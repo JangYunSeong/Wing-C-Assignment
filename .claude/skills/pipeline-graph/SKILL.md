@@ -20,7 +20,7 @@ START
   ├─ retrieve_t1              ③ 주장 → 역량 후보 (패턴+BM25(카드·예문) RRF, 범위 soft, 공고 가산점 → LLM 0~2개 선택·uncovered)
   └─ retrieve_t2              ③ 이력서↔자기소개서 연결·어긋남 (문서가 둘 다 있을 때만)
   └─ evidence                 ③ 역량 → NCS 수행준거·KSA / ESCO 그래프 조인 (결정적)
-  └─ compare                  ④ 겹침 / 공고에만 / 지원자에만 / uncovered
+  └─ compare                  ④ 겹침 / 공고에만 / 지원자에만(직무 연계 강·중·약) / uncovered + 검증 후보 주장 점수 순 (결정적, nodes/compare.py)
   └─ draft_spec               ④ 공통 과제(공고 기준) + 경험 검증 과제(claims_to_verify)
   └─ approval                 ④ interrupt() — 사람 승인/반려/수정 요청
        ├─ approved  → finalize → END
