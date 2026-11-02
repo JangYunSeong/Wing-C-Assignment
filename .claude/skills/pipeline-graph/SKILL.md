@@ -15,8 +15,8 @@ START
   └─ posting_profile          ① 온톨로지 조회. LLM 없음.
   └─ ingest                   ② 문서별 텍스트 추출(PDF 텍스트층 → 스캔본만 OCR) + 칸 분리
   └─ pseudonymize             ② 치환 + 누락 검사. 실패 시 END(error) — 다음 노드로 절대 넘기지 않음
-  └─ assign_roles             ② 칸 위치로 역할 규칙 판정 (LLM 아님)
-  └─ extract_claims           ② LLM. 문서 단위 Send 로 fan-out 가능
+  └─ extract_claims           ② LLM. 주장마다 인용이 속한 ⟦칸⟧(field)을 기록
+  └─ assign_roles             ② 칸 → 역할 규칙 판정 (LLM 아님, nodes/roles.py)
   ├─ retrieve_t1              ③ 주장 → 역량 후보 (범위 필터 → 어휘+벡터 RRF → 재정렬 → LLM 0~2개 선택)
   └─ retrieve_t2              ③ 이력서↔자기소개서 연결·어긋남 (문서가 둘 다 있을 때만)
   └─ evidence                 ③ 역량 → NCS 수행준거·KSA / ESCO 그래프 조인 (결정적)
@@ -46,7 +46,7 @@ class RunState(BaseModel):
     documents: list[DocumentRef] = []     # 경로·종류(resume|cover_letter)·해시. 원문 텍스트는 State 에 넣지 않는다
     posting_profile: PostingProfile | None = None
     pseudo_docs: list[PseudoDocRef] = []  # 가명화본 저장 위치 + 검사 결과. 매핑 테이블은 State 밖(data/ 암호화 저장)
-    claims: Annotated[list[Claim], add] = []
+    claims: list[Claim] = []              # 교체 — assign_roles 가 역할을 채운 목록으로 바꾼다
     candidates: list[ClaimCandidates] = []
     links: list[CrossDocLink] = []
     evidence: list[CompetencyEvidence] = []
@@ -62,6 +62,23 @@ class RunState(BaseModel):
   State 에는 `data/` 안의 참조(경로·해시)만 둔다.
 - fan-out 결과를 모으는 필드만 reducer(`add`)를 쓴다.
 - 모든 스키마는 `src/task_spec/schemas/` 의 Pydantic 모델. 노드는 dict 를 반환하되 키는 State 필드명.
+
+## 역할 규칙 [확정: 2026-11-02]
+
+| 주장이 속한 칸 | 역할 |
+|---|---|
+| 과정 · 담당업무 | 참여 (participate) |
+| 기여한 점 | 주도 (lead) |
+| 기여한 점·담당업무 + 설계 표현(설계·아키텍처·구조 수립/정의) | 설계 (design) |
+| 문제 정의 · 성과 · 사용 기술 · 칸 밖(자기소개서 산문 등) | 판정 안 함 (None) → 명세에서 '역할 확인 필요' |
+
+주장마다 `field`(칸)·`role_basis`(근거)를 남긴다. 칸은 다음 칸 표시·빈 줄·절 제목·기간 머리말에서 끝난다.
+
+## 과제 기술 환경 [미정 — 2026-11-02 사용자 제안, 범위 확인 중]
+
+`사용 기술` 칸 + 공고 언어: 겹치면 공고 언어, 아니면 지원자 역량의 프레임워크(온톨로지 enables).
+불변식 3(공통 과제는 지원자 문서로 바꾸지 않음)과 충돌하므로 제안: 공통 과제 = 공고 언어만, 경험 검증 과제 = 위 규칙.
+draft_spec 구현 전에 확정한다.
 
 ## 노드 규칙
 

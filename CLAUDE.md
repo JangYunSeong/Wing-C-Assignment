@@ -54,7 +54,7 @@ LangGraph StateGraph (src/task_spec/graph) + AsyncPostgresSaver
    모든 명세에 `ontology_version` 을 적는다.
 5. **판정은 규칙·재정렬·LLM·사람.** 벡터 유사도는 후보 재현율 보강용이지 판정이 아니다.
    공고 역량은 retrieve 에서 **가산점만** (후보를 공고 역량으로 제한하지 않는다) [확정: 2026-11-02 — `context.md` §4.6 "제한"보다 우선].
-6. **역할(참여/주도/설계)은 칸 위치로 규칙 판정**한다. LLM 에 맡기지 않는다.
+6. **역할(참여/주도/설계)은 칸 위치로 규칙 판정**한다. LLM 에 맡기지 않는다. 규칙표: pipeline-graph 스킬 "역할 규칙".
 7. **프롬프트는 코드에 문자열로 박지 않는다.** `prompts/<task>/vN.md` + `CURRENT`. 기존 vN 은 수정 금지(새 버전 추가).
    `CURRENT` 변경은 평가 통과 후에만.
 8. **모든 LLM 산출물에 provenance**: `prompt_id@version+hash`, 모델·설정, few-shot 예시 id, `ontology_version`.
