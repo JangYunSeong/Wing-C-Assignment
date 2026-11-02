@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # 지원자 데이터 루트 (git 밖, 불변식 1)
     data_dir: Path
 
+    # 업로드 (fastapi-service "업로드"): 파일 1개당 바이트 상한. 허용 형식은 api/uploads.py.
+    upload_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    # SSE 상태 폴링 간격(초)
+    sse_poll_seconds: float = Field(default=0.5, gt=0)
+
     # LLM 프로바이더 (llm-client 스킬). 값은 로그·provenance·/healthz 에 넣지 않는다.
     openai_api_key: SecretStr
     opencode_api_key: SecretStr
