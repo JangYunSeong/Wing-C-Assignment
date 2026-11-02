@@ -25,6 +25,23 @@ from psycopg.types.json import Jsonb
 
 from task_spec.config import Settings
 
+# 새 공고 매칭(경로 2)에 쓰는 규칙 — 결과 테이블과 같은 버전으로 묶어 적재한다 (매처: postings/matcher.py)
+RULE_GLOBS = (
+    "data/rules/competencies/*.json",
+    "data/rules/tools/*.json",
+    "data/build/seed/tech_seed.json",
+)
+
+RULES_DDL = """
+CREATE TABLE IF NOT EXISTS public.ontology_rules (
+    version text NOT NULL,
+    path text NOT NULL,
+    sha256 text NOT NULL,
+    content json NOT NULL,  -- jsonb 아님: jsonb 는 키 순서를 바꾼다 (수준 규칙 등 순서 = 우선순위)
+    PRIMARY KEY (version, path)
+)
+"""
+
 REGISTRY_DDL = """
 CREATE TABLE IF NOT EXISTS public.ontology_registry (
     version text PRIMARY KEY,
@@ -90,6 +107,33 @@ def _table_order(cur: psycopg.Cursor, schema: str, tables: list[str]) -> list[st
     return order
 
 
+def _analyze_keys(cur: psycopg.Cursor, schema: str) -> None:
+    """인덱스에 쓰이는 키 컬럼만 통계 갱신.
+
+    COPY 직후엔 통계가 없어 플래너가 인덱스 대신 전체 스캔을 고른다 (평가 근거 질의가 수 초).
+    테이블 전체 ANALYZE 는 긴 한국어 텍스트 컬럼(수행준거·KSA 본문)의 통계 계산이 수십 분 걸려 쓰지 않는다
+    (2026-11-02 실측: ncs_unit 1.3만 행에서 10분 이상). 키 컬럼만이면 테이블당 1초 이내.
+    """
+    cur.execute(
+        """
+        SELECT c.relname, array_agg(DISTINCT a.attname ORDER BY a.attname)
+          FROM pg_index i
+          JOIN pg_class c ON c.oid = i.indrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+         WHERE n.nspname = %s
+         GROUP BY c.relname
+        """,
+        (schema,),
+    )
+    for table, cols in cur.fetchall():
+        cur.execute(
+            sql.SQL("ANALYZE {} ({})").format(
+                sql.Identifier(schema, table), sql.SQL(", ").join(map(sql.Identifier, cols))
+            )
+        )
+
+
 def _convert(value: object, udt: str) -> object:
     if value is None:
         return None
@@ -102,7 +146,9 @@ def _convert(value: object, udt: str) -> object:
     return value
 
 
-def load(sqlite_path: Path, schema_sql: Path, database_url: str) -> dict[str, object]:
+def load(
+    sqlite_path: Path, schema_sql: Path, database_url: str, rules_root: Path | None = None
+) -> dict[str, object]:
     src = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
     version = src.execute("SELECT version FROM ontology_version").fetchone()[0]
     target = schema_name(version)
@@ -138,6 +184,7 @@ def load(sqlite_path: Path, schema_sql: Path, database_url: str) -> dict[str, ob
             src_n = src.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]  # noqa: S608
             if not (got == n == src_n):
                 raise RuntimeError(f"행 수 불일치 {t}: sqlite {src_n}, pg {got}")
+        _analyze_keys(cur, staging)
         cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(target)))
         cur.execute(
             sql.SQL("ALTER SCHEMA {} RENAME TO {}").format(
@@ -150,8 +197,10 @@ def load(sqlite_path: Path, schema_sql: Path, database_url: str) -> dict[str, ob
             "source_sha256 = EXCLUDED.source_sha256, row_counts = EXCLUDED.row_counts, loaded_at = now()",
             (version, target, source_sha, Jsonb(counts)),
         )
+        n_rules = _load_rules(cur, version, rules_root) if rules_root is not None else 0
         conn.commit()
     return {
+        "rules": n_rules,
         "version": version,
         "schema": target,
         "tables": len(counts),
@@ -160,12 +209,44 @@ def load(sqlite_path: Path, schema_sql: Path, database_url: str) -> dict[str, ob
     }
 
 
+def _load_rules(cur: psycopg.Cursor, version: str, root: Path) -> int:
+    cur.execute(RULES_DDL)
+    cur.execute(  # 예전 jsonb 컬럼이면 json 으로 (행은 아래에서 다시 넣는다)
+        "SELECT data_type FROM information_schema.columns WHERE table_schema='public' "
+        "AND table_name='ontology_rules' AND column_name='content'"
+    )
+    if (cur.fetchone() or [""])[0] == "jsonb":
+        cur.execute("DELETE FROM public.ontology_rules")
+        cur.execute(
+            "ALTER TABLE public.ontology_rules ALTER COLUMN content TYPE json USING content::json"
+        )
+    cur.execute("DELETE FROM public.ontology_rules WHERE version = %s", (version,))
+    files = sorted({f for g in RULE_GLOBS for f in root.glob(g)})
+    if not files:
+        raise RuntimeError(f"규칙 파일이 없습니다: {root}")
+    for f in files:
+        raw = f.read_bytes()
+        cur.execute(
+            "INSERT INTO public.ontology_rules (version, path, sha256, content) VALUES (%s, %s, %s, %s)",
+            (
+                version,
+                str(f.relative_to(root)),
+                hashlib.sha256(raw).hexdigest(),
+                raw.decode("utf-8"),  # 원문 그대로 (json 컬럼이 텍스트를 보존 — 키 순서 유지)
+            ),
+        )
+    return len(files)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--sqlite", type=Path, required=True)
     ap.add_argument("--schema-sql", type=Path, required=True)
+    ap.add_argument(
+        "--rules-root", type=Path, default=None, help="온톨로지 레포 루트 (새 공고 매칭 규칙 적재)"
+    )
     ap.add_argument(
         "--target",
         choices=["main", "test"],
@@ -177,7 +258,11 @@ def main() -> None:
     url = s.database_url if a.target == "main" else s.test_database_url
     if url is None:
         sys.exit("TEST_DATABASE_URL 이 없습니다")
-    print(json.dumps(load(a.sqlite, a.schema_sql, url.get_secret_value()), ensure_ascii=False))
+    print(
+        json.dumps(
+            load(a.sqlite, a.schema_sql, url.get_secret_value(), a.rules_root), ensure_ascii=False
+        )
+    )
 
 
 if __name__ == "__main__":
