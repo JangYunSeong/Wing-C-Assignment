@@ -23,9 +23,13 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 
 - 두 프로바이더 모두 **외부 API** 다. 지원자 계열 입력은 `PseudonymizedText` 만 허용 — 아니면 호출 전에 예외.
 - 프롬프트 머리말의 `model` 은 `<provider>:<model>` 형식 (예: `opencode:qwen3.8-flash`, `openai:<model>`).
-  `llm/registry.py` 가 provider 접두로 클라이언트를 고른다. 모델 설정은 머리말이 SSOT, 코드 기본값으로 덮지 않는다.
+  `LLMClient` 가 provider 접두로 백엔드를 고른다. 모델 설정은 머리말이 SSOT, 코드 기본값으로 덮지 않는다.
 - OpenCode 쪽이 지원하지 않는 파라미터(예: `reasoning_effort`)는 provider 별 허용 목록으로 걸러 보내고, 걸러진 사실을 provenance 에 남긴다.
-- 구조화 출력: `with_structured_output(PydanticModel)` 우선, 미지원 모델은 JSON 모드 + Pydantic 검증.
+- 구조화 출력 [확정: 2026-11-02]: `with_structured_output` 을 쓰지 않는다. 프로바이더마다 json_schema 지원이 달라서,
+  프롬프트에 `{{output_schema}}`(출력 모델 JSON 스키마)를 넣고 응답 본문 JSON 을 직접 파싱(코드 펜스 허용) → Pydantic 검증.
+- 구조: `ChatBackend`(1회 호출, `llm/backend.py`) ← `LLMClient`(재시도·검증·provenance, `llm/client.py`).
+  실제 백엔드는 `OpenAICompatBackend`(ChatOpenAI, SDK 재시도 0), 조립은 `llm/factory.py` 의 `build_llm_client(settings)`.
+- 프로바이더별 허용 파라미터: `ALLOWED_PARAMS` (`llm/client.py`). 걸러진 키는 provenance `params.dropped`.
 - 키는 `Settings` 가 `.env` 에서 로드. 키 값을 로그·provenance·예외 메시지·`/healthz` 에 넣지 않는다.
 - 비용 계산용 단가는 `llm/pricing.py` 표 하나 (모르는 모델은 `cost_usd: null`).
 
@@ -49,12 +53,14 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 
 ## 원문 인용 대조
 
-주장 추출처럼 `원문` 필드를 돌려받는 작업은 `verify_quotes(output, source)` 를 거친다.
-- 비교 전 양쪽에서 표시(`[담당업무]`, `[문제 정의]` 등 프롬프트가 붙인 칸 표시)와 공백 정규화를 제거.
+주장 추출처럼 `원문` 필드를 돌려받는 작업은 `verify_quote(quote, source)` 를 거친다.
+- 칸 표시는 **`⟦담당업무⟧` 형식만** 쓴다 — 가명화 토큰 `[ORG_1]` 과 겹치지 않게. 비교 전 양쪽에서 칸 표시를 지우고 공백을 정규화한다.
+  가명화 토큰은 원문의 일부라 지우지 않는다 (`llm/quotes.py`).
 - 원문에 글자 그대로 없으면 그 항목은 폐기 + 에러 기록 (모델이 표시까지 인용하는 현상 대응).
 
 ## 테스트
 
-- `FakeLLM`: (prompt_id, 입력 해시) → 고정 응답 테이블. 네트워크 없이 그래프 전체 테스트.
+- `FakeBackend` (`llm/fake.py`): 입력 해시별(없으면 default) 응답 큐. 예외도 넣을 수 있다. 네트워크 없이 그래프 전체 테스트.
+- 실제 API 스모크: `uv run pytest -m llm -q -s` — 가상 텍스트만, 비용 발생, 기본 실행에서 제외.
 - 재시도 경로(빈 응답 → low 재시도, 스키마 실패 → 재요청 → 실패)를 각각 테스트.
 - 가명화되지 않은 입력 → 예외 테스트 (네거티브).

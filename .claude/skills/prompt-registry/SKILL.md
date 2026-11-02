@@ -100,7 +100,10 @@ LLM 호출 1건마다:
 ## 4. 코드 규칙
 
 - 코드에 프롬프트 문자열을 쓰지 않는다. 로더는 `CURRENT` 를 읽고, 테스트·평가는 버전을 명시할 수 있다.
-- 템플릿 변수는 `{{name}}` 만. 누락·남는 변수는 로드 시 에러.
+- 템플릿 변수는 `{{name}}` 만. 입력 스키마 필드 + 예약 변수(`criteria`, `examples`, `output_schema`). 누락·남는 변수는 로드 시 에러.
+  `output_schema` 는 머리말 output_schema 모델의 JSON 스키마로 채워진다 (llm-client 구조화 출력).
+- 첫 버전처럼 비교 기준이 없으면 머리말 `eval: pending`.
+- 구현: `prompting/registry.py`(PromptRegistry·parse_template), `prompting/assemble.py`, `prompting/context.py`(기준·예시 제공자 — export 전까지 Empty).
 - 로더는 시작 시 모든 `CURRENT` 를 검증(머리말 스키마, 스키마 클래스 존재).
 
 ## 5. 승격 절차 (vN → CURRENT)
