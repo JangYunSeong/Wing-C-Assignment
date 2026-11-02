@@ -1,0 +1,27 @@
+# 지원자 원본·가명화본·주장·대조·명세 결과·체크포인트·온톨로지 산출물 (CLAUDE.md 불변식 1)
+data/
+*.pdf
+*.docx
+*.hwp
+*.hwpx
+
+# 시크릿
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Claude Code 로컬
+.claude/settings.local.json
+.claude/worktrees/
+.claude/agent-memory/

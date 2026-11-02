@@ -1,0 +1,58 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Edit(.env)",
+      "Edit(**/.env)",
+      "Read(data/pseudonymized/**/mapping.json)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/check-python-rules.sh", "timeout": 5, "statusMessage": "Python 코딩 규칙 검증 중..."},
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/protect-prompt-versions.sh", "timeout": 5, "statusMessage": "프롬프트 버전 보호 확인 중..."},
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/check-pseudonymize-order.sh", "timeout": 5, "statusMessage": "가명화 순서 확인 중..."}
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/block-dangerous-commands.sh", "timeout": 5, "statusMessage": "위험 명령 검사 중..."},
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/block-dotenv-access.sh", "timeout": 5, "statusMessage": ".env 시크릿 접근 검사 중..."},
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/block-applicant-data.sh", "timeout": 5, "statusMessage": "지원자 데이터 커밋 검사 중..."}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/auto-format-python.sh", "timeout": 10, "statusMessage": "Python 포매팅 적용 중..."}
+        ]
+      }
+    ],
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-context.sh", "timeout": 5, "statusMessage": "프로젝트 컨텍스트 로딩 중..."}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/remind-tests.sh", "timeout": 5}]}
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "graph-architect|api-implementor|privacy-auditor|ontology-reference|code-reviewer|test-writer|git-committer|git-pusher|github-issue|github-pr",
+        "hooks": [{"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/subagent-context.sh", "timeout": 5, "statusMessage": "서브에이전트 컨텍스트 주입 중..."}]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "test-writer",
+        "hooks": [{"type": "command", "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/subagent-quality-check.sh", "timeout": 10}]
+      }
+    ]
+  }
+}
