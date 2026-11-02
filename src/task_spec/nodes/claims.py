@@ -1,4 +1,4 @@
-"""② 역할 판정(규칙) + 주장 추출(LLM).
+"""② 주장 추출(LLM). 역할 판정은 nodes/roles.py (규칙).
 
 extract_claims 는 검사를 통과한 가명화본만 읽어(PseudonymizedText) prompting.assemble() + llm.call() 로
 주장을 뽑는다. 인용이 원문에 글자 그대로 없는 주장은 폐기하고 errors 에 남긴다 (재요청하지 않음).
@@ -15,6 +15,7 @@ from task_spec.llm import LLMClient, verify_quote
 from task_spec.llm.backend import TransientLLMError
 from task_spec.llm.client import EmptyResponse, SchemaViolation
 from task_spec.nodes.pseudonymize import load_pseudonymized
+from task_spec.nodes.roles import locate_field
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     Claim,
@@ -26,11 +27,6 @@ from task_spec.schemas import (
 )
 
 TASK = "extract_claims"
-
-
-async def assign_roles(state: RunState) -> dict[str, Any]:
-    """칸 위치로 역할을 규칙 판정한다 (불변식 6). TODO(document-ingest): 칸 정보가 생기면 구현."""
-    return {}
 
 
 def make_extract_claims(
@@ -93,6 +89,7 @@ def make_extract_claims(
                         result=item.result,
                         period=item.period,
                         quote=item.quote,
+                        field=locate_field(text, item.quote),
                         provenance_id=result.provenance.provenance_id,
                     )
                 )
