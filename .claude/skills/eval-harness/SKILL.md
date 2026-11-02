@@ -55,7 +55,23 @@ uv run python -m eval.ingest.run_eval --split dev --show-misses
 uv run python -m eval.ingest.run_eval --split test --save
 ```
 
-## 주장 추출 평가 [예정]
+## 주장 추출 평가 (`eval/claims/`)
 
-`extract_claims` 프롬프트 승격(prompt-registry §5)에 쓴다. gold = 가상 지원서의 행동 단위 주장. 지표: 주장 재현율·정밀도,
-인용 일치율, 반복 실행 안정성, 모델 간 비교(qwen3.8-flash vs gpt-4.1-mini). 구조는 위와 같게(dev/test, 리포트, 회귀).
+`generate.py`: 가명화 끝난 형태(토큰·⟦칸⟧)의 가상 이력서·자기소개서, 문장마다 정답(행동 수·칸·역할, 뽑으면 안 되는 문장).
+`run_eval.py`: 실제 LLM 호출(비용 발생). 모델 출력 인용 → 가장 가까운 정답 문장에 대응.
+지표: 문장·행동 재현율, 두 행동 분리율, 정밀도, 행동 아닌 문장 비율, 인용 일치, 칸·역할 정확도, 2회 안정성, 지연·추론 토큰.
+채점기 자기 검증(정답 입력 = 만점): `tests/eval/test_claims_scoring.py`.
+
+```bash
+uv run python -m eval.claims.run_eval --split dev --prompt-version 2 --show-misses --save
+uv run python -m eval.claims.run_eval --split test --prompt-version 2 --save
+```
+
+| 2026-11-02 test (숨김) | qwen3.8-flash v1 → v2 | gpt-4.1-mini v1 → v2 |
+|---|---|---|
+| 행동 재현율 | 0.971 → 1.0 | 0.691 → 1.0 |
+| 두 행동 분리율 | 1.0 → 1.0 | 0.071 → 1.0 |
+| 안정성 | 0.988 → 1.0 | 0.973 → 1.0 |
+| 지연 | 16.2s → 10.3s | 2.1s → 2.7s |
+
+v2 를 CURRENT 로 승격(모델 qwen 유지). 한계: 템플릿 생성기라 dev·test 문장 풀이 같다 — 다음은 LLM 이 쓴 문체 다양 표본(가명화 평가처럼).
