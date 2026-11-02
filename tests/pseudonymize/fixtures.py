@@ -115,3 +115,25 @@ KEEP_B = [
     "산업공학과",
     "(2022.07~08)",
 ]
+
+
+def extracted_ref(root, run_id: str, name: str, body, kind: str = "resume"):  # type: ignore[no-untyped-def]
+    """ingest 가 만든 것과 같은 위치·해시의 추출본 참조 (data/extracted/<run_id>/<doc_id>.txt)."""
+    import hashlib
+    from pathlib import Path
+
+    from task_spec.schemas import ExtractedRef
+
+    data = body if isinstance(body, bytes) else body.encode("utf-8")
+    doc_id = Path(name).stem
+    p = Path(root) / "extracted" / run_id / f"{doc_id}.txt"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+    return ExtractedRef(
+        doc_id=doc_id,
+        kind=kind,
+        ok=True,
+        path=str(p),
+        sha256=hashlib.sha256(data).hexdigest(),
+        method="txt",
+    )
