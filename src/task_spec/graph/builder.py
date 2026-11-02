@@ -1,9 +1,9 @@
 """그래프 조립.
 
-START → posting_profile ─┬─ (문서 있음) ingest → pseudonymize ─┬─ (통과) assign_roles → extract_claims
+START → posting_profile ─┬─ (문서 있음) ingest → pseudonymize ─┬─ (통과) extract_claims → assign_roles
                          │                                      └─ (실패) END
                          └─ (문서 없음) compare
-extract_claims → [retrieve_t1 ∥ retrieve_t2] → evidence → compare → draft_spec → approval
+assign_roles → [retrieve_t1 ∥ retrieve_t2] → evidence → compare → draft_spec → approval
 approval ─ approved → finalize → END / revise → draft_spec / rejected → END
 """
 
@@ -16,7 +16,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from task_spec.llm import LLMClient
-from task_spec.nodes.claims import assign_roles, make_extract_claims
+from task_spec.nodes.claims import make_extract_claims
 from task_spec.nodes.ingest import Ingestor, make_ingest, stub_ingestor
 from task_spec.nodes.posting_profile import posting_profile
 from task_spec.nodes.pseudonymize import (
@@ -26,6 +26,7 @@ from task_spec.nodes.pseudonymize import (
     stub_pseudonymizer,
 )
 from task_spec.nodes.retrieve import evidence, retrieve_t1, retrieve_t2
+from task_spec.nodes.roles import assign_roles
 from task_spec.nodes.spec import approval, compare, draft_spec, finalize
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import RunInput, RunState
@@ -36,9 +37,9 @@ def _route_after_profile(state: RunState) -> Literal["ingest", "compare"]:
     return "ingest" if state.has_documents() else "compare"
 
 
-def _route_after_pseudonymize(state: RunState) -> Literal["assign_roles", "__end__"]:
+def _route_after_pseudonymize(state: RunState) -> Literal["extract_claims", "__end__"]:
     # 가명화 누락 검사 실패 → 즉시 END. 다음 단계로 절대 넘기지 않는다.
-    return "assign_roles" if pseudonymization_passed(state) else END
+    return "extract_claims" if pseudonymization_passed(state) else END
 
 
 def build_graph(
@@ -67,10 +68,10 @@ def build_graph(
     g.add_edge(START, "posting_profile")
     g.add_conditional_edges("posting_profile", _route_after_profile, ["ingest", "compare"])
     g.add_edge("ingest", "pseudonymize")
-    g.add_conditional_edges("pseudonymize", _route_after_pseudonymize, ["assign_roles", END])
-    g.add_edge("assign_roles", "extract_claims")
-    g.add_edge("extract_claims", "retrieve_t1")
-    g.add_edge("extract_claims", "retrieve_t2")
+    g.add_conditional_edges("pseudonymize", _route_after_pseudonymize, ["extract_claims", END])
+    g.add_edge("extract_claims", "assign_roles")
+    g.add_edge("assign_roles", "retrieve_t1")
+    g.add_edge("assign_roles", "retrieve_t2")
     g.add_edge(["retrieve_t1", "retrieve_t2"], "evidence")  # 둘 다 끝나야 합류
     g.add_edge("evidence", "compare")
     g.add_edge("compare", "draft_spec")

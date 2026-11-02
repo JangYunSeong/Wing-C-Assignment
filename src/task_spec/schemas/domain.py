@@ -40,7 +40,9 @@ class Claim(Schema):
     result: str | None = None
     period: str | None = None
     quote: str = Field(min_length=1)
+    field: str | None = None  # 인용이 속한 ⟦칸⟧ (FieldLabel). 칸 밖이면 None
     role: Role | None = None
+    role_basis: str | None = None  # 판정 근거: "field:기여한 점", "+design_term", "no_field"
     provenance_id: str | None = None
 
 

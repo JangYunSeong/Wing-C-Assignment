@@ -40,7 +40,9 @@ class RunState(BaseModel):
     posting_profile: PostingProfile | None = None
     extracted: list[ExtractedRef] = Field(default_factory=list)
     pseudo_docs: list[PseudoDocRef] = Field(default_factory=list)
-    claims: Annotated[list[Claim], add] = Field(default_factory=list)
+    claims: list[Claim] = Field(
+        default_factory=list
+    )  # 교체 — assign_roles 가 역할을 채운 목록으로 바꾼다
     candidates: list[ClaimCandidates] = Field(default_factory=list)
     links: list[CrossDocLink] = Field(default_factory=list)
     evidence: list[CompetencyEvidence] = Field(default_factory=list)
