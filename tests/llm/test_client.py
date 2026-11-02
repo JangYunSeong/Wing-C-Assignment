@@ -44,7 +44,7 @@ async def test_success_with_provenance() -> None:
     r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert r.parsed.claims[0].action == "데이터 파이프라인 설계"
     p = r.provenance
-    assert p.prompt == "extract_claims@1"
+    assert p.prompt == PROMPTS.get("extract_claims").ref  # CURRENT
     assert p.model == "opencode:qwen3.8-flash"
     assert p.ontology_version == "onto-v2026.11.02"
     assert p.retries == 0
