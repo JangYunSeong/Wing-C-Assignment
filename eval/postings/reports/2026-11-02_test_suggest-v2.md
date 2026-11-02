@@ -1,0 +1,19 @@
+# 새 공고 평가 — test (2026-11-02)
+
+| 지표 | 값 |
+|---|---|
+| positions | 114 |
+| styles | {'bracket': 28, 'none': 12, 'colon': 36, 'markdown': 38} |
+| segment_methods | {'rules': 102, 'llm': 12} |
+| section_acc | 0.99 |
+| sub_top1 | 0.886 |
+| sub_top3 | 0.965 |
+| industry_known | 0.939 |
+| industry_unknown_llm | 0.725 |
+| industry_unknown_top3 | 0.85 |
+| industry_unknown_n | 40 |
+| suggest_llm_errors | 0 |
+| comp_recall_gold | 1.0 |
+| comp_precision_gold | 0.998 |
+| comp_recall_top1 | 0.987 |
+| comp_precision_top1 | 0.984 |
