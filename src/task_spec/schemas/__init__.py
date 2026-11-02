@@ -16,6 +16,13 @@ from task_spec.schemas.domain import (
     TaskItem,
     TaskSpec,
 )
+from task_spec.schemas.ingest import (
+    ExtractedDocument,
+    ExtractedField,
+    ExtractedRef,
+    ExtractedSection,
+    SectionHeader,
+)
 from task_spec.schemas.provenance import NodeError, Provenance, TokenUsage
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.schemas.state import RunInput, RunState
@@ -33,6 +40,10 @@ __all__ = [
     "DocumentKind",
     "DocumentRef",
     "ExtractedClaim",
+    "ExtractedDocument",
+    "ExtractedField",
+    "ExtractedRef",
+    "ExtractedSection",
     "NodeError",
     "PostingProfile",
     "Provenance",
@@ -42,6 +53,7 @@ __all__ = [
     "Role",
     "RunInput",
     "RunState",
+    "SectionHeader",
     "TaskItem",
     "TaskSpec",
     "TokenUsage",

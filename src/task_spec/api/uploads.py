@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from fastapi import UploadFile
 from task_spec.api.errors import FileTooLarge, InvalidUpload, UnsupportedFileType
 from task_spec.schemas import DocumentKind, DocumentRef
 
-ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".txt"})
+ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".hwpx", ".txt"})
 _CHUNK = 1024 * 1024
 
 
@@ -29,9 +30,15 @@ async def _read_limited(upload: UploadFile, limit: int, run_id: str) -> bytes:
 
 
 def _write_all(run_dir: Path, items: list[tuple[str, bytes]]) -> None:
+    """원본(원문 PII)은 700 폴더 / 600 파일로 (추출본·가명화본과 같은 수준, 감사 W6)."""
     run_dir.mkdir(parents=True, exist_ok=True)
+    for d in (run_dir.parent, run_dir):
+        os.chmod(d, 0o700)
     for name, data in items:
-        (run_dir / name).write_bytes(data)
+        fd = os.open(run_dir / name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
 
 
 async def store_uploads(

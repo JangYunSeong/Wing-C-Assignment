@@ -23,6 +23,7 @@ from task_spec.schemas.domain import (
     PostingProfile,
     TaskSpec,
 )
+from task_spec.schemas.ingest import ExtractedRef
 from task_spec.schemas.provenance import NodeError, Provenance
 
 
@@ -37,6 +38,7 @@ class RunState(BaseModel):
     posting_id: str = Field(min_length=1)
     documents: list[DocumentRef] = Field(default_factory=list)
     posting_profile: PostingProfile | None = None
+    extracted: list[ExtractedRef] = Field(default_factory=list)
     pseudo_docs: list[PseudoDocRef] = Field(default_factory=list)
     claims: Annotated[list[Claim], add] = Field(default_factory=list)
     candidates: list[ClaimCandidates] = Field(default_factory=list)
