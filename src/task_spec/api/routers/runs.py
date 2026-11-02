@@ -7,7 +7,7 @@ import uuid
 from collections.abc import AsyncIterable
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langgraph.types import Command
 
@@ -23,6 +23,7 @@ from task_spec.api.run_view import load_run_view
 from task_spec.api.schemas import TERMINAL_STATUSES, RunAccepted, RunEvent, RunView
 from task_spec.api.uploads import store_uploads
 from task_spec.ontology.queries import posting_exists
+from task_spec.postings.store import is_provisional
 from task_spec.schemas import ApprovalDecision, DocumentKind, RunInput, TaskSpec
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -32,6 +33,7 @@ _ERRORS = {404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}
 
 @router.post("", status_code=202, responses={413: {"model": ErrorResponse}})
 async def create_run(
+    request: Request,
     settings: SettingsDep,
     ontology: OntologyDep,
     launcher: LauncherDep,
@@ -40,7 +42,11 @@ async def create_run(
     resumes: Annotated[list[UploadFile] | None, File()] = None,
     cover_letters: Annotated[list[UploadFile] | None, File()] = None,
 ) -> RunAccepted:
-    if ontology is not None and not await posting_exists(ontology, posting_id):
+    if is_provisional(posting_id):
+        ctx = getattr(request.app.state, "postings", None)
+        if ctx is None or await ctx.store.get_provisional(posting_id) is None:
+            raise PostingNotFound(posting_id)
+    elif ontology is not None and not await posting_exists(ontology, posting_id):
         raise PostingNotFound(posting_id)
     run_id = uuid.uuid4().hex
     uploads: list[tuple[DocumentKind, UploadFile]] = [

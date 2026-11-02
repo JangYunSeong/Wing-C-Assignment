@@ -11,15 +11,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from langgraph.graph.state import CompiledStateGraph
 
+from task_spec.api.deps import PostingsContext
 from task_spec.api.errors import install_error_handlers
 from task_spec.api.launcher import RunLauncher
-from task_spec.api.routers import health, runs
+from task_spec.api.routers import health, postings, runs
 from task_spec.config import Settings, get_settings
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm.factory import build_llm_client
 from task_spec.nodes.ingest import FileIngestor
 from task_spec.nodes.pseudonymize import RulePseudonymizer
 from task_spec.ontology.repository import OntologyRepository
+from task_spec.postings.store import PostingStore
+from task_spec.postings.suggest import load_lists
 from task_spec.prompting import PromptRegistry
 
 
@@ -40,6 +43,10 @@ def create_app(
         prompts = PromptRegistry(app.state.settings.prompts_dir)
         prompts.validate_all()  # 프롬프트 머리말·변수·스키마 오류면 기동 실패
         llm = build_llm_client(app.state.settings)
+        # 새 공고(경로 2): 온톨로지 목록·매칭 규칙(같은 버전) + 임시 공고 저장소
+        lists = await load_lists(app.state.ontology)
+        store = await PostingStore.open(app.state.settings.database_url.get_secret_value())
+        app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때
         async with make_checkpointer(app.state.settings) as cp:
@@ -50,6 +57,8 @@ def create_app(
                 llm=llm,
                 prompts=prompts,
                 ontology=app.state.ontology,
+                postings=store,
+                ontology_lists=lists,
             )
             app.state.launcher = RunLauncher(app.state.graph)
             try:
@@ -57,6 +66,7 @@ def create_app(
             finally:
                 await app.state.launcher.shutdown()
                 await app.state.ontology.close()
+                await store.close()
 
     app = FastAPI(title="task-spec", lifespan=lifespan)
     if settings is not None:
@@ -68,6 +78,7 @@ def create_app(
         app.state.launcher = RunLauncher(graph)
     install_error_handlers(app)
     app.include_router(runs.router)
+    app.include_router(postings.router)
     app.include_router(health.router)
     return app
 

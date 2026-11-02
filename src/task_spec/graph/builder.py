@@ -29,6 +29,8 @@ from task_spec.nodes.retrieve import make_evidence, retrieve_t1, retrieve_t2
 from task_spec.nodes.roles import assign_roles
 from task_spec.nodes.spec import approval, compare, draft_spec, finalize
 from task_spec.ontology.repository import OntologyRepository
+from task_spec.postings.store import PostingStore
+from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import RunInput, RunState
 
@@ -53,10 +55,12 @@ def build_graph(
     llm: LLMClient | None = None,
     prompts: PromptRegistry | None = None,
     ontology: OntologyRepository | None = None,
+    postings: PostingStore | None = None,
+    ontology_lists: OntologyLists | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
-    g.add_node("posting_profile", make_posting_profile(ontology))
+    g.add_node("posting_profile", make_posting_profile(ontology, postings, ontology_lists))
     g.add_node("ingest", make_ingest(ingestor))
     g.add_node("pseudonymize", make_pseudonymize(pseudonymizer))
     g.add_node("assign_roles", assign_roles)
