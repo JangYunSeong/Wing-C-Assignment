@@ -47,7 +47,7 @@ gh repo clone JangYunSeong/job-competency-ontology data/ontology/src -- --depth 
 #   data/esco/v1.2.1/esco_v1.2.1.sqlite, data/ncs/ncs_infonet.sqlite, data/train/<버전>/
 (cd data/ontology/src && python3.11 -I scripts/db/build_db.py)
 uv run python -m task_spec.ontology.load_pg --sqlite data/ontology/src/data/build/ontology.sqlite \
-    --schema-sql data/ontology/src/scripts/db/schema_pg.sql [--target test]
+    --schema-sql data/ontology/src/scripts/db/schema_pg.sql --rules-root data/ontology/src [--target test]
 ```
 
 정식 산출물(태그 `onto-vYYYY.MM.DD`, manifest, release)이 생기면 그 sqlite 를 같은 적재기로 올리고 `ONTOLOGY_VERSION` 을 고정한다.
@@ -80,14 +80,35 @@ uv run python -m task_spec.ontology.load_pg --sqlite data/ontology/src/data/buil
 | NCS 본문 | State 에는 능력단위·요소·수행준거·KSA **건수**만, 본문은 명세 생성 때 `v_ncs_unit_detail` 조회 |
 | ESCO | `competency_esco.representative` 만 (broad 제외) |
 
-### 새 공고 (경로 2) [확정: 2026-11-02 — 방향, 구현은 다음 작업]
+### 새 공고 (경로 2) [확정: 2026-11-02 — 구현: `src/task_spec/postings/`]
 
-온톨로지에 없는 공고도 처리한다 (C안). P1 이 **임시(provisional) 프로필**을 만든다:
-- 직군·업종: 공고 원문으로 **자동 추천 → 요청자 확인** (목록: 직군 59 · 업종 10)
-- 절 분리(담당업무/자격요건/우대): 규칙 → 안 되면 LLM (공고는 PII 아님)
-- 문장 → 역량·도구: 온톨로지 레포 매처 + 적재 산출물 규칙 (#59 §2 (b) 사본, 원본 커밋 기록). LLM 아님
-- `source="provisional"` 표시, 명세 승인 화면에 '미검수 공고 분석'. 온톨로지 레포 검수 대상으로 환류
-- 평가: 온톨로지 공고를 '새 공고처럼' 경로 2 로 돌려 검수 결과와 일치율 측정
+온톨로지에 없는 공고도 처리한다 (C안). 흐름:
+
+```
+POST /postings/suggest  원문(텍스트·PDF·DOCX·HWPX) + 회사·직무명 → 절 분리 + 직군·업종 후보 (posting_suggestion)
+POST /postings          suggestion_id + 확인한 직군·업종 + confirmed_by → 매처 분석 → 임시 공고 prov-… (provisional_posting)
+POST /runs              posting_id=prov-…  → posting_profile(source=provisional) → 이하 경로 1 과 같음
+```
+
+| 단계 | 방식 |
+|---|---|
+| 절 분리 (`sections.py`) | 절 제목 사전(업무내용·지원자격·우대사항 등, 묶음 제목·글머리 제거) → 담당업무·자격요건을 못 찾으면 LLM(`prompts/segment_posting`). LLM 문장은 원문에 글자 그대로 있어야 남김 |
+| 업종 (`suggest.py`) | 등록 회사면 그 업종, 아니면 LLM(`prompts/suggest_field`) |
+| 직군 | 0.5·직무명 유사도(포지션 623, 평가 땐 자기 제외) + 0.5·직군별 역량 문장 비율. 약하거나 접전이면 LLM 섞음. 상위 3 + 근거 |
+| 확인 | 요청자가 직군·업종을 고른다 (`confirmed_by` — 인증 전까지 본문, TODO(auth)). 목록 밖 값 422 |
+| 문장 분석 | 매처 사본 `postings/matcher.py` (원본 b69d00f, 로직 동일) + **PG `public.ontology_rules`(같은 버전, json)** |
+| 임시 공고 | `public.provisional_posting` — 버전·규칙 해시·문장별 결과·미매칭 수, 상태 pending_review. 실행 버전과 분석 버전이 다르면 그래프 END(`posting_version_mismatch`) |
+| 환류 | DB 저장까지. 온톨로지 레포로 내보내기는 보류 [미정] |
+| LLM | 공고는 PII 아님 → openai:gpt-4.1-mini (속도). 규칙이 실패할 때만 |
+
+검증한 것
+- 매처 사본 = 온톨로지 결과: 시범 직군 공고 문장 2,765개 종류·역량·수준 100% (`tests/postings/test_postings_pg.py`)
+- **규칙은 jsonb 가 아니라 json 으로 저장** — jsonb 는 키 순서를 바꾸고, 수준 규칙은 순서가 우선순위다 (jsonb 로 넣었을 때 40문장 수준이 틀렸다)
+- 적재 후 **키 컬럼만 ANALYZE** — 통계 없으면 평가 근거 질의 4초+, 전체 ANALYZE 는 긴 한국어 텍스트 통계 계산에 10분+ (키 컬럼만: 테이블당 <1초, 질의 0.06초)
+
+알려진 공백 — **온톨로지에 없는 직군×업종 셀** [미정]
+셀 범위 NCS(`cell_ncs`)는 공고가 있던 48개 셀에만 있다 (시범 직군 조합 140개 중). 새 공고가 그 밖의 셀이면
+평가 근거가 비고 경고 `posting_cell_unseen` 을 남긴다. 보완 후보: 직군 단위 `sub_ncs`(시범 13/14 직군)로 대체.
 
 ## 쓰임새
 
