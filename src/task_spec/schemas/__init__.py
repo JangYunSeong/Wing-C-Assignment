@@ -27,11 +27,27 @@ from task_spec.schemas.ingest import (
     ExtractedSection,
     SectionHeader,
 )
+from task_spec.schemas.postings import (
+    AnalyzedLine,
+    Candidate,
+    PostingLineIn,
+    SegmentPostingInput,
+    SegmentPostingOutput,
+    SuggestFieldInput,
+    SuggestFieldOutput,
+)
 from task_spec.schemas.provenance import NodeError, Provenance, TokenUsage
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.schemas.state import RunInput, RunState
 
 __all__ = [
+    "SuggestFieldOutput",
+    "SuggestFieldInput",
+    "SegmentPostingOutput",
+    "SegmentPostingInput",
+    "PostingLineIn",
+    "Candidate",
+    "AnalyzedLine",
     "PostingTool",
     "PostingCompetency",
     "NcsUnitRef",
