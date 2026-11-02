@@ -3,12 +3,13 @@
 가명화 이전 단계: LLM·임베딩 import 금지. 실패 문서가 하나라도 있으면 그래프는 END 로 간다
 (부분 통과 금지, pseudonymization 스킬).
 
-실제 가명화기는 `Pseudonymizer` 로 주입한다 (테스트에서 실패 경로를 만들기 위해).
-TODO(pseudonymization): 규칙·사전·로컬 NER 기반 구현으로 교체.
+실제 가명화기는 `Pseudonymizer` 로 주입한다. 운영은 `RulePseudonymizer`(rule_pseudonymizer.py),
+테스트는 가짜를 끼운다. 기본값 stub 는 텍스트를 내보내지 않으므로(path=None) 주장 추출까지 가지 않는다.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -38,8 +39,8 @@ def make_pseudonymize(
         errors = [
             NodeError(
                 node="pseudonymize",
-                code="residual_pii",
-                message=f"누락 검사 실패: 잔여 {r.check.residual_count}건",
+                code=r.check.reason or "residual_pii",
+                message=f"가명화 실패: {r.check.reason or 'residual_pii'} (잔여 {r.check.residual_count}건)",
                 ref_id=r.doc_id,
             )
             for r in results
@@ -64,7 +65,21 @@ class PseudonymizedNotAvailable(Exception):
 
 
 def load_pseudonymized(ref: PseudoDocRef) -> PseudonymizedText:
-    """검사를 통과한 가명화본만 PseudonymizedText 로 읽는다 (블로킹 — 호출 측에서 to_thread)."""
-    if not ref.check.passed or ref.path is None:
+    """검사를 통과한 가명화본만 PseudonymizedText 로 읽는다 (블로킹 — 호출 측에서 to_thread).
+
+    State 가 오염돼도 임의 파일이 LLM 으로 가지 않게 (privacy-auditor W3):
+    경로 모양이 `.../pseudonymized/<run_id>/<doc_id>.txt` 이고, 심볼릭 링크가 아니고, sha256 이 맞아야 한다.
+    """
+    if not ref.check.passed or ref.path is None or ref.sha256 is None:
         raise PseudonymizedNotAvailable(ref.doc_id)
-    return mint_pseudonymized(Path(ref.path).read_text(encoding="utf-8"))
+    path = Path(ref.path)
+    if (
+        path.is_symlink()
+        or path.name != f"{ref.doc_id}.txt"
+        or path.parent.parent.name != "pseudonymized"
+    ):
+        raise PseudonymizedNotAvailable(ref.doc_id)
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != ref.sha256:
+        raise PseudonymizedNotAvailable(ref.doc_id)
+    return mint_pseudonymized(raw.decode("utf-8"))

@@ -32,6 +32,10 @@ class PseudoCheck(Schema):
     passed: bool
     residual_count: int = Field(ge=0)
     detectors: list[str] = Field(default_factory=list)
+    # 실패 사유 코드. residual_pii(누락 검사) / ingest_required(텍스트 추출 전 형식) / read_error
+    reason: Literal["residual_pii", "ingest_required", "read_error"] | None = None
+    # 범주별 치환 건수 (값은 남기지 않는다)
+    counts: dict[str, int] = Field(default_factory=dict)
 
 
 class PseudoDocRef(Schema):
