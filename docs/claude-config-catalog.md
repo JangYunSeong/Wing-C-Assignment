@@ -68,4 +68,5 @@
 | SubagentStart | 10 유형 | subagent-context.sh | 에이전트별 규칙 주입 |
 | SubagentStop | test-writer | subagent-quality-check.sh | 네거티브 테스트 누락 시 되돌림 |
 
-권한: `settings.json` `permissions.deny` 가 `.env` 와 가명화 매핑(`data/pseudonymized/**/mapping.json`) Read 를 막는다.
+권한: `settings.json` `permissions.deny` 가 `.env`·`.env.local`·`.env.*.local`·`.env.production`, DB 비밀번호(`data/secrets/**`),
+가명화 매핑(`data/pseudonymized/**/mapping.json`) Read 를 막는다. 템플릿 `.env.example` 은 읽고 고칠 수 있다.
