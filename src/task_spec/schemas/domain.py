@@ -28,14 +28,19 @@ class PostingProfile(Schema):
 
 
 class Claim(Schema):
-    """② 가명화된 문서에서 뽑은 주장 1건.
+    """② 가명화된 문서에서 뽑은 주장 1건. 텍스트 필드는 모두 가명화본 기준이다.
 
-    TODO(extract_claims): 가명화된 인용(PseudonymizedText)·칸 위치·기간 등 필드 확정.
+    role 은 assign_roles 가 칸 위치 규칙으로 채운다 (불변식 6). LLM 은 role 을 정하지 않는다.
     """
 
     claim_id: str = Field(min_length=1)
     doc_id: str = Field(min_length=1)
-    role: Role | None = None  # assign_roles 가 칸 위치 규칙으로 채운다 (불변식 6)
+    action: str = Field(min_length=1)
+    target: str | None = None
+    result: str | None = None
+    period: str | None = None
+    quote: str = Field(min_length=1)
+    role: Role | None = None
     provenance_id: str | None = None
 
 
