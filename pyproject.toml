@@ -46,3 +46,4 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["E501"]  # 줄 길이는 ruff format 이 맞춘다 (한글 docstring 폭 오탐)
