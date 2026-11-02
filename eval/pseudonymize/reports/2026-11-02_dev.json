@@ -1,0 +1,171 @@
+{
+ "samples": 119,
+ "recall": {
+  "CONTACT": [
+   283,
+   283
+  ],
+  "COURSE": [
+   119,
+   119
+  ],
+  "LINK": [
+   100,
+   100
+  ],
+  "ORG": [
+   97,
+   99
+  ],
+  "PERSON": [
+   257,
+   257
+  ],
+  "PRODUCT": [
+   24,
+   40
+  ],
+  "REMOVE": [
+   106,
+   106
+  ],
+  "SCHOOL": [
+   119,
+   119
+  ]
+ },
+ "recall_all": [
+  1105,
+  1123
+ ],
+ "recall_by_source": {
+  "llm": [
+   187,
+   205
+  ],
+  "template": [
+   918,
+   918
+  ]
+ },
+ "hard_recall": [
+  0,
+  20
+ ],
+ "over_replacement": [
+  0,
+  515
+ ],
+ "stopped_by_residual": 0,
+ "misses": [
+  {
+   "id": "llm-dev-11-000",
+   "layout": "한글·영문이 섞인 1페이지 이력서 (머리줄에 인적사항을 한 줄로)",
+   "category": "PRODUCT",
+   "value": "다온톡"
+  },
+  {
+   "id": "llm-dev-11-001",
+   "layout": "줄글 위주의 경력기술서 (프로젝트별 문제 정의 / 과정 / 기여한 점)",
+   "category": "PRODUCT",
+   "value": "누리노트"
+  },
+  {
+   "id": "llm-dev-11-002",
+   "layout": "자기소개서 3문항 답변 (지원 동기, 협업 경험, 입사 후 포부)",
+   "category": "PRODUCT",
+   "value": "다온톡"
+  },
+  {
+   "id": "llm-dev-11-006",
+   "layout": "한글·영문이 섞인 1페이지 이력서 (머리줄에 인적사항을 한 줄로)",
+   "category": "PRODUCT",
+   "value": "누리노트"
+  },
+  {
+   "id": "llm-dev-11-007",
+   "layout": "인사 담당자에게 보내는 이메일 형식의 지원서",
+   "category": "PRODUCT",
+   "value": "가상페이"
+  },
+  {
+   "id": "llm-dev-11-008",
+   "layout": "링크드인 프로필 요약처럼 쓴 소개글",
+   "category": "PRODUCT",
+   "value": "다온톡"
+  },
+  {
+   "id": "llm-dev-11-009",
+   "layout": "한글·영문이 섞인 1페이지 이력서 (머리줄에 인적사항을 한 줄로)",
+   "category": "PRODUCT",
+   "value": "다온톡"
+  },
+  {
+   "id": "llm-dev-11-010",
+   "layout": "자기소개서 3문항 답변 (지원 동기, 협업 경험, 입사 후 포부)",
+   "category": "PRODUCT",
+   "value": "누리노트"
+  },
+  {
+   "id": "llm-dev-11-011",
+   "layout": "표 대신 들여쓰기와 기호(▶, ㆍ)로 정리한 이력서",
+   "category": "ORG",
+   "value": "누리가상"
+  },
+  {
+   "id": "llm-dev-11-011",
+   "layout": "표 대신 들여쓰기와 기호(▶, ㆍ)로 정리한 이력서",
+   "category": "PRODUCT",
+   "value": "한결맵"
+  },
+  {
+   "id": "llm-dev-11-012",
+   "layout": "자기소개서 3문항 답변 (지원 동기, 협업 경험, 입사 후 포부)",
+   "category": "PRODUCT",
+   "value": "한결맵"
+  },
+  {
+   "id": "llm-dev-11-013",
+   "layout": "줄글 위주의 경력기술서 (프로젝트별 문제 정의 / 과정 / 기여한 점)",
+   "category": "PRODUCT",
+   "value": "한결맵"
+  },
+  {
+   "id": "llm-dev-11-015",
+   "layout": "표 대신 들여쓰기와 기호(▶, ㆍ)로 정리한 이력서",
+   "category": "PRODUCT",
+   "value": "누리노트"
+  },
+  {
+   "id": "llm-dev-11-016",
+   "layout": "줄글 위주의 경력기술서 (프로젝트별 문제 정의 / 과정 / 기여한 점)",
+   "category": "PRODUCT",
+   "value": "누리노트"
+  },
+  {
+   "id": "llm-dev-11-017",
+   "layout": "표 대신 들여쓰기와 기호(▶, ㆍ)로 정리한 이력서",
+   "category": "ORG",
+   "value": "가상솔루션"
+  },
+  {
+   "id": "llm-dev-11-017",
+   "layout": "표 대신 들여쓰기와 기호(▶, ㆍ)로 정리한 이력서",
+   "category": "PRODUCT",
+   "value": "가상페이"
+  },
+  {
+   "id": "llm-dev-11-018",
+   "layout": "표 대신 들여쓰기와 기호(▶, ㆍ)로 정리한 이력서",
+   "category": "PRODUCT",
+   "value": "가상페이"
+  },
+  {
+   "id": "llm-dev-11-019",
+   "layout": "표 대신 들여쓰기와 기호(▶, ㆍ)로 정리한 이력서",
+   "category": "PRODUCT",
+   "value": "가상페이"
+  }
+ ],
+ "keep_lost": []
+}
