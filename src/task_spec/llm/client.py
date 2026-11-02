@@ -32,6 +32,16 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 # 프로바이더별로 백엔드에 넘길 수 있는 파라미터. 나머지는 걸러내고 provenance 에 기록한다.
+# OpenAI 추론 모델(gpt-5 계열·o 계열)은 temperature·top_p 기본값만 받는다 → 보내지 않는다 (provenance 의 dropped 에 남음).
+# max_tokens 는 langchain-openai 가 max_completion_tokens 로 바꿔 보낸다.
+REASONING_ONLY_DEFAULT = frozenset({"temperature", "top_p"})
+_REASONING_MODEL = re.compile(r"^(gpt-5|o\d)")
+
+
+def is_reasoning_model(provider: str, model: str) -> bool:
+    return provider == "openai" and bool(_REASONING_MODEL.match(model))
+
+
 ALLOWED_PARAMS: dict[str, frozenset[str]] = {
     "openai": frozenset({"temperature", "max_tokens", "reasoning_effort", "top_p", "seed"}),
     "opencode": frozenset({"temperature", "max_tokens", "reasoning_effort", "top_p", "seed"}),
@@ -89,7 +99,12 @@ class LLMClient:
             raise ValueError(f"설정되지 않은 프로바이더: {provider}")
 
         allowed = ALLOWED_PARAMS.get(provider, frozenset())
-        params = {k: v for k, v in prompt.params.items() if k in allowed}
+        params = {
+            k: v
+            for k, v in prompt.params.items()
+            if k in allowed
+            and not (k in REASONING_ONLY_DEFAULT and is_reasoning_model(provider, model))
+        }
         dropped = sorted(set(prompt.params) - set(params))
 
         messages = list(prompt.messages)
@@ -150,7 +165,9 @@ class LLMClient:
             retries=len(retries),
             tokens=TokenUsage(**{"in": total.input}, out=total.output, reasoning=total.reasoning),
             latency_ms=latency_ms,
-            cost_usd=cost_usd(prompt.model, total.input, total.output + total.reasoning),
+            cost_usd=cost_usd(
+                prompt.model, total.input, total.output
+            ),  # output 에 추론 토큰 포함 (OpenAI 호환 usage)
         )
         logger.info(
             "llm call prompt=%s model=%s retries=%s reasons=%s tokens_in=%d tokens_out=%d latency_ms=%d",

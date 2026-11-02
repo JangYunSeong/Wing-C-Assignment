@@ -1,9 +1,19 @@
-"""비용 계산 단가표 (USD / 1M tokens). 모르는 모델은 None — 추측하지 않는다."""
+"""비용 계산 단가표 (USD / 1M tokens). 모르는 모델은 None — 추측하지 않는다.
+
+출력 토큰 수는 OpenAI 호환 usage 의 completion/output 토큰(추론 토큰 포함)을 쓴다.
+출처·확인일을 함께 적는다. 공식 가격 페이지로 재확인 전 값은 [미정] 표시.
+"""
 
 from __future__ import annotations
 
-# "<provider>:<model>": (input, output). 출력 단가는 추론 토큰에도 적용한다.
-PRICES: dict[str, tuple[float, float]] = {}
+# "<provider>:<model>": (input, output)
+PRICES: dict[str, tuple[float, float]] = {
+    # 2026-11-02 집계 사이트(benchlm.ai, pricepertoken.com) 일치값. OpenAI 공식 페이지 재확인 [미정]
+    "openai:gpt-5.5": (5.00, 30.00),
+    "openai:gpt-5.4-mini": (0.75, 4.50),
+    # 2026-11-02 opencode.ai/data(사용 통계 페이지)·Maxim 일치값. Zen 가격 페이지 재확인 [미정]
+    "opencode:qwen3.8-flash": (0.15, 0.47),
+}
 
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
