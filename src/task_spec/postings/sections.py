@@ -13,7 +13,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from task_spec.llm import LLMClient, normalize_for_quote
+from task_spec.llm import LLMClient, SchemaViolation, TransientLLMError, normalize_for_quote
+from task_spec.llm.client import EmptyResponse
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import PostingLineIn, SegmentPostingInput, SegmentPostingOutput
 
@@ -45,7 +46,7 @@ _GROUP_TITLE = re.compile(r"^\s*(?:\*\*)?\s*[<〈《\[]\s*.{1,40}\s*[>〉》\]]\
 @dataclass(frozen=True)
 class Segmented:
     lines: list[PostingLineIn]
-    method: str  # "rules" | "llm" | "none"
+    method: str  # "rules" | "llm" | "llm_failed" | "none"
 
 
 def _heading(line: str) -> str | None:
@@ -86,7 +87,10 @@ async def segment(text: str, llm: LLMClient | None, prompts: PromptRegistry | No
     prompt = assemble(
         prompts.get("segment_posting"), SegmentPostingInput(text=text), ontology_version="n/a"
     )
-    result = await llm.call(prompt, SegmentPostingOutput)
+    try:
+        result = await llm.call(prompt, SegmentPostingOutput)
+    except (SchemaViolation, EmptyResponse, TransientLLMError):
+        return Segmented(lines, "llm_failed")  # 보조 실패 — 규칙 결과(비어 있을 수 있음)로
     source = normalize_for_quote(text)
     kept = [
         x

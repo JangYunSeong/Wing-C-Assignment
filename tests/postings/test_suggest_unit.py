@@ -80,3 +80,26 @@ async def test_weak_signal_or_unknown_company_uses_llm() -> None:
     assert meta["llm_used"] and subs[0].id == "sw.backend"
     assert all(c.id != "없는직군" for c in subs)  # 목록 밖 값은 버림
     assert ind[0].id == "ind.platform" and ind[0].reasons == ["LLM 추천"]
+
+
+async def test_llm_failure_falls_back_to_rules() -> None:
+    """LLM 출력이 두 번 다 깨져도 추천은 규칙 후보로 응답한다."""
+    fake = FakeBackend().push(Completion("깨진 응답"), Completion("또 깨짐"))
+    subs, ind, meta = await suggest(
+        _lists(),
+        company="처음보는회사",
+        title="데이터 엔지니어",
+        text="x",
+        lines=LINES,
+        llm=LLMClient({"openai": fake}),
+        prompts=PROMPTS,
+    )
+    assert meta["llm_error"] == "SchemaViolation"
+    assert subs and subs[0].id == "data.eng" and ind == []
+
+
+def test_nulls_in_llm_lists_are_dropped() -> None:
+    from task_spec.schemas import SuggestFieldOutput
+
+    out = SuggestFieldOutput.model_validate({"sub_ids": ["data.eng", None], "industry_ids": [None]})
+    assert out.sub_ids == ["data.eng"] and out.industry_ids == []
