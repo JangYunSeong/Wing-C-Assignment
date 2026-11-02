@@ -24,6 +24,7 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import load_lists
 from task_spec.prompting import PromptRegistry
+from task_spec.retrieve import build_retriever
 
 
 def create_app(
@@ -49,6 +50,7 @@ def create_app(
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때
+        retriever = await build_retriever(app.state.ontology, lists)  # T1 검색 색인 (수 초, 로컬)
         async with make_checkpointer(app.state.settings) as cp:
             app.state.graph = build_graph(
                 cp,
@@ -59,6 +61,7 @@ def create_app(
                 ontology=app.state.ontology,
                 postings=store,
                 ontology_lists=lists,
+                retriever=retriever,
             )
             app.state.launcher = RunLauncher(app.state.graph)
             try:
