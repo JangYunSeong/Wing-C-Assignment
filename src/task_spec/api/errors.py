@@ -57,8 +57,8 @@ class PostingNotFound(DomainError):
     status_code = 404
 
     def __init__(self, posting_id: str) -> None:
-        # 새 공고는 아직 미지원 (경로 2 — provisional 프로필, 다음 작업)
-        super().__init__(f"온톨로지에 없는 공고입니다: {posting_id}")
+        # 새 공고는 POST /postings/suggest → POST /postings 로 임시 공고(prov-…)를 먼저 만든다
+        super().__init__(f"공고를 찾을 수 없습니다: {posting_id}")
 
 
 class ApprovalNotPending(DomainError):
@@ -74,6 +74,11 @@ class UnsupportedFileType(DomainError):
 class FileTooLarge(DomainError):
     code = "file_too_large"
     status_code = 413
+
+
+class ServiceUnavailable(DomainError):
+    code = "service_unavailable"
+    status_code = 503
 
 
 class InvalidUpload(DomainError):

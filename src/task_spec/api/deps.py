@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Request
 from langgraph.graph.state import CompiledStateGraph
 
-from task_spec.api.errors import RunNotFound
+from task_spec.api.errors import RunNotFound, ServiceUnavailable
 from task_spec.api.launcher import RunLauncher
 from task_spec.api.run_view import load_run_view
 from task_spec.api.schemas import RunView
 from task_spec.config import Settings
+from task_spec.llm import LLMClient
 from task_spec.ontology.repository import OntologyRepository
+from task_spec.postings.store import PostingStore
+from task_spec.postings.suggest import OntologyLists
+from task_spec.prompting import PromptRegistry
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -48,3 +53,23 @@ async def get_run_view(run_id: str, graph: GraphDep, launcher: LauncherDep) -> R
 
 
 RunViewDep = Annotated[RunView, Depends(get_run_view)]
+
+
+@dataclass(frozen=True)
+class PostingsContext:
+    """새 공고(경로 2) 처리에 필요한 것 — 앱 lifespan 이 만든다."""
+
+    store: PostingStore
+    lists: OntologyLists
+    llm: LLMClient | None
+    prompts: PromptRegistry | None
+
+
+def get_postings(request: Request) -> PostingsContext:
+    ctx = getattr(request.app.state, "postings", None)
+    if ctx is None:
+        raise ServiceUnavailable("새 공고 처리가 준비되지 않았습니다 (온톨로지·저장소 미연결)")
+    return ctx
+
+
+PostingsDep = Annotated[PostingsContext, Depends(get_postings)]
