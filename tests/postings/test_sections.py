@@ -74,3 +74,9 @@ async def test_llm_fallback_only_without_headings_and_drops_fabrications() -> No
 async def test_no_headings_without_llm() -> None:
     seg = await segment(NO_HEADINGS, None, None)
     assert seg.method == "none" and seg.lines == []
+
+
+async def test_llm_segment_failure_is_contained() -> None:
+    fake = FakeBackend().push(Completion("깨진 응답"), Completion("또 깨짐"))
+    seg = await segment(NO_HEADINGS, LLMClient({"openai": fake}), PROMPTS)
+    assert seg.method == "llm_failed" and seg.lines == []

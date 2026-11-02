@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from task_spec.schemas.base import Schema
 
@@ -41,8 +41,17 @@ class SuggestFieldInput(Schema):
 
 class SuggestFieldOutput(Schema):
     sub_ids: list[str] = Field(default_factory=list, max_length=3)
-    industry_id: str | None = None
+    industry_id: str | None = None  # v1: 하나만
+    industry_ids: list[str] = Field(
+        default_factory=list, max_length=3
+    )  # v2: 가능성 높은 순 최대 3개
     reason: str = Field(default="", max_length=500)
+
+    @field_validator("sub_ids", "industry_ids", mode="before")
+    @classmethod
+    def _drop_nulls(cls, v: object) -> object:
+        """모델이 '모름'을 목록 안 null 로 쓰는 경우가 있다 (2026-11-02 dev) — 빼고 받는다."""
+        return [x for x in v if x is not None] if isinstance(v, list) else v
 
 
 class Candidate(Schema):

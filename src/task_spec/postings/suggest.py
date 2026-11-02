@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
-from task_spec.llm import LLMClient
+from task_spec.llm import LLMClient, SchemaViolation, TransientLLMError
+from task_spec.llm.client import EmptyResponse
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.matcher import Matcher
 from task_spec.prompting import PromptRegistry, assemble
@@ -147,6 +148,7 @@ async def suggest(
     llm: LLMClient | None,
     prompts: PromptRegistry | None,
     exclude_positions: frozenset[str] = frozenset(),
+    prompt_version: int | None = None,
 ) -> tuple[list[Candidate], list[Candidate], dict[str, Any]]:
     """(직군 후보 top3, 업종 후보, 메타). 메타에 어떤 신호를 썼는지 남긴다."""
     meta: dict[str, Any] = {"llm_used": False}
@@ -180,7 +182,12 @@ async def suggest(
         not ranked or ranked[0][1] < WEAK or (len(ranked) > 1 and ranked[0][1] - ranked[1][1] < TIE)
     )
     if (weak or not industry) and llm is not None and prompts is not None:
-        out = await _ask_llm(lists, company, title, text, llm, prompts)
+        try:
+            out = await _ask_llm(lists, company, title, text, llm, prompts, prompt_version)
+        except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
+            # LLM 은 보조 — 실패하면 규칙 후보만으로 응답한다 (추천 API 가 500 이 되지 않게)
+            meta["llm_error"] = type(exc).__name__
+            out = SuggestFieldOutput()
         meta["llm_used"] = True
         for rank, sid in enumerate(out.sub_ids):
             if sid in lists.subs:
@@ -188,15 +195,18 @@ async def suggest(
                 reasons[sid].append(
                     "LLM 추천" + (f": {out.reason}" if rank == 0 and out.reason else "")
                 )
-        if not industry and out.industry_id in lists.industries:
-            industry.append(
-                Candidate(
-                    id=out.industry_id,
-                    label=lists.industries[out.industry_id],
-                    score=0.6,
-                    reasons=["LLM 추천"],
-                )  # type: ignore[index]
-            )
+        if not industry:
+            picks = out.industry_ids or ([out.industry_id] if out.industry_id else [])
+            for rank, iid in enumerate(dict.fromkeys(picks)):
+                if iid in lists.industries:
+                    industry.append(
+                        Candidate(
+                            id=iid,
+                            label=lists.industries[iid],
+                            score=round(0.6 - 0.15 * rank, 2),
+                            reasons=["LLM 추천"],
+                        )
+                    )
         ranked = sorted(sub_score.items(), key=lambda x: -x[1])
     subs = [
         Candidate(id=s, label=lists.subs[s]["label"], score=round(v, 3), reasons=reasons[s])
@@ -213,6 +223,7 @@ async def _ask_llm(
     text: str,
     llm: LLMClient,
     prompts: PromptRegistry,
+    version: int | None = None,
 ) -> SuggestFieldOutput:
     payload = SuggestFieldInput(
         company=company or "(미상)",
@@ -221,7 +232,9 @@ async def _ask_llm(
         subs="\n".join(f"{k}: {v['label']}" for k, v in sorted(lists.subs.items())),
         industries="\n".join(f"{k}: {v}" for k, v in sorted(lists.industries.items())),
     )
-    prompt = assemble(prompts.get("suggest_field"), payload, ontology_version=lists.version)
+    prompt = assemble(
+        prompts.get("suggest_field", version), payload, ontology_version=lists.version
+    )
     return (await llm.call(prompt, SuggestFieldOutput)).parsed
 
 
