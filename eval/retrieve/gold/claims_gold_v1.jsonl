@@ -1,0 +1,41 @@
+{"id": "g01", "sub": "data.eng", "kind": "normal", "action": "배치 파이프라인 재구성", "quote": "Airflow DAG 를 재구성해 매일 돌던 주문 집계 배치를 단계별로 나눴다.", "gold": ["comp:data.pipeline"], "accept": [], "note": "Airflow = 파이프라인"}
+{"id": "g02", "sub": "data.eng", "kind": "normal", "action": "Spark 집계 최적화", "quote": "Spark 집계 잡을 파티션 단위로 나눠 6시간 걸리던 집계를 40분으로 줄였다.", "gold": ["comp:data.bigdata"], "accept": [], "note": "공고 문체와 다름"}
+{"id": "g03", "sub": "data.eng", "kind": "normal", "action": "Kafka 토픽 재설계", "quote": "Kafka 토픽을 재설계하고 소비자 지연 알림을 붙였다.", "gold": ["comp:data.streaming"], "accept": [], "note": ""}
+{"id": "g04", "sub": "data.eng", "kind": "normal", "action": "데이터 품질 검증 규칙 작성", "quote": "적재 데이터의 누락·중복을 잡는 검증 규칙 40개를 만들었다.", "gold": ["comp:data.quality"], "accept": [], "note": "'품질'이라는 말을 쓰지 않은 변형도 시험"}
+{"id": "g05", "sub": "data.eng", "kind": "normal", "action": "쿼리 튜닝", "quote": "느린 정산 조회 쿼리의 실행 계획을 분석하고 인덱스를 다시 만들어 응답을 10초에서 1초로 줄였다.", "gold": ["comp:data.db_tuning"], "accept": [], "note": ""}
+{"id": "g06", "sub": "data.eng", "kind": "normal", "action": "로그 수집 체계 구축", "quote": "서비스 로그를 Fluent Bit 로 모아 S3 와 데이터 레이크에 적재하는 수집 구조를 만들었다.", "gold": ["comp:data.pipeline"], "accept": [], "note": "도구명이 사전에 없을 수 있음"}
+{"id": "g07", "sub": "data.eng", "kind": "normal", "action": "대시보드 구축", "quote": "주간 매출 지표를 Tableau 대시보드로 만들어 영업팀에 공유했다.", "gold": ["comp:data.bi"], "accept": [], "note": ""}
+{"id": "g08", "sub": "data.eng", "kind": "normal", "action": "데이터 모델링", "quote": "주문·결제 테이블을 정규화하고 분석용 스타 스키마를 설계했다.", "gold": ["comp:data.db_design"], "accept": [], "note": ""}
+{"id": "g09", "sub": "data.ml", "kind": "uncovered", "action": "추천 모델 개발", "quote": "협업 필터링 기반 상품 추천 모델을 만들어 클릭률을 12% 올렸다.", "gold": [], "accept": [], "note": "추천 모델링을 덮는 역량 없음(ai.ml·추천 역량 없음). ai.service 는 '서비스 적용'이라 아님 — 역량 신설 시 gold 갱신. '협업 필터링'→협업(sw.agile) 어휘 오탐 회귀"}
+{"id": "g10", "sub": "data.ml", "kind": "uncovered", "action": "추천 결과 재정렬", "quote": "벡터 검색으로 뽑은 후보를 학습 기반 랭커로 재정렬했다.", "gold": [], "accept": [], "note": "infra.vector_db 는 구축·운영, 랭커 학습은 범위 밖 (#59 §8 uncovered 예)"}
+{"id": "g11", "sub": "data.ml", "kind": "normal", "action": "LLM 파인튜닝", "quote": "사내 상담 데이터로 오픈소스 LLM 을 LoRA 로 파인튜닝했다.", "gold": ["comp:ai.llm_training"], "accept": [], "note": ""}
+{"id": "g12", "sub": "data.ml", "kind": "normal", "action": "RAG 챗봇 개발", "quote": "사내 문서를 검색해 답하는 RAG 챗봇을 만들었다.", "gold": ["comp:ai.llm"], "accept": [], "note": ""}
+{"id": "g13", "sub": "data.ml", "kind": "normal", "action": "모델 경량화", "quote": "이미지 분류 모델을 양자화해 추론 지연을 절반으로 줄였다.", "gold": ["comp:ai.model_opt"], "accept": [], "note": ""}
+{"id": "g14", "sub": "data.ml", "kind": "normal", "action": "MLOps 구축", "quote": "모델 학습·배포를 MLflow 와 Kubeflow 파이프라인으로 자동화했다.", "gold": ["comp:ai.mlops"], "accept": [], "note": ""}
+{"id": "g15", "sub": "data.ml", "kind": "scope_probe", "action": "수요 예측 분석", "quote": "판매 데이터로 수요 예측 모형을 만들어 재고 결정을 도왔다.", "gold": ["comp:data.stat_ml"], "accept": ["comp:data.analysis"], "note": "정의상 data.stat_ml. 범위(data.analytics·data.eng) 밖 — 온톨로지 범위 문제. accept: '재고 결정을 도왔다' = 의사결정 지원, data.analysis 범위 전체"}
+{"id": "g16", "sub": "data.ml", "kind": "normal", "action": "논문 구현", "quote": "최신 시계열 예측 논문을 재현 구현해 사내 데이터에 적용했다.", "gold": ["comp:ai.research"], "accept": [], "note": ""}
+{"id": "g17", "sub": "data.ml", "kind": "normal", "action": "GPU 자원 관리", "quote": "팀 GPU 서버의 학습 작업 스케줄링을 Slurm 으로 정리했다.", "gold": ["comp:ai.gpu"], "accept": [], "note": ""}
+{"id": "g18", "sub": "data.ml", "kind": "normal", "action": "에이전트 개발", "quote": "사내 도구를 호출하는 MCP 서버와 LLM 에이전트를 만들었다.", "gold": ["comp:ai.agent"], "accept": [], "note": ""}
+{"id": "g19", "sub": "sw.backend", "kind": "normal", "action": "REST API 개발", "quote": "주문 조회·취소 REST API 를 설계하고 구현했다.", "gold": ["comp:sw.rest_api"], "accept": [], "note": ""}
+{"id": "g20", "sub": "sw.backend", "kind": "normal", "action": "Spring 서비스 개발", "quote": "Spring Boot 로 정산 서비스를 개발했다.", "gold": ["comp:sw.spring"], "accept": [], "note": ""}
+{"id": "g21", "sub": "sw.backend", "kind": "normal", "action": "캐시 적용", "quote": "자주 조회되는 상품 정보에 Redis 캐시를 붙여 DB 부하를 60% 줄였다.", "gold": ["comp:sw.cache"], "accept": [], "note": ""}
+{"id": "g22", "sub": "sw.backend", "kind": "normal", "action": "MSA 전환", "quote": "모놀리식 주문 시스템을 서비스 단위로 쪼개 마이크로서비스로 옮겼다.", "gold": ["comp:sw.msa"], "accept": [], "note": ""}
+{"id": "g23", "sub": "sw.backend", "kind": "normal", "action": "대용량 트래픽 대응", "quote": "이벤트 기간 초당 5천 건 요청을 견디도록 커넥션 풀과 비동기 처리를 조정했다.", "gold": ["comp:sw.perf"], "accept": [], "note": ""}
+{"id": "g24", "sub": "sw.backend", "kind": "normal", "action": "로그인 연동", "quote": "카카오·구글 소셜 로그인을 OAuth 로 연동했다.", "gold": ["comp:sw.auth"], "accept": [], "note": ""}
+{"id": "g25", "sub": "sw.backend", "kind": "normal", "action": "테스트 코드 작성", "quote": "핵심 결제 로직에 단위 테스트를 붙여 커버리지를 30%에서 80%로 올렸다.", "gold": ["comp:sw.test_code"], "accept": [], "note": ""}
+{"id": "g26", "sub": "sw.backend", "kind": "normal", "action": "배포 자동화", "quote": "GitHub Actions 로 빌드·테스트·배포를 자동화했다.", "gold": ["comp:sw.cicd"], "accept": [], "note": ""}
+{"id": "g27", "sub": "sw.backend", "kind": "normal", "action": "메시지 큐 도입", "quote": "주문 완료 알림을 RabbitMQ 로 비동기 처리했다.", "gold": ["comp:sw.messaging"], "accept": [], "note": ""}
+{"id": "g28", "sub": "sw.backend", "kind": "normal", "action": "검색 기능 개발", "quote": "Elasticsearch 로 상품 검색 기능을 만들었다.", "gold": ["comp:sw.search"], "accept": [], "note": ""}
+{"id": "g29", "sub": "infra.cloud", "kind": "normal", "action": "클라우드 이전", "quote": "온프레미스 서비스를 AWS 로 옮기며 VPC 와 보안 그룹을 설계했다.", "gold": ["comp:infra.cloud"], "accept": ["comp:infra.security"], "note": "accept: '보안 그룹 설계' 명시, NCS 클라우드 인프라 보안"}
+{"id": "g30", "sub": "infra.cloud", "kind": "normal", "action": "Terraform 도입", "quote": "Terraform 으로 개발·운영 환경을 코드로 관리하게 바꿨다.", "gold": ["comp:infra.iac"], "accept": [], "note": ""}
+{"id": "g31", "sub": "infra.cloud", "kind": "normal", "action": "쿠버네티스 운영", "quote": "EKS 클러스터를 구축하고 Helm 으로 서비스 배포를 표준화했다.", "gold": ["comp:infra.container"], "accept": ["comp:infra.cloud"], "note": "accept: EKS = AWS 관리형(ESCO deploy cloud resource). 핵심은 K8s 라 gold 는 infra.container"}
+{"id": "g32", "sub": "infra.cloud", "kind": "normal", "action": "모니터링 구축", "quote": "Prometheus 와 Grafana 로 서버·서비스 지표 알림 체계를 만들었다.", "gold": ["comp:infra.monitoring"], "accept": [], "note": ""}
+{"id": "g33", "sub": "infra.cloud", "kind": "normal", "action": "장애 대응", "quote": "새벽 결제 장애의 원인을 로그로 추적해 DB 커넥션 고갈을 찾아냈다.", "gold": ["comp:infra.incident"], "accept": [], "note": ""}
+{"id": "g34", "sub": "infra.cloud", "kind": "multi", "action": "운영 자동화 스크립트", "quote": "반복되던 서버 점검을 쉘 스크립트로 자동화했다.", "gold": ["comp:infra.scripting", "comp:infra.ops_automation"], "accept": [], "note": "정답 둘 다 필요 (재현율은 각각 센다)"}
+{"id": "g35", "sub": "sw.embedded", "kind": "normal", "action": "RTOS 펌웨어 개발", "quote": "FreeRTOS 기반 센서 펌웨어의 태스크 구조를 설계했다.", "gold": ["comp:emb.rtos"], "accept": [], "note": ""}
+{"id": "g36", "sub": "sw.embedded", "kind": "normal", "action": "드라이버 개발", "quote": "신규 보드의 SPI·I2C 디바이스 드라이버를 작성하고 리눅스 커널에 포팅했다.", "gold": ["comp:emb.bsp"], "accept": [], "note": ""}
+{"id": "g37", "sub": "sw.embedded", "kind": "normal", "action": "모터 제어", "quote": "BLDC 모터 속도 제어 알고리즘을 구현했다.", "gold": ["comp:emb.motor"], "accept": [], "note": ""}
+{"id": "g38", "sub": "sw.embedded", "kind": "normal", "action": "CAN 통신 개발", "quote": "차량 제어기 간 CAN 통신 메시지 처리 모듈을 만들었다.", "gold": ["comp:emb.comm"], "accept": [], "note": ""}
+{"id": "g39", "sub": "sw.embedded", "kind": "normal", "action": "정적 분석", "quote": "MISRA C 규칙 위반을 정적 분석 도구로 찾아 고쳤다.", "gold": ["comp:qa.static"], "accept": [], "note": ""}
+{"id": "g40", "sub": "sw.embedded", "kind": "normal", "action": "협업 회고 주도", "quote": "매주 팀 회고를 진행하며 개발 절차를 개선했다.", "gold": ["comp:sw.agile"], "accept": [], "note": "회고 = 스크럼 이벤트. ESCO Agile development·NCS 개발 방법론 활용이 덮음 (공고 예문은 도구 위주지만 gold 는 정의를 따름)"}
+{"id": "g41", "sub": "sw.backend", "kind": "uncovered", "action": "신입 개발자 멘토링", "quote": "신입 개발자 두 명의 멘토를 맡아 석 달 동안 매주 1:1 면담을 진행했다.", "gold": [], "accept": [], "note": "멘토링 역량 없음 — 비ML 정답 없음 균형용"}

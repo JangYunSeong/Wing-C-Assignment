@@ -1,0 +1,33 @@
+{
+  "split": "test",
+  "n": 20,
+  "ceiling": 1.0,
+  "models": {
+    "opencode:qwen3.8-flash": {
+      "precision": 0.905,
+      "lenient_P": 0.905,
+      "recall": 0.95,
+      "exact": 0.85,
+      "lenient_exact": 0.85,
+      "none_ok": 0.0,
+      "stability": 0.9,
+      "uncovered_ok": 0.0,
+      "multi_ok": 0.0,
+      "errors": 0,
+      "cost_usd": 0.0
+    },
+    "openai:gpt-4.1-mini": {
+      "precision": 0.76,
+      "lenient_P": 0.76,
+      "recall": 0.95,
+      "exact": 0.65,
+      "lenient_exact": 0.65,
+      "none_ok": 0.0,
+      "stability": 1.0,
+      "uncovered_ok": 0.0,
+      "multi_ok": 0.0,
+      "errors": 0,
+      "cost_usd": 0.0
+    }
+  }
+}
