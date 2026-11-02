@@ -59,7 +59,11 @@ async def test_claims_extracted_with_provenance_and_bad_quote_dropped(tmp_path: 
 
     claims = result["claims"]
     assert [c.claim_id for c in claims] == ["d1-c1", "d1-c2"]
-    assert all(c.role is None for c in claims)  # 역할은 LLM 이 정하지 않는다
+    # 역할은 LLM 이 아니라 칸 규칙으로 (불변식 6): ⟦담당업무⟧ + '설계' 표현 → 설계, ⟦성과⟧ → 판정 안 함
+    assert [(c.field, c.role, c.role_basis) for c in claims] == [
+        ("담당업무", "design", "field:담당업무+design_term"),
+        ("성과", None, "field:성과"),
+    ]
     assert len(result["provenance"]) == 1
     prov = result["provenance"][0]
     assert all(c.provenance_id == prov.provenance_id for c in claims)
