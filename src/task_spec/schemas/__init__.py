@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus
+from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
 from task_spec.schemas.domain import (
     Claim,
@@ -16,6 +17,7 @@ from task_spec.schemas.domain import (
     TaskSpec,
 )
 from task_spec.schemas.provenance import NodeError, Provenance, TokenUsage
+from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.schemas.state import RunInput, RunState
 
 __all__ = [
@@ -23,16 +25,20 @@ __all__ = [
     "ApprovalStatus",
     "Claim",
     "ClaimCandidates",
+    "ClaimExtractionInput",
+    "ClaimExtractionOutput",
     "Comparison",
     "CompetencyEvidence",
     "CrossDocLink",
     "DocumentKind",
     "DocumentRef",
+    "ExtractedClaim",
     "NodeError",
     "PostingProfile",
     "Provenance",
     "PseudoCheck",
     "PseudoDocRef",
+    "PseudonymizedText",
     "Role",
     "RunInput",
     "RunState",
