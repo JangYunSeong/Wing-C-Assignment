@@ -1,4 +1,4 @@
-"""④ 대조 → 명세 초안 → 사람 승인(interrupt) → 확정.
+"""④ 명세 초안 (대조는 nodes/compare.py) → 사람 승인(interrupt) → 확정.
 
 승인은 approval 노드의 interrupt() 로만 받는다 (불변식 9). 자동 승인 경로 없음.
 TODO(spec-generation): draft_spec 는 prompting + llm 으로 연결.
@@ -12,14 +12,9 @@ from langgraph.graph import END
 from langgraph.types import Command, interrupt
 from pydantic import ValidationError
 
-from task_spec.schemas import ApprovalDecision, Comparison, RunState, TaskSpec
+from task_spec.schemas import ApprovalDecision, RunState, TaskSpec
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
-
-
-async def compare(state: RunState) -> dict[str, Any]:
-    posting = state.posting_profile.competency_ids if state.posting_profile else []
-    return {"comparison": Comparison(posting_only=list(posting))}
 
 
 async def draft_spec(state: RunState) -> dict[str, Any]:

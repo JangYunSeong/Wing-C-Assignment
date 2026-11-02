@@ -154,16 +154,37 @@ class CompetencyEvidence(Schema):
     esco: list[EscoRef] = Field(default_factory=list)
 
 
+class CompetencyMatch(Schema):
+    """④ 대조 항목 1건: 역량 + 공고 여부 + 근거 주장 id."""
+
+    competency_id: str = Field(min_length=1)
+    label: str
+    in_posting: bool
+    primary: bool | None = None  # 공고 역량일 때만: 주(담당업무·자격요건) / 보조(우대)
+    claim_ids: list[str] = Field(default_factory=list)
+    # 공고 밖 역량일 때만: 직무 연계 강·중·약 (ontology/relatedness.py). None = 판정 데이터 없음
+    relatedness: Literal["strong", "medium", "weak"] | None = None
+    relatedness_reason: str | None = None
+
+
+class VerifyTarget(Schema):
+    """경험 검증 과제 후보 주장 (compare 의 결정적 점수 순)."""
+
+    claim_id: str = Field(min_length=1)
+    competency_ids: list[str] = Field(default_factory=list)
+    role: Role | None = None
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
 class Comparison(Schema):
-    """④ 공고 역량 vs 지원자 역량.
+    """④ 공고 역량 vs 지원자 주장에서 고른 역량 (nodes/compare.py, 결정적)."""
 
-    TODO(compare): 항목별 근거 주장 id 연결.
-    """
-
-    overlap: list[str] = Field(default_factory=list)
-    posting_only: list[str] = Field(default_factory=list)
-    applicant_only: list[str] = Field(default_factory=list)
-    uncovered: list[str] = Field(default_factory=list)
+    overlap: list[CompetencyMatch] = Field(default_factory=list)
+    posting_only: list[CompetencyMatch] = Field(default_factory=list)
+    applicant_only: list[CompetencyMatch] = Field(default_factory=list)
+    uncovered: list[str] = Field(default_factory=list)  # 맞는 역량이 없는 주장 id
+    claims_to_verify: list[VerifyTarget] = Field(default_factory=list)
 
 
 class TaskItem(Schema):
