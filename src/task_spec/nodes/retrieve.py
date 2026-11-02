@@ -7,8 +7,11 @@ TODO(competency-retrieve / cross-doc-link / ontology-artifact): 실제 구현.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from task_spec.ontology.queries import evidence as query_evidence
+from task_spec.ontology.repository import OntologyRepository
 from task_spec.schemas import RunState
 
 
@@ -22,5 +25,28 @@ async def retrieve_t2(state: RunState) -> dict[str, Any]:
     return {"links": []}
 
 
-async def evidence(state: RunState) -> dict[str, Any]:
-    return {"evidence": []}
+def make_evidence(
+    ontology: OntologyRepository | None,
+) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
+    """③ 평가 근거: 공고 역량(+ 후보 역량, retrieve_t1 구현 후) → 셀 범위 NCS·대표 ESCO (결정적)."""
+
+    async def evidence(state: RunState) -> dict[str, Any]:
+        p = state.posting_profile
+        if ontology is None or p is None or not (p.sub and p.industry_id):
+            return {"evidence": []}
+        ids = list(
+            dict.fromkeys(
+                p.competency_ids + [c for cand in state.candidates for c in cand.competency_ids]
+            )
+        )
+        rows = await query_evidence(
+            ontology,
+            ids,
+            sub=p.sub,
+            industry_id=p.industry_id,
+            secondary_sub=p.secondary_sub,
+            in_pilot=p.in_pilot,
+        )
+        return {"evidence": rows}
+
+    return evidence

@@ -11,7 +11,11 @@ from task_spec.schemas.domain import (
     Comparison,
     CompetencyEvidence,
     CrossDocLink,
+    EscoRef,
+    NcsUnitRef,
+    PostingCompetency,
     PostingProfile,
+    PostingTool,
     Role,
     TaskItem,
     TaskSpec,
@@ -28,6 +32,10 @@ from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.schemas.state import RunInput, RunState
 
 __all__ = [
+    "PostingTool",
+    "PostingCompetency",
+    "NcsUnitRef",
+    "EscoRef",
     "ApprovalDecision",
     "ApprovalStatus",
     "Claim",

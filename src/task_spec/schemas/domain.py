@@ -16,15 +16,57 @@ from task_spec.schemas.base import Schema
 Role = Literal["participate", "lead", "design"]
 
 
-class PostingProfile(Schema):
-    """① 공고 → 온톨로지 역량 프로필.
+PostingSection = Literal["duties", "required", "preferred"]
 
-    TODO(ontology-artifact): 역량 가중치·NCS/ESCO 매핑 등 필드 확정.
+
+class PostingCompetency(Schema):
+    """공고 역량 1건. 주/보조 [확정: 2026-11-02]: 담당업무·자격요건에 나오면 주, 우대에만 나오면 보조."""
+
+    competency_id: str = Field(min_length=1)
+    label: str
+    sections: list[PostingSection] = Field(default_factory=list)
+    primary: bool
+    levels: list[str] = Field(default_factory=list)  # 수행·활용·이해·언급
+    line_ids: list[str] = Field(default_factory=list)  # 근거 공고 문장 (posting_line.id)
+
+
+class PostingTool(Schema):
+    tool_id: str = Field(min_length=1)
+    label: str
+    kind: str | None = None  # language · framework · platform · tool …
+    family_id: str | None = None
+    sections: list[PostingSection] = Field(default_factory=list)
+
+
+class PostingProfile(Schema):
+    """① 공고 → 온톨로지 역량 프로필 (결정적, ontology/queries.py).
+
+    source: ontology = 온톨로지에 있는 포지션(검수됨) / provisional = 새 공고 임시 분석(미검수, 경로 2).
     """
 
     posting_id: str = Field(min_length=1)
     ontology_version: str = Field(min_length=1)
-    competency_ids: list[str] = Field(default_factory=list)
+    source: Literal["ontology", "provisional"] = "ontology"
+    company: str | None = None
+    position_name: str | None = None
+    sub: str | None = None  # 직군
+    secondary_sub: str | None = None
+    industry_id: str | None = None
+    in_pilot: bool = False
+    competencies: list[PostingCompetency] = Field(default_factory=list)
+    tools: list[PostingTool] = Field(default_factory=list)
+
+    @property
+    def cell_id(self) -> str | None:
+        return f"{self.sub}|{self.industry_id}" if self.sub and self.industry_id else None
+
+    @property
+    def competency_ids(self) -> list[str]:
+        return [c.competency_id for c in self.competencies]
+
+    @property
+    def languages(self) -> list[str]:
+        return [t.label for t in self.tools if t.kind == "language"]
 
 
 class Claim(Schema):
@@ -68,15 +110,33 @@ class CrossDocLink(Schema):
     relation: Literal["consistent", "mismatch"]
 
 
-class CompetencyEvidence(Schema):
-    """③ 역량 → NCS 수행준거·KSA / ESCO 그래프 조인 결과 (결정적).
+class NcsUnitRef(Schema):
+    unit_cl_cd: str
+    subd_code: str | None = None
+    name: str
+    level: int | None = None
+    scope: Literal["primary", "secondary"]  # 셀 허용(primary) / 보조 직군 허용(secondary)
+    rel: str | None = None
+    n_elements: int = 0
+    n_criteria: int = 0  # 수행준거 수 — 본문은 명세 생성 때 조회
+    n_ksa: int = 0
 
-    TODO(evidence): KSA 구분·ESCO 관계 필드 확정.
+
+class EscoRef(Schema):
+    uri: str
+    label: str | None = None
+    rel: str | None = None
+
+
+class CompetencyEvidence(Schema):
+    """③ 역량 → 셀 범위 NCS 능력단위(수행준거·KSA 건수) / 대표 ESCO (결정적).
+
+    셀 밖 NCS 는 넣지 않는다 (온톨로지 v_position_competency_ncs 와 같은 규칙).
     """
 
     competency_id: str = Field(min_length=1)
-    ncs_criteria_ids: list[str] = Field(default_factory=list)
-    esco_ids: list[str] = Field(default_factory=list)
+    ncs_units: list[NcsUnitRef] = Field(default_factory=list)
+    esco: list[EscoRef] = Field(default_factory=list)
 
 
 class Comparison(Schema):

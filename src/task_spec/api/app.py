@@ -49,6 +49,7 @@ def create_app(
                 pseudonymizer=pseudonymizer,
                 llm=llm,
                 prompts=prompts,
+                ontology=app.state.ontology,
             )
             app.state.launcher = RunLauncher(app.state.graph)
             try:

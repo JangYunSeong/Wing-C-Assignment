@@ -52,6 +52,15 @@ class SpecNotFound(DomainError):
         super().__init__("승인 확정된 명세가 없습니다", run_id=run_id)
 
 
+class PostingNotFound(DomainError):
+    code = "posting_not_found"
+    status_code = 404
+
+    def __init__(self, posting_id: str) -> None:
+        # 새 공고는 아직 미지원 (경로 2 — provisional 프로필, 다음 작업)
+        super().__init__(f"온톨로지에 없는 공고입니다: {posting_id}")
+
+
 class ApprovalNotPending(DomainError):
     code = "approval_not_pending"
     status_code = 409
