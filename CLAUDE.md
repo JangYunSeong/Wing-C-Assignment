@@ -22,7 +22,8 @@
 
 ## 스택
 
-Python 3.11+ · **FastAPI**(인터페이스) · **LangGraph**(파이프라인) · **PostgreSQL**(체크포인터·실행 데이터, 테스트 DB 별도)
+Python 3.11+ · **FastAPI**(인터페이스) · **LangGraph**(파이프라인) · **PostgreSQL 16 + pgvector**
+(`task_db` 컨테이너, `127.0.0.1:5434`, DB `task_db`·테스트 `task_db_test` — `docker/db/README.md`)
 · LLM: **OpenAI API · OpenCode**(OpenAI 호환) — 키는 `.env` · uv(패키지) · pytest · ruff.
 
 ## 아키텍처
