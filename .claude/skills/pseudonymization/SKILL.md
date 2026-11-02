@@ -54,6 +54,8 @@ class PseudonymizedText(str):
     """pseudonymize 노드만 생성할 수 있다. 생성자는 모듈 private."""
 ```
 
+- 구현: `schemas/pseudo_text.py` — 생성에 모듈 private 토큰 `_MINT` 필요. 만드는 곳은 `nodes/pseudonymize.py` 의
+  `mint_pseudonymized()`·`load_pseudonymized()`(검사 통과본만) 뿐. 입력 스키마 필드는 `PseudoTextField` 로 선언한다.
 - `prompting.assemble()` 과 임베딩 클라이언트는 지원자 텍스트 인자를 `PseudonymizedText` 로만 받는다.
 - 일반 `str` 을 넘기면 타입 검사(mypy/pyright)와 런타임 검사 둘 다에서 막힌다.
 
