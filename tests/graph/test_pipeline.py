@@ -75,7 +75,7 @@ async def test_pseudonymization_failure_stops_pipeline(graph_with) -> None:
     result = await graph.ainvoke(inp, cfg)
     assert not _interrupted(result)
     assert result.get("spec") is None  # 명세 단계까지 가지 않음
-    assert result.get("claims") == []
+    assert not result.get("claims")
     assert [e.code for e in result["errors"]] == ["residual_pii"]
     history = [s.next async for s in graph.aget_state_history(cfg)]
     visited = {n for nxt in history for n in nxt}

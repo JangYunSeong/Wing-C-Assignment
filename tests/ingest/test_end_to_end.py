@@ -60,6 +60,8 @@ async def test_pdf_flows_to_approval_with_field_markers(tmp_path: Path) -> None:
         # 경력 줄 규칙이 들어오면 이 단언을 not in 으로 바꾼다.
         assert "가상데이터랩" in pseudo
         assert [c.claim_id for c in state["claims"]] == ["resume-1-c1"]
+        c = state["claims"][0]
+        assert (c.field, c.role) == ("과정", "participate")  # PDF 칸 → 역할 규칙
     finally:
         await app.state.launcher.shutdown()
         await client.aclose()
