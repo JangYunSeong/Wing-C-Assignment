@@ -17,6 +17,8 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.schemas import (
     CompetencyEvidence,
     EscoRef,
+    NcsCriterion,
+    NcsKsa,
     NcsUnitRef,
     PostingCompetency,
     PostingProfile,
@@ -194,3 +196,75 @@ async def evidence(
         CompetencyEvidence(competency_id=c, ncs_units=units.get(c, []), esco=escos.get(c, []))
         for c in competency_ids
     ]
+
+
+async def criteria_detail(
+    repo: OntologyRepository,
+    unit_ids: list[str],
+    *,
+    max_criteria: int = 12,
+    max_ksa: int = 10,
+) -> tuple[list[NcsCriterion], list[NcsKsa]]:
+    """능력단위 → 수행준거·KSA 본문 (명세 근거). id = '요소id#번호'. 단위 순서·요소 순서대로 상한까지."""
+    if not unit_ids:
+        return [], []
+    order = {u: i for i, u in enumerate(unit_ids)}
+    rows = await repo.fetch(
+        """
+        SELECT e.unit_cl_cd, u.name AS unit_name, e.id AS element_id, e.no AS el_no, e.name AS element_name,
+               cr.no, cr.text
+          FROM ncs_element e
+          JOIN ncs_unit u ON u.cl_cd = e.unit_cl_cd
+          JOIN ncs_criterion cr ON cr.element_id = e.id
+         WHERE e.unit_cl_cd = ANY(%s)
+         ORDER BY e.unit_cl_cd, e.no, cr.no
+        """,
+        (unit_ids,),
+    )
+    ksa = await repo.fetch(
+        """
+        SELECT e.unit_cl_cd, k.element_id, k.kind, k.no, k.text
+          FROM ncs_element e JOIN ncs_ksa k ON k.element_id = e.id
+         WHERE e.unit_cl_cd = ANY(%s)
+         ORDER BY e.unit_cl_cd, e.no, k.kind, k.no
+        """,
+        (unit_ids,),
+    )
+    rows = sorted(rows, key=lambda r: (order[r["unit_cl_cd"]], r["el_no"], r["no"]))
+    crit = [
+        NcsCriterion(
+            criterion_id=f"{r['element_id']}#{r['no']}",
+            unit_cl_cd=r["unit_cl_cd"],
+            unit_name=r["unit_name"],
+            element_name=r["element_name"],
+            text=r["text"],
+        )
+        for r in _round_robin(rows, "unit_cl_cd", max_criteria)
+    ]
+    ks = [
+        NcsKsa(
+            ksa_id=f"{r['element_id']}#{r['kind']}{r['no']}",
+            unit_cl_cd=r["unit_cl_cd"],
+            kind=r["kind"],
+            text=r["text"],
+        )
+        for r in _round_robin(
+            sorted(ksa, key=lambda r: order[r["unit_cl_cd"]]), "unit_cl_cd", max_ksa
+        )
+    ]
+    return crit, ks
+
+
+def _round_robin(rows: list[dict], key: str, limit: int) -> list[dict]:  # type: ignore[type-arg]
+    """단위마다 번갈아 뽑아 상한까지 (한 단위가 근거를 독차지하지 않게). 단위 안 순서는 유지."""
+    groups: dict[str, list[dict]] = defaultdict(list)  # type: ignore[type-arg]
+    for r in rows:
+        groups[r[key]].append(r)
+    out: list[dict] = []  # type: ignore[type-arg]
+    i = 0
+    while len(out) < limit and any(i < len(g) for g in groups.values()):
+        for g in groups.values():
+            if i < len(g) and len(out) < limit:
+                out.append(g[i])
+        i += 1
+    return out
