@@ -137,6 +137,23 @@ class NcsUnitRef(Schema):
     n_ksa: int = 0
 
 
+class NcsCriterion(Schema):
+    """NCS 수행준거 1건 (명세 근거). criterion_id = '요소id#번호'."""
+
+    criterion_id: str
+    unit_cl_cd: str
+    unit_name: str
+    element_name: str
+    text: str
+
+
+class NcsKsa(Schema):
+    ksa_id: str  # '요소id#종류번호'
+    unit_cl_cd: str
+    kind: str  # 지식·기술·태도
+    text: str
+
+
 class EscoRef(Schema):
     uri: str
     label: str | None = None
@@ -187,29 +204,97 @@ class Comparison(Schema):
     claims_to_verify: list[VerifyTarget] = Field(default_factory=list)
 
 
-class TaskItem(Schema):
-    """명세 안의 과제 1건.
+AiAxis = Literal["delegation", "communication", "verification", "responsibility"]
+AI_AXES: tuple[AiAxis, ...] = ("delegation", "communication", "verification", "responsibility")
+Track = Literal["common", "claim_verification"]
+Difficulty = Literal["high", "medium", "low"]
 
-    TODO(spec): context.md §6 기준으로 필드 확정 (난이도·평가 기준 등).
-    """
+
+class TargetCompetency(Schema):
+    """측정 대상 역량 1건 (context.md §6 target_competencies). 결정적으로 채운다."""
+
+    competency_id: str = Field(min_length=1)
+    label: str
+    level: str | None = None  # 공고 요구 수준 (수행·활용·이해·언급)
+    esco_uri: str | None = None  # 대표 ESCO 가 있을 때만
+    ncs_unit_ids: list[str] = Field(default_factory=list)  # 셀 범위 능력단위
+    ncs_criterion_ids: list[str] = Field(
+        default_factory=list
+    )  # 과제 근거로 쓴 수행준거 (요소id#번호)
+
+
+class Anchor(Schema):
+    """수준별 행동 기준 1개 — 근거 수행준거 id 가 반드시 있다."""
+
+    behavior: str = Field(min_length=1)
+    criterion_ids: list[str] = Field(min_length=1)
+
+
+class BehavioralAnchors(Schema):
+    level_1: Anchor
+    level_3: Anchor
+    level_5: Anchor
+
+
+class Trap(Schema):
+    """경험자만 걸리는 함정 (context.md §4.3). 부서 사례가 없으면 LLM 제안 — 승인자 검토 필요."""
+
+    trap_id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    why_ai_fails: str = Field(min_length=1)  # 일반적인 AI 답이 그럴듯하지만 틀리는 이유
+
+
+class Observable(Schema):
+    """로그에서 관찰할 것 (first_mention_of 개념 / catches_trap 함정 id)."""
+
+    kind: Literal["first_mention_of", "catches_trap"]
+    value: str = Field(min_length=1)
+
+
+class TechEnv(Schema):
+    languages: list[str] = Field(default_factory=list)
+    frameworks: list[str] = Field(default_factory=list)
+    basis: str  # 근거: "공고 언어" / "지원자 사용 기술 ∩ 공고 언어" / "enables: …"
+
+
+class TaskItem(Schema):
+    """명세 안의 과제 1건 (context.md §6). 결정적 필드 + LLM 필드(draft_task) + 검토 표시."""
 
     task_id: str = Field(min_length=1)
-    competency_ids: list[str] = Field(default_factory=list)
+    track: Track
+    target_competencies: list[TargetCompetency] = Field(min_length=1)
+    ai_axes: list[AiAxis] = Field(default_factory=lambda: list(AI_AXES))
+    claims_to_verify: list[str] = Field(default_factory=list)  # claim_verification 트랙일 때만
+    tech_env: TechEnv
+    difficulty_target: Difficulty
+    time_limit_min: int = Field(ge=10, le=240)
+    constraints: list[str] = Field(default_factory=lambda: ["no_pii"])
+    # LLM 이 채우는 것 (draft_task). 결정적 단계만 끝난 초안이면 None
+    title: str | None = None
+    scenario: str | None = None
+    deliverables: list[str] = Field(default_factory=list)
+    invariant: str | None = None  # 유지할 심층 구조
+    variable: list[str] = Field(default_factory=list)  # 바꿀 표면 (domain_surface, numbers …)
+    traps: list[Trap] = Field(default_factory=list)
+    observables: list[Observable] = Field(default_factory=list)
+    behavioral_anchors: BehavioralAnchors | None = None
+    source_incident: str | None = None  # 부서 결정적 사건 id — 수집 전에는 None
+    review_flags: list[str] = Field(default_factory=list)  # 승인자가 꼭 볼 것
     provenance_id: str | None = None
 
 
 class TaskSpec(Schema):
-    """④ 과제 명세 초안/확정본.
+    """④ 과제 명세 초안/확정본 (context.md §6).
 
-    공통 과제는 공고 기준만으로 만든다 (불변식 3). claims_to_verify 는 경험 검증 과제 대상 주장 id.
-    TODO(spec): context.md §6 스키마로 교체.
+    공통 과제는 공고 기준만으로 만든다 (불변식 3). 경험 검증 과제는 compare 의 claims_to_verify 에서.
     """
 
+    spec_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     posting_id: str = Field(min_length=1)
     ontology_version: str = Field(min_length=1)
     revision: int = Field(default=1, ge=1)
     common_tasks: list[TaskItem] = Field(default_factory=list)
     verification_tasks: list[TaskItem] = Field(default_factory=list)
-    claims_to_verify: list[str] = Field(default_factory=list)
+    review_flags: list[str] = Field(default_factory=list)
     approval: ApprovalDecision | None = None  # finalize 가 승인 결정을 붙인다

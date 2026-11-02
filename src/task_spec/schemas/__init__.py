@@ -6,6 +6,9 @@ from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus
 from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
 from task_spec.schemas.domain import (
+    AI_AXES,
+    Anchor,
+    BehavioralAnchors,
     CandidateRef,
     Claim,
     ClaimCandidates,
@@ -14,13 +17,19 @@ from task_spec.schemas.domain import (
     CompetencyMatch,
     CrossDocLink,
     EscoRef,
+    NcsCriterion,
+    NcsKsa,
     NcsUnitRef,
+    Observable,
     PostingCompetency,
     PostingProfile,
     PostingTool,
     Role,
+    TargetCompetency,
     TaskItem,
     TaskSpec,
+    TechEnv,
+    Trap,
     VerifyTarget,
 )
 from task_spec.schemas.ingest import (
@@ -49,6 +58,15 @@ from task_spec.schemas.retrieve import (
 from task_spec.schemas.state import RunInput, RunState
 
 __all__ = [
+    "NcsCriterion",
+    "NcsKsa",
+    "AI_AXES",
+    "Anchor",
+    "BehavioralAnchors",
+    "Observable",
+    "TargetCompetency",
+    "TechEnv",
+    "Trap",
     "CompetencyMatch",
     "VerifyTarget",
     "CandidateRef",
