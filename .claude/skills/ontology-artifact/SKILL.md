@@ -76,7 +76,7 @@ uv run python -m task_spec.ontology.load_pg --sqlite data/ontology/src/data/buil
 | 공고 역량 | `posting_line` ⋈ `line_competency` — 역량별 절·수준·근거 문장 id |
 | 주/보조 | **담당업무·자격요건 = 주, 우대에만 = 보조** (사용자 결정) |
 | 공고 도구 | `line_tool` ⋈ `tool` — `kind=language` 가 '공고 언어' (과제 기술 환경 입력) |
-| NCS 범위 | 온톨로지 뷰 `v_position_competency_ncs` 와 같은 규칙: 셀 `cell_ncs` → primary, 시범 직군 + 보조 직군 `sub_ncs` → secondary, 그 외 제외. (역량, 직군, 업종)으로 받아 새 공고에도 씀. 623 포지션 전부 뷰와 일치 확인 |
+| NCS 범위 | 온톨로지 뷰 `v_position_competency_ncs` 와 같은 규칙: 셀 `cell_ncs` → primary, 시범 직군 + 보조 직군 `sub_ncs` → secondary, 그 외 제외. 셀에 목록이 없으면 직군 `sub_ncs` → sub_fallback (아래). (역량, 직군, 업종)으로 받아 새 공고에도 씀. 623 포지션 전부 뷰와 일치 확인 |
 | NCS 본문 | State 에는 능력단위·요소·수행준거·KSA **건수**만, 본문은 명세 생성 때 `v_ncs_unit_detail` 조회 |
 | ESCO | `competency_esco.representative` 만 (broad 제외) |
 
@@ -106,9 +106,10 @@ POST /runs              posting_id=prov-…  → posting_profile(source=provisio
 - **규칙은 jsonb 가 아니라 json 으로 저장** — jsonb 는 키 순서를 바꾸고, 수준 규칙은 순서가 우선순위다 (jsonb 로 넣었을 때 40문장 수준이 틀렸다)
 - 적재 후 **키 컬럼만 ANALYZE** — 통계 없으면 평가 근거 질의 4초+, 전체 ANALYZE 는 긴 한국어 텍스트 통계 계산에 10분+ (키 컬럼만: 테이블당 <1초, 질의 0.06초)
 
-알려진 공백 — **온톨로지에 없는 직군×업종 셀** [미정]
-셀 범위 NCS(`cell_ncs`)는 공고가 있던 48개 셀에만 있다 (시범 직군 조합 140개 중). 새 공고가 그 밖의 셀이면
-평가 근거가 비고 경고 `posting_cell_unseen` 을 남긴다. 보완 후보: 직군 단위 `sub_ncs`(시범 13/14 직군)로 대체.
+온톨로지에 NCS 목록이 없는 직군×업종 셀 [확정: 2026-11-02 — 사용자 결정 (a) + 경고]
+셀 범위 NCS(`cell_ncs`)는 공고가 있던 48개 셀에만 있다 (시범 직군 조합 140개 중). 셀에 목록이 하나도 없으면
+**직군 단위 `sub_ncs` 로 대체** — `NcsUnitRef.scope = "sub_fallback"` (셀보다 넓어 덜 정밀), 경고 `posting_cell_unseen`.
+경로 1·2 모두 적용. 온톨로지 뷰에는 없는 이 레포 규칙이라 뷰 대조 테스트는 primary/secondary 끼리만 비교.
 
 ## 쓰임새
 
