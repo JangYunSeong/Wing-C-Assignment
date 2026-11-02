@@ -70,14 +70,16 @@ def make_posting_profile(
                 )
             )
         if (
-            profile.source == "provisional"
-            and lists is not None
+            lists is not None
+            and profile.cell_id is not None
             and profile.cell_id not in lists.cells_with_ncs
         ):
-            # 온톨로지에 공고가 없던 직군×업종 조합 — 셀 범위 NCS 가 없어 평가 근거가 빈다 (보완 방식 [미정])
+            # 온톨로지에 NCS 목록이 없는 직군×업종 셀 — 평가 근거를 직군 단위(sub_ncs)로 대체한다 (덜 정밀)
             warnings.append(
                 _err(
-                    "posting_cell_unseen", "온톨로지에 없는 직군×업종 조합 — 셀 범위 NCS 없음", pid
+                    "posting_cell_unseen",
+                    "온톨로지에 NCS 목록이 없는 직군×업종 셀 — 평가 근거를 직군 단위 NCS 로 대체함",
+                    pid,
                 )
             )
         if profile.cell_id is None:

@@ -84,7 +84,13 @@ async def test_evidence_matches_ontology_view(repo: OntologyRepository) -> None:
             secondary_sub=p.secondary_sub,
             in_pilot=p.in_pilot,
         )
-        mine = {(e.competency_id, u.unit_cl_cd, u.scope) for e in ev for u in e.ncs_units}
+        # 뷰와 대조는 셀 범위 근거끼리 (sub_fallback 은 뷰에 없는 이 레포 규칙)
+        mine = {
+            (e.competency_id, u.unit_cl_cd, u.scope)
+            for e in ev
+            for u in e.ncs_units
+            if u.scope != "sub_fallback"
+        }
         view = await repo.fetch(
             "SELECT competency_id, unit_cl_cd, scope FROM v_position_competency_ncs WHERE position_id = %s AND scope IS NOT NULL",
             (r["id"],),
@@ -103,7 +109,7 @@ async def test_out_of_cell_units_excluded_and_esco_representative(repo: Ontology
     assert sum(len(e.ncs_units) for e in ev) <= all_units[0]["n"]
     for e in ev:
         for u in e.ncs_units:
-            assert u.scope in ("primary", "secondary") and u.n_criteria >= 0
+            assert u.scope in ("primary", "secondary", "sub_fallback") and u.n_criteria >= 0
         for x in e.esco:
             assert x.rel != "broad"  # 대표 연결만 (broad 는 대표가 아님)
 
@@ -161,3 +167,20 @@ async def test_api_rejects_unknown_posting_and_records_real_version(
             state = (await graph.aget_state({"configurable": {"thread_id": run_id}})).values
             assert state["ontology_version"] == VERSION  # 'dev' 가 아니라 실제 버전
         await app.state.launcher.shutdown()
+
+
+async def test_sub_fallback_only_when_cell_has_no_ncs(repo: OntologyRepository) -> None:
+    """셀에 NCS 목록이 없으면 직군 단위(sub_ncs)로 대체, 있으면 대체하지 않는다."""
+    ids = [
+        r["id"] for r in await repo.fetch("SELECT id FROM competency WHERE id LIKE 'comp:data.%%'")
+    ]
+    unseen = await evidence(repo, ids, sub="data.eng", industry_id="ind.platform")  # 셀 없음
+    scopes = {u.scope for e in unseen for u in e.ncs_units}
+    assert scopes == {"sub_fallback"}
+    allowed = {
+        r["subd_code"]
+        for r in await repo.fetch("SELECT subd_code FROM sub_ncs WHERE sub = 'data.eng'")
+    }
+    assert all(u.subd_code in allowed for e in unseen for u in e.ncs_units)
+    seen = await evidence(repo, ids, sub="data.eng", industry_id="ind.it_si")  # 셀 있음
+    assert "sub_fallback" not in {u.scope for e in seen for u in e.ncs_units}

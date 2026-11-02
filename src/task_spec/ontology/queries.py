@@ -4,6 +4,8 @@
 - NCS 범위는 온톨로지 뷰 `v_position_competency_ncs` 와 같은 규칙: 셀(직군|업종)의 cell_ncs 에 세분류가 있으면
   primary, 시범 직군이면서 보조 직군의 sub_ncs 에 있으면 secondary, 둘 다 아니면 제외. 새 공고(position 없음)에도
   쓰도록 (역량, 직군, 업종) 을 직접 받는다.
+- 셀에 NCS 목록(cell_ncs)이 하나도 없으면 직군 단위 sub_ncs 로 대체 — scope=sub_fallback [확정: 2026-11-02].
+  온톨로지 뷰에는 없는 규칙이다 (뷰는 이 경우 근거 없음). 경고 posting_cell_unseen 과 함께.
 - ESCO 는 대표(representative) 연결만.
 """
 
@@ -138,6 +140,9 @@ async def evidence(
                          THEN 'primary'
                     WHEN %(pilot)s AND EXISTS (SELECT 1 FROM sub_ncs sn WHERE sn.sub = %(sec)s AND sn.subd_code = cu.subd_code)
                          THEN 'secondary'
+                    WHEN NOT EXISTS (SELECT 1 FROM cell_ncs cs WHERE cs.cell_id = %(cell)s)
+                         AND EXISTS (SELECT 1 FROM sub_ncs sn WHERE sn.sub = %(sub)s AND sn.subd_code = cu.subd_code)
+                         THEN 'sub_fallback'
                END AS scope,
                coalesce(n_el.n, 0) AS n_elements, coalesce(n_cr.n, 0) AS n_criteria, coalesce(n_ksa.n, 0) AS n_ksa
           FROM cu
@@ -147,7 +152,13 @@ async def evidence(
           LEFT JOIN n_ksa ON n_ksa.unit_cl_cd = cu.unit_cl_cd
          ORDER BY cu.competency_id, cu.unit_cl_cd
         """,
-        {"cell": cell_id, "pilot": in_pilot, "sec": secondary_sub, "ids": competency_ids},  # type: ignore[arg-type]
+        {
+            "cell": cell_id,
+            "pilot": in_pilot,
+            "sec": secondary_sub,
+            "sub": sub,
+            "ids": competency_ids,
+        },  # type: ignore[arg-type]
     )
     esco = await repo.fetch(
         """
