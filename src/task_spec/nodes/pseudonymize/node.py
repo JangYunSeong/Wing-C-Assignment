@@ -10,10 +10,11 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from task_spec.nodes.pseudonymize.detectors import TOKEN_RE, detect_patterns
 from task_spec.schemas import ExtractedRef, NodeError, PseudoCheck, PseudoDocRef, RunState
 from task_spec.schemas.pseudo_text import _MINT, PseudonymizedText
 
@@ -68,6 +69,46 @@ def pseudonymization_passed(state: RunState) -> bool:
 def mint_pseudonymized(text: str) -> PseudonymizedText:
     """가명화기가 누락 검사를 통과시킨 텍스트에만 쓴다. 이 모듈 밖에서 PseudonymizedText 를 만들지 않는다."""
     return PseudonymizedText(text, _token=_MINT)
+
+
+def derive_pseudonymized(
+    source: PseudonymizedText, *, quote: str, summary: str = ""
+) -> PseudonymizedText:
+    """가명화본(source)에서 나온 주장(인용 + LLM 요약)을 다음 LLM 입력으로 넘길 때 쓴다.
+
+    - quote: source 에 글자 그대로 있어야 한다 (공백만 정규화).
+    - summary(행동 요약 등 LLM 이 쓴 자유 텍스트): 패턴 탐지기(이메일·전화·URL·주민번호)에 걸리면 거부.
+    - 둘 다 가명화 토큰([PERSON_1] 등)은 source 에 있는 것만 허용 (위조 토큰 거부).
+    결과 = "행동: {summary} / 문장: {quote}". 어기면 ValueError.
+    """
+
+    def ws(t: str) -> str:
+        return " ".join(t.split())
+
+    if not quote.strip() or ws(quote) not in ws(source):
+        raise ValueError("인용이 가명화본에 없음")
+    if summary and detect_patterns(summary):
+        raise ValueError("요약에 개인정보 패턴")
+    text = f"행동: {summary} / 문장: {quote}" if summary else quote
+    known = {m.group(0) for m in TOKEN_RE.finditer(source)}
+    if any(m.group(0) not in known for m in TOKEN_RE.finditer(text)):
+        raise ValueError("가명화본에 없는 가명화 토큰")
+    return PseudonymizedText(text, _token=_MINT)
+
+
+def join_pseudonymized(
+    parts: Sequence[PseudonymizedText], labels: Sequence[str], sep: str = "\n"
+) -> PseudonymizedText:
+    """가명화 텍스트 여러 개를 '[라벨] 텍스트' 줄로 잇는다. 라벨은 c1·c2 같은 짧은 표시만 (영숫자)."""
+    if len(parts) != len(labels):
+        raise ValueError("parts 와 labels 길이가 다릅니다")
+    if not all(isinstance(p, PseudonymizedText) for p in parts):
+        raise ValueError("가명화되지 않은 텍스트는 이을 수 없습니다")
+    if not all(lb.isascii() and lb.isalnum() for lb in labels):
+        raise ValueError("라벨은 영숫자만")
+    return PseudonymizedText(
+        sep.join(f"[{lb}] {p}" for lb, p in zip(labels, parts, strict=True)), _token=_MINT
+    )
 
 
 class PseudonymizedNotAvailable(Exception):
