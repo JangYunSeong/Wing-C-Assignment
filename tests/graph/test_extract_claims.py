@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -19,12 +20,14 @@ PSEUDO = (
 
 def _writer(tmp_path: Path):
     async def pseudonymizer(run_id: str, doc: DocumentRef) -> PseudoDocRef:
-        out = tmp_path / f"{doc.doc_id}.txt"
+        out = tmp_path / "pseudonymized" / run_id / f"{doc.doc_id}.txt"
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(PSEUDO, encoding="utf-8")
         return PseudoDocRef(
             doc_id=doc.doc_id,
             kind=doc.kind,
             path=str(out),
+            sha256=hashlib.sha256(PSEUDO.encode()).hexdigest(),
             check=PseudoCheck(passed=True, residual_count=0, detectors=["fake"]),
         )
 
