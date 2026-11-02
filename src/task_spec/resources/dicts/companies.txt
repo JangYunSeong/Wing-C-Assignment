@@ -1,0 +1,94 @@
+삼성전자|Samsung Electronics|삼성 전자
+삼성SDS|삼성에스디에스|Samsung SDS
+삼성SDI
+삼성디스플레이
+삼성생명
+삼성화재
+삼성물산
+SK하이닉스|하이닉스|SK hynix
+SK텔레콤|SKT|SK Telecom
+SK C&C|SK씨앤씨
+SK이노베이션
+LG전자|LG Electronics
+LG CNS|엘지씨엔에스
+LG화학
+LG유플러스|LG U+|엘지유플러스
+LG에너지솔루션
+현대자동차|현대차|Hyundai Motor
+기아|기아자동차|Kia
+현대모비스
+현대오토에버
+현대로보틱스
+현대위아
+현대카드
+네이버|NAVER|Naver
+네이버웹툰|NAVER WEBTOON
+카카오|Kakao
+카카오뱅크|KakaoBank
+카카오페이|KakaoPay
+카카오엔터프라이즈
+카카오모빌리티
+쿠팡|Coupang
+배달의민족|우아한형제들|배민|Woowa Brothers
+토스|비바리퍼블리카|Toss|Viva Republica
+당근마켓|Daangn
+야놀자|Yanolja
+직방
+무신사|Musinsa
+마켓컬리|컬리|Kurly
+크래프톤|Krafton
+넥슨|Nexon
+엔씨소프트|NCSOFT|NC소프트
+넷마블|Netmarble
+스마일게이트|Smilegate
+펄어비스|Pearl Abyss
+하이브|HYBE
+KT|케이티|Korea Telecom
+KB국민은행|국민은행|KB Kookmin Bank
+KB증권
+KB자산운용
+신한은행
+신한카드
+하나은행|KEB하나은행
+우리은행
+NH농협은행|농협은행
+IBK기업은행|기업은행
+한국투자증권
+미래에셋증권|미래에셋
+두산로보틱스
+두산에너빌리티
+LIG넥스원|LIG Nex1
+한화시스템
+한화에어로스페이스
+포스코|POSCO
+포스코DX
+CJ올리브네트웍스
+CJ제일제당
+롯데정보통신
+GS리테일
+신세계아이앤씨|신세계I&C
+11번가
+SSG닷컴|쓱닷컴
+티맥스소프트|TmaxSoft
+티맥스티베로|TmaxTibero
+한글과컴퓨터|한컴
+안랩|AhnLab
+더존비즈온
+NHN
+NHN클라우드
+가비아
+솔트룩스
+업스테이지|Upstage
+뤼튼
+리벨리온|Rebellions
+퓨리오사AI|FuriosaAI
+# 아래는 이력서에서 '도구'로도 자주 쓰여(구글 클라우드, Oracle DB 등) 맥락이 있을 때만 치환한다.
+# '!' 접두 = 같은 줄에 기간(2023.01~ 등)이나 재직·근무·인턴·입사·퇴사 표현이 있을 때만.
+!Google|구글
+!Microsoft|마이크로소프트
+!Amazon|아마존
+!Meta|메타|Facebook|페이스북
+!Apple|애플
+!NVIDIA|엔비디아
+!IBM
+!Oracle|오라클
