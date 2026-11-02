@@ -190,7 +190,7 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     await client.post("/runs", data={"posting_id": "prov-000000000000"})
                 ).status_code == 404
 
-                # 온톨로지에 없는 셀(data.eng|ind.platform) → 경고, 평가 근거 비어 있음
+                # 온톨로지에 없는 셀(data.eng|ind.platform) → 경고 + 직군 단위 NCS 로 대체한 평가 근거
                 r = await client.post(
                     "/postings",
                     json={
@@ -206,7 +206,8 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     await graph.aget_state({"configurable": {"thread_id": r.json()["run_id"]}})
                 ).values
                 assert "posting_cell_unseen" in [e.code for e in st2["errors"]]
-                assert not any(e.ncs_units for e in st2["evidence"])
+                units = [u for e in st2["evidence"] for u in e.ncs_units]
+                assert units and {u.scope for u in units} == {"sub_fallback"}
             await app.state.launcher.shutdown()
     finally:
         async with await psycopg.AsyncConnection.connect(url, autocommit=True) as conn:

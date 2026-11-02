@@ -115,7 +115,8 @@ class NcsUnitRef(Schema):
     subd_code: str | None = None
     name: str
     level: int | None = None
-    scope: Literal["primary", "secondary"]  # 셀 허용(primary) / 보조 직군 허용(secondary)
+    # 셀 허용(primary) / 보조 직군 허용(secondary) / 셀에 NCS 목록이 없어 직군 단위로 대체(sub_fallback, 덜 정밀)
+    scope: Literal["primary", "secondary", "sub_fallback"]
     rel: str | None = None
     n_elements: int = 0
     n_criteria: int = 0  # 수행준거 수 — 본문은 명세 생성 때 조회
