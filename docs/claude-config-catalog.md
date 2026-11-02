@@ -3,7 +3,7 @@
 > 실측 기준일: 2026-11-02. 갱신: `ls .claude/skills | wc -l ; ls .claude/agents | wc -l ; ls .claude/hooks | wc -l`
 > vendored 스킬은 `skills-lock.json` 에 출처·해시가 고정되어 있다 (`npx skills experimental_install` 로 복원).
 
-## 스킬 — 22개 (자체 7 + vendored 15)
+## 스킬 — 23개 (자체 8 + vendored 15)
 
 ### 자체 (P0)
 
@@ -15,13 +15,14 @@
 | `llm-client` | 모델 호출 래퍼·재시도(reasoning_effort=low)·인용 대조·FakeLLM |
 | `ontology-artifact` | 버전 고정 산출물 읽기·테이블·셀 범위·NCS/ESCO 조인 |
 | `pseudonymization` | 치환 대상·일관 토큰·누락 검사·`PseudonymizedText` |
+| `document-ingest` | PDF(pypdfium2)·스캔(tesseract)·DOCX·HWPX 추출, 레이아웃 복원, ⟦칸⟧ 구조화 |
 | `eval-harness` | 가상 표본(템플릿·LLM)·dev/test 숨김 규칙·평가 실행기·회귀 기준치 |
 
 ### 자체 — 예정
 
 | 단계 | 스킬 |
 |---|---|
-| P1 | `document-ingest`(pdf 위에 이력서 레이아웃), `claim-extraction`, `competency-retrieve`(hybrid-search 위에) |
+| P1 | `claim-extraction`, `competency-retrieve`(hybrid-search 위에) |
 | P2 | `cross-doc-link`, `spec-generation` |
 
 ### vendored (15)
@@ -35,12 +36,13 @@
 | `anthropics/skills` | pdf |
 | `acaprino/alfio-claude-plugins` | python-refactor (sql_generator 에서 복사) |
 
-## 에이전트 — 11개
+## 에이전트 — 12개
 
 | 에이전트 | 역할 | 모델 | SubagentStart 주입 |
 |---|---|---|---|
 | `graph-architect` | 그래프·State·체크포인터·승인 흐름 구현 | opus | ✅ |
 | `api-implementor` | FastAPI 레이어 구현 | sonnet | ✅ |
+| `ingest-implementor` | ② 입력 처리 구현·추출 품질 개선 | opus | ❌ (settings.json matcher 미등록) |
 | `privacy-auditor` | 개인정보 경로 점검 (읽기 전용) | sonnet | ✅ |
 | `ontology-reference` | 온톨로지 조회 (읽기 전용) | haiku | ✅ |
 | `code-reviewer` | CLAUDE.md 불변식 기반 리뷰 (읽기 전용) | sonnet | ✅ |
@@ -51,7 +53,7 @@
 | `github-pr` | gh PR | sonnet | ✅ |
 | `python-refactor-agent` | 지표 기반 리팩토링 | inherit | ❌ |
 
-예정: `ingest-implementor`, `claims-implementor`, `retrieve-implementor`, `spec-implementor`, `prompt-engineer`, `eval-runner`.
+예정: `claims-implementor`, `retrieve-implementor`, `spec-implementor`, `prompt-engineer`, `eval-runner`.
 
 ## 훅 — 11개 (전부 `.claude/settings.json` 등록)
 
