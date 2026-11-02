@@ -96,8 +96,10 @@ async def approval(state: RunState) -> Command:
 | 환경 | 체크포인터 |
 |---|---|
 | 단위 테스트 | `InMemorySaver` |
-| 통합 테스트 | `AsyncPostgresSaver` — **테스트 전용 Postgres DB** (`TEST_DATABASE_URL`), pytest 마커 `pg` |
-| 로컬·운영 | `AsyncPostgresSaver` (`DATABASE_URL`) [확정: 2026-11-02] |
+| 통합 테스트 | `AsyncPostgresSaver` — `task_db_test` (`TEST_DATABASE_URL`), pytest 마커 `pg` |
+| 로컬·운영 | `AsyncPostgresSaver` — `task_db` (`DATABASE_URL`) [확정: 2026-11-02] |
+
+DB 는 `task_db` 컨테이너(`docker/db/`, PostgreSQL 16 + pgvector, `127.0.0.1:5434`, 사용자 `task`).
 
 ```python
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
