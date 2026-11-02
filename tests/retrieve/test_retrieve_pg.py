@@ -24,3 +24,15 @@ async def test_cards_and_search_on_loaded_ontology(ctx) -> None:  # type: ignore
     assert any(c.esco for c in cards.cards.values()) and any(c.ncs for c in cards.cards.values())
     hits = ret.search("Kafka 토픽을 재설계하고 소비자 지연 알림을 붙였다", "data.eng", scope="soft")
     assert "comp:data.streaming" in [h.competency_id for h in hits[:3]]
+
+
+async def test_relatedness_on_loaded_ontology(ctx) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+    from task_spec.ontology.relatedness import load_relatedness
+
+    _, repo, _ = ctx
+    rel = await load_relatedness(repo)
+    assert (
+        rel.level("comp:sw.container_dev", "infra.cloud", ["comp:infra.container"])[0] == "strong"
+    )
+    assert rel.level("comp:ai.service", "data.ml", [])[0] == "strong"  # data.ml 공고 다수가 요구
+    assert rel.level("comp:infra.security", "data.ml", [])[0] == "weak"
