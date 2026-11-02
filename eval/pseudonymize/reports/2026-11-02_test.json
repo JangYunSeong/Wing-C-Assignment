@@ -1,0 +1,60 @@
+{
+ "samples": 120,
+ "recall": {
+  "CONTACT": [
+   287,
+   287
+  ],
+  "COURSE": [
+   120,
+   120
+  ],
+  "LINK": [
+   96,
+   96
+  ],
+  "ORG": [
+   99,
+   106
+  ],
+  "PERSON": [
+   261,
+   264
+  ],
+  "PRODUCT": [
+   20,
+   39
+  ],
+  "REMOVE": [
+   109,
+   109
+  ],
+  "SCHOOL": [
+   120,
+   120
+  ]
+ },
+ "recall_all": [
+  1112,
+  1141
+ ],
+ "recall_by_source": {
+  "llm": [
+   187,
+   216
+  ],
+  "template": [
+   925,
+   925
+  ]
+ },
+ "hard_recall": [
+  0,
+  14
+ ],
+ "over_replacement": [
+  0,
+  502
+ ],
+ "stopped_by_residual": 0
+}
