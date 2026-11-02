@@ -67,6 +67,28 @@ uv run python -m task_spec.ontology.load_pg --sqlite data/ontology/src/data/buil
 
 정확한 컬럼은 적재된 스키마의 `information_schema.columns` 로 확인한다. 이 표를 믿고 컬럼명을 추측하지 않는다.
 
+## ① 공고 프로필·③ 평가 근거 (`ontology/queries.py`) [확정: 2026-11-02]
+
+| 항목 | 규칙 |
+|---|---|
+| 공고 식별 | `posting_id` = 온톨로지 `position.id` (경로 1). 없으면 API 404 `posting_not_found`, 그래프는 END |
+| 셀 | `직군(sub)|업종(industry_id)` |
+| 공고 역량 | `posting_line` ⋈ `line_competency` — 역량별 절·수준·근거 문장 id |
+| 주/보조 | **담당업무·자격요건 = 주, 우대에만 = 보조** (사용자 결정) |
+| 공고 도구 | `line_tool` ⋈ `tool` — `kind=language` 가 '공고 언어' (과제 기술 환경 입력) |
+| NCS 범위 | 온톨로지 뷰 `v_position_competency_ncs` 와 같은 규칙: 셀 `cell_ncs` → primary, 시범 직군 + 보조 직군 `sub_ncs` → secondary, 그 외 제외. (역량, 직군, 업종)으로 받아 새 공고에도 씀. 623 포지션 전부 뷰와 일치 확인 |
+| NCS 본문 | State 에는 능력단위·요소·수행준거·KSA **건수**만, 본문은 명세 생성 때 `v_ncs_unit_detail` 조회 |
+| ESCO | `competency_esco.representative` 만 (broad 제외) |
+
+### 새 공고 (경로 2) [확정: 2026-11-02 — 방향, 구현은 다음 작업]
+
+온톨로지에 없는 공고도 처리한다 (C안). P1 이 **임시(provisional) 프로필**을 만든다:
+- 직군·업종: 공고 원문으로 **자동 추천 → 요청자 확인** (목록: 직군 59 · 업종 10)
+- 절 분리(담당업무/자격요건/우대): 규칙 → 안 되면 LLM (공고는 PII 아님)
+- 문장 → 역량·도구: 온톨로지 레포 매처 + 적재 산출물 규칙 (#59 §2 (b) 사본, 원본 커밋 기록). LLM 아님
+- `source="provisional"` 표시, 명세 승인 화면에 '미검수 공고 분석'. 온톨로지 레포 검수 대상으로 환류
+- 평가: 온톨로지 공고를 '새 공고처럼' 경로 2 로 돌려 검수 결과와 일치율 측정
+
 ## 쓰임새
 
 | 단계 | 질의 |

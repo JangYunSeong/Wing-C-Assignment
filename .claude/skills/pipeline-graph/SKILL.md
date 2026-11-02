@@ -12,7 +12,7 @@ API 사용법은 vendored 스킬(`langgraph-fundamentals`, `langgraph-persistenc
 
 ```
 START
-  └─ posting_profile          ① 온톨로지 조회. LLM 없음.
+  └─ posting_profile          ① 온톨로지 조회. LLM 없음. 공고 없으면 END(posting_not_found)
   └─ ingest                   ② 문서별 텍스트 추출(PDF 텍스트층 → 스캔본만 OCR) + 칸 분리
   └─ pseudonymize             ② 치환 + 누락 검사. 실패 시 END(error) — 다음 노드로 절대 넘기지 않음
   └─ extract_claims           ② LLM. 주장마다 인용이 속한 ⟦칸⟧(field)을 기록
@@ -29,7 +29,7 @@ START
 ```
 
 - `retrieve_t1` 과 `retrieve_t2` 는 서로 독립 → 병렬 분기 후 `evidence` 에서 합류.
-- 지원자 문서 없이 공고만 들어오면 ②③ 을 건너뛰고 공통 과제만 만든다 (조건부 엣지).
+- 지원자 문서 없이 공고만 들어오면 ② 와 ③ retrieve 를 건너뛰고 **evidence(공고 역량의 평가 근거)** → 공통 과제 (조건부 엣지).
 
 ## State
 
