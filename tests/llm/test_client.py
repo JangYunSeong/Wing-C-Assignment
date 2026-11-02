@@ -49,7 +49,7 @@ async def test_success_with_provenance() -> None:
     assert p.ontology_version == "onto-v2026.11.02"
     assert p.retries == 0
     assert (p.tokens.in_, p.tokens.out, p.tokens.reasoning) == (100, 20, 5)
-    assert p.cost_usd is None  # 단가 모르는 모델은 추측하지 않음
+    assert p.cost_usd == 0.000024  # qwen3.8-flash 단가 × (입력 100, 출력 20 — 추론 포함)
     assert fake.calls == [
         ("qwen3.8-flash", {"temperature": 0, "max_tokens": 4096, "reasoning_effort": "low"})
     ]
@@ -113,6 +113,35 @@ async def test_unknown_params_dropped_and_recorded() -> None:
     assert r.provenance.params["dropped"] == ["frequency_penalty"]
 
 
+async def test_gpt5_drops_temperature_and_is_priced() -> None:
+    from task_spec.llm import LLMClient
+
+    base = _prompt()
+    meta = base.template.meta.model_copy(update={"model": "openai:gpt-5.4-mini"})
+    prompt = base.model_copy(
+        update={
+            "template": base.template.model_copy(update={"meta": meta}),
+            "params": {"temperature": 0, "max_tokens": 100},
+        }
+    )
+    fake = FakeBackend().push(Completion(GOOD))
+    r = await LLMClient({"openai": fake}).call(prompt, ClaimExtractionOutput)
+    assert fake.calls[0] == ("gpt-5.4-mini", {"max_tokens": 100})
+    assert r.provenance.params["dropped"] == ["temperature"]
+    assert r.provenance.cost_usd is not None
+
+
 async def test_unconfigured_provider() -> None:
     with pytest.raises(ValueError, match="프로바이더"):
         await LLMClient({}).call(_prompt(), ClaimExtractionOutput)
+
+
+def test_unknown_model_has_no_cost_and_reasoning_model_drops_temperature() -> None:
+    from task_spec.llm.client import is_reasoning_model
+    from task_spec.llm.pricing import cost_usd
+
+    assert cost_usd("openai:없는모델", 100, 100) is None  # 단가 모르는 모델은 추측하지 않음
+    assert is_reasoning_model("openai", "gpt-5.5") and is_reasoning_model("openai", "gpt-5.4-mini")
+    assert not is_reasoning_model("openai", "gpt-4.1") and not is_reasoning_model(
+        "opencode", "gpt-5.5"
+    )
