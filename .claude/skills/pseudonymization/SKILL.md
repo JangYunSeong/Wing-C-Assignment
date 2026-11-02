@@ -11,7 +11,7 @@ description: 이력서·자기소개서 가명화 규칙. 치환 대상(이름·
 |---|---|
 | 위치 | `src/task_spec/nodes/pseudonymize/` (패키지 — 훅이 LLM import 를 막는 경로) |
 | 운영 가명화기 | `RulePseudonymizer(data_dir)` — 앱 lifespan 에서 생성·`warm_up()`. 그래프 기본값 stub 은 텍스트를 내보내지 않는다 |
-| 입력 형식 | `.txt` 만. PDF·DOCX 는 document-ingest 전까지 `ingest_required` 로 멈춤 |
+| 입력 | ingest 추출본(`data/extracted/<run_id>/<doc_id>.txt`, `ExtractedRef`)만 — sha256 대조. 추출 실패는 같은 사유로 실패 |
 | 사람 이름 | 호칭·직함 규칙 + Kiwi(kiwipiepy, 로컬) NNP 중 '성씨+이름' 3~4음절. 기술어·지명 허용목록으로 오탐 차단 |
 | 사전 | `src/task_spec/resources/dicts/` 공개 목록 (대학·회사·교육과정·성씨·기술어). `!` 항목은 재직 맥락에서만 |
 | 주소 | 라벨(`주소:`) 또는 행정구역 2단위 이상 + 도로명/동 + 번지 |

@@ -45,6 +45,16 @@ uv run python -m eval.pseudonymize.run_eval --split test --save                 
 
 다음: 사전·접미어 없는 회사(hard 0%) — 경력 줄 구조(기간과 붙은 이름) 규칙. test PERSON 누락 3건은 새 dev 표본으로 원인 탐색.
 
+## 추출 평가 (`eval/ingest/`)
+
+`generate.py`(시드 고정, 레이아웃 7종 — 파일은 평가 때 임시 폴더에 생성, 커밋하지 않음) + `run_eval.py`.
+지표: 본문 일치·칸 재현율·칸 순서 정확·잘못 만든 칸·기간 인식·2단 순서. 기록은 document-ingest 스킬.
+
+```bash
+uv run python -m eval.ingest.run_eval --split dev --show-misses
+uv run python -m eval.ingest.run_eval --split test --save
+```
+
 ## 주장 추출 평가 [예정]
 
 `extract_claims` 프롬프트 승격(prompt-registry §5)에 쓴다. gold = 가상 지원서의 행동 단위 주장. 지표: 주장 재현율·정밀도,
