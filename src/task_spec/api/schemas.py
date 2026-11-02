@@ -42,5 +42,6 @@ class RunEvent(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     database: Literal["ok", "error", "not_applicable"]
-    ontology_version: str
+    ontology_version: str  # 설정값 (dev 별칭 포함)
+    ontology_resolved: str | None = None  # 실제로 쓰는 적재 버전
     llm_keys: dict[str, bool]  # 설정 여부만. 값은 노출하지 않는다.
