@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # TODO(ontology-artifact): 형식(onto-vYYYY.MM.DD)·산출물 존재 검증은 산출물 로더가 기동 시 한다.
     ontology_version: str = Field(min_length=1)
     ontology_artifact_dir: Path
+    # 프롬프트 루트 (prompt-registry). CURRENT 는 기동 시 전부 검증한다.
+    prompts_dir: Path = Path("prompts")
     # 지원자 데이터 루트 (git 밖, 불변식 1)
     data_dir: Path
 

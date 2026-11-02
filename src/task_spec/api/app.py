@@ -16,6 +16,8 @@ from task_spec.api.launcher import RunLauncher
 from task_spec.api.routers import health, runs
 from task_spec.config import Settings, get_settings
 from task_spec.graph import build_graph, make_checkpointer
+from task_spec.llm.factory import build_llm_client
+from task_spec.prompting import PromptRegistry
 
 
 def create_app(
@@ -29,8 +31,11 @@ def create_app(
             return
         app.state.settings = settings or get_settings()
         # TODO(ontology-artifact): 산출물 로더가 생기면 여기서 버전 검증 (실패 시 기동 실패).
+        prompts = PromptRegistry(app.state.settings.prompts_dir)
+        prompts.validate_all()  # 프롬프트 머리말·변수·스키마 오류면 기동 실패
+        llm = build_llm_client(app.state.settings)
         async with make_checkpointer(app.state.settings) as cp:
-            app.state.graph = build_graph(cp)
+            app.state.graph = build_graph(cp, llm=llm, prompts=prompts)
             app.state.launcher = RunLauncher(app.state.graph)
             try:
                 yield
