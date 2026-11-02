@@ -1,0 +1,38 @@
+{
+ "split": "test",
+ "docs": 20,
+ "runs": 2,
+ "prompt": "extract_claims@1",
+ "models": {
+  "opencode:qwen3.8-flash": {
+   "sentence_recall": 0.966,
+   "action_recall": 0.971,
+   "split_rate": 1.0,
+   "precision": 1.0,
+   "non_action_rate": 0.0,
+   "quote_ok": 1.0,
+   "field_acc": 1.0,
+   "role_acc": 1.0,
+   "stability": 0.988,
+   "claims_per_doc": 4.95,
+   "errors": 0,
+   "latency_ms_avg": 16175,
+   "reasoning_tokens_avg": 735
+  },
+  "openai:gpt-4.1-mini": {
+   "sentence_recall": 0.79,
+   "action_recall": 0.691,
+   "split_rate": 0.071,
+   "precision": 1.0,
+   "non_action_rate": 0.0,
+   "quote_ok": 1.0,
+   "field_acc": 1.0,
+   "role_acc": 1.0,
+   "stability": 0.973,
+   "claims_per_doc": 3.52,
+   "errors": 0,
+   "latency_ms_avg": 2146,
+   "reasoning_tokens_avg": 0
+  }
+ }
+}
