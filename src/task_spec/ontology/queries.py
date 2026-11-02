@@ -115,23 +115,37 @@ async def evidence(
     if not competency_ids:
         return []
     cell_id = f"{sub}|{industry_id}"
+    # 건수는 능력단위별로 한 번에 묶어 센다 (행마다 하위 질의를 돌리면 역량이 많은 공고에서 수 초 걸린다)
     ncs = await repo.fetch(
         """
-        SELECT cn.competency_id, cn.unit_cl_cd, cn.subd_code, u.name, u.level, cn.rel,
-               CASE WHEN EXISTS (SELECT 1 FROM cell_ncs cs WHERE cs.cell_id = %(cell)s AND cs.subd_code = cn.subd_code)
+        WITH cu AS (
+            SELECT cn.competency_id, cn.unit_cl_cd, cn.subd_code, cn.rel
+              FROM competency_ncs cn
+             WHERE cn.competency_id = ANY(%(ids)s)
+        ), units AS (SELECT DISTINCT unit_cl_cd FROM cu),
+        el AS (
+            SELECT e.unit_cl_cd, e.id FROM ncs_element e JOIN units USING (unit_cl_cd)
+        ),
+        n_el AS (SELECT unit_cl_cd, count(*) AS n FROM el GROUP BY unit_cl_cd),
+        n_cr AS (
+            SELECT el.unit_cl_cd, count(*) AS n FROM el JOIN ncs_criterion cr ON cr.element_id = el.id GROUP BY el.unit_cl_cd
+        ),
+        n_ksa AS (
+            SELECT el.unit_cl_cd, count(*) AS n FROM el JOIN ncs_ksa k ON k.element_id = el.id GROUP BY el.unit_cl_cd
+        )
+        SELECT cu.competency_id, cu.unit_cl_cd, cu.subd_code, u.name, u.level, cu.rel,
+               CASE WHEN EXISTS (SELECT 1 FROM cell_ncs cs WHERE cs.cell_id = %(cell)s AND cs.subd_code = cu.subd_code)
                          THEN 'primary'
-                    WHEN %(pilot)s AND EXISTS (SELECT 1 FROM sub_ncs sn WHERE sn.sub = %(sec)s AND sn.subd_code = cn.subd_code)
+                    WHEN %(pilot)s AND EXISTS (SELECT 1 FROM sub_ncs sn WHERE sn.sub = %(sec)s AND sn.subd_code = cu.subd_code)
                          THEN 'secondary'
                END AS scope,
-               (SELECT count(*) FROM ncs_element e WHERE e.unit_cl_cd = u.cl_cd) AS n_elements,
-               (SELECT count(*) FROM ncs_criterion cr JOIN ncs_element e ON e.id = cr.element_id
-                 WHERE e.unit_cl_cd = u.cl_cd) AS n_criteria,
-               (SELECT count(*) FROM ncs_ksa k JOIN ncs_element e ON e.id = k.element_id
-                 WHERE e.unit_cl_cd = u.cl_cd) AS n_ksa
-          FROM competency_ncs cn
-          JOIN ncs_unit u ON u.cl_cd = cn.unit_cl_cd
-         WHERE cn.competency_id = ANY(%(ids)s)
-         ORDER BY cn.competency_id, cn.unit_cl_cd
+               coalesce(n_el.n, 0) AS n_elements, coalesce(n_cr.n, 0) AS n_criteria, coalesce(n_ksa.n, 0) AS n_ksa
+          FROM cu
+          JOIN ncs_unit u ON u.cl_cd = cu.unit_cl_cd
+          LEFT JOIN n_el ON n_el.unit_cl_cd = cu.unit_cl_cd
+          LEFT JOIN n_cr ON n_cr.unit_cl_cd = cu.unit_cl_cd
+          LEFT JOIN n_ksa ON n_ksa.unit_cl_cd = cu.unit_cl_cd
+         ORDER BY cu.competency_id, cu.unit_cl_cd
         """,
         {"cell": cell_id, "pilot": in_pilot, "sec": secondary_sub, "ids": competency_ids},  # type: ignore[arg-type]
     )
