@@ -21,21 +21,14 @@ from task_spec.nodes.pseudonymize.engine import (
     count_residual,
     pseudonymize_text,
 )
-from task_spec.schemas import DocumentRef, PseudoCheck, PseudoDocRef
+from task_spec.schemas import ExtractedRef, PseudoCheck, PseudoDocRef
+from tests.pseudonymize.fixtures import extracted_ref
 
 D = Detectors(load_dictionaries())
 
 
-def _doc(root: Path, run_id: str, name: str, body: str) -> DocumentRef:
-    p = root / "raw" / run_id / name
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(body, encoding="utf-8")
-    return DocumentRef(
-        doc_id=Path(name).stem,
-        kind="resume",
-        path=str(p),
-        sha256=hashlib.sha256(body.encode()).hexdigest(),
-    )
+def _doc(root: Path, run_id: str, name: str, body: str) -> ExtractedRef:
+    return extracted_ref(root, run_id, name, body)
 
 
 # ---- C1: 원문의 토큰 모양 문자열이 탐지를 끄면 안 된다
@@ -70,7 +63,7 @@ async def test_attack_through_pseudonymizer_never_writes_raw_pii(tmp_path: Path)
         assert "김가상" not in text and "kim@example.com" not in text
 
 
-# ---- W2: 경로 가두기
+# ---- W2: 경로 가두기 (추출본은 data/extracted/<run_id>/ 아래만, sha256 대조)
 
 
 @pytest.mark.parametrize("run_id", ["../escape", "a/b", "run 1", ""])
@@ -81,10 +74,23 @@ async def test_unsafe_run_id_rejected(tmp_path: Path, run_id: str) -> None:
     assert not (tmp_path.parent / "escape").exists()
 
 
-async def test_source_outside_raw_run_dir_rejected(tmp_path: Path) -> None:
+async def test_source_outside_extracted_run_dir_rejected(tmp_path: Path) -> None:
     outside = tmp_path / "elsewhere.txt"
     outside.write_text("성명: 김가상", encoding="utf-8")
-    doc = DocumentRef(doc_id="resume-1", kind="resume", path=str(outside), sha256="0" * 64)
+    doc = ExtractedRef(
+        doc_id="resume-1",
+        kind="resume",
+        ok=True,
+        path=str(outside),
+        sha256=hashlib.sha256("성명: 김가상".encode()).hexdigest(),
+    )
+    ref = await RulePseudonymizer(tmp_path)("run1", doc)
+    assert not ref.check.passed and ref.check.reason == "read_error"
+
+
+async def test_extracted_sha_mismatch_rejected(tmp_path: Path) -> None:
+    doc = _doc(tmp_path, "run1", "resume-1.txt", "성명: 김가상")
+    Path(doc.path).write_text("성명: 바뀐내용", encoding="utf-8")  # type: ignore[arg-type]
     ref = await RulePseudonymizer(tmp_path)("run1", doc)
     assert not ref.check.passed and ref.check.reason == "read_error"
 
@@ -170,3 +176,11 @@ async def test_failed_document_does_not_persist_mapping(
         "run1", _doc(tmp_path, "run1", "resume-1.txt", "성명: 김가상")
     )
     assert not (tmp_path / "pseudonymized" / "run1" / "mapping.json").exists()
+
+
+async def test_extracted_path_must_be_doc_txt(tmp_path: Path) -> None:
+    ok = _doc(tmp_path, "run1", "resume-1.txt", "성명: 김가상")
+    other = _doc(tmp_path, "run1", "resume-2.txt", "성명: 이가상")
+    swapped = ok.model_copy(update={"path": other.path, "sha256": other.sha256})  # 다른 문서 추출본
+    ref = await RulePseudonymizer(tmp_path)("run1", swapped)
+    assert not ref.check.passed and ref.check.reason == "read_error"

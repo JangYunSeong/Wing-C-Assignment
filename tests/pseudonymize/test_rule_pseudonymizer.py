@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import stat
@@ -12,22 +11,14 @@ import pytest
 
 from task_spec.nodes.pseudonymize import RulePseudonymizer, load_pseudonymized
 from task_spec.nodes.pseudonymize.engine import RunMapping
-from task_spec.schemas import DocumentRef
-from tests.pseudonymize.fixtures import COVER_LETTER, RESUME
+from task_spec.schemas import ExtractedRef
+from tests.pseudonymize.fixtures import COVER_LETTER, RESUME, extracted_ref
 
 
 def _doc(
     tmp_path: Path, name: str, body: bytes, kind: str = "resume", run_id: str = "run1"
-) -> DocumentRef:
-    p = tmp_path / "raw" / run_id / name
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(body)
-    return DocumentRef(
-        doc_id=Path(name).stem,
-        kind=kind,
-        path=str(p),
-        sha256=hashlib.sha256(body).hexdigest(),  # type: ignore[arg-type]
-    )
+) -> ExtractedRef:
+    return extracted_ref(tmp_path, run_id, name, body, kind)
 
 
 async def test_txt_pseudonymized_and_written_privately(tmp_path: Path) -> None:
@@ -58,10 +49,11 @@ async def test_runs_do_not_share_mapping(tmp_path: Path) -> None:
     assert "[PERSON_1]" in load_pseudonymized(ref)  # run2 는 1번부터
 
 
-@pytest.mark.parametrize("name", ["resume-1.pdf", "resume-1.docx"])
-async def test_non_text_requires_ingest(tmp_path: Path, name: str) -> None:
-    ref = await RulePseudonymizer(tmp_path)("run1", _doc(tmp_path, name, b"%PDF-fake"))
-    assert not ref.check.passed and ref.check.reason == "ingest_required" and ref.path is None
+@pytest.mark.parametrize("reason", ["unsupported_format", "ocr_error", "empty_text"])
+async def test_failed_extraction_is_not_pseudonymized(tmp_path: Path, reason: str) -> None:
+    failed = ExtractedRef(doc_id="resume-1", kind="resume", ok=False, reason=reason)  # type: ignore[arg-type]
+    ref = await RulePseudonymizer(tmp_path)("run1", failed)
+    assert not ref.check.passed and ref.check.reason == reason and ref.path is None
 
 
 async def test_unreadable_text_is_read_error(tmp_path: Path) -> None:

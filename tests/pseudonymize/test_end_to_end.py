@@ -10,6 +10,7 @@ import httpx
 from task_spec.api.app import create_app
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm import Completion, FakeBackend, LLMClient
+from task_spec.nodes.ingest import FileIngestor
 from task_spec.nodes.pseudonymize import RulePseudonymizer
 from task_spec.prompting import PromptRegistry
 from tests.api.conftest import make_settings, wait_status
@@ -33,6 +34,7 @@ async def _client(tmp_path: Path, fake: FakeBackend):
     await pseudonymizer.warm_up()  # 앱 lifespan 과 같이 Kiwi 를 미리 올린다
     graph = build_graph(
         cp,
+        ingestor=FileIngestor(tmp_path),
         pseudonymizer=pseudonymizer,
         llm=LLMClient({"opencode": fake}),
         prompts=PROMPTS,
@@ -80,14 +82,14 @@ async def test_txt_resume_flows_to_approval_without_leaking(tmp_path: Path) -> N
         await cm.__aexit__(None, None, None)
 
 
-async def test_pdf_upload_stops_with_ingest_required(tmp_path: Path) -> None:
+async def test_broken_pdf_upload_stops_with_extract_error(tmp_path: Path) -> None:
     app, cm, graph, client = await _client(tmp_path, FakeBackend())
     try:
         files = {"resumes": ("resume.pdf", b"%PDF-1.4 fake", "application/pdf")}
         r = await client.post("/runs", data={"posting_id": "posting-fake-001"}, files=files)
         view = await wait_status(client, r.json()["run_id"], "failed", "awaiting_approval")
         assert view["status"] == "failed"
-        assert [e["code"] for e in view["errors"]] == ["ingest_required"]
+        assert "extract_error" in [e["code"] for e in view["errors"]]
     finally:
         await app.state.launcher.shutdown()
         await client.aclose()
