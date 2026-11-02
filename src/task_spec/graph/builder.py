@@ -28,7 +28,7 @@ from task_spec.nodes.pseudonymize import (
 )
 from task_spec.nodes.retrieve import make_evidence, make_retrieve_t1, retrieve_t2
 from task_spec.nodes.roles import assign_roles
-from task_spec.nodes.spec import approval, draft_spec, finalize
+from task_spec.nodes.spec import approval, finalize, make_draft_spec
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
@@ -74,7 +74,7 @@ def build_graph(
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", make_evidence(ontology))
     g.add_node("compare", make_compare(relatedness))
-    g.add_node("draft_spec", draft_spec)
+    g.add_node("draft_spec", make_draft_spec(ontology, relatedness))
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))
     g.add_node("finalize", finalize)
 
