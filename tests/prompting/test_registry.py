@@ -38,7 +38,11 @@ def _write(
 
 def test_repo_prompts_all_valid() -> None:
     refs = PromptRegistry(REPO_PROMPTS).validate_all()
-    assert "extract_claims@1" in refs
+    reg = PromptRegistry(REPO_PROMPTS)
+    assert f"extract_claims@{reg.current_version('extract_claims')}" in refs
+    # 승격 후에도 이전 버전은 그대로 읽힌다 (vN 은 고치지 않는다)
+    assert reg.get("extract_claims", 1).ref == "extract_claims@1"
+    assert reg.get("extract_claims", 2).ref == "extract_claims@2"
 
 
 def test_good_template_loads(tmp_path: Path) -> None:

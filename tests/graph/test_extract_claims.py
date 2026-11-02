@@ -67,7 +67,7 @@ async def test_claims_extracted_with_provenance_and_bad_quote_dropped(tmp_path: 
     assert len(result["provenance"]) == 1
     prov = result["provenance"][0]
     assert all(c.provenance_id == prov.provenance_id for c in claims)
-    assert prov.prompt == "extract_claims@1"
+    assert prov.prompt == PROMPTS.get("extract_claims").ref  # CURRENT
     codes = [e.code for e in result["errors"]]
     assert codes == ["quote_mismatch"]
     assert "99%" not in result["errors"][0].message  # 에러에 원문·인용 없음
