@@ -1,0 +1,56 @@
+{
+ "split": "test",
+ "per_layout": 8,
+ "summary": {
+  "pdf_basic": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "pdf_right_date": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "pdf_two_col": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0,
+   "two_col_order": 1.0
+  },
+  "docx_para": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "docx_table": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "hwpx": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "pdf_scan": {
+   "text_similarity": 0.906,
+   "labels_exact": 0.125,
+   "label_recall": 0.66,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  }
+ }
+}
