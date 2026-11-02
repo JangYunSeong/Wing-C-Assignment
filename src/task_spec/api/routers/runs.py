@@ -11,11 +11,18 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langgraph.types import Command
 
-from task_spec.api.deps import GraphDep, LauncherDep, RunViewDep, SettingsDep
-from task_spec.api.errors import ApprovalNotPending, ErrorResponse, RunNotFound, SpecNotFound
+from task_spec.api.deps import GraphDep, LauncherDep, OntologyDep, RunViewDep, SettingsDep
+from task_spec.api.errors import (
+    ApprovalNotPending,
+    ErrorResponse,
+    PostingNotFound,
+    RunNotFound,
+    SpecNotFound,
+)
 from task_spec.api.run_view import load_run_view
 from task_spec.api.schemas import TERMINAL_STATUSES, RunAccepted, RunEvent, RunView
 from task_spec.api.uploads import store_uploads
+from task_spec.ontology.queries import posting_exists
 from task_spec.schemas import ApprovalDecision, DocumentKind, RunInput, TaskSpec
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -26,12 +33,15 @@ _ERRORS = {404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}
 @router.post("", status_code=202, responses={413: {"model": ErrorResponse}})
 async def create_run(
     settings: SettingsDep,
+    ontology: OntologyDep,
     launcher: LauncherDep,
     posting_id: Annotated[str, Form(min_length=1, max_length=200)],
     # 문서 종류는 필드 이름으로 구분한다: resumes / cover_letters (각 0개 이상).
     resumes: Annotated[list[UploadFile] | None, File()] = None,
     cover_letters: Annotated[list[UploadFile] | None, File()] = None,
 ) -> RunAccepted:
+    if ontology is not None and not await posting_exists(ontology, posting_id):
+        raise PostingNotFound(posting_id)
     run_id = uuid.uuid4().hex
     uploads: list[tuple[DocumentKind, UploadFile]] = [
         *(("resume", f) for f in resumes or []),
@@ -45,7 +55,8 @@ async def create_run(
     )
     graph_input = RunInput(
         run_id=run_id,
-        ontology_version=settings.ontology_version,
+        # 실제로 쓰는 온톨로지 버전 (dev 별칭이 아니라 적재 버전 문자열 — 불변식 4)
+        ontology_version=ontology.version.version if ontology else settings.ontology_version,
         posting_id=posting_id,
         documents=documents,
     )

@@ -12,6 +12,7 @@ from task_spec.api.launcher import RunLauncher
 from task_spec.api.run_view import load_run_view
 from task_spec.api.schemas import RunView
 from task_spec.config import Settings
+from task_spec.ontology.repository import OntologyRepository
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -29,6 +30,14 @@ def get_launcher(request: Request) -> RunLauncher:
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 GraphDep = Annotated[CompiledStateGraph, Depends(get_graph)]
 LauncherDep = Annotated[RunLauncher, Depends(get_launcher)]
+
+
+def get_ontology(request: Request) -> OntologyRepository | None:
+    """앱 lifespan 이 연 온톨로지 (테스트에서 그래프를 주입하면 없을 수 있다)."""
+    return getattr(request.app.state, "ontology", None)
+
+
+OntologyDep = Annotated[OntologyRepository | None, Depends(get_ontology)]
 
 
 async def get_run_view(run_id: str, graph: GraphDep, launcher: LauncherDep) -> RunView:

@@ -18,23 +18,26 @@ from langgraph.graph.state import CompiledStateGraph
 from task_spec.llm import LLMClient
 from task_spec.nodes.claims import make_extract_claims
 from task_spec.nodes.ingest import Ingestor, make_ingest, stub_ingestor
-from task_spec.nodes.posting_profile import posting_profile
+from task_spec.nodes.posting_profile import make_posting_profile
 from task_spec.nodes.pseudonymize import (
     Pseudonymizer,
     make_pseudonymize,
     pseudonymization_passed,
     stub_pseudonymizer,
 )
-from task_spec.nodes.retrieve import evidence, retrieve_t1, retrieve_t2
+from task_spec.nodes.retrieve import make_evidence, retrieve_t1, retrieve_t2
 from task_spec.nodes.roles import assign_roles
 from task_spec.nodes.spec import approval, compare, draft_spec, finalize
+from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import RunInput, RunState
 
 
-def _route_after_profile(state: RunState) -> Literal["ingest", "compare"]:
-    # 지원자 문서가 없으면 ②③ 을 건너뛰고 공통 과제만 만든다.
-    return "ingest" if state.has_documents() else "compare"
+def _route_after_profile(state: RunState) -> Literal["ingest", "evidence", "__end__"]:
+    # 공고를 찾지 못하면 멈춘다. 지원자 문서가 없으면 ②③ retrieve 를 건너뛰고 공고 역량의 평가 근거 → 공통 과제만.
+    if state.posting_profile is None:
+        return END
+    return "ingest" if state.has_documents() else "evidence"
 
 
 def _route_after_pseudonymize(state: RunState) -> Literal["extract_claims", "__end__"]:
@@ -49,24 +52,25 @@ def build_graph(
     pseudonymizer: Pseudonymizer = stub_pseudonymizer,
     llm: LLMClient | None = None,
     prompts: PromptRegistry | None = None,
+    ontology: OntologyRepository | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
-    g.add_node("posting_profile", posting_profile)
+    g.add_node("posting_profile", make_posting_profile(ontology))
     g.add_node("ingest", make_ingest(ingestor))
     g.add_node("pseudonymize", make_pseudonymize(pseudonymizer))
     g.add_node("assign_roles", assign_roles)
     g.add_node("extract_claims", make_extract_claims(llm, prompts))
     g.add_node("retrieve_t1", retrieve_t1)
     g.add_node("retrieve_t2", retrieve_t2)
-    g.add_node("evidence", evidence)
+    g.add_node("evidence", make_evidence(ontology))
     g.add_node("compare", compare)
     g.add_node("draft_spec", draft_spec)
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))
     g.add_node("finalize", finalize)
 
     g.add_edge(START, "posting_profile")
-    g.add_conditional_edges("posting_profile", _route_after_profile, ["ingest", "compare"])
+    g.add_conditional_edges("posting_profile", _route_after_profile, ["ingest", "evidence", END])
     g.add_edge("ingest", "pseudonymize")
     g.add_conditional_edges("pseudonymize", _route_after_pseudonymize, ["extract_claims", END])
     g.add_edge("extract_claims", "assign_roles")
