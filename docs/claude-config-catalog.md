@@ -3,7 +3,7 @@
 > 실측 기준일: 2026-11-02. 갱신: `ls .claude/skills | wc -l ; ls .claude/agents | wc -l ; ls .claude/hooks | wc -l`
 > vendored 스킬은 `skills-lock.json` 에 출처·해시가 고정되어 있다 (`npx skills experimental_install` 로 복원).
 
-## 스킬 — 21개 (자체 6 + vendored 15)
+## 스킬 — 22개 (자체 7 + vendored 15)
 
 ### 자체 (P0)
 
@@ -15,12 +15,13 @@
 | `llm-client` | 모델 호출 래퍼·재시도(reasoning_effort=low)·인용 대조·FakeLLM |
 | `ontology-artifact` | 버전 고정 산출물 읽기·테이블·셀 범위·NCS/ESCO 조인 |
 | `pseudonymization` | 치환 대상·일관 토큰·누락 검사·`PseudonymizedText` |
+| `eval-harness` | 가상 표본(템플릿·LLM)·dev/test 숨김 규칙·평가 실행기·회귀 기준치 |
 
 ### 자체 — 예정
 
 | 단계 | 스킬 |
 |---|---|
-| P1 | `document-ingest`(pdf 위에 이력서 레이아웃), `claim-extraction`, `competency-retrieve`(hybrid-search 위에), `eval-harness`(llm-evaluation 위에) |
+| P1 | `document-ingest`(pdf 위에 이력서 레이아웃), `claim-extraction`, `competency-retrieve`(hybrid-search 위에) |
 | P2 | `cross-doc-link`, `spec-generation` |
 
 ### vendored (15)
