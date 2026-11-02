@@ -19,6 +19,7 @@ from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm.factory import build_llm_client
 from task_spec.nodes.ingest import FileIngestor
 from task_spec.nodes.pseudonymize import RulePseudonymizer
+from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
 
 
@@ -32,7 +33,10 @@ def create_app(
             await app.state.launcher.shutdown()
             return
         app.state.settings = settings or get_settings()
-        # TODO(ontology-artifact): 산출물 로더가 생기면 여기서 버전 검증 (실패 시 기동 실패).
+        # 온톨로지 버전 고정 — 적재되지 않은 버전이면 기동 실패 (불변식 4)
+        app.state.ontology = await OntologyRepository.open(
+            app.state.settings.database_url.get_secret_value(), app.state.settings.ontology_version
+        )
         prompts = PromptRegistry(app.state.settings.prompts_dir)
         prompts.validate_all()  # 프롬프트 머리말·변수·스키마 오류면 기동 실패
         llm = build_llm_client(app.state.settings)
@@ -51,6 +55,7 @@ def create_app(
                 yield
             finally:
                 await app.state.launcher.shutdown()
+                await app.state.ontology.close()
 
     app = FastAPI(title="task-spec", lifespan=lifespan)
     if settings is not None:

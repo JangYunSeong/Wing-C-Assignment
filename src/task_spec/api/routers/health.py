@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
@@ -31,7 +31,7 @@ async def _ping(saver: AsyncPostgresSaver) -> bool:
 
 
 @router.get("/healthz")
-async def healthz(graph: GraphDep, settings: SettingsDep) -> JSONResponse:
+async def healthz(request: Request, graph: GraphDep, settings: SettingsDep) -> JSONResponse:
     saver = graph.checkpointer
     if isinstance(saver, AsyncPostgresSaver):
         database = "ok" if await _ping(saver) else "error"
@@ -41,6 +41,9 @@ async def healthz(graph: GraphDep, settings: SettingsDep) -> JSONResponse:
         status="ok" if database != "error" else "degraded",
         database=database,
         ontology_version=settings.ontology_version,
+        ontology_resolved=(
+            o.version.version if (o := getattr(request.app.state, "ontology", None)) else None
+        ),
         llm_keys={
             "openai": bool(settings.openai_api_key.get_secret_value()),
             "opencode": bool(settings.opencode_api_key.get_secret_value()),
