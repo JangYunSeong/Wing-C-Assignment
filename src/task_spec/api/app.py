@@ -20,6 +20,7 @@ from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm.factory import build_llm_client
 from task_spec.nodes.ingest import FileIngestor
 from task_spec.nodes.pseudonymize import RulePseudonymizer
+from task_spec.ontology.relatedness import load_relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import load_lists
@@ -62,6 +63,7 @@ def create_app(
                 postings=store,
                 ontology_lists=lists,
                 retriever=retriever,
+                relatedness=await load_relatedness(app.state.ontology),
             )
             app.state.launcher = RunLauncher(app.state.graph)
             try:

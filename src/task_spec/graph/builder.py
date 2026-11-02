@@ -17,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from task_spec.llm import LLMClient
 from task_spec.nodes.claims import make_extract_claims
+from task_spec.nodes.compare import make_compare
 from task_spec.nodes.ingest import Ingestor, make_ingest, stub_ingestor
 from task_spec.nodes.posting_profile import make_posting_profile
 from task_spec.nodes.pseudonymize import (
@@ -27,7 +28,8 @@ from task_spec.nodes.pseudonymize import (
 )
 from task_spec.nodes.retrieve import make_evidence, make_retrieve_t1, retrieve_t2
 from task_spec.nodes.roles import assign_roles
-from task_spec.nodes.spec import approval, compare, draft_spec, finalize
+from task_spec.nodes.spec import approval, draft_spec, finalize
+from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import OntologyLists
@@ -59,6 +61,7 @@ def build_graph(
     postings: PostingStore | None = None,
     ontology_lists: OntologyLists | None = None,
     retriever: T1Retriever | None = None,
+    relatedness: Relatedness | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -70,7 +73,7 @@ def build_graph(
     g.add_node("retrieve_t1", make_retrieve_t1(retriever, llm, prompts))
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", make_evidence(ontology))
-    g.add_node("compare", compare)
+    g.add_node("compare", make_compare(relatedness))
     g.add_node("draft_spec", draft_spec)
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))
     g.add_node("finalize", finalize)
