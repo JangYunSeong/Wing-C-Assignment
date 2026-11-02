@@ -25,13 +25,14 @@ from task_spec.nodes.pseudonymize import (
     pseudonymization_passed,
     stub_pseudonymizer,
 )
-from task_spec.nodes.retrieve import make_evidence, retrieve_t1, retrieve_t2
+from task_spec.nodes.retrieve import make_evidence, make_retrieve_t1, retrieve_t2
 from task_spec.nodes.roles import assign_roles
 from task_spec.nodes.spec import approval, compare, draft_spec, finalize
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
+from task_spec.retrieve.t1 import T1Retriever
 from task_spec.schemas import RunInput, RunState
 
 
@@ -57,6 +58,7 @@ def build_graph(
     ontology: OntologyRepository | None = None,
     postings: PostingStore | None = None,
     ontology_lists: OntologyLists | None = None,
+    retriever: T1Retriever | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -65,7 +67,7 @@ def build_graph(
     g.add_node("pseudonymize", make_pseudonymize(pseudonymizer))
     g.add_node("assign_roles", assign_roles)
     g.add_node("extract_claims", make_extract_claims(llm, prompts))
-    g.add_node("retrieve_t1", retrieve_t1)
+    g.add_node("retrieve_t1", make_retrieve_t1(retriever, llm, prompts))
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", make_evidence(ontology))
     g.add_node("compare", compare)
