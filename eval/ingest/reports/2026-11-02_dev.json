@@ -1,0 +1,174 @@
+{
+ "split": "dev",
+ "per_layout": 8,
+ "summary": {
+  "pdf_basic": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "pdf_right_date": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "pdf_two_col": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0,
+   "two_col_order": 1.0
+  },
+  "docx_para": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "docx_table": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "hwpx": {
+   "text_similarity": 1.0,
+   "labels_exact": 1.0,
+   "label_recall": 1.0,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  },
+  "pdf_scan": {
+   "text_similarity": 0.931,
+   "labels_exact": 0.375,
+   "label_recall": 0.858,
+   "label_extra": 0.0,
+   "period_recall": 1.0
+  }
+ },
+ "misses": [
+  {
+   "id": "ing-dev-049",
+   "layout": "pdf_scan",
+   "method": "ocr",
+   "sim": 0.854,
+   "expected": [
+    "과정",
+    "담당업무",
+    "성과"
+   ],
+   "got": [
+    "과정",
+    "담당업무",
+    "성과"
+   ]
+  },
+  {
+   "id": "ing-dev-051",
+   "layout": "pdf_scan",
+   "method": "ocr",
+   "sim": 0.903,
+   "expected": [
+    "담당업무",
+    "문제 정의",
+    "과정",
+    "기여한 점"
+   ],
+   "got": [
+    "담당업무",
+    "문제 정의",
+    "기여한 점"
+   ]
+  },
+  {
+   "id": "ing-dev-052",
+   "layout": "pdf_scan",
+   "method": "ocr",
+   "sim": 0.927,
+   "expected": [
+    "문제 정의",
+    "담당업무",
+    "과정",
+    "과정",
+    "기여한 점"
+   ],
+   "got": [
+    "문제 정의",
+    "담당업무",
+    "과정",
+    "기여한 점"
+   ]
+  },
+  {
+   "id": "ing-dev-053",
+   "layout": "pdf_scan",
+   "method": "ocr",
+   "sim": 0.978,
+   "expected": [
+    "담당업무",
+    "성과",
+    "과정",
+    "기여한 점",
+    "성과",
+    "담당업무",
+    "기여한 점"
+   ],
+   "got": [
+    "담당업무",
+    "성과",
+    "기여한 점",
+    "성과",
+    "담당업무",
+    "기여한 점"
+   ]
+  },
+  {
+   "id": "ing-dev-054",
+   "layout": "pdf_scan",
+   "method": "ocr",
+   "sim": 0.98,
+   "expected": [
+    "성과",
+    "담당업무",
+    "과정",
+    "기여한 점",
+    "문제 정의",
+    "성과",
+    "담당업무"
+   ],
+   "got": [
+    "성과",
+    "담당업무",
+    "과정",
+    "문제 정의",
+    "성과",
+    "담당업무"
+   ]
+  },
+  {
+   "id": "ing-dev-055",
+   "layout": "pdf_scan",
+   "method": "ocr",
+   "sim": 0.856,
+   "expected": [
+    "과정",
+    "문제 정의",
+    "과정",
+    "문제 정의",
+    "기여한 점"
+   ],
+   "got": [
+    "문제 정의",
+    "과정",
+    "문제 정의"
+   ]
+  }
+ ]
+}
