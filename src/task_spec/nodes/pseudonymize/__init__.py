@@ -5,6 +5,8 @@ from __future__ import annotations
 from task_spec.nodes.pseudonymize.node import (
     PseudonymizedNotAvailable,
     Pseudonymizer,
+    derive_pseudonymized,
+    join_pseudonymized,
     load_pseudonymized,
     make_pseudonymize,
     mint_pseudonymized,
@@ -17,6 +19,8 @@ __all__ = [
     "PseudonymizedNotAvailable",
     "Pseudonymizer",
     "RulePseudonymizer",
+    "derive_pseudonymized",
+    "join_pseudonymized",
     "load_pseudonymized",
     "make_pseudonymize",
     "mint_pseudonymized",
