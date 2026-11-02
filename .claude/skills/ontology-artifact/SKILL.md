@@ -12,24 +12,45 @@ description: 온톨로지 레포(job-competency-ontology)가 내보내는 버전
 - 모든 명세에 `ontology_version` 을 적는다.
 
 > 상태(2026-11-02): 온톨로지 레포에 아직 tag·release·`manifest.json`·역량 카드 export 가 없다 (#59 §5 미완).
-> 그 전까지는 로컬 빌드한 `ontology.sqlite` 를 `data/ontology/dev/` 에 두고 버전을 `dev+<commit>` 로 기록한다.
+> 그 전까지는 로컬 빌드 → PG 적재 (아래 "현재 적재").
 
-## 산출물 배치
+## 저장: PostgreSQL (task_db) [확정: 2026-11-02]
+
+온톨로지는 sqlite 파일을 직접 열지 않고 **task_db 의 버전별 스키마**에서 읽는다.
 
 ```
-data/ontology/<version>/
-  manifest.json            커밋, 규칙 해시, 학습 데이터 버전, 행 수
-  ontology.sqlite          scripts/db/build_db.py 산출 (수행준거·KSA 포함)
-  competency_cards.jsonl   역량별 라벨·nature·제외 메모·패턴 어휘·도구 별칭·공고 예문 5~10개·ESCO 설명·NCS 단위 정의
-  rules/competencies/ rules/tools/ seed/tech_seed.json   매처 규칙
+온톨로지 레포 build_db.py → ontology.sqlite
+   └→ task_spec.ontology.load_pg → task_db 스키마 onto_<버전 슬러그> + public.ontology_registry
+        (온톨로지 레포의 schema_pg.sql 을 그대로 사용 — 이 레포는 스키마를 고치지 않는다)
 ```
 
-## 로딩·검증
+- 적재: 스테이징 스키마 → 외래키 순서 COPY(boolean·jsonb·text[] 변환) → 행 수 대조 → 이름 교체. 실패해도 기존 버전 유지.
+- 기록: `public.ontology_registry(version, schema_name, source_sha256, row_counts, loaded_at)`.
+- 읽기: `OntologyRepository.open(DATABASE_URL, ONTOLOGY_VERSION)` — 세션 `default_transaction_read_only=on` + 버전 스키마
+  search_path. 쓰기는 DB 가 거부한다. 고정 SQL(LiteralString)만, 입력은 params.
+- 앱 기동: 설정 버전이 레지스트리에 없으면 기동 실패. `/healthz` 의 `ontology_resolved` 가 실제 버전.
+- `ONTOLOGY_VERSION=dev` 는 개발용 별칭 — 가장 최근 적재 버전. 명세 `ontology_version` 에는 실제 버전 문자열을 적는다.
 
-- 설정 `ONTOLOGY_VERSION` 과 디렉토리 이름, `manifest.json`, sqlite `ontology_version` 테이블 값이 모두 일치해야 기동.
-- `manifest.json` 의 행 수·규칙 해시를 실제와 대조 (불일치 시 기동 실패).
-- sqlite 는 `mode=ro` URI 로 연다: `sqlite3.connect(f"file:{p}?mode=ro", uri=True)`.
-- 블로킹이므로 노드에서는 `asyncio.to_thread` 로.
+### 현재 적재 (2026-11-02, 방법 a — 로컬 빌드)
+
+| 항목 | 값 |
+|---|---|
+| 버전 | `v2026-10-30e@b69d00f+dirty` (온톨로지 레포 HEAD b69d00f, train v2026-10-30e) |
+| 스키마 | `onto_v2026_10_30e_b69d00f_dirty` (task_db, task_db_test) |
+| 규모 | 35 테이블, 866,161 행, 151 MB (NCS 수행준거 196,658 · KSA 574,279) |
+| `+dirty` | git 제외 원천(ESCO·NCS 정보망 DB·train)을 복사해 빌드한 표시. 규칙·코드 변경 없음 |
+
+재현:
+```bash
+gh repo clone JangYunSeong/job-competency-ontology data/ontology/src -- --depth 1   # data/ 는 git 밖
+# git 제외 원천 복사 (현재 서버의 온톨로지 작업 사본에서, 읽기 전용):
+#   data/esco/v1.2.1/esco_v1.2.1.sqlite, data/ncs/ncs_infonet.sqlite, data/train/<버전>/
+(cd data/ontology/src && python3.11 -I scripts/db/build_db.py)
+uv run python -m task_spec.ontology.load_pg --sqlite data/ontology/src/data/build/ontology.sqlite \
+    --schema-sql data/ontology/src/scripts/db/schema_pg.sql [--target test]
+```
+
+정식 산출물(태그 `onto-vYYYY.MM.DD`, manifest, release)이 생기면 그 sqlite 를 같은 적재기로 올리고 `ONTOLOGY_VERSION` 을 고정한다.
 
 ## 주요 테이블 (schema.sql 기준, 2026-11-02 확인)
 
@@ -44,7 +65,7 @@ data/ontology/<version>/
 | ESCO | `esco_concept`, `competency_esco`, `job_node_esco`, `position_esco` |
 | 뷰 | `v_competency_links`, `v_position_competency_ncs`, `v_ncs_unit_detail` |
 
-정확한 컬럼은 사용하는 버전의 sqlite 에서 `PRAGMA table_info` 로 확인한다. 이 표를 믿고 컬럼명을 추측하지 않는다.
+정확한 컬럼은 적재된 스키마의 `information_schema.columns` 로 확인한다. 이 표를 믿고 컬럼명을 추측하지 않는다.
 
 ## 쓰임새
 
