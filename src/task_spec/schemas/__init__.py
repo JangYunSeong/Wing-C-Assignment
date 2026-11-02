@@ -6,6 +6,7 @@ from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus
 from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
 from task_spec.schemas.domain import (
+    CandidateRef,
     Claim,
     ClaimCandidates,
     Comparison,
@@ -38,9 +39,18 @@ from task_spec.schemas.postings import (
 )
 from task_spec.schemas.provenance import NodeError, Provenance, TokenUsage
 from task_spec.schemas.pseudo_text import PseudonymizedText
+from task_spec.schemas.retrieve import (
+    SelectCompetencyInput,
+    SelectCompetencyOutput,
+    SelectedItem,
+)
 from task_spec.schemas.state import RunInput, RunState
 
 __all__ = [
+    "CandidateRef",
+    "SelectCompetencyInput",
+    "SelectCompetencyOutput",
+    "SelectedItem",
     "SuggestFieldOutput",
     "SuggestFieldInput",
     "SegmentPostingOutput",

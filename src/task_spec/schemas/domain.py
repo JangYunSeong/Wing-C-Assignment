@@ -88,14 +88,28 @@ class Claim(Schema):
     provenance_id: str | None = None
 
 
-class ClaimCandidates(Schema):
-    """③ T1: 주장 → 역량 후보 (LLM 이 0~2개 선택).
+class CandidateRef(Schema):
+    """T1 검색 후보 1건 (결정적 검색 결과). ranks = 채널별 순위 (pattern·card·example)."""
 
-    TODO(retrieve_t1): 점수·선택 근거 필드 확정.
+    competency_id: str = Field(min_length=1)
+    label: str
+    score: float
+    ranks: dict[str, int] = Field(default_factory=dict)
+    in_scope: bool = True  # 지원 공고 직군 범위 안 (밖이면 점수 절반)
+    posting: bool = False  # 공고 역량 (가산점을 받음)
+
+
+class ClaimCandidates(Schema):
+    """③ T1: 주장 → 역량 후보 상위 k (검색) → LLM 이 0~2개 선택 또는 uncovered.
+
+    competency_ids 는 candidates 안에서만 고른다. 고른 게 없고 uncovered 면 온톨로지 공백 후보.
     """
 
     claim_id: str = Field(min_length=1)
+    candidates: list[CandidateRef] = Field(default_factory=list)
     competency_ids: list[str] = Field(default_factory=list, max_length=2)
+    uncovered: bool = False
+    reason: str | None = None
     provenance_id: str | None = None
 
 
