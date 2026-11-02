@@ -55,6 +55,27 @@ uv run python -m eval.ingest.run_eval --split dev --show-misses
 uv run python -m eval.ingest.run_eval --split test --save
 ```
 
+## 새 공고 평가 (`eval/postings/`)
+
+온톨로지 시범 직군 공고 239건을 '새 공고처럼' 넣고 검수 결과와 비교 (dev/test = 포지션 id 해시).
+원문 재구성: 절 제목 표기 3종 + 제목 없음 15% (시드 고정). 입력은 온톨로지 클론 `data/ontology/src/data/postings/parsed/` (git 밖).
+지표: 절 분리, 직군 top-1/3(평가 대상 자신은 직무명 비교에서 제외), 업종(등록 회사 / 모르는 회사 LLM top-1·3),
+역량 재현율·정밀도(정답 직군 / 추천 1위 직군), LLM 보조 실패 수.
+
+```bash
+uv run python -m eval.postings.run_eval --split dev --llm --unknown-sample 40 --show-misses
+uv run python -m eval.postings.run_eval --split test --llm --unknown-sample 40 --suggest-version 2 --save
+```
+
+| 2026-11-02 test (숨김, 114) | 규칙만(dev 참고) | LLM 보조, suggest_field v2 |
+|---|---|---|
+| 절 분리 | 0.754 | 0.99 |
+| 직군 top-1 / top-3 | 0.79 / 0.919 | 0.886 / 0.965 |
+| 업종 (등록 / 모르는 회사 top-1 / top-3) | 0.919 / - / - | 0.939 / 0.725 / 0.85 |
+| 역량 재현율·정밀도 (추천 직군) | 0.742 / 0.988 | 0.987 / 0.984 |
+
+절 분리는 표기를 재구성한 것이라 낙관적. 직군·역량은 실제 공고 문장 기준. suggest_field v1→v2 승격 기록: `prompts/suggest_field/PROMOTIONS.md`.
+
 ## 주장 추출 평가 (`eval/claims/`)
 
 `generate.py`: 가명화 끝난 형태(토큰·⟦칸⟧)의 가상 이력서·자기소개서, 문장마다 정답(행동 수·칸·역할, 뽑으면 안 되는 문장).
