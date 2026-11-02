@@ -17,7 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from task_spec.llm import LLMClient
 from task_spec.nodes.claims import assign_roles, make_extract_claims
-from task_spec.nodes.ingest import ingest
+from task_spec.nodes.ingest import Ingestor, make_ingest, stub_ingestor
 from task_spec.nodes.posting_profile import posting_profile
 from task_spec.nodes.pseudonymize import (
     Pseudonymizer,
@@ -44,6 +44,7 @@ def _route_after_pseudonymize(state: RunState) -> Literal["assign_roles", "__end
 def build_graph(
     checkpointer: BaseCheckpointSaver | None,
     *,
+    ingestor: Ingestor = stub_ingestor,
     pseudonymizer: Pseudonymizer = stub_pseudonymizer,
     llm: LLMClient | None = None,
     prompts: PromptRegistry | None = None,
@@ -51,7 +52,7 @@ def build_graph(
     g = StateGraph(RunState, input_schema=RunInput)
 
     g.add_node("posting_profile", posting_profile)
-    g.add_node("ingest", ingest)
+    g.add_node("ingest", make_ingest(ingestor))
     g.add_node("pseudonymize", make_pseudonymize(pseudonymizer))
     g.add_node("assign_roles", assign_roles)
     g.add_node("extract_claims", make_extract_claims(llm, prompts))

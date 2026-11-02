@@ -1,6 +1,6 @@
 """운영용 가명화기: 규칙 + 공개 사전 + 로컬 형태소 분석기(Kiwi). 외부 API 호출 없음 (불변식 2).
 
-- 입력은 텍스트만. PDF·DOCX 는 document-ingest 가 텍스트를 뽑기 전까지 `ingest_required` 로 멈춘다.
+- 입력은 ingest 가 만든 추출본(`data/extracted/<run_id>/<doc_id>.txt`)만. sha256 을 대조한다.
 - 출력: `data/pseudonymized/<run_id>/<doc_id>.txt` (권한 600) + 실행 단위 `mapping.json` (권한 600).
 - 누락 검사 실패면 가명화본을 쓰지 않고 실패로 돌려준다 → 그래프가 END 로 간다.
 """
@@ -22,15 +22,14 @@ from task_spec.nodes.pseudonymize.engine import (
     ensure_private_dir,
     pseudonymize_text,
 )
-from task_spec.schemas import DocumentRef, PseudoCheck, PseudoDocRef
+from task_spec.schemas import ExtractedRef, PseudoCheck, PseudoDocRef
 
 logger = logging.getLogger(__name__)
 
-TEXT_SUFFIXES = frozenset({".txt"})
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def _failed(doc: DocumentRef, reason: str, residual: int = 0) -> PseudoDocRef:
+def _failed(doc: ExtractedRef, reason: str, residual: int = 0) -> PseudoDocRef:
     return PseudoDocRef(
         doc_id=doc.doc_id,
         kind=doc.kind,
@@ -59,20 +58,26 @@ class RulePseudonymizer:
         """탐지기를 한 번 돌려 Kiwi 모델을 미리 올린다."""
         await asyncio.to_thread(self._detectors.detect, "가상 데이터 워밍업")
 
-    async def __call__(self, run_id: str, doc: DocumentRef) -> PseudoDocRef:
+    async def __call__(self, run_id: str, doc: ExtractedRef) -> PseudoDocRef:
         return await asyncio.to_thread(self._run, run_id, doc)
 
-    def _run(self, run_id: str, doc: DocumentRef) -> PseudoDocRef:
-        # 경로 가두기: id 형식 검사 + 원본은 data_dir/raw/<run_id>/ 아래만 (privacy-auditor W2)
+    def _run(self, run_id: str, doc: ExtractedRef) -> PseudoDocRef:
+        # 경로 가두기: id 형식 검사 + 추출본은 data_dir/extracted/<run_id>/ 아래만 (privacy-auditor W2)
         if not (SAFE_ID.match(run_id) and SAFE_ID.match(doc.doc_id)):
             return _failed(doc, "read_error")
-        src = Path(doc.path).resolve()
-        if not src.is_relative_to(self._data_dir / "raw" / run_id):
+        if not doc.ok or doc.path is None or doc.sha256 is None:
+            return _failed(doc, doc.reason or "read_error")
+        given = Path(doc.path)
+        if given.is_symlink() or given.name != f"{doc.doc_id}.txt":  # 감사 W7
             return _failed(doc, "read_error")
-        if src.suffix.lower() not in TEXT_SUFFIXES:
-            return _failed(doc, "ingest_required")
+        src = given.resolve()
+        if not src.is_relative_to(self._data_dir / "extracted" / run_id):
+            return _failed(doc, "read_error")
         try:
-            text = src.read_text(encoding="utf-8")
+            raw = src.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != doc.sha256:
+                return _failed(doc, "read_error")
+            text = raw.decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return _failed(doc, "read_error")
 

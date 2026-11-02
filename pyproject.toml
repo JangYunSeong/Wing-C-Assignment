@@ -7,14 +7,18 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "defusedxml>=0.7.1",
     "fastapi>=0.162.0",
     "kiwipiepy>=0.24.1",
     "langchain-openai>=1.7.3",
     "langgraph>=1.2.19",
     "langgraph-checkpoint-postgres>=3.2.0",
+    "pillow>=13.0.0",
     "psycopg[binary,pool]>=3.3.6",
     "pydantic>=2.14.2",
     "pydantic-settings>=2.16.2",
+    "pypdfium2>=5.14.0",
+    "python-docx>=1.2.0",
     "python-multipart>=0.0.33",
     "pyyaml>=6.0.3",
     "uvicorn[standard]>=0.54.0",
@@ -26,6 +30,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "fpdf2>=2.9.0",
     "httpx>=0.28.1",
     "mypy>=2.4.1",
     "pytest>=9.2.0",

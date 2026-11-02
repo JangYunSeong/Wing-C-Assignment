@@ -14,13 +14,13 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from task_spec.schemas import DocumentRef, NodeError, PseudoCheck, PseudoDocRef, RunState
+from task_spec.schemas import ExtractedRef, NodeError, PseudoCheck, PseudoDocRef, RunState
 from task_spec.schemas.pseudo_text import _MINT, PseudonymizedText
 
-Pseudonymizer = Callable[[str, DocumentRef], Awaitable[PseudoDocRef]]
+Pseudonymizer = Callable[[str, ExtractedRef], Awaitable[PseudoDocRef]]
 
 
-async def stub_pseudonymizer(run_id: str, doc: DocumentRef) -> PseudoDocRef:
+async def stub_pseudonymizer(run_id: str, doc: ExtractedRef) -> PseudoDocRef:
     """골격용: 아무것도 치환하지 않고 검사 통과로 표시한다."""
     return PseudoDocRef(
         doc_id=doc.doc_id,
@@ -35,7 +35,17 @@ def make_pseudonymize(
     pseudonymizer: Pseudonymizer,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     async def pseudonymize(state: RunState) -> dict[str, Any]:
-        results = [await pseudonymizer(state.run_id, d) for d in state.documents]
+        # 추출에 실패한 문서는 가명화하지 않고 같은 사유로 실패시킨다 (→ END)
+        results = [
+            await pseudonymizer(state.run_id, r)
+            if r.ok
+            else PseudoDocRef(
+                doc_id=r.doc_id,
+                kind=r.kind,
+                check=PseudoCheck(passed=False, residual_count=0, reason=r.reason),
+            )
+            for r in state.extracted
+        ]
         errors = [
             NodeError(
                 node="pseudonymize",
