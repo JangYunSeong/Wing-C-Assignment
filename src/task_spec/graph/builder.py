@@ -15,7 +15,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from task_spec.nodes.claims import assign_roles, extract_claims
+from task_spec.llm import LLMClient
+from task_spec.nodes.claims import assign_roles, make_extract_claims
 from task_spec.nodes.ingest import ingest
 from task_spec.nodes.posting_profile import posting_profile
 from task_spec.nodes.pseudonymize import (
@@ -26,6 +27,7 @@ from task_spec.nodes.pseudonymize import (
 )
 from task_spec.nodes.retrieve import evidence, retrieve_t1, retrieve_t2
 from task_spec.nodes.spec import approval, compare, draft_spec, finalize
+from task_spec.prompting import PromptRegistry
 from task_spec.schemas import RunInput, RunState
 
 
@@ -43,6 +45,8 @@ def build_graph(
     checkpointer: BaseCheckpointSaver | None,
     *,
     pseudonymizer: Pseudonymizer = stub_pseudonymizer,
+    llm: LLMClient | None = None,
+    prompts: PromptRegistry | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -50,7 +54,7 @@ def build_graph(
     g.add_node("ingest", ingest)
     g.add_node("pseudonymize", make_pseudonymize(pseudonymizer))
     g.add_node("assign_roles", assign_roles)
-    g.add_node("extract_claims", extract_claims)
+    g.add_node("extract_claims", make_extract_claims(llm, prompts))
     g.add_node("retrieve_t1", retrieve_t1)
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", evidence)
