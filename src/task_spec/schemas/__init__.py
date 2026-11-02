@@ -11,6 +11,7 @@ from task_spec.schemas.domain import (
     ClaimCandidates,
     Comparison,
     CompetencyEvidence,
+    CompetencyMatch,
     CrossDocLink,
     EscoRef,
     NcsUnitRef,
@@ -20,6 +21,7 @@ from task_spec.schemas.domain import (
     Role,
     TaskItem,
     TaskSpec,
+    VerifyTarget,
 )
 from task_spec.schemas.ingest import (
     ExtractedDocument,
@@ -47,6 +49,8 @@ from task_spec.schemas.retrieve import (
 from task_spec.schemas.state import RunInput, RunState
 
 __all__ = [
+    "CompetencyMatch",
+    "VerifyTarget",
     "CandidateRef",
     "SelectCompetencyInput",
     "SelectCompetencyOutput",
