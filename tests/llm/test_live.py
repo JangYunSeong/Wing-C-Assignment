@@ -52,3 +52,19 @@ async def test_live_extract_claims(model: str) -> None:
         f"\n{model}: claims={len(result.parsed.claims)} quote_ok={len(ok)} retries={p.retries} "
         f"tokens={p.tokens.in_}/{p.tokens.out}/{p.tokens.reasoning} latency_ms={p.latency_ms}"
     )
+
+
+async def test_live_draft_task() -> None:
+    """공통 과제 서술 (CURRENT 모델) — 가상 온톨로지 값만. 자동 검증 통과까지."""
+    from task_spec.spec.draft import FLAG_DRAFT_FAILED, check, draft_task
+    from tests.spec.test_draft import _ctx
+
+    ctx = _ctx()
+    res = await draft_task(ctx, llm=build_llm_client(Settings()), prompts=PROMPTS)  # type: ignore[call-arg]
+    assert res.output is not None and FLAG_DRAFT_FAILED not in res.flags
+    if not res.flags:  # 재요청 후에도 어긋나면 flags 로 남으므로, flags 가 없을 때만 검증 통과를 요구
+        assert check(res.output, ctx) == []
+    p = res.provenance[-1]
+    print(
+        f"\ndraft_task: calls={len(res.provenance)} flags={res.flags} out={p.tokens.out} latency_ms={p.latency_ms}"
+    )

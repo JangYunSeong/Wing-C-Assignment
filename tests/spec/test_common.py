@@ -114,3 +114,13 @@ def test_common_tech_env_uses_posting_languages_only() -> None:
     assert env.languages == ["Python", "Go"] and env.frameworks == [] and flags == []
     _, flags = common_tech_env(_profile(COMPS))
     assert flags == [FLAG_NO_LANGUAGE]
+
+
+def test_applicant_candidate_evidence_never_becomes_target() -> None:
+    """evidence 에는 지원자 후보 역량도 섞여 들어온다 — 측정 역량은 공고 역량에서만 (불변식 3)."""
+    ev = [_ev(c.competency_id) for c in COMPS if c.competency_id != "comp:noev"]
+    ev += [_ev("comp:applicant_only_1"), _ev("comp:applicant_only_2")]
+    plan = plan_common(_profile(COMPS), ev)
+    posting = {c.competency_id for c in COMPS}
+    assert plan.competencies and {c.competency_id for c in plan.competencies} <= posting
+    assert all(not t.competency_id.startswith("comp:applicant") for t in targets(plan, ev))
