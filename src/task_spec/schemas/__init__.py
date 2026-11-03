@@ -32,6 +32,13 @@ from task_spec.schemas.domain import (
     Trap,
     VerifyTarget,
 )
+from task_spec.schemas.draft import (
+    DraftTaskInput,
+    DraftTaskOutput,
+    JudgedDraft,
+    JudgeDraftInput,
+    JudgeDraftOutput,
+)
 from task_spec.schemas.ingest import (
     ExtractedDocument,
     ExtractedField,
@@ -58,6 +65,11 @@ from task_spec.schemas.retrieve import (
 from task_spec.schemas.state import RunInput, RunState
 
 __all__ = [
+    "DraftTaskInput",
+    "DraftTaskOutput",
+    "JudgeDraftInput",
+    "JudgeDraftOutput",
+    "JudgedDraft",
     "NcsCriterion",
     "NcsKsa",
     "AI_AXES",
