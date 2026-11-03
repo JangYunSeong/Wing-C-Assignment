@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     ontology_artifact_dir: Path
     # 프롬프트 루트 (prompt-registry). CURRENT 는 기동 시 전부 검증한다.
     prompts_dir: Path = Path("prompts")
+    # 공개 사례 (부서 결정적 사건 대용, incidents/public_v1/README.md) — git 안, 지원자 데이터 아님
+    incidents_dir: Path = Path("incidents/public_v1")
     # 지원자 데이터 루트 (git 밖, 불변식 1)
     data_dir: Path
 
