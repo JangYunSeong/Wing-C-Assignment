@@ -17,6 +17,7 @@
 | `pseudonymization` | 치환 대상·일관 토큰·누락 검사·`PseudonymizedText` |
 | `document-ingest` | PDF(pypdfium2)·스캔(tesseract)·DOCX·HWPX 추출, 레이아웃 복원, ⟦칸⟧ 구조화 |
 | `eval-harness` | 가상 표본(템플릿·LLM)·dev/test 숨김 규칙·평가 실행기·회귀 기준치 |
+| `deployment` | podman 이미지(task-api·task-db)·내부망 반입(save/load)·env-file·볼륨·업그레이드·백업·배포 후 확인 |
 
 ### 자체 — 예정
 
