@@ -38,11 +38,13 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 | 증상 | 처리 |
 |---|---|
 | 빈 응답 + 출력 토큰이 추론에 소진 | `reasoning_effort=low` 로 1회 재시도 (시험 사실: `qwen3.8-flash` 는 긴 입력에서 기본 추론 설정이면 빈 응답) |
-| 타임아웃·5xx·연결 오류 | 지수 백오프 최대 3회 |
+| 5xx·연결 오류·429 | 지수 백오프 최대 3회 |
+| 시간 초과 | **1회만** 다시 [확정: 2026-11-03 — 운영에서 120초 × 4회 재시도로 draft_spec 이 수십 분 멈춤]. 요청 제한 시간 `LLM_TIMEOUT_SECONDS`(기본 300초) |
 | JSON 파싱·스키마 검증 실패 | 검증 에러 메시지를 붙여 1회 재요청. 그래도 실패면 `SchemaViolation` |
 | 4xx(인증·요청 오류) | 재시도 없음 |
 
-재시도 횟수·사유는 provenance `retries` 에 남긴다.
+재시도 횟수·사유는 provenance `retries` 에 남긴다. 재시도는 WARNING(`llm retry prompt=… model=… reason=… elapsed_ms=…`),
+포기는 ERROR(`llm give up …`) 로그 — 본문·키 없이. 로깅 설정은 `logging_setup.py`(LOG_LEVEL·LOG_FORMAT).
 
 ## 기록
 
