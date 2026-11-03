@@ -60,6 +60,8 @@ async def lifespan(app: FastAPI):
 - 받은 파일은 즉시 `data/raw/<run_id>/` 에 저장하고 해시만 State 로 넘긴다.
 - 허용 형식: PDF, DOCX, TXT [제안]. 크기 상한 설정값으로.
 - 업로드 원본을 응답·로그에 되돌리지 않는다.
+- 자기소개서(`cover_letters`)는 `USE_COVER_LETTERS=false`(기본)면 **저장하지 않는다** — 응답 `ignored: ["cover_letter#1", …]` 로만 알린다
+  (파일 이름은 넣지 않음). 검증할 주장은 이력서에서만 [확정: 2026-11-03].
 
 ## 에러 형식
 
