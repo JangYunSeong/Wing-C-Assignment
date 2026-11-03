@@ -268,3 +268,20 @@ def _round_robin(rows: list[dict], key: str, limit: int) -> list[dict]:  # type:
                 out.append(g[i])
         i += 1
     return out
+
+
+async def field_labels(
+    repo: OntologyRepository, sub: str | None, industry_id: str | None
+) -> tuple[str, str]:
+    """직군·업종 → 'id: 라벨' (과제 서술 입력). 모르면 id 그대로."""
+    subs = await repo.fetch("SELECT id, label FROM sub_family WHERE id = %s", (sub or "",))
+    inds = await repo.fetch("SELECT id, label FROM industry WHERE id = %s", (industry_id or "",))
+    s = f"{sub}: {subs[0]['label']}" if subs else (sub or "(미상)")
+    i = inds[0]["label"] if inds else (industry_id or "(미상)")
+    return s, i
+
+
+async def language_labels(repo: OntologyRepository) -> list[str]:
+    """온톨로지의 언어 도구 이름 전체 (과제 본문에 공고 밖 언어가 나오는지 검사)."""
+    rows = await repo.fetch("SELECT label FROM tool WHERE kind = 'language' ORDER BY label")
+    return [r["label"] for r in rows]
