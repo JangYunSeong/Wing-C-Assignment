@@ -283,6 +283,8 @@ class TaskItem(Schema):
     # 슬롯도 TaskItem(track=extension_slot, task_id=s1…) — 지원자별 확장 문항은 slot_id 로 가리킨다 (PR-B)
     slots: list[TaskItem] = Field(default_factory=list, max_length=6)
     slot_id: str | None = None
+    # 지원자에게 보이는 연결 문구 (확장 문항) — "지원서에 적은 '…' 경험과 관련됩니다". 수치·회사·가명 토큰 없음
+    link_text: str | None = None
     tech_env: TechEnv
     difficulty_target: Difficulty
     time_limit_min: int = Field(ge=10, le=240)
@@ -318,6 +320,19 @@ class CommonRef(Schema):
     prompt_ref: str  # draft_task@N 또는 skeleton
 
 
+class SlotAssignment(Schema):
+    """검증할 주장 1건 → 확장 슬롯 배정 (규칙) [확정: 2026-11-03 사용자]. 슬롯이 없으면 면접 질문만."""
+
+    claim_id: str = Field(min_length=1)
+    competency_ids: list[str] = Field(default_factory=list)
+    slot_id: str | None = None  # 공통 과제 slots 의 task_id (s1…). None = 맞는 슬롯 없음
+    basis: str  # "역량 같음: comp:x" / "근접·기반 관계: comp:x ↔ comp:y" / "승인자 지정" / "맞는 슬롯 없음"
+    link_text: str | None = None
+    follow_up_questions: list[str] = Field(default_factory=list)  # 면접관용 (지원자마다 LLM)
+    review_flags: list[str] = Field(default_factory=list)
+    provenance_id: str | None = None
+
+
 class TaskSpec(Schema):
     """④ 과제 명세 초안/확정본 (context.md §6).
 
@@ -332,5 +347,6 @@ class TaskSpec(Schema):
     common_tasks: list[TaskItem] = Field(default_factory=list)
     verification_tasks: list[TaskItem] = Field(default_factory=list)
     common_refs: list[CommonRef] = Field(default_factory=list)
+    slot_assignments: list[SlotAssignment] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     approval: ApprovalDecision | None = None  # finalize 가 승인 결정을 붙인다

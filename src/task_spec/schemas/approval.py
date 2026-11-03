@@ -24,6 +24,8 @@ class ApprovalDecision(Schema):
     comment: str | None = Field(default=None, max_length=4000)
     # revise 대상: common = 공고 공통 과제(새 판) / verification = 이 지원자의 확장 문항만 (공통 과제는 재사용) / all
     revise_target: Literal["common", "verification", "all"] = "all"
+    # 슬롯 배정 바꾸기 (revise 일 때만): {주장 id: 슬롯 id 또는 null(슬롯 없이 면접 질문만)} — 규칙보다 우선
+    reassign: dict[str, str | None] = Field(default_factory=dict)
     at: AwareDatetime
 
     @model_validator(mode="after")
@@ -32,4 +34,6 @@ class ApprovalDecision(Schema):
             raise ValueError("revise 결정에는 수정 사유(comment)가 필요합니다")
         if not self.reviewer.strip():
             raise ValueError("reviewer 가 비어 있습니다")
+        if self.reassign and self.status != "revise":
+            raise ValueError("reassign(슬롯 배정 바꾸기)은 revise 결정에서만 쓸 수 있습니다")
         return self
