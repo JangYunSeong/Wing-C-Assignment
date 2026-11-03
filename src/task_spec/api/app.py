@@ -26,6 +26,7 @@ from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import load_lists
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve import build_retriever
+from task_spec.spec.incidents import load_incidents
 from task_spec.spec.store import CommonTaskStore
 
 
@@ -70,6 +71,7 @@ def create_app(
                 retriever=retriever,
                 relatedness=await load_relatedness(app.state.ontology),
                 common_store=common_store,
+                incidents=load_incidents(app.state.settings.incidents_dir),
             )
             app.state.launcher = RunLauncher(app.state.graph)
             try:
