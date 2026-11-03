@@ -3,6 +3,7 @@
 #
 # 사용:  TASK_API_IMAGE=task-api:<버전> TASK_API_ENV=/etc/task-spec/env docker/api/run.sh
 #   TASK_API_BIND  기본 127.0.0.1:8001 — 내부망 다른 PC 에서 접속하려면 <서버IP>:8001 (인증 전 — 접근 대상 제한 필수)
+#                  none = 호스트에 포트를 열지 않음 (nginx 앞단 구성 — docker/nginx/run.sh 가 task-net 으로 접속)
 set -euo pipefail
 
 NAME="${TASK_API_NAME:-task-api}"
@@ -22,13 +23,20 @@ if podman container exists "$NAME"; then
   exit 1
 fi
 
+publish=(-p "${BIND}:8000")
+[[ "$BIND" == none ]] && publish=()
+
 podman run -d --name "$NAME" \
   --network "$NET" \
   --env-file "$ENV_FILE" \
   -v task_data:/data \
-  -p "${BIND}:8000" \
+  "${publish[@]}" \
   --restart unless-stopped \
   --health-cmd "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status == 200 else 1)\"" \
   --health-interval 30s --health-start-period 60s \
   "$IMAGE"
-echo "기동: $NAME ($IMAGE) → http://${BIND}/healthz"
+if [[ "$BIND" == none ]]; then
+  echo "기동: $NAME ($IMAGE) — 호스트 포트 없음, nginx(task-net) 경유"
+else
+  echo "기동: $NAME ($IMAGE) → http://${BIND}/healthz"
+fi
