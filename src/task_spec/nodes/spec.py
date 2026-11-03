@@ -34,6 +34,7 @@ from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
 from task_spec.spec.store import CommonKey, CommonTaskRepo
+from task_spec.spec.verify import build_verifications
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 
@@ -62,6 +63,7 @@ def make_draft_spec(
         revision = state.spec.revision + 1 if state.spec is not None else 1
         spec_id = f"{state.run_id}-r{revision}"
         common: list[TaskItem] = []
+        verification: list[TaskItem] = []
         refs: list[CommonRef] = []
         flags: list[str] = []
         update: dict[str, Any] = {}
@@ -85,7 +87,13 @@ def make_draft_spec(
                 revise = (
                     state.approval if state.approval and state.approval.status == "revise" else None
                 )
-                reused = await store.reusable(key) if store is not None and revise is None else None
+                note, note_flags = safe_reviewer_note(revise.comment if revise else None)
+                flags = [*flags, *note_flags]  # 수정 요청을 보내지 못했으면 명세 단위로 알린다
+                redo_common = revise is not None and revise.revise_target != "verification"
+                redo_verify = revise is None or revise.revise_target != "common"
+                reused = (
+                    await store.reusable(key) if store is not None and not redo_common else None
+                )
                 if reused is not None:
                     task = reused.task
                     if reused.status != "approved":
@@ -109,11 +117,12 @@ def make_draft_spec(
                         )
                     else:
                         assert built.ctx is not None and llm is not None and prompts is not None
-                        note, note_flags = safe_reviewer_note(revise.comment if revise else None)
                         res = await draft_task(
-                            built.ctx, llm=llm, prompts=prompts, reviewer_note=note
+                            built.ctx,
+                            llm=llm,
+                            prompts=prompts,
+                            reviewer_note=note if redo_common else None,
                         )
-                        res.flags[:0] = note_flags
                         task = apply(task, res)
                         update = {"provenance": res.provenance, "errors": res.errors}
                     if store is not None:
@@ -129,6 +138,30 @@ def make_draft_spec(
                             )
                         )
                 common.append(task)
+                # 경험 검증 확장 문항 (지원자별, 공통 과제 안에 붙음). revise_target=common 이면 직전 것을 유지
+                if not redo_verify and state.spec is not None:
+                    verification = [
+                        v.model_copy(update={"parent_task_id": task.task_id})
+                        for v in state.spec.verification_tasks
+                    ]
+                elif built.ctx is not None and use_llm and ontology is not None:
+                    assert llm is not None and prompts is not None
+                    verification, vprov, verrs = await build_verifications(
+                        state,
+                        task,
+                        spec_id=spec_id,
+                        ontology=ontology,
+                        llm=llm,
+                        prompts=prompts,
+                        sub_label=built.ctx.sub_label,
+                        industry_label=built.ctx.industry_label,
+                        language_labels=built.ctx.language_labels,
+                        reviewer_note=note if revise is not None else None,
+                    )
+                    update = {
+                        "provenance": [*update.get("provenance", []), *vprov],
+                        "errors": [*update.get("errors", []), *verrs],
+                    }
         spec = TaskSpec(
             spec_id=spec_id,
             run_id=state.run_id,
@@ -136,6 +169,7 @@ def make_draft_spec(
             ontology_version=state.ontology_version,
             revision=revision,
             common_tasks=common,
+            verification_tasks=verification,
             common_refs=refs,
             review_flags=flags,
         )
