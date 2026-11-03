@@ -77,8 +77,9 @@ def _new_id() -> str:
 
 
 def _with_id(task: TaskItem, common_id: str) -> TaskItem:
-    # 지원자마다 같은 과제임을 id 로도 드러낸다 (실행 id 가 아니라 공통 과제 id)
-    return task.model_copy(update={"task_id": common_id})
+    # 지원자마다 같은 과제임을 id 로도 드러낸다 (실행 id 가 아니라 공통 과제 id). 슬롯도 새 id 를 가리키게
+    slots = [x.model_copy(update={"parent_task_id": common_id}) for x in task.slots]
+    return task.model_copy(update={"task_id": common_id, "slots": slots})
 
 
 class InMemoryCommonStore:
