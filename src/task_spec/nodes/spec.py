@@ -23,6 +23,7 @@ from task_spec.schemas import (
     CommonRef,
     ComparisonBrief,
     OutsideBrief,
+    PublicIncident,
     RunState,
     TaskBrief,
     TaskItem,
@@ -48,6 +49,7 @@ def make_draft_spec(
     llm: LLMClient | None = None,
     prompts: PromptRegistry | None = None,
     store: CommonTaskRepo | None = None,
+    incidents: dict[str, PublicIncident] | None = None,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     """공통 과제 = 결정적 골격 + 서술(LLM). 공고·온톨로지만 쓴다 — 지원자 문서·주장을 읽지 않는다 (불변식 3).
 
@@ -72,6 +74,7 @@ def make_draft_spec(
                 ontology_version=state.ontology_version,
                 ontology=ontology,
                 rel=rel,
+                incidents=incidents,
             )
             flags = built.flags
             task = built.task

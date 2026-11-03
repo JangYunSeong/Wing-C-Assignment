@@ -30,6 +30,9 @@ TIME_LIMIT_MIN = 60
 SCOPE_ORDER = {"primary": 0, "secondary": 1, "sub_fallback": 2}
 
 FLAG_NO_INCIDENT = "부서 결정적 사건 없음 — 함정·심층 구조는 LLM 제안, 승인자 검토 필요"
+FLAG_PUBLIC_INCIDENT = (
+    "공개 사례 기반 — 부서 결정적 사건 아님. 원리만 가져오고 소재는 바꿈, 승인자 검토 필요"
+)
 FLAG_SUPPORTING = "주 역량이 2개 미만 — 우대(보조) 역량으로 채움"
 FLAG_NO_EVIDENCE = "NCS 근거가 있는 공고 역량 없음 — 공통 과제를 만들 수 없음"
 FLAG_FALLBACK = "셀에 NCS 목록이 없어 직군 단위 NCS 로 대체한 근거 사용 (덜 정밀)"

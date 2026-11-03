@@ -35,7 +35,7 @@ from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve.t1 import T1Retriever
-from task_spec.schemas import RunInput, RunState
+from task_spec.schemas import PublicIncident, RunInput, RunState
 from task_spec.spec.store import CommonTaskRepo
 
 
@@ -64,6 +64,7 @@ def build_graph(
     retriever: T1Retriever | None = None,
     relatedness: Relatedness | None = None,
     common_store: CommonTaskRepo | None = None,
+    incidents: dict[str, PublicIncident] | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -76,7 +77,9 @@ def build_graph(
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", make_evidence(ontology))
     g.add_node("compare", make_compare(relatedness))
-    g.add_node("draft_spec", make_draft_spec(ontology, relatedness, llm, prompts, common_store))
+    g.add_node(
+        "draft_spec", make_draft_spec(ontology, relatedness, llm, prompts, common_store, incidents)
+    )
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))
     g.add_node("finalize", make_finalize(common_store))
 
