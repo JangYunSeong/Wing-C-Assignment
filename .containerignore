@@ -1,0 +1,15 @@
+# 이미지에 들어가면 안 되는 것 (deployment 스킬 "이미지 규칙")
+.env
+.env.*
+!.env.example
+data/
+tests/
+eval/
+docs/
+.claude/
+.git/
+.venv/
+**/__pycache__/
+*.dump
+*.tar
+dist/
