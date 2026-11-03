@@ -50,6 +50,8 @@ class ComparisonBrief(Schema):
 class ApprovalSummary(Schema):
     review_flags: list[str] = Field(default_factory=list)
     tasks: list[TaskBrief] = Field(default_factory=list)
+    # 공통 과제의 확장 슬롯 (공고 단위 — 승인하면 공통 과제와 함께 승인됨)
+    slots: list[TaskBrief] = Field(default_factory=list)
     common: list[CommonRef] = Field(default_factory=list)
     total_time_min: int = 0
     comparison: ComparisonBrief | None = None

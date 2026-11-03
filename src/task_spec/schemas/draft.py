@@ -64,6 +64,23 @@ class DraftTaskOutputV3(DraftTaskOutput):
     max_requests: int = Field(ge=2, le=6)
 
 
+class DraftSlotInput(DraftTaskInput):
+    """확장 슬롯 1개 (prompts/draft_slot). 공통 과제의 지원자에게 보이는 부분과 언급 금지 개념을 더한다."""
+
+    common_task: str  # 공통 과제 제목·상황·자료 목록 (지원자가 이미 본 것)
+    forbidden: str  # 슬롯 본문에 쓰면 안 되는 공통 과제의 핵심 개념 (공통 과제 정답 노출 방지)
+
+
+class DraftSlotOutput(DraftTaskOutputV3):
+    """v3 형식과 같고 규모만 작다 (30분)."""
+
+    deliverables: list[str] = Field(min_length=1, max_length=3)
+    traps: list[Trap] = Field(min_length=1, max_length=2)
+    observables: list[Observable] = Field(min_length=1, max_length=6)
+    artifacts: list[Artifact] = Field(min_length=4, max_length=8)
+    max_requests: int = Field(ge=1, le=3)
+
+
 class JudgeDraftInput(Schema):
     """평가 전용 판정 프롬프트(judge_draft_task) 입력 — 공고·온톨로지 조건 + 이름을 가린 초안 여러 개."""
 
