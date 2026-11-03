@@ -114,6 +114,16 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 과제 형태 `qa_mutation`(sw.qa): 요구사항 + 작은 모듈 + 커버리지 높고 단언 약한 테스트 → 채점은 비공개로 심은 결함 검출 수.
   실행 채점(돌연변이 실행·커버리지 측정)은 응시 플랫폼 몫 [미정].
 
+## 경험 검증 = 공통 과제 안의 확장 문항 [제안: 2026-11-03 사용자 결정 — context §3 두 트랙을 한 과제로 냄] (`spec/verify.py`, `prompts/verify_task`)
+
+- 채점은 두 트랙 그대로: 공통 과제 본체 = 점수 비교 / 확장 문항 = 확인됨·의심됨 + 면접 질문(비교 점수 제외, `review_flags` 고정 문구).
+- 명세 `verification_tasks`: `track=claim_verification`, `parent_task_id`=공통 과제 id, `claims_to_verify`=[주장 id], `follow_up_questions` 2~3개, 30분.
+- 주장 고르기 [확정, 방식 B]: compare 점수 순, 공통 과제 역량과 겹치면 −1.5(빼지 않음), 문항끼리 역량 안 겹치게 최대 2개.
+- 기술 환경 [확정]: 주장 언어 ∩ 공고 언어 → 없으면 공고 언어 (`basis`). 난이도 = 그 역량의 공고 요구 수준(공고 밖 = medium) — 역할로 바꾸지 않음.
+- LLM 입력: 가명화본에서 다시 뽑은 주장(`derive_pseudonymized`) + 공통 과제의 **보이는 부분(제목·상황)만** — 함정·정답 제외.
+- 검증: 인용 id, 관찰 행동은 first_mention_of 만, 기술 환경, **원문 베끼기 금지**(가명화 토큰·인용 수치·인용과 12자 이상 겹침 — 본문과 면접 질문 모두), 핵심 개념 노출.
+- revise: `ApprovalDecision.revise_target` = common(공통 과제 새 판, 확장 문항 유지) / verification(공통 과제 재사용, 확장 문항만 재생성) / all(기본).
+
 ## 공고 단위 공통 과제 재사용 [확정: 2026-11-03] (`spec/store.py`, task_db `public.common_task`)
 
 - 같은 공고 지원자는 같은 공통 과제를 받는다 (context.md §3). 키 = (posting_id, ontology_version, draft_task@N | skeleton).
