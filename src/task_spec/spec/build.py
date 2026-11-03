@@ -1,0 +1,81 @@
+"""공통 과제 골격 + 서술 입력 만들기 (노드와 평가 스크립트가 같이 쓴다). 공고·온톨로지만 읽는다 (불변식 3)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from task_spec.ontology.queries import criteria_detail, field_labels, language_labels
+from task_spec.ontology.relatedness import Relatedness
+from task_spec.ontology.repository import OntologyRepository
+from task_spec.schemas import CompetencyEvidence, NcsCriterion, NcsKsa, PostingProfile, TaskItem
+from task_spec.spec.common import (
+    FLAG_NO_INCIDENT,
+    TIME_LIMIT_MIN,
+    common_tech_env,
+    difficulty,
+    plan_common,
+    targets,
+)
+from task_spec.spec.draft import DraftContext
+
+KSA_PER_COMP = 3
+
+
+@dataclass
+class CommonDraft:
+    task: TaskItem | None = None  # 골격 (역량을 못 고르면 None)
+    ctx: DraftContext | None = None  # 서술 입력 (온톨로지·수행준거가 없으면 None)
+    flags: list[str] = field(default_factory=list)  # 명세 단위 review_flags
+
+
+async def build_common(
+    profile: PostingProfile,
+    evidence: list[CompetencyEvidence],
+    *,
+    task_id: str,
+    ontology_version: str,
+    ontology: OntologyRepository | None = None,
+    rel: Relatedness | None = None,
+) -> CommonDraft:
+    plan = plan_common(profile, evidence, rel)
+    out = CommonDraft(flags=list(plan.flags))
+    if not plan.competencies:
+        return out
+    tcs = targets(plan, evidence)
+    crit_all: list[NcsCriterion] = []
+    ksa_all: list[NcsKsa] = []
+    if ontology is not None:
+        filled = []
+        for t in tcs:
+            crit, ksa = await criteria_detail(ontology, t.ncs_unit_ids)
+            filled.append(
+                t.model_copy(update={"ncs_criterion_ids": [c.criterion_id for c in crit]})
+            )
+            crit_all += [c for c in crit if c not in crit_all]
+            ksa_all += ksa[:KSA_PER_COMP]
+        tcs = filled
+    env, env_flags = common_tech_env(profile)
+    out.task = TaskItem(
+        task_id=task_id,
+        track="common",
+        target_competencies=tcs,
+        tech_env=env,
+        difficulty_target=difficulty(plan),  # type: ignore[arg-type]
+        time_limit_min=TIME_LIMIT_MIN,
+        review_flags=[FLAG_NO_INCIDENT, *env_flags],
+    )
+    if ontology is not None and crit_all:
+        sub_label, ind_label = await field_labels(ontology, profile.sub, profile.industry_id)
+        out.ctx = DraftContext(
+            sub_label=sub_label,
+            industry_label=ind_label,
+            targets=tcs,
+            criteria=crit_all,
+            ksa=ksa_all,
+            env=env,
+            difficulty=out.task.difficulty_target,
+            time_limit_min=out.task.time_limit_min,
+            ontology_version=ontology_version,
+            language_labels=await language_labels(ontology),
+        )
+    return out

@@ -74,7 +74,7 @@ def build_graph(
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", make_evidence(ontology))
     g.add_node("compare", make_compare(relatedness))
-    g.add_node("draft_spec", make_draft_spec(ontology, relatedness))
+    g.add_node("draft_spec", make_draft_spec(ontology, relatedness, llm, prompts))
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))
     g.add_node("finalize", finalize)
 

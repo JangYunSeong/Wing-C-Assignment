@@ -1,7 +1,7 @@
 """④ 명세 초안 (대조는 nodes/compare.py) → 사람 승인(interrupt) → 확정.
 
 승인은 approval 노드의 interrupt() 로만 받는다 (불변식 9). 자동 승인 경로 없음.
-TODO(spec-generation): draft_spec 는 prompting + llm 으로 연결.
+공통 과제: 결정적 골격(spec/common.py) → 서술(spec/draft.py, draft_task LLM). 입력은 공고·온톨로지만.
 """
 
 from __future__ import annotations
@@ -13,18 +13,13 @@ from langgraph.graph import END
 from langgraph.types import Command, interrupt
 from pydantic import ValidationError
 
-from task_spec.ontology.queries import criteria_detail
+from task_spec.llm import LLMClient
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
+from task_spec.prompting import PromptRegistry
 from task_spec.schemas import ApprovalDecision, RunState, TaskItem, TaskSpec
-from task_spec.spec.common import (
-    FLAG_NO_INCIDENT,
-    TIME_LIMIT_MIN,
-    common_tech_env,
-    difficulty,
-    plan_common,
-    targets,
-)
+from task_spec.spec.build import build_common
+from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 
@@ -33,11 +28,14 @@ FLAG_NO_DRAFTER = "draft_task 미연결 — 결정적 골격만 (제목·상황�
 
 
 def make_draft_spec(
-    ontology: OntologyRepository | None, rel: Relatedness | None = None
+    ontology: OntologyRepository | None,
+    rel: Relatedness | None = None,
+    llm: LLMClient | None = None,
+    prompts: PromptRegistry | None = None,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
-    """공통 과제 골격(결정적). 공고·온톨로지만 쓴다 — 지원자 문서·주장을 읽지 않는다 (불변식 3).
+    """공통 과제 = 결정적 골격 + 서술(LLM). 공고·온톨로지만 쓴다 — 지원자 문서·주장을 읽지 않는다 (불변식 3).
 
-    revise 로 돌아오면 revision 을 올린다. 경험 검증 과제는 PR-4.
+    revise 로 돌아오면 revision 을 올리고 승인자 수정 요청을 서술 입력에 넣는다. 경험 검증 과제는 PR-4.
     """
 
     async def draft_spec(state: RunState) -> dict[str, Any]:
@@ -45,31 +43,36 @@ def make_draft_spec(
         spec_id = f"{state.run_id}-r{revision}"
         common: list[TaskItem] = []
         flags: list[str] = []
+        update: dict[str, Any] = {}
         p = state.posting_profile
         if p is not None:
-            plan = plan_common(p, state.evidence, rel)
-            flags = list(plan.flags)
-            if plan.competencies:
-                tcs = targets(plan, state.evidence)
-                if ontology is not None:
-                    filled = []
-                    for t in tcs:
-                        crit, _ = await criteria_detail(ontology, t.ncs_unit_ids)
-                        ids = [c.criterion_id for c in crit]
-                        filled.append(t.model_copy(update={"ncs_criterion_ids": ids}))
-                    tcs = filled
-                env, env_flags = common_tech_env(p)
-                common.append(
-                    TaskItem(
-                        task_id=f"{spec_id}-common-1",
-                        track="common",
-                        target_competencies=tcs,
-                        tech_env=env,
-                        difficulty_target=difficulty(plan),  # type: ignore[arg-type]
-                        time_limit_min=TIME_LIMIT_MIN,
-                        review_flags=[FLAG_NO_INCIDENT, FLAG_NO_DRAFTER, *env_flags],
+            built = await build_common(
+                p,
+                state.evidence,
+                task_id=f"{spec_id}-common-1",
+                ontology_version=state.ontology_version,
+                ontology=ontology,
+                rel=rel,
+            )
+            flags = built.flags
+            task = built.task
+            if task is not None:
+                if built.ctx is None or llm is None or prompts is None:
+                    task = task.model_copy(
+                        update={"review_flags": [*task.review_flags, FLAG_NO_DRAFTER]}
                     )
-                )
+                else:
+                    revise = (
+                        state.approval
+                        if state.approval and state.approval.status == "revise"
+                        else None
+                    )
+                    note, note_flags = safe_reviewer_note(revise.comment if revise else None)
+                    res = await draft_task(built.ctx, llm=llm, prompts=prompts, reviewer_note=note)
+                    res.flags[:0] = note_flags
+                    task = apply(task, res)
+                    update = {"provenance": res.provenance, "errors": res.errors}
+                common.append(task)
         spec = TaskSpec(
             spec_id=spec_id,
             run_id=state.run_id,
@@ -79,7 +82,7 @@ def make_draft_spec(
             common_tasks=common,
             review_flags=flags,
         )
-        return {"spec": spec, "approval": None}
+        return {"spec": spec, "approval": None, **update}
 
     return draft_spec
 
