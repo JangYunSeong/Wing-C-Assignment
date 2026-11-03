@@ -93,6 +93,18 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 함정·심층 구조: 부서 결정적 사건(`source_incident`)이 모일 때까지 LLM 제안 + 승인자 검토 (`review_flags` 고정 문구).
 - 명세 LLM 판정 모델(평가용): gpt-4.1 (비교 대상 밖).
 
+## 공통 과제 서술 [확정: 2026-11-03] (`spec/draft.py`, `prompts/draft_task`)
+
+- 골격(`spec/build.py build_common`) 위에 제목·상황·제출물·심층 구조·표면·함정·관찰 행동·행동 기준(1·3·5)만 LLM 이 쓴다.
+  입력은 직군·업종 라벨, 난이도, 시간, 기술 환경, 역량, 수행준거·KSA 본문 — **지원자 필드 없음** (불변식 3).
+- 자동 검증: 행동 기준 인용 id ⊆ 입력 수행준거, 역량마다 1개 이상 인용, `catches_trap` ∈ trap_id,
+  `tech_used`·본문 언어 ⊆ 기술 환경. 어긋나면 사유를 넣어 1회 재요청 → 그래도 어긋나면 잘못된 값만 걷어내고 `review_flags`.
+  LLM 실패 → 골격만 + `review_flags`.
+- revise: 승인자 `comment` 를 `revision_note` 로 넣는다 (아래 탐지에 걸리면 보내지 않고 `review_flags`).
+- 모델: `opencode:qwen3.8-flash` [확정: 2026-11-03 — test 순위 1.17/4, gpt-5.5 의 1/40 비용]. 근거 `prompts/draft_task/PROMOTIONS.md`.
+- 모델 비교: `eval/spec/run_draft.py` (시범 공고 직군별 1건, 12건 dev/test, 판정 `judge_draft_task` gpt-4.1 이 이름 가린 초안 비교 채점·순위).
+- 승인자 수정 요청은 가명화와 같은 로컬 탐지기(이름·학교·회사·연락처)에 하나라도 걸리거나 1000자를 넘으면 보내지 않는다.
+
 ## 노드 규칙
 
 - 노드 = `async def node(state: RunState) -> dict`. 하나의 노드는 하나의 단계만.
