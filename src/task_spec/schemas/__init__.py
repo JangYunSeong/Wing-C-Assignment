@@ -8,6 +8,7 @@ from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, 
 from task_spec.schemas.domain import (
     AI_AXES,
     Anchor,
+    Artifact,
     BehavioralAnchors,
     CandidateRef,
     Claim,
@@ -37,6 +38,7 @@ from task_spec.schemas.draft import (
     DraftTaskInput,
     DraftTaskInputV2,
     DraftTaskOutput,
+    DraftTaskOutputV3,
     JudgedDraft,
     JudgeDraftInput,
     JudgeDraftOutput,
@@ -65,6 +67,14 @@ from task_spec.schemas.retrieve import (
     SelectCompetencyOutput,
     SelectedItem,
 )
+from task_spec.schemas.solo import (
+    GradeSoloInput,
+    GradeSoloOutput,
+    SolveSelectInput,
+    SolveSelectOutput,
+    SolveTaskInput,
+    SolveTaskOutput,
+)
 from task_spec.schemas.state import RunInput, RunState
 from task_spec.schemas.summary import (
     ApprovalSummary,
@@ -76,6 +86,12 @@ from task_spec.schemas.summary import (
 from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
 
 __all__ = [
+    "GradeSoloInput",
+    "GradeSoloOutput",
+    "SolveTaskInput",
+    "SolveSelectInput",
+    "SolveSelectOutput",
+    "SolveTaskOutput",
     "VerifyTaskInput",
     "VerifyTaskOutput",
     "ApprovalSummary",
@@ -87,6 +103,8 @@ __all__ = [
     "DraftTaskInputV2",
     "PublicIncident",
     "DraftTaskOutput",
+    "DraftTaskOutputV3",
+    "Artifact",
     "JudgeDraftInput",
     "JudgeDraftOutput",
     "JudgedDraft",
