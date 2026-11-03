@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # 지원자 데이터 루트 (git 밖, 불변식 1)
     data_dir: Path
 
+    # 자기소개서 사용 여부 [확정: 2026-11-03 사용자 — 검증할 주장은 이력서에서만].
+    # false 면 API 가 자기소개서를 저장하지 않고, 그래프도 처리하지 않는다 (개인정보 최소 처리).
+    use_cover_letters: bool = False
+
     # 업로드 (fastapi-service "업로드"): 파일 1개당 바이트 상한. 허용 형식은 api/uploads.py.
     upload_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     # SSE 상태 폴링 간격(초)
