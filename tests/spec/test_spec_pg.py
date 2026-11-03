@@ -94,6 +94,30 @@ async def test_draft_on_real_posting_with_fake_llm(ctx) -> None:  # type: ignore
             "level_5": {"behavior": "c", "criterion_ids": ids[-1:]},
         },
         "tech_used": [],
+        # draft_task v3 (자료 점진 공개): 핵심 1·방해 3 이상, 요청 한도 ≤ 자료 수의 3분의 1
+        "artifacts": [
+            {
+                "artifact_id": f"a{i}",
+                "title": f"가상 구성 요소 {i} 지표",
+                "content": f"가상 로그 {i}",
+                "role": r,
+            }
+            for i, r in enumerate(
+                [
+                    "key",
+                    "support",
+                    "distractor",
+                    "distractor",
+                    "distractor",
+                    "support",
+                    "support",
+                    "support",
+                    "support",
+                ],
+                1,
+            )
+        ],
+        "max_requests": 3,
     }
     fake = FakeBackend().push(Completion(json.dumps(draft, ensure_ascii=False)))
     prompts = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
