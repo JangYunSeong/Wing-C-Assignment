@@ -12,6 +12,7 @@ review_flags 에 남긴다. LLM 이 실패하면 골격만 두고 review_flags �
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -37,6 +38,7 @@ from task_spec.schemas.incident import PublicIncident
 from task_spec.spec.common import FLAG_NO_INCIDENT, FLAG_PUBLIC_INCIDENT
 from task_spec.spec.incidents import incident_block
 
+logger = logging.getLogger(__name__)
 TASK = "draft_task"
 NONE = "(없음)"
 DIFFICULTY_KO = {
@@ -321,6 +323,12 @@ async def draft_task(
             continue
         res.provenance.append(r.provenance)
         problems = check(r.parsed, ctx)
+        logger.info(
+            "draft_task attempt=%d problems=%d latency_ms=%d",
+            attempt + 1,
+            len(problems),
+            r.provenance.latency_ms,
+        )
         if best is None or len(problems) < len(best[1]):
             best = (r.parsed, problems, r.provenance.provenance_id)
         if not problems:
