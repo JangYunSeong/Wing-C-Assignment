@@ -14,6 +14,7 @@ description: P1 과제 명세 서비스의 컨테이너 구성·내부망 배포
 |---|---|---|---|
 | API | `task-api:<버전>` (`docker/api/Dockerfile`) | `task-net`, 기본 `127.0.0.1:8001 → 8000` | `task_data:/data` (권한 700) |
 | DB | `task-db:1` (`docker/db/Dockerfile`, PG16 + pgvector) | `task-net`(이름 `task_db`), `127.0.0.1:5434 → 5432` | `task_db_data` |
+| nginx (사내망 밖 접속 시 필수) | `nginx:1.27-alpine` + `docker/nginx/nginx.conf` | `task-net`, `443`·`80` 공개, API 는 `TASK_API_BIND=none` | 인증서·htpasswd 읽기 전용 마운트 |
 
 ## 1. 이미지 규칙 (불변식)
 
@@ -52,6 +53,15 @@ TASK_API_IMAGE=task-api:<버전> docker/api/run.sh            # 내부망 접속
 
 env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한 것). 새 Settings 필드를 추가하면 둘 다 고친다.
 
+## 3-1. nginx (TLS + Basic 인증) [확정: 2026-11-03 — TLS 사용, 사내망 밖 접속]
+
+- 앱에 인증이 없으므로 **모든 경로 Basic 인증**(`/healthz` 만 예외). 승인자마다 계정. 앱 인증이 붙으면 다시 본다.
+- HTTP→HTTPS, TLS 1.2+, HSTS·nosniff·frame DENY. Basic 인증 헤더는 앱으로 넘기지 않는다.
+- SSE `/runs/{id}/events`: `proxy_buffering off`, read 1h. 그 밖 read 600s (LLM_TIMEOUT_SECONDS 300 + 여유). 업로드 25 MB.
+- 접근 로그 형식에 쿼리·본문을 넣지 않는다 (지원서 경로). IP 당 10 r/s.
+- API 는 호스트 포트 없이(`TASK_API_BIND=none`) nginx 를 통해서만. 인증서 privkey 600, htpasswd 600.
+- 설정을 바꾸면 이 서버에서 `nginx -t` 로 문법만 확인 (더미 인증서, `--add-host task-api:127.0.0.1`).
+
 ## 4. 업그레이드·롤백·백업
 
 - 업그레이드: 새 묶음 load → `podman rm -f task-api` → 새 `TASK_API_IMAGE` 로 run. 볼륨·DB 는 그대로.
@@ -69,6 +79,5 @@ env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한
 
 ## 주의
 
-- **인증 없음** (승인자 이름을 요청 본문에서 받음, `api/routers/runs.py` TODO(auth)) — API 를 내부망 정해진 사용자에게만 연다.
-  `TASK_API_BIND` 를 넓힐 때는 방화벽·nginx 등으로 접근을 제한한다.
+- **인증 없음** (승인자 이름을 요청 본문에서 받음, `api/routers/runs.py` TODO(auth)) — 사내망 밖이면 nginx(3-1) 없이 열지 않는다.
 - 로컬 개발 DB 컨테이너가 `task-net` 에 없으면 `podman network connect task-net task_db`.
