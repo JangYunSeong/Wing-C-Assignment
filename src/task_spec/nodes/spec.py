@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from task_spec.llm import LLMClient
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
-from task_spec.prompting import PromptRegistry
+from task_spec.prompting import PromptError, PromptRegistry
 from task_spec.schemas import (
     ApprovalDecision,
     ApprovalSummary,
@@ -33,6 +33,8 @@ from task_spec.schemas import (
 from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
+from task_spec.spec.slots import TASK as SLOT_TASK
+from task_spec.spec.slots import build_slots
 from task_spec.spec.store import CommonKey, CommonTaskRepo
 from task_spec.spec.verify import build_verifications
 
@@ -42,6 +44,16 @@ ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 FLAG_NO_DRAFTER = "draft_task 미연결 — 결정적 골격만 (제목·상황·행동 기준 없음)"
 SKELETON_REF = "skeleton"
 FLAG_REUSED_DRAFT = "이 공고의 공통 과제가 아직 승인되지 않은 초안을 재사용함 — 이 명세를 승인하면 그 판이 공고 공통 과제로 승인됨"
+
+
+def _has_prompt(prompts: PromptRegistry | None, task: str) -> bool:
+    if prompts is None:
+        return False
+    try:
+        prompts.get(task)
+    except PromptError:
+        return False
+    return True
 
 
 def make_draft_spec(
@@ -83,6 +95,10 @@ def make_draft_spec(
             if task is not None:
                 use_llm = built.ctx is not None and drafter_ready
                 prompt_ref = prompts.get(DRAFT_TASK).ref if use_llm and prompts else SKELETON_REF
+                use_slots = use_llm and ontology is not None and _has_prompt(prompts, SLOT_TASK)
+                if use_slots and prompts is not None:
+                    # 슬롯 프롬프트가 바뀌어도 새 판 — 공통 과제와 슬롯은 함께 승인된다
+                    prompt_ref = f"{prompt_ref}+{prompts.get(SLOT_TASK).ref}"
                 key = CommonKey(state.posting_id, state.ontology_version, prompt_ref)
                 revise = (
                     state.approval if state.approval and state.approval.status == "revise" else None
@@ -125,6 +141,28 @@ def make_draft_spec(
                         )
                         task = apply(task, res)
                         update = {"provenance": res.provenance, "errors": res.errors}
+                        if use_slots and task.title:
+                            assert ontology is not None
+                            sres = await build_slots(
+                                p,
+                                state.evidence,
+                                task,
+                                built.ctx,
+                                ontology=ontology,
+                                llm=llm,
+                                prompts=prompts,
+                                reviewer_note=note if redo_common else None,
+                            )
+                            task = task.model_copy(
+                                update={
+                                    "slots": sres.slots,
+                                    "review_flags": [*task.review_flags, *sres.flags],
+                                }
+                            )
+                            update = {
+                                "provenance": [*update["provenance"], *sres.provenance],
+                                "errors": [*update["errors"], *sres.errors],
+                            }
                     if store is not None:
                         saved = await store.save_draft(key, task, update.get("provenance", []))
                         task = saved.task
@@ -182,8 +220,9 @@ def approval_summary(state: RunState) -> ApprovalSummary:
     """승인자가 먼저 볼 것. 원문·가명화 매핑·주장 인용은 넣지 않는다 (인증 전 — privacy-auditor W1)."""
     spec = state.spec
     assert spec is not None
-    tasks = [
-        TaskBrief(
+
+    def brief(t: TaskItem) -> TaskBrief:
+        return TaskBrief(
             task_id=t.task_id,
             track=t.track,
             title=t.title,
@@ -194,8 +233,9 @@ def approval_summary(state: RunState) -> ApprovalSummary:
             has_anchors=t.behavioral_anchors is not None,
             review_flags=t.review_flags,
         )
-        for t in [*spec.common_tasks, *spec.verification_tasks]
-    ]
+
+    tasks = [brief(t) for t in [*spec.common_tasks, *spec.verification_tasks]]
+    slots = [brief(x) for t in spec.common_tasks for x in t.slots]
     c = state.comparison
     comparison = (
         ComparisonBrief(
@@ -216,6 +256,7 @@ def approval_summary(state: RunState) -> ApprovalSummary:
     return ApprovalSummary(
         review_flags=spec.review_flags,
         tasks=tasks,
+        slots=slots,
         common=spec.common_refs,
         total_time_min=sum(t.time_limit_min for t in tasks),
         comparison=comparison,

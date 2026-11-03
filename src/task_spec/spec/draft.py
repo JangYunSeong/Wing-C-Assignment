@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -93,9 +94,12 @@ class DraftResult:
 
 
 def build_input(
-    ctx: DraftContext, note: str | None = None, model: type[DraftTaskInput] = DraftTaskInput
+    ctx: DraftContext,
+    note: str | None = None,
+    model: type[DraftTaskInput] = DraftTaskInput,
+    extra_input: dict[str, str] | None = None,
 ) -> DraftTaskInput:
-    """템플릿의 입력 스키마(v1 DraftTaskInput / v2 DraftTaskInputV2)에 맞춰 만든다."""
+    """템플릿의 입력 스키마(v1 DraftTaskInput / v2 DraftTaskInputV2 / 슬롯 DraftSlotInput)에 맞춰 만든다."""
     comps = "\n".join(
         f"- {t.competency_id} {t.label} (공고 요구 수준: {t.level or '미상'})" for t in ctx.targets
     )
@@ -108,6 +112,7 @@ def build_input(
         or "(공고에 언어 없음 — 특정 언어에 묶이지 않게)"
     )
     extra = {"incident": incident_block(ctx.incident)} if "incident" in model.model_fields else {}
+    extra |= {k: v for k, v in (extra_input or {}).items() if k in model.model_fields}
     return model(
         **extra,
         sub=ctx.sub_label,
@@ -424,30 +429,35 @@ async def draft_task(
     llm: LLMClient,
     prompts: PromptRegistry,
     reviewer_note: str | None = None,
+    task: str = TASK,
+    extra_input: dict[str, str] | None = None,
+    extra_check: Callable[[DraftTaskOutput], list[str]] | None = None,
 ) -> DraftResult:
-    template = prompts.get(TASK)
+    """생성 → 검증 → 1회 재요청 → 고쳐 쓰기. 공통 과제(draft_task)와 확장 슬롯(draft_slot)이 같이 쓴다."""
+    template = prompts.get(task)
     res = DraftResult()
     if "incident" in template.input_model.model_fields and ctx.incident is not None:
         res.incident_id = ctx.incident.incident_id
     note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
     best: tuple[DraftTaskOutput, list[str], str] | None = None
     for attempt in range(2):
-        inp = build_input(ctx, note, template.input_model)  # type: ignore[arg-type]
+        inp = build_input(ctx, note, template.input_model, extra_input)  # type: ignore[arg-type]
         prompt = assemble(template, inp, ontology_version=ctx.ontology_version)
         try:
             r = await llm.call(prompt, template.output_model)  # type: ignore[arg-type]
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
             res.errors.append(
-                NodeError(node=TASK, code=type(exc).__name__, message="과제 서술 생성 실패")
+                NodeError(node=task, code=type(exc).__name__, message="과제 서술 생성 실패")
             )
             res.fail_reasons.append(f"{type(exc).__name__}: {str(exc)[:300]}")
             continue
         res.provenance.append(r.provenance)
         parsed = shuffle_artifacts(r.parsed, f"{ctx.sub_label}|{ctx.industry_label}|{attempt}")
         r = r.model_copy(update={"parsed": parsed})
-        problems = check(r.parsed, ctx)
+        problems = check(r.parsed, ctx) + (extra_check(r.parsed) if extra_check else [])
         logger.info(
-            "draft_task attempt=%d problems=%d latency_ms=%d",
+            "%s attempt=%d problems=%d latency_ms=%d",
+            task,
             attempt + 1,
             len(problems),
             r.provenance.latency_ms,
@@ -460,7 +470,7 @@ async def draft_task(
             res.first_problems = list(problems)
             res.errors.append(
                 NodeError(
-                    node=TASK,
+                    node=task,
                     code="draft_invalid",
                     message=f"자동 검증 실패 {len(problems)}건 — 재요청",
                 )
