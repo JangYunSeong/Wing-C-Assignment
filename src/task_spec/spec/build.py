@@ -7,7 +7,14 @@ from dataclasses import dataclass, field
 from task_spec.ontology.queries import criteria_detail, field_labels, language_labels
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
-from task_spec.schemas import CompetencyEvidence, NcsCriterion, NcsKsa, PostingProfile, TaskItem
+from task_spec.schemas import (
+    CompetencyEvidence,
+    NcsCriterion,
+    NcsKsa,
+    PostingProfile,
+    PublicIncident,
+    TaskItem,
+)
 from task_spec.spec.common import (
     FLAG_NO_INCIDENT,
     TIME_LIMIT_MIN,
@@ -36,6 +43,7 @@ async def build_common(
     ontology_version: str,
     ontology: OntologyRepository | None = None,
     rel: Relatedness | None = None,
+    incidents: dict[str, PublicIncident] | None = None,
 ) -> CommonDraft:
     plan = plan_common(profile, evidence, rel)
     out = CommonDraft(flags=list(plan.flags))
@@ -77,5 +85,6 @@ async def build_common(
             time_limit_min=out.task.time_limit_min,
             ontology_version=ontology_version,
             language_labels=await language_labels(ontology),
+            incident=(incidents or {}).get(profile.sub or ""),
         )
     return out

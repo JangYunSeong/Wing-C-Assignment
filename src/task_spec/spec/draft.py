@@ -33,6 +33,9 @@ from task_spec.schemas import (
     TechEnv,
 )
 from task_spec.schemas.domain import Anchor, BehavioralAnchors
+from task_spec.schemas.incident import PublicIncident
+from task_spec.spec.common import FLAG_NO_INCIDENT, FLAG_PUBLIC_INCIDENT
+from task_spec.spec.incidents import incident_block
 
 TASK = "draft_task"
 NONE = "(없음)"
@@ -63,6 +66,7 @@ class DraftContext:
     time_limit_min: int
     ontology_version: str
     language_labels: list[str] = field(default_factory=list)  # 온톨로지의 언어 전체 (본문 검사용)
+    incident: PublicIncident | None = None  # 공고 직군의 공개 사례 (draft_task v2 부터 입력)
 
     @property
     def criterion_ids(self) -> set[str]:
@@ -74,12 +78,17 @@ class DraftResult:
     output: DraftTaskOutput | None = None
     anchors_ok: bool = True  # False = 재요청 후에도 근거 id 가 비어 행동 기준을 비운다
     provenance_id: str | None = None  # 채택한 답의 provenance
+    incident_id: str | None = None  # 프롬프트에 실제로 넣은 공개 사례
+    first_problems: list[str] = field(default_factory=list)  # 첫 답의 검증 실패 사유 (평가용)
     provenance: list[Provenance] = field(default_factory=list)
     errors: list[NodeError] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
 
 
-def build_input(ctx: DraftContext, note: str | None = None) -> DraftTaskInput:
+def build_input(
+    ctx: DraftContext, note: str | None = None, model: type[DraftTaskInput] = DraftTaskInput
+) -> DraftTaskInput:
+    """템플릿의 입력 스키마(v1 DraftTaskInput / v2 DraftTaskInputV2)에 맞춰 만든다."""
     comps = "\n".join(
         f"- {t.competency_id} {t.label} (공고 요구 수준: {t.level or '미상'})" for t in ctx.targets
     )
@@ -91,7 +100,9 @@ def build_input(ctx: DraftContext, note: str | None = None) -> DraftTaskInput:
         ", ".join(ctx.env.languages + ctx.env.frameworks)
         or "(공고에 언어 없음 — 특정 언어에 묶이지 않게)"
     )
-    return DraftTaskInput(
+    extra = {"incident": incident_block(ctx.incident)} if "incident" in model.model_fields else {}
+    return model(
+        **extra,
         sub=ctx.sub_label,
         industry=ctx.industry_label,
         difficulty=DIFFICULTY_KO.get(ctx.difficulty, ctx.difficulty),
@@ -135,6 +146,16 @@ def _allowed_tech(env: TechEnv) -> set[str]:
     return _names(env.languages + env.frameworks)
 
 
+def _phrase(term: str) -> re.Pattern[str]:
+    """'SYN cookie' → 단어 사이 공백 1개 이상, 영문 단어 경계 (TcpExtSyncookiesSent 는 안 잡음)."""
+    body = r"\s+".join(re.escape(w) for w in term.split())
+    return re.compile(rf"(?<![A-Za-z0-9_]){body}(?![A-Za-z0-9_])", re.IGNORECASE)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", "", s).lower()
+
+
 def check(out: DraftTaskOutput, ctx: DraftContext) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다 — 온톨로지·공고 값만 담는다."""
     problems: list[str] = []
@@ -173,6 +194,32 @@ def check(out: DraftTaskOutput, ctx: DraftContext) -> list[str]:
     ]
     if mentioned:
         problems.append(f"본문에 기술 환경 밖 언어가 나옴: {', '.join(sorted(mentioned))}")
+    # 지원자에게 보이는 곳(제목·상황·제출물)에 핵심 원인 개념이 나오면 원인 찾기 과제가 성립하지 않는다
+    visible = _norm(text)
+    revealed = [
+        o.value
+        for o in out.observables
+        if o.kind == "first_mention_of" and len(_norm(o.value)) >= 2 and _norm(o.value) in visible
+    ]
+    if revealed:
+        problems.append(
+            f"핵심 원인 개념이 제목·상황·제출물에 드러남 (증상만 써야 함): {', '.join(revealed)}"
+        )
+    if ctx.incident is not None and ctx.incident.hidden_terms:
+        # 문장 속 표현만 잡는다 — 띄어쓰기를 지운 비교는 카운터·옵션 이름(도구 출력 = 단서)까지 잡는다
+        raw = "\n".join([out.title, out.scenario, *out.deliverables])
+        shown = [w for w in ctx.incident.hidden_terms if _phrase(w).search(raw)]
+        if shown:
+            problems.append(
+                f"원 사례의 원인 용어가 제목·상황·제출물에 드러남 (증상만 써야 함): {', '.join(shown)}"
+            )
+    if ctx.incident is not None and ctx.incident.avoid_terms:
+        full = "\n".join(
+            [text, out.invariant, *(f"{t.description} {t.why_ai_fails}" for t in out.traps)]
+        ).lower()
+        leaked = [w for w in ctx.incident.avoid_terms if w.lower() in full]
+        if leaked:
+            problems.append(f"원 사례의 고유어가 나옴 (소재를 바꿔야 함): {', '.join(leaked)}")
     return problems
 
 
@@ -219,7 +266,14 @@ def apply(task: TaskItem, res: DraftResult) -> TaskItem:
             "observables": list(out.observables),
             "behavioral_anchors": out.behavioral_anchors if res.anchors_ok else None,
             "provenance_id": res.provenance_id,
-            "review_flags": [*task.review_flags, *res.flags],
+            "source_incident": res.incident_id,
+            "review_flags": [
+                *(
+                    FLAG_PUBLIC_INCIDENT if f == FLAG_NO_INCIDENT and res.incident_id else f
+                    for f in task.review_flags
+                ),
+                *res.flags,
+            ],
         }
     )
 
@@ -251,10 +305,13 @@ async def draft_task(
 ) -> DraftResult:
     template = prompts.get(TASK)
     res = DraftResult()
+    if "incident" in template.input_model.model_fields and ctx.incident is not None:
+        res.incident_id = ctx.incident.incident_id
     note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
     best: tuple[DraftTaskOutput, list[str], str] | None = None
     for attempt in range(2):
-        prompt = assemble(template, build_input(ctx, note), ontology_version=ctx.ontology_version)
+        inp = build_input(ctx, note, template.input_model)  # type: ignore[arg-type]
+        prompt = assemble(template, inp, ontology_version=ctx.ontology_version)
         try:
             r = await llm.call(prompt, DraftTaskOutput)
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
@@ -269,6 +326,7 @@ async def draft_task(
         if not problems:
             break
         if attempt == 0:
+            res.first_problems = list(problems)
             res.errors.append(
                 NodeError(
                     node=TASK,
