@@ -11,6 +11,8 @@ PRICES: dict[str, tuple[float, float]] = {
     # 2026-11-02 집계 사이트(benchlm.ai, pricepertoken.com) 일치값. OpenAI 공식 페이지 재확인 [미정]
     "openai:gpt-5.5": (5.00, 30.00),
     "openai:gpt-5.4-mini": (0.75, 4.50),
+    # 2026-11-03 OpenCode Zen 가격표의 같은 이름 모델 값. OpenAI 공식 페이지 재확인 [미정]
+    "openai:gpt-5.4-nano": (0.20, 1.25),
     # 2026-11-02 opencode.ai/data(사용 통계 페이지)·Maxim 일치값. Zen 가격 페이지 재확인 [미정]
     "opencode:qwen3.8-flash": (0.15, 0.47),
     # 2025-04 출시 때 OpenAI 공표가 (모델 지식 기준). 공식 페이지 재확인 [미정]
