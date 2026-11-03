@@ -56,7 +56,7 @@ async def test_draft_on_real_posting_with_fake_llm(ctx) -> None:  # type: ignore
     from pathlib import Path
 
     from task_spec.llm import Completion, FakeBackend, LLMClient
-    from task_spec.prompting import PromptRegistry
+    from task_spec.prompting import PromptError, PromptRegistry
     from task_spec.spec.common import FLAG_NO_INCIDENT
 
     _, repo, _ = ctx
@@ -120,9 +120,19 @@ async def test_draft_on_real_posting_with_fake_llm(ctx) -> None:  # type: ignore
         "max_requests": 3,
     }
     fake = FakeBackend().push(Completion(json.dumps(draft, ensure_ascii=False)))
-    prompts = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
+    registry = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
+
+    class _CommonOnly:
+        """공통 과제만 본다 — 확장 슬롯(draft_slot)은 test_slots 에서."""
+
+        def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+            if task == "draft_slot":
+                raise PromptError(task)
+            return registry.get(task, version)
+
+    prompts = _CommonOnly()
     model = prompts.get("draft_task").meta.model.partition(":")[0]
-    out = await make_draft_spec(repo, rel, LLMClient({model: fake}), prompts)(state)
+    out = await make_draft_spec(repo, rel, LLMClient({model: fake}), prompts)(state)  # type: ignore[arg-type]
     task = out["spec"].common_tasks[0]
     assert task.title == "가상 과제" and task.behavioral_anchors is not None
     assert task.review_flags[0] == FLAG_NO_INCIDENT and len(fake.calls) == 1
