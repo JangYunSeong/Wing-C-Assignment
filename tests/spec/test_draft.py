@@ -24,7 +24,20 @@ from task_spec.spec.draft import (
     safe_reviewer_note,
 )
 
-PROMPTS = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
+_REGISTRY = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
+
+
+class _Pinned:
+    """재요청·고쳐 쓰기 경로는 버전과 무관 — 자료 목록이 없는 v2 출력 형식으로 고정해 검사한다 (v3 는 test_artifacts)."""
+
+    def __init__(self, version: int) -> None:
+        self.version = version
+
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return _REGISTRY.get(task, version or self.version)
+
+
+PROMPTS = _Pinned(2)
 
 
 async def _no_sleep(_: float) -> None:
@@ -171,7 +184,7 @@ def test_input_has_no_applicant_fields_and_lists_criteria() -> None:
 
 async def test_draft_first_answer_ok() -> None:
     fake = FakeBackend().push(Completion(json.dumps(_draft(), ensure_ascii=False)))
-    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)  # type: ignore[arg-type]
     assert res.output is not None and res.flags == [] and res.errors == []
     assert len(fake.calls) == 1 and res.provenance_id == res.provenance[0].provenance_id
 
@@ -182,7 +195,7 @@ async def test_draft_reasks_once_then_ok() -> None:
         Completion(json.dumps(bad, ensure_ascii=False)),
         Completion(json.dumps(_draft(), ensure_ascii=False)),
     )
-    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)  # type: ignore[arg-type]
     assert len(fake.calls) == 2
     assert [e.code for e in res.errors] == ["draft_invalid"]
     assert res.flags == [] and res.output is not None and res.output.tech_used == ["Python"]
@@ -192,7 +205,7 @@ async def test_draft_reasks_once_then_ok() -> None:
 async def test_draft_invalid_twice_repairs_and_flags() -> None:
     bad = json.dumps(_draft(tech_used=["Rust"]), ensure_ascii=False)
     fake = FakeBackend().push(Completion(bad), Completion(bad))
-    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)  # type: ignore[arg-type]
     assert len(fake.calls) == 2
     assert res.output is not None and res.output.tech_used == []
     assert len(res.flags) == 1 and res.flags[0].startswith(FLAG_DRAFT_INVALID)
@@ -200,7 +213,7 @@ async def test_draft_invalid_twice_repairs_and_flags() -> None:
 
 async def test_draft_llm_failure_keeps_skeleton() -> None:
     fake = FakeBackend().push(*[TransientLLMError("InternalServerError")] * 8)
-    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)  # type: ignore[arg-type]
     assert res.output is None and res.flags == [FLAG_DRAFT_FAILED]
     task = TaskItem(
         task_id="t",
