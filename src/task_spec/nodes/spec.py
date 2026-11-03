@@ -20,11 +20,13 @@ from task_spec.prompting import PromptError, PromptRegistry
 from task_spec.schemas import (
     ApprovalDecision,
     ApprovalSummary,
+    AssignmentBrief,
     CommonRef,
     ComparisonBrief,
     OutsideBrief,
     PublicIncident,
     RunState,
+    SlotAssignment,
     TaskBrief,
     TaskItem,
     TaskSpec,
@@ -33,10 +35,11 @@ from task_spec.schemas import (
 from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
+from task_spec.spec.questions import TASK as Q_TASK
+from task_spec.spec.questions import build_slot_verifications
 from task_spec.spec.slots import TASK as SLOT_TASK
 from task_spec.spec.slots import build_slots
 from task_spec.spec.store import CommonKey, CommonTaskRepo
-from task_spec.spec.verify import build_verifications
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 
@@ -76,6 +79,7 @@ def make_draft_spec(
         spec_id = f"{state.run_id}-r{revision}"
         common: list[TaskItem] = []
         verification: list[TaskItem] = []
+        assignments: list[SlotAssignment] = []
         refs: list[CommonRef] = []
         flags: list[str] = []
         update: dict[str, Any] = {}
@@ -176,25 +180,29 @@ def make_draft_spec(
                             )
                         )
                 common.append(task)
-                # 경험 검증 확장 문항 (지원자별, 공통 과제 안에 붙음). revise_target=common 이면 직전 것을 유지
+                # 경험 검증 = 검증할 주장 → 확장 슬롯 배정(규칙) + 면접 질문(LLM) [확정: 2026-11-03].
+                # revise_target=common 이면 직전 배정·질문을 유지 (공통 과제 id 만 갱신)
                 if not redo_verify and state.spec is not None:
                     verification = [
                         v.model_copy(update={"parent_task_id": task.task_id})
                         for v in state.spec.verification_tasks
                     ]
-                elif built.ctx is not None and use_llm and ontology is not None:
-                    assert llm is not None and prompts is not None
-                    verification, vprov, verrs = await build_verifications(
+                    assignments = list(state.spec.slot_assignments)
+                elif (
+                    use_llm
+                    and llm is not None
+                    and prompts is not None
+                    and _has_prompt(prompts, Q_TASK)
+                ):
+                    assignments, verification, vprov, verrs = await build_slot_verifications(
                         state,
                         task,
                         spec_id=spec_id,
-                        ontology=ontology,
                         llm=llm,
                         prompts=prompts,
-                        sub_label=built.ctx.sub_label,
-                        industry_label=built.ctx.industry_label,
-                        language_labels=built.ctx.language_labels,
-                        reviewer_note=note if revise is not None else None,
+                        rel=rel,
+                        reassign=revise.reassign if revise is not None else None,
+                        slots_approved=(refs[-1].status == "approved") if refs else True,
                     )
                     update = {
                         "provenance": [*update.get("provenance", []), *vprov],
@@ -209,6 +217,7 @@ def make_draft_spec(
             common_tasks=common,
             verification_tasks=verification,
             common_refs=refs,
+            slot_assignments=assignments,
             review_flags=flags,
         )
         return {"spec": spec, "approval": None, **update}
@@ -257,6 +266,16 @@ def approval_summary(state: RunState) -> ApprovalSummary:
         review_flags=spec.review_flags,
         tasks=tasks,
         slots=slots,
+        assignments=[
+            AssignmentBrief(
+                claim_id=a.claim_id,
+                slot_id=a.slot_id,
+                basis=a.basis,
+                n_questions=len(a.follow_up_questions),
+                review_flags=a.review_flags,
+            )
+            for a in spec.slot_assignments
+        ],
         common=spec.common_refs,
         total_time_min=sum(t.time_limit_min for t in tasks),
         comparison=comparison,
