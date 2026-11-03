@@ -49,9 +49,12 @@ async def create_run(
     elif ontology is not None and not await posting_exists(ontology, posting_id):
         raise PostingNotFound(posting_id)
     run_id = uuid.uuid4().hex
+    # 자기소개서를 쓰지 않으면 저장하지도 않는다 (개인정보 최소 처리) [확정: 2026-11-03]
+    use_cl = settings.use_cover_letters
+    ignored = [] if use_cl else [f"cover_letter#{i}" for i, _ in enumerate(cover_letters or [], 1)]
     uploads: list[tuple[DocumentKind, UploadFile]] = [
         *(("resume", f) for f in resumes or []),
-        *(("cover_letter", f) for f in cover_letters or []),
+        *(("cover_letter", f) for f in (cover_letters or []) if use_cl),
     ]
     documents = await store_uploads(
         run_id=run_id,
@@ -67,7 +70,7 @@ async def create_run(
         documents=documents,
     )
     launcher.launch(run_id, graph_input.model_dump(mode="json"))
-    return RunAccepted(run_id=run_id, status="running")
+    return RunAccepted(run_id=run_id, status="running", ignored=ignored)
 
 
 @router.get("/{run_id}", responses=_ERRORS)

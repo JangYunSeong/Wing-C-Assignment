@@ -15,6 +15,8 @@ TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "rejected", "failed"})
 class RunAccepted(BaseModel):
     run_id: str
     status: RunStatus
+    # 받았지만 저장·처리하지 않은 문서 (예: USE_COVER_LETTERS=false 일 때 자기소개서) — 파일 이름은 넣지 않는다
+    ignored: list[str] = []
 
 
 class RunView(BaseModel):

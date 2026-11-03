@@ -124,10 +124,25 @@ class FileIngestor:
         )
 
 
-def make_ingest(ingestor: Ingestor) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
+def make_ingest(
+    ingestor: Ingestor, *, use_cover_letters: bool = False
+) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
+    """use_cover_letters=False 면 자기소개서는 읽지 않는다 [확정: 2026-11-03 — 검증할 주장은 이력서에서만]."""
+
     async def ingest(state: RunState) -> dict[str, Any]:
-        refs = [await ingestor(state.run_id, d) for d in state.documents]
-        errors = [
+        docs = [d for d in state.documents if use_cover_letters or d.kind != "cover_letter"]
+        skipped = [
+            NodeError(
+                node="ingest",
+                code="cover_letter_unused",
+                message="자기소개서는 현재 쓰지 않음 (USE_COVER_LETTERS=false)",
+                ref_id=d.doc_id,
+            )
+            for d in state.documents
+            if d not in docs
+        ]
+        refs = [await ingestor(state.run_id, d) for d in docs]
+        errors = skipped + [
             NodeError(
                 node="ingest",
                 code=r.reason or "extract_error",
