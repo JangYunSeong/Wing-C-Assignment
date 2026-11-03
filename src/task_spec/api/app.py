@@ -26,6 +26,7 @@ from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import load_lists
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve import build_retriever
+from task_spec.spec.store import CommonTaskStore
 
 
 def create_app(
@@ -48,6 +49,10 @@ def create_app(
         # 새 공고(경로 2): 온톨로지 목록·매칭 규칙(같은 버전) + 임시 공고 저장소
         lists = await load_lists(app.state.ontology)
         store = await PostingStore.open(app.state.settings.database_url.get_secret_value())
+        # 공고 단위 공통 과제 저장소 (같은 공고 지원자는 같은 공통 과제)
+        common_store = await CommonTaskStore.open(
+            app.state.settings.database_url.get_secret_value()
+        )
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때
@@ -64,6 +69,7 @@ def create_app(
                 ontology_lists=lists,
                 retriever=retriever,
                 relatedness=await load_relatedness(app.state.ontology),
+                common_store=common_store,
             )
             app.state.launcher = RunLauncher(app.state.graph)
             try:
@@ -72,6 +78,7 @@ def create_app(
                 await app.state.launcher.shutdown()
                 await app.state.ontology.close()
                 await store.close()
+                await common_store.close()
 
     app = FastAPI(title="task-spec", lifespan=lifespan)
     if settings is not None:
