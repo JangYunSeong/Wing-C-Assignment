@@ -47,11 +47,21 @@ class ComparisonBrief(Schema):
     claims_to_verify: list[VerifyBrief] = Field(default_factory=list)
 
 
+class AssignmentBrief(Schema):
+    claim_id: str
+    slot_id: str | None = None  # None = 맞는 슬롯 없음 (면접 질문만)
+    basis: str  # 배정 근거 (규칙 문구·온톨로지 id)
+    n_questions: int = 0
+    review_flags: list[str] = Field(default_factory=list)
+
+
 class ApprovalSummary(Schema):
     review_flags: list[str] = Field(default_factory=list)
     tasks: list[TaskBrief] = Field(default_factory=list)
     # 공통 과제의 확장 슬롯 (공고 단위 — 승인하면 공통 과제와 함께 승인됨)
     slots: list[TaskBrief] = Field(default_factory=list)
+    # 지원자별 슬롯 배정 — 바꾸려면 revise + reassign {주장 id: 슬롯 id | null}
+    assignments: list[AssignmentBrief] = Field(default_factory=list)
     common: list[CommonRef] = Field(default_factory=list)
     total_time_min: int = 0
     comparison: ComparisonBrief | None = None

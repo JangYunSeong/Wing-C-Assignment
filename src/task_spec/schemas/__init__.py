@@ -27,6 +27,7 @@ from task_spec.schemas.domain import (
     PostingProfile,
     PostingTool,
     Role,
+    SlotAssignment,
     TargetCompetency,
     TaskItem,
     TaskSpec,
@@ -64,6 +65,7 @@ from task_spec.schemas.postings import (
 )
 from task_spec.schemas.provenance import NodeError, Provenance, TokenUsage
 from task_spec.schemas.pseudo_text import PseudonymizedText
+from task_spec.schemas.questions import SlotQuestionsInput, SlotQuestionsOutput
 from task_spec.schemas.retrieve import (
     SelectCompetencyInput,
     SelectCompetencyOutput,
@@ -80,6 +82,7 @@ from task_spec.schemas.solo import (
 from task_spec.schemas.state import RunInput, RunState
 from task_spec.schemas.summary import (
     ApprovalSummary,
+    AssignmentBrief,
     ComparisonBrief,
     OutsideBrief,
     TaskBrief,
@@ -88,6 +91,9 @@ from task_spec.schemas.summary import (
 from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
 
 __all__ = [
+    "SlotAssignment",
+    "SlotQuestionsInput",
+    "SlotQuestionsOutput",
     "GradeSoloInput",
     "GradeSoloOutput",
     "SolveTaskInput",
@@ -97,6 +103,7 @@ __all__ = [
     "VerifyTaskInput",
     "VerifyTaskOutput",
     "ApprovalSummary",
+    "AssignmentBrief",
     "ComparisonBrief",
     "OutsideBrief",
     "TaskBrief",
