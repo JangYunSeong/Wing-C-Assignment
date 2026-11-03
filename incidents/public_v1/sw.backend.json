@@ -1,0 +1,36 @@
+{
+ "incident_id": "pub:sw.backend:pool-hold-and-wait-deadlock",
+ "sub": "sw.backend",
+ "title": "HikariCP Dead lock에서 벗어나기 (이론편·실전편)",
+ "org": "우아한형제들 (공통시스템개발팀)",
+ "url": "https://techblog.woowahan.com/2663/",
+ "published": "2020-02",
+ "source_lang": "ko",
+ "symptom": "메시지 저장 서비스에서 약 30초마다 'Connection is not available, request timed out after 30000ms'가 발생했다. insert가 실패·롤백되고 가끔만 성공했다. 풀 상태 total=10, active=10, idle=0, waiting=16. 네트워크·DB 접근은 정상.",
+ "naive_fix": "maximumPoolSize 나 connectionTimeout 을 적당히 늘린다. DB 서버 증설, 느린 쿼리 튜닝, 인덱스 추가.",
+ "root_cause": "@GeneratedValue(AUTO)가 Hibernate 5 에서 SequenceStyleGenerator로 풀려, 시퀀스가 없는 MySQL에서 hibernate_sequence 테이블 'select next_val ... for update'를 별도 하위 트랜잭션으로 실행했다. 작업 하나가 바깥 트랜잭션 커넥션을 쥔 채 커넥션을 하나 더 요청(작업당 2개)한다. 소비자 스레드 16개, 풀 10개에서 10개가 모두 바깥 트랜잭션에 잡히면 모든 스레드가 두 번째 커넥션을 기다리는 pool-locking deadlock이 된다. 하위 트랜잭션 timeout 롤백이 바깥 트랜잭션을 rollback-only로 만들어 전체가 롤백된다.",
+ "why_naive_fails": "쿼리는 느리지 않고 고갈은 대기 순환 때문이라 인덱스·튜닝은 무효다. timeout을 늘리면 교착만 길어진다. 근거 없이 풀만 늘리면 스레드 수나 부하가 바뀔 때 다시 터진다. 실제 조치는 원인 파악 후 크기 산정(스레드 수 × (작업당 커넥션 − 1) + 여유분 = 24)과 ID 블록 선할당(pooled-lo)이었다.",
+ "key_insight": "active=최대치, idle=0인데 DB는 한가하고 waiting=스레드 수라면 처리량 부족이 아니라 자원 대기 순환이다. 요청 하나가 커넥션을 몇 개 동시에 쥐는지(ID 생성기·REQUIRES_NEW·하위 트랜잭션)를 센다.",
+ "deep_structure": "한 작업이 같은 유한 풀에서 자원을 보유한 채 추가 자원을 요청하면, 동시 작업 수가 풀 크기 이상일 때 처리 지연이 아닌 교착이 생긴다.",
+ "surface": [
+  "DB 커넥션 풀 → 스레드 풀·HTTP 클라이언트 풀·세마포어",
+  "JPA ID 생성기 → REQUIRES_NEW 감사 로그·트랜잭션 안 내부 API 호출",
+  "메시지 큐 소비자 → 웹 요청 스레드·배치 워커",
+  "MySQL → 다른 RDBMS"
+ ],
+ "tech": [
+  "Java",
+  "HikariCP",
+  "Spring Boot",
+  "JPA/Hibernate",
+  "MySQL"
+ ],
+ "verified": true,
+ "notes": "실제로 풀을 24로 늘렸으므로 '풀 확대' 자체를 오답 처리하지 말고, 원인 없이 숫자만 바꾸는 처방을 함정으로 둔다. 정답 기준은 원인 구조와 산정식. 자료: 풀 상태 로그, 소비자 스레드 수 설정, @GeneratedValue(AUTO) 코드, 'select next_val ... for update' SQL 로그, 낮은 DB CPU. 이론편: https://techblog.woowahan.com/2664/",
+ "avoid_terms": [
+  "우아한형제들",
+  "배달의민족",
+  "hibernate_sequence"
+ ],
+ "task_pattern": null
+}

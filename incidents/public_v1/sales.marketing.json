@@ -1,0 +1,32 @@
+{
+ "incident_id": "pub:sales.marketing:attribution-vs-incrementality",
+ "sub": "sales.marketing",
+ "title": "Consumer Heterogeneity and Paid Search Effectiveness: A Large Scale Field Experiment",
+ "org": "eBay (Blake, Nosko, Tadelis — NBER Working Paper 20171, Econometrica 2015)",
+ "url": "https://www.nber.org/papers/w20171",
+ "published": "2014-05",
+ "source_lang": "en",
+ "symptom": "클릭 기준(비실험) 지표로 보면 검색 광고, 특히 브랜드 키워드 광고의 수익률이 높아 보였다. 광고를 클릭한 사람들이 실제로 많이 구매했다.",
+ "naive_fix": "ROI가 높게 찍히는 브랜드 키워드와 검색 광고 예산을 늘리고, 성과가 좋은 키워드에 집중한다.",
+ "root_cause": "광고 클릭 뒤 구매 상당수는 광고가 없어도 일어났을 구매였다. 브랜드 키워드 광고의 단기 효과는 측정할 수 없을 만큼 작았다. 광고에 반응한 쪽은 신규·저빈도 사용자였는데 지출의 대부분은 광고와 무관하게 구매하는 고빈도 사용자에게 쓰여, non-brand 키워드도 평균 수익률이 음수였다.",
+ "why_naive_fails": "라스트 클릭 같은 상관 기반 지표는 구매 의도가 이미 있는 사람에게 광고가 몰리는 선택 편향을 효과로 착각한다. 예산을 늘리면 광고와 무관한 구매에 돈을 더 쓰게 된다.",
+ "key_insight": "광고 효과는 광고를 본 사람과 안 본 사람의 구매 차이(incrementality)로 재야 하고, 그 차이는 원래 살 사람인지에 따라 갈린다. 광고를 끈 대조군 실험으로만 드러난다.",
+ "deep_structure": "개입이 원래 결과가 일어날 대상에게 몰리면, 개입과 결과의 상관은 크지만 인과 효과는 작아 실적 귀속 지표가 성과를 과대평가한다.",
+ "surface": [
+  "채널(검색 광고 → 리타기팅·앱 푸시·쿠폰)",
+  "업종(마켓플레이스 → 배달앱·핀테크·구독)",
+  "세그먼트 축(구매 빈도 → 가입 기간·신규/기존)",
+  "지표(ROI → ROAS·CPA·전환율)"
+ ],
+ "tech": [
+  "paid search",
+  "field experiment",
+  "last-click attribution"
+ ],
+ "verified": true,
+ "notes": "검증은 NBER 초록 페이지만(실험 설계 세부·수치는 미확인 → 넣지 않음). 유명 논문이라 업종·채널을 바꾸고 자료는 가상(채널별 귀속 ROAS, 빈도 구간별 매출·광고비, 대조군 비교표). 함정: 귀속 ROAS가 가장 높은 채널에 예산 증액.",
+ "avoid_terms": [
+  "eBay"
+ ],
+ "task_pattern": null
+}

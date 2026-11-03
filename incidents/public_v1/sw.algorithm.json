@@ -1,0 +1,36 @@
+{
+ "incident_id": "pub:sw.algorithm:fixed-point-time-drift",
+ "sub": "sw.algorithm",
+ "title": "Patriot Missile Defense: Software Problem Led to System Failure at Dhahran (GAO/IMTEC-92-26)",
+ "org": "U.S. General Accounting Office (확인한 페이지: University of Minnesota, Douglas Arnold 요약)",
+ "url": "https://www-users.cse.umn.edu/~arnold/disasters/patriot.html",
+ "published": "1992-02",
+ "source_lang": "en",
+ "symptom": "약 100시간 연속 가동한 레이더 추적 시스템이 표적을 탐지는 했지만 추적·요격에 실패했다.",
+ "naive_fix": "레이더 감도·탐지 임계값 조정, 추적 필터(range gate) 폭 확대, 표적 속도 모델 재튜닝.",
+ "root_cause": "부팅 후 시간을 '0.1초 단위 정수 카운트 × 1/10'으로 계산했는데 1/10은 이진수로 끝나지 않아 24-bit 고정소수점에서 잘렸다. 오차가 가동 시간에 비례해 쌓여 100시간 뒤 약 0.34초가 됐고, 표적 속도로 환산하면 range gate 예측 위치가 500m 넘게 어긋났다. 시간 계산 수정이 코드 일부에만 적용되어 오차가 상쇄되지 않았다.",
+ "why_naive_fails": "센서와 필터는 정상이었고 오차는 시간 변환 정밀도에서 나와 가동 시간에 따라 커졌다. 감도나 게이트를 튜닝하면 증상만 잠시 가리거나 오경보를 늘린다.",
+ "key_insight": "실패 확률이 가동 시간과 상관된다는 점이 단서다. 누적 수치 오차를 의심하고 시간 오차 × 표적 속도 = 위치 오차로 환산한다.",
+ "deep_structure": "매 단계 작은 표현 오차는 장시간 누적되면 예측 창 밖으로 벗어나고, 같은 양을 경로마다 다른 정밀도로 계산하면 오차가 상쇄되지 않는다.",
+ "surface": [
+  "미사일 방어 → 차량 레이더·드론 추적·로봇 SLAM",
+  "0.1초 tick → 다른 샘플 주기",
+  "24-bit 고정소수점 → float32",
+  "표적 속도"
+ ],
+ "tech": [
+  "fixed-point",
+  "radar tracking",
+  "range gate"
+ ],
+ "verified": true,
+ "notes": "원 GAO 페이지는 열리지 않아 2차 요약 페이지로 확인(수정 조치는 그 페이지에 없음 — naive_fix·why_naive_fails 는 과제 설계용 추론). 너무 유명한 사례라 소재·수치를 바꿔 쓴다. 자료: 가동 시간별 추적 실패율 로그 + 시간 계산 코드 일부.",
+ "avoid_terms": [
+  "Patriot",
+  "패트리어트",
+  "Scud",
+  "스커드",
+  "Dhahran"
+ ],
+ "task_pattern": null
+}
