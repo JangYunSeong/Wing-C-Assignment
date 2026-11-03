@@ -28,6 +28,12 @@ class DraftTaskInput(Schema):
     revision_note: str  # 재작성 사유 — 검증 실패 내용·승인자 수정 요청 (없으면 "(없음)")
 
 
+class DraftTaskInputV2(DraftTaskInput):
+    """v2: 공개 사례(원리·증상·원인·함정·표면)를 더한다. 조직명·제목·URL 은 넣지 않는다."""
+
+    incident: str  # 사례 블록 (없으면 "(없음)")
+
+
 class DraftTaskOutput(Schema):
     title: str = Field(min_length=1, max_length=120)
     scenario: str = Field(min_length=1, max_length=3000)
