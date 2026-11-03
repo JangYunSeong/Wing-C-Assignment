@@ -48,3 +48,58 @@ async def test_common_skeleton_on_real_posting(ctx) -> None:  # type: ignore[no-
             and len(ksa) <= 10
         )
     assert task.tech_env.basis == "공고 언어" and task.track == "common"
+
+
+async def test_draft_on_real_posting_with_fake_llm(ctx) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+    """골격의 실제 수행준거 id 를 인용한 가짜 서술 → 노드가 검증 통과 후 붙인다."""
+    import json
+    from pathlib import Path
+
+    from task_spec.llm import Completion, FakeBackend, LLMClient
+    from task_spec.prompting import PromptRegistry
+    from task_spec.spec.common import FLAG_NO_INCIDENT
+
+    _, repo, _ = ctx
+    p = await posting_profile(repo, "kakao_2026#001")
+    assert p is not None and p.sub and p.industry_id
+    ev = await evidence(
+        repo,
+        p.competency_ids,
+        sub=p.sub,
+        industry_id=p.industry_id,
+        secondary_sub=p.secondary_sub,
+        in_pilot=p.in_pilot,
+    )
+    state = RunState(
+        run_id="r-pg",
+        ontology_version=repo.version.version,
+        posting_id=p.posting_id,
+        posting_profile=p,
+        evidence=ev,
+    )
+    rel = await load_relatedness(repo)
+    skel = (await make_draft_spec(repo, rel)(state))["spec"].common_tasks[0]
+    ids = [t.ncs_criterion_ids[0] for t in skel.target_competencies]
+    draft = {
+        "title": "가상 과제",
+        "scenario": "가상의 회사에서 응답 지연이 생겼다.",
+        "deliverables": ["원인 분석 메모"],
+        "invariant": "원인 구조",
+        "variable": ["domain_surface"],
+        "traps": [{"trap_id": "t1", "description": "가상 함정", "why_ai_fails": "흔한 답"}],
+        "observables": [{"kind": "catches_trap", "value": "t1"}],
+        "behavioral_anchors": {
+            "level_1": {"behavior": "a", "criterion_ids": ids[:1]},
+            "level_3": {"behavior": "b", "criterion_ids": ids},
+            "level_5": {"behavior": "c", "criterion_ids": ids[-1:]},
+        },
+        "tech_used": [],
+    }
+    fake = FakeBackend().push(Completion(json.dumps(draft, ensure_ascii=False)))
+    prompts = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
+    model = prompts.get("draft_task").meta.model.partition(":")[0]
+    out = await make_draft_spec(repo, rel, LLMClient({model: fake}), prompts)(state)
+    task = out["spec"].common_tasks[0]
+    assert task.title == "가상 과제" and task.behavioral_anchors is not None
+    assert task.review_flags[0] == FLAG_NO_INCIDENT and len(fake.calls) == 1
+    assert out["errors"] == [] and task.provenance_id == out["provenance"][0].provenance_id
