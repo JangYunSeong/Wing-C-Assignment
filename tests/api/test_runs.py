@@ -40,6 +40,7 @@ async def test_create_approve_done_and_spec(client: httpx.AsyncClient, tmp_path:
     assert awaiting["spec"]["revision"] == 1
     assert awaiting["spec"]["ontology_version"] == "onto-v2026.11.02"
     assert awaiting["current_node"] == "approval"
+    assert awaiting["approval_summary"]["total_time_min"] >= 0  # 승인 요약이 함께 온다
     assert (await client.get(f"/runs/{run_id}/spec")).status_code == 404  # 초안은 확정본 아님
 
     resp = await client.post(f"/runs/{run_id}/approve", json=reviewer_decision("approved"))
