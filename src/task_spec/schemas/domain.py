@@ -244,10 +244,22 @@ class Trap(Schema):
     why_ai_fails: str = Field(min_length=1)  # 일반적인 AI 답이 그럴듯하지만 틀리는 이유
 
 
+class Artifact(Schema):
+    """요청 시 공개하는 자료 1건 (자료 점진 공개) [제안: 2026-11-03 — AI 단독 풀이 테스트에서 '자료 전부 제공' 과제가 풀림].
+
+    지원자에게는 처음에 title(목록)만 보이고, 요청한 것만 content 가 공개된다. role 은 승인자·채점용 (지원자에게 숨김).
+    """
+
+    artifact_id: str = Field(pattern=r"^a\d{1,2}$")
+    title: str = Field(min_length=1, max_length=80)  # 목록에 보이는 이름 — 원인을 드러내지 않음
+    content: str = Field(min_length=1, max_length=3000)
+    role: Literal["key", "support", "distractor"]
+
+
 class Observable(Schema):
     """로그에서 관찰할 것 (first_mention_of 개념 / catches_trap 함정 id)."""
 
-    kind: Literal["first_mention_of", "catches_trap"]
+    kind: Literal["first_mention_of", "catches_trap", "requests_artifact"]
     value: str = Field(min_length=1)
 
 
@@ -278,6 +290,10 @@ class TaskItem(Schema):
     invariant: str | None = None  # 유지할 심층 구조
     variable: list[str] = Field(default_factory=list)  # 바꿀 표면 (domain_surface, numbers …)
     traps: list[Trap] = Field(default_factory=list)
+    artifacts: list[Artifact] = Field(
+        default_factory=list
+    )  # 요청 시 공개 자료 (비면 자료가 scenario 안에 다 있음)
+    max_requests: int | None = Field(default=None, ge=1, le=12)  # 지원자가 요청할 수 있는 자료 수
     observables: list[Observable] = Field(default_factory=list)
     behavioral_anchors: BehavioralAnchors | None = None
     follow_up_questions: list[str] = Field(
