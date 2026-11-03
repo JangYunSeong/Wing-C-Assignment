@@ -22,6 +22,8 @@ class ApprovalDecision(Schema):
     status: ApprovalStatus
     reviewer: str = Field(min_length=1, max_length=200)
     comment: str | None = Field(default=None, max_length=4000)
+    # revise 대상: common = 공고 공통 과제(새 판) / verification = 이 지원자의 확장 문항만 (공통 과제는 재사용) / all
+    revise_target: Literal["common", "verification", "all"] = "all"
     at: AwareDatetime
 
     @model_validator(mode="after")

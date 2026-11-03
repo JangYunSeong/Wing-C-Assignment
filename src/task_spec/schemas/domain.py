@@ -265,6 +265,8 @@ class TaskItem(Schema):
     target_competencies: list[TargetCompetency] = Field(min_length=1)
     ai_axes: list[AiAxis] = Field(default_factory=lambda: list(AI_AXES))
     claims_to_verify: list[str] = Field(default_factory=list)  # claim_verification 트랙일 때만
+    # 경험 검증 확장 문항이 붙는 공통 과제 (같은 상황을 이어 씀) [제안: 2026-11-03 — context §3 두 트랙을 한 과제로 냄]
+    parent_task_id: str | None = None
     tech_env: TechEnv
     difficulty_target: Difficulty
     time_limit_min: int = Field(ge=10, le=240)
@@ -278,6 +280,9 @@ class TaskItem(Schema):
     traps: list[Trap] = Field(default_factory=list)
     observables: list[Observable] = Field(default_factory=list)
     behavioral_anchors: BehavioralAnchors | None = None
+    follow_up_questions: list[str] = Field(
+        default_factory=list
+    )  # 면접 확인 질문 (확장 문항) [제안]
     source_incident: str | None = None  # 부서 결정적 사건 id — 수집 전에는 None
     review_flags: list[str] = Field(default_factory=list)  # 승인자가 꼭 볼 것
     provenance_id: str | None = None
