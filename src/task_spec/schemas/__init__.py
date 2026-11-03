@@ -35,11 +35,13 @@ from task_spec.schemas.domain import (
 )
 from task_spec.schemas.draft import (
     DraftTaskInput,
+    DraftTaskInputV2,
     DraftTaskOutput,
     JudgedDraft,
     JudgeDraftInput,
     JudgeDraftOutput,
 )
+from task_spec.schemas.incident import PublicIncident
 from task_spec.schemas.ingest import (
     ExtractedDocument,
     ExtractedField,
@@ -79,6 +81,8 @@ __all__ = [
     "TaskBrief",
     "VerifyBrief",
     "DraftTaskInput",
+    "DraftTaskInputV2",
+    "PublicIncident",
     "DraftTaskOutput",
     "JudgeDraftInput",
     "JudgeDraftOutput",
