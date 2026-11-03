@@ -13,6 +13,8 @@ PRICES: dict[str, tuple[float, float]] = {
     "openai:gpt-5.4-mini": (0.75, 4.50),
     # 2026-11-02 opencode.ai/data(사용 통계 페이지)·Maxim 일치값. Zen 가격 페이지 재확인 [미정]
     "opencode:qwen3.8-flash": (0.15, 0.47),
+    # 2025-04 출시 때 OpenAI 공표가 (모델 지식 기준). 공식 페이지 재확인 [미정]
+    "openai:gpt-4.1": (2.00, 8.00),
 }
 
 
