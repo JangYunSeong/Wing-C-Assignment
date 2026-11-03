@@ -12,6 +12,7 @@ from task_spec.schemas.domain import (
     CandidateRef,
     Claim,
     ClaimCandidates,
+    CommonRef,
     Comparison,
     CompetencyEvidence,
     CompetencyMatch,
@@ -63,8 +64,20 @@ from task_spec.schemas.retrieve import (
     SelectedItem,
 )
 from task_spec.schemas.state import RunInput, RunState
+from task_spec.schemas.summary import (
+    ApprovalSummary,
+    ComparisonBrief,
+    OutsideBrief,
+    TaskBrief,
+    VerifyBrief,
+)
 
 __all__ = [
+    "ApprovalSummary",
+    "ComparisonBrief",
+    "OutsideBrief",
+    "TaskBrief",
+    "VerifyBrief",
     "DraftTaskInput",
     "DraftTaskOutput",
     "JudgeDraftInput",
@@ -79,6 +92,7 @@ __all__ = [
     "TargetCompetency",
     "TechEnv",
     "Trap",
+    "CommonRef",
     "CompetencyMatch",
     "VerifyTarget",
     "CandidateRef",

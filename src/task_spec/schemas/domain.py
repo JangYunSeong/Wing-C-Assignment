@@ -283,6 +283,16 @@ class TaskItem(Schema):
     provenance_id: str | None = None
 
 
+class CommonRef(Schema):
+    """공통 과제가 공고 단위 저장소의 어느 판인지 (spec/store.py). 같은 공고 지원자 비교 가능성 추적용."""
+
+    common_id: str = Field(min_length=1)  # = 그 공통 과제의 task_id
+    revision: int = Field(ge=1)
+    status: Literal["draft", "approved", "superseded"]  # 이 명세를 만들 때의 상태
+    reused: bool  # True = 이전 실행이 만든 판을 재사용 (LLM 호출 없음)
+    prompt_ref: str  # draft_task@N 또는 skeleton
+
+
 class TaskSpec(Schema):
     """④ 과제 명세 초안/확정본 (context.md §6).
 
@@ -296,5 +306,6 @@ class TaskSpec(Schema):
     revision: int = Field(default=1, ge=1)
     common_tasks: list[TaskItem] = Field(default_factory=list)
     verification_tasks: list[TaskItem] = Field(default_factory=list)
+    common_refs: list[CommonRef] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     approval: ApprovalDecision | None = None  # finalize 가 승인 결정을 붙인다
