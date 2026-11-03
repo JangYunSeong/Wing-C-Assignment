@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
@@ -37,14 +38,34 @@ class RunLauncher:
         self._tasks[run_id] = asyncio.create_task(self._run(run_id, graph_input))
 
     async def _run(self, run_id: str, graph_input: Any) -> None:
+        """노드가 끝날 때마다 이름·걸린 시간만 로그에 남긴다 (State 값·원문은 남기지 않음)."""
         config = {"configurable": {"thread_id": run_id}}
+        t0 = last = time.monotonic()
+        logger.info("run start run_id=%s", run_id)
         try:
-            await self._graph.ainvoke(graph_input, config)
+            async for update in self._graph.astream(graph_input, config, stream_mode="updates"):
+                now = time.monotonic()
+                for node in update:
+                    if node == "__interrupt__":
+                        logger.info(
+                            "run waiting approval run_id=%s total_ms=%d", run_id, (now - t0) * 1000
+                        )
+                    else:
+                        logger.info(
+                            "node done run_id=%s node=%s ms=%d", run_id, node, (now - last) * 1000
+                        )
+                last = now
+            logger.info("run stop run_id=%s total_ms=%d", run_id, (time.monotonic() - t0) * 1000)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._failures[run_id] = type(exc).__name__
-            logger.error("run failed run_id=%s exc=%s", run_id, type(exc).__name__)
+            logger.error(
+                "run failed run_id=%s exc=%s total_ms=%d",
+                run_id,
+                type(exc).__name__,
+                (time.monotonic() - t0) * 1000,
+            )
 
     async def shutdown(self) -> None:
         tasks = [t for t in self._tasks.values() if not t.done()]

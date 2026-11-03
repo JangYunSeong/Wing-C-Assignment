@@ -18,6 +18,7 @@ from task_spec.api.routers import health, postings, runs
 from task_spec.config import Settings, get_settings
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm.factory import build_llm_client
+from task_spec.logging_setup import configure_logging
 from task_spec.nodes.ingest import FileIngestor
 from task_spec.nodes.pseudonymize import RulePseudonymizer
 from task_spec.ontology.relatedness import load_relatedness
@@ -40,6 +41,7 @@ def create_app(
             await app.state.launcher.shutdown()
             return
         app.state.settings = settings or get_settings()
+        configure_logging(app.state.settings.log_level, app.state.settings.log_format)
         # 온톨로지 버전 고정 — 적재되지 않은 버전이면 기동 실패 (불변식 4)
         app.state.ontology = await OntologyRepository.open(
             app.state.settings.database_url.get_secret_value(), app.state.settings.ontology_version
