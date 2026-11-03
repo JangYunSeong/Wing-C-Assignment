@@ -11,7 +11,7 @@ from typing import Annotated
 from pydantic import Field, field_validator
 
 from task_spec.schemas.base import Schema
-from task_spec.schemas.domain import BehavioralAnchors, Observable, Trap
+from task_spec.schemas.domain import Artifact, BehavioralAnchors, Observable, Trap
 
 
 class DraftTaskInput(Schema):
@@ -55,6 +55,13 @@ class DraftTaskOutput(Schema):
     @classmethod
     def _drop_nulls(cls, v: object) -> object:
         return [x for x in v if x] if isinstance(v, list) else v
+
+
+class DraftTaskOutputV3(DraftTaskOutput):
+    """v3: 자료 점진 공개 — scenario 는 증상·목록만, 자료 본문은 artifacts 에."""
+
+    artifacts: list[Artifact] = Field(min_length=6, max_length=12)
+    max_requests: int = Field(ge=2, le=6)
 
 
 class JudgeDraftInput(Schema):
