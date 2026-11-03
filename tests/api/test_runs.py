@@ -28,13 +28,15 @@ async def _create(client: httpx.AsyncClient, **extra: object) -> str:
     assert resp.status_code == 202, resp.text
     body = resp.json()
     assert body["status"] == "running"
+    # USE_COVER_LETTERS=false (기본): 자기소개서는 받되 저장·처리하지 않고 알린다 [확정: 2026-11-03]
+    assert body["ignored"] == ["cover_letter#1"]
     return str(body["run_id"])
 
 
 async def test_create_approve_done_and_spec(client: httpx.AsyncClient, tmp_path: Path) -> None:
     run_id = await _create(client)
     saved = sorted(p.name for p in (tmp_path / "raw" / run_id).iterdir())
-    assert saved == ["cover_letter-1.txt", "resume-1.txt"]
+    assert saved == ["resume-1.txt"]  # 자기소개서는 저장하지 않음
 
     awaiting = await wait_status(client, run_id, "awaiting_approval")
     assert awaiting["spec"]["revision"] == 1
@@ -154,7 +156,7 @@ async def test_residual_pii_run_is_failed(make_client: AppFactory) -> None:
     client = await make_client(pseudonymizer=failing_pseudonymizer)
     run_id = await _create(client)
     body = await wait_status(client, run_id, "failed")
-    assert [e["code"] for e in body["errors"]] == ["residual_pii", "residual_pii"]
+    assert [e["code"] for e in body["errors"]] == ["residual_pii"]  # 이력서 1건만 처리
     assert body["spec"] is None
     assert (await client.get(f"/runs/{run_id}/spec")).status_code == 404
     resp = await client.post(f"/runs/{run_id}/approve", json=reviewer_decision("approved"))

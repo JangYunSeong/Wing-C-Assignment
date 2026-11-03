@@ -79,7 +79,7 @@ async def test_one_document_failure_does_not_block_others(tmp_path: Path) -> Non
         {"claims": [{"action": "설계", "quote": "처리 시간 30% 단축."}]}, ensure_ascii=False
     )
     fake = FakeBackend().push(Completion("깨진 응답"), Completion("또 깨짐"), Completion(good))
-    result = await _run(tmp_path, fake, [fake_doc("d1", "resume"), fake_doc("d2", "cover_letter")])
+    result = await _run(tmp_path, fake, [fake_doc("d1", "resume"), fake_doc("d2", "resume")])
     assert [c.doc_id for c in result["claims"]] == ["d2"]
     assert [(e.code, e.ref_id) for e in result["errors"]] == [("SchemaViolation", "d1")]
 
