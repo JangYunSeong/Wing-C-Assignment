@@ -1,0 +1,41 @@
+{
+ "incident_id": "pub:sw.embedded:priority-inversion-reset",
+ "sub": "sw.embedded",
+ "title": "What really happened on Mars? (Mars Pathfinder priority inversion)",
+ "org": "Mike Jones(Microsoft)가 Wind River CTO David Wilner의 IEEE RTSS 기조연설을 정리 (JPL 엔지니어 설명 포함)",
+ "url": "https://www.cs.cornell.edu/courses/cs614/1999sp/papers/pathfinder.html",
+ "published": "1997-12",
+ "source_lang": "en",
+ "symptom": "착륙 며칠 뒤 기상 데이터 수집을 시작하자 시스템 전체 리셋이 반복되고 매번 데이터가 사라졌다. 비행 전 시험에서도 원인 모를 리셋이 한두 번 있었지만 하드웨어 일시 오류로 보고 넘어갔다.",
+ "naive_fix": "하드웨어 결함·환경 영향으로 보고 watchdog 타임아웃을 늘리거나 끈다. 또는 bus 관리 태스크의 우선순위를 더 올리거나 통신 태스크를 최적화한다.",
+ "root_cause": "우선순위 역전. 낮은 우선순위 기상 태스크가 information bus mutex를 잡고 있는 동안 높은 우선순위 bus 관리 태스크가 같은 mutex를 기다리며 막혔고, 그 사이 mutex와 무관한 중간 우선순위 통신 태스크가 기상 태스크를 오래 선점했다. bus 태스크가 제때 돌지 못하자 watchdog이 시스템을 리셋했다. mutex가 priority inheritance 꺼진 상태로 생성되어 있었다.",
+ "why_naive_fails": "watchdog은 고장을 알리는 쪽이지 원인이 아니라, 타임아웃을 늘리면 리셋 대신 멈춘다. 높은 태스크의 우선순위를 더 올려도 CPU가 아니라 낮은 태스크가 쥔 mutex 때문에 막혀 있어 소용없다. 중간 태스크 최적화는 빈도만 줄인다.",
+ "key_insight": "막힌 태스크가 무엇을 기다리는지 따라가, mutex 보유자가 무관한 태스크에게 선점당하는 3자 관계를 찾는다. 해결은 mutex의 priority inheritance를 켜는 것이었다(같은 위험의 mutex도 함께).",
+ "deep_structure": "공유 자원을 쥔 저우선 주체를 무관한 중간 주체가 선점하면 고우선 주체가 간접적으로 굶게 되며, 감시 장치가 드러내는 것은 증상일 뿐이다.",
+ "surface": [
+  "우주선 → 차량 ECU·AUTOSAR OS·산업 컨트롤러",
+  "VxWorks → FreeRTOS·Zephyr",
+  "information bus → CAN 버퍼·공유 메모리",
+  "watchdog 리셋 → ECU reset·DTC",
+  "태스크 이름·주기"
+ ],
+ "tech": [
+  "C",
+  "RTOS",
+  "VxWorks",
+  "mutex",
+  "priority inheritance",
+  "watchdog"
+ ],
+ "verified": true,
+ "notes": "너무 유명한 사례라 소재(차량 ECU 등)·태스크 이름을 바꾸고 'priority inversion' 용어는 뺀다. 자료: 태스크 우선순위표, mutex 생성 코드(inheritance 옵션), 리셋 직전 이벤트 트레이스(고우선 blocked on mutex, 중간 running).",
+ "avoid_terms": [
+  "Pathfinder",
+  "패스파인더",
+  "Mars",
+  "화성",
+  "JPL",
+  "VxWorks"
+ ],
+ "task_pattern": null
+}

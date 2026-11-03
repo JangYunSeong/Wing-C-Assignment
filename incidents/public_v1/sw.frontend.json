@@ -1,0 +1,37 @@
+{
+ "incident_id": "pub:sw.frontend:multi-writer-local-db",
+ "sub": "sw.frontend",
+ "title": "How we sped up Notion in the browser with WASM SQLite",
+ "org": "Notion",
+ "url": "https://www.notion.com/blog/how-we-sped-up-notion-in-the-browser-with-wasm-sqlite",
+ "published": "2024",
+ "source_lang": "en",
+ "symptom": "브라우저에서 페이지에 엉뚱한 데이터가 보였다(댓글 작성자가 다른 사람으로 표시). 일부 로컬 DB에 같은 row ID를 가진 서로 다른 행이 생겼다. 데스크톱 앱에서는 재현되지 않았다.",
+ "naive_fix": "서버 API나 렌더링 버그로 보고 응답 데이터·컴포넌트 key·상태 관리 코드를 고친다. 캐시를 지우거나 트랜잭션 batching을 강화한다. 탭 간 Web Locks만 추가한다.",
+ "root_cause": "탭마다 따로 연결을 연 여러 탭이 같은 OPFS SQLite 파일에 동시에 써서 로컬 DB가 손상됐다(원문 표현은 '의심되는' 동시성 문제). 데스크톱 앱은 SQLite에 쓰는 프로세스가 하나뿐이라 문제가 없었다.",
+ "why_naive_fails": "서버 데이터와 렌더링에는 잘못이 없어 고쳐도 소용없다. 캐시를 지우면 잠깐 사라졌다 다시 생긴다. batching이나 Web Locks·'포커스 탭만 쓰기'로는 손상이 줄기만 하고 없어지지 않았다.",
+ "key_insight": "'웹에서만 발생하고 단일 writer인 데스크톱에서는 안 난다'는 차이가 다중 writer 동시성을 가리킨다. 최종 해결은 SharedWorker로 활성 탭 하나만 SQLite에 접근하게 하는 단일 writer 구조였다.",
+ "deep_structure": "여러 독립 실행 단위가 조율 없이 같은 저장소에 쓰면 데이터 손상이 '틀린 표시'로 나타나며, 표시 계층을 고쳐서는 해결되지 않고 writer를 하나로 만들어야 한다.",
+ "surface": [
+  "SQLite/OPFS → IndexedDB·localStorage",
+  "브라우저 탭 → 여러 WebView·멀티 윈도",
+  "댓글 작성자 오표시 → 장바구니·알림 오표시",
+  "SharedWorker → BroadcastChannel·leader election"
+ ],
+ "tech": [
+  "JavaScript",
+  "TypeScript",
+  "WebAssembly",
+  "SQLite",
+  "OPFS",
+  "SharedWorker",
+  "Web Locks API"
+ ],
+ "verified": true,
+ "notes": "원문도 원인을 '의심'으로 표현하므로 과제에서는 증거를 분명히 만든다(탭 수와 손상 빈도 상관, 웹 전용 발생, 중복 row ID 로그). 같은 글의 성능 회귀 사례(WASM 로딩 블로킹, 저사양 기기 디스크 읽기)는 보조 함정으로 쓸 수 있다.",
+ "avoid_terms": [
+  "Notion",
+  "노션"
+ ],
+ "task_pattern": null
+}

@@ -1,0 +1,33 @@
+{
+ "incident_id": "pub:infra.dba:vacuum-debt-write-stop",
+ "sub": "infra.dba",
+ "title": "Transaction ID Wraparound in Postgres",
+ "org": "Sentry",
+ "url": "https://blog.sentry.io/transaction-id-wraparound-in-postgres/",
+ "published": "2015-07",
+ "source_lang": "en",
+ "symptom": "미국 업무 시간 대부분 동안 서비스가 멈췄다. Postgres가 쓰기를 받지 않아 이벤트 적체가 쌓였고 Redis 버퍼가 가득 찼다.",
+ "naive_fix": "하드웨어 증설(CPU·메모리)이나 failover, 느린 쿼리 튜닝·인덱스 추가, 커넥션 풀 확대, DB 재시작.",
+ "root_cause": "쓰기가 많은 부하에 비해 autovacuum 설정이 보수적이었다(높은 autovacuum_freeze_max_age, worker 3개, cost delay). 그래서 freeze가 따라가지 못했고 transaction ID(XID)가 wraparound 한계에 다가가자, Postgres가 데이터 가시성 손상을 막으려고 스스로 쓰기를 멈췄다.",
+ "why_naive_fails": "성능 문제가 아니라 MVCC가 지키는 안전장치가 작동한 것이다. 인덱스 추가나 쿼리 튜닝은 XID 소모와 상관이 없다. 재시작하면 진행 중이던 vacuum만 날아가 복구가 더 늦어진다. 하드웨어를 늘려도 vacuum이 끝나야만 풀린다.",
+ "key_insight": "쓰기만 거부되고 읽기는 되는 상황이면 리소스 부족보다 엔진의 보호 정지를 먼저 의심한다. age(datfrozenxid)와 autovacuum 진행 상태를 확인하는 것이 출발점이다.",
+ "deep_structure": "평소 미뤄 온 백그라운드 정리 작업의 부채가 임계에 닿으면 시스템이 안전을 위해 전면 정지하고, 정지를 풀 수 있는 것은 그 정리 작업을 끝내는 것뿐이다.",
+ "surface": [
+  "DB 엔진(PostgreSQL→MySQL undo/purge 지연 등)",
+  "서비스 업종(에러 수집→결제·로그)",
+  "적체 버퍼(Redis→Kafka)",
+  "가장 큰 테이블의 성격"
+ ],
+ "tech": [
+  "PostgreSQL",
+  "MVCC",
+  "autovacuum",
+  "Redis"
+ ],
+ "verified": true,
+ "notes": "쓰기 실패 에러 로그(wraparound 경고는 처음엔 가림), 테이블별 age(relfrozenxid), autovacuum 설정, 쓰기 TPS 추이로 구성. 원문의 최종 조치(TRUNCATE)는 유일한 정답이 아니므로 채점은 원인 구조 식별과 재발 방지 설정 위주. 2015년 사례라 최신 PG 기본값 차이를 명시.",
+ "avoid_terms": [
+  "Sentry"
+ ],
+ "task_pattern": null
+}

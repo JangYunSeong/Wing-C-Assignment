@@ -1,0 +1,37 @@
+{
+ "incident_id": "pub:infra.system:wallclock-negative-elapsed",
+ "sub": "infra.system",
+ "title": "How and why the leap second affected Cloudflare DNS",
+ "org": "Cloudflare",
+ "url": "https://blog.cloudflare.com/how-and-why-the-leap-second-affected-cloudflare-dns/",
+ "published": "2017-01",
+ "source_lang": "en",
+ "symptom": "특정 시각(00:00 UTC)부터 일부 머신에서 CNAME 레코드를 쓰는 도메인의 DNS 해석만 간헐적으로 실패했다(최대 약 0.2%, 일부 머신에 몰림). 로그에 panic이 recover 되었다는 기록이 남았다.",
+ "naive_fix": "업스트림 resolver나 네트워크 문제로 보고 타임아웃·재시도를 늘린다. 머신을 재시작하거나 서버를 증설하고, panic 지점에 방어 코드만 넣는다.",
+ "root_cause": "윤초 때 시스템 시계가 약 1초 뒤로 갔다. 서비스는 단조 시계가 보장되지 않는 벽시계(time.Now()) 차이로 업스트림 RTT를 쟀기 때문에 RTT가 음수로 나왔고, 이 음수가 평활 값에 남아 평균이 0 아래로 내려갔다. 그 값으로 가중치를 매겨 업스트림을 고르는 과정에서 난수 함수에 음수가 들어가 panic이 났다.",
+ "why_naive_fails": "업스트림과 네트워크는 정상이라 타임아웃·재시도는 효과가 없다. 재시작하면 잠시 나아지지만 같은 조건이면 다시 생긴다. panic 지점만 막으면 벽시계로 경과 시간을 잰 원인은 그대로 남는다.",
+ "key_insight": "정확히 시계 이벤트 시각에 시작됐고, 업스트림 조회가 필요한 경로에서만 실패했다. 이 두 단서를 이으면 시간 측정이 원인으로 좁혀진다. 경과 시간은 monotonic clock으로 재야 한다.",
+ "deep_structure": "경과 시간을 벽시계로 재는 코드는 시계 보정으로 시간이 뒤로 갈 때 음수 구간을 만들고, 이 값이 누적 상태에 남으면 시계 이벤트가 지난 뒤에도 무관해 보이는 하위 로직에서 장애가 난다.",
+ "surface": [
+  "윤초 → NTP step 보정·VM 스냅샷 복원 뒤 시계 점프",
+  "DNS RTT → DB 커넥션 풀 지연·로드밸런서 가중치·rate limiter 토큰",
+  "Go → Java currentTimeMillis·Python time.time"
+ ],
+ "tech": [
+  "Go",
+  "DNS",
+  "NTP",
+  "leap second"
+ ],
+ "verified": true,
+ "notes": "자료: 시각별 오류율(이벤트 시각 시작), 레코드 유형별 실패 분포, panic 스택 일부, RTT 계산 코드 발췌, 시계 동기화 로그. '윤초'로 검색되지 않게 원인을 NTP step 보정 등으로 바꾼다. 과제용 로그·지표는 가상.",
+ "avoid_terms": [
+  "Cloudflare",
+  "RRDNS"
+ ],
+ "task_pattern": null,
+ "hidden_terms": [
+  "윤초",
+  "leap second"
+ ]
+}
