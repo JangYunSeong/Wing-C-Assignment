@@ -11,6 +11,7 @@
 판정: judge_draft_task (gpt-4.1) 1~5점 — alignment·trap_quality·anchors·feasibility·ai_axes.
 출력: data/eval/spec/<날짜>-<tag>/ (report.json, samples.md, drafts.jsonl) — git 밖.
 
+프롬프트 버전 비교: --models opencode:qwen3.8-flash@1 opencode:qwen3.8-flash@2 --prompts-root DIR
 사용: uv run python -m eval.spec.run_draft --split dev --models openai:gpt-5.5 openai:gpt-5.4-mini \
         opencode:qwen3.8-flash openai:gpt-4.1 [--prompts-root DIR] [--no-judge]
 """
@@ -36,9 +37,10 @@ from task_spec.ontology.queries import posting_profile
 from task_spec.ontology.relatedness import load_relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry, PromptTemplate, assemble
-from task_spec.schemas import DraftTaskOutput, JudgeDraftInput, JudgeDraftOutput
+from task_spec.schemas import DraftTaskOutput, JudgeDraftInput, JudgeDraftOutput, PublicIncident
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID, DraftContext, draft_task
+from task_spec.spec.incidents import load_incidents
 
 ROOT = Path(__file__).resolve().parents[2]
 PROMPTS = PromptRegistry(ROOT / "prompts")
@@ -54,20 +56,25 @@ PARAMS: dict[str, dict[str, Any]] = {
 
 
 class ModelOverride:
-    """PromptRegistry 처럼 보이되 모델·설정만 바꾼 템플릿을 준다 (평가 전용)."""
+    """PromptRegistry 처럼 보이되 모델·설정(·프롬프트 버전)만 바꾼 템플릿을 준다 (평가 전용).
 
-    def __init__(self, base: PromptRegistry, model: str) -> None:
+    variant = "<provider>:<model>" 또는 "<provider>:<model>@<버전>" (같은 모델로 프롬프트 v1·v2 비교).
+    """
+
+    def __init__(self, base: PromptRegistry, variant: str) -> None:
+        model, _, ver = variant.rpartition("@") if "@" in variant else (variant, "", "")
         self.base, self.model = base, model
+        self.version = int(ver) if ver else None
 
     def get(self, task: str, version: int | None = None) -> PromptTemplate:
-        t = self.base.get(task, version)
+        t = self.base.get(task, self.version if task == "draft_task" and self.version else version)
         params = PARAMS.get(self.model, t.meta.params)
         meta = t.meta.model_copy(update={"model": self.model, "params": params})
         return t.model_copy(update={"meta": meta})
 
 
 async def pick_postings(
-    repo: OntologyRepository, version: str
+    repo: OntologyRepository, version: str, incidents: dict[str, PublicIncident] | None = None
 ) -> list[tuple[str, str, CommonDraft]]:
     """직군마다 서술 입력이 만들어지는 첫 공고 (id 순)."""
     rel = await load_relatedness(repo)
@@ -93,7 +100,13 @@ async def pick_postings(
                 in_pilot=p.in_pilot,
             )
             built = await build_common(
-                p, ev, task_id=f"eval-{pid}", ontology_version=version, ontology=repo, rel=rel
+                p,
+                ev,
+                task_id=f"eval-{pid}",
+                ontology_version=version,
+                ontology=repo,
+                rel=rel,
+                incidents=incidents,
             )
             if built.ctx is not None:
                 out.append((sub, pid, built))
@@ -170,6 +183,7 @@ async def run_one(llm: LLMClient, reg: ModelOverride, ctx: DraftContext) -> dict
         "ok_final": not failed and not invalid,
         "failed": failed,
         "problems": invalid,
+        "first_problems": res.first_problems,
         "errors": [e.code for e in res.errors],
         "cost_usd": sum(p.cost_usd or 0.0 for p in res.provenance),
         "latency_s": sum(p.latency_ms for p in res.provenance) / 1000,
@@ -242,15 +256,18 @@ async def main() -> None:
     ap.add_argument("--prompts-root", type=Path, default=ROOT / "prompts")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--subs", nargs="*", default=None, help="이 직군 공고만 (사례 교체 확인용)")
     a = ap.parse_args()
 
     s = Settings()
     repo = await OntologyRepository.open(s.database_url.get_secret_value(), "dev")
     version = repo.version.version
-    picked = await pick_postings(repo, version)
+    picked = await pick_postings(repo, version, load_incidents(s.incidents_dir))
     await repo.close()
     split = {"dev": 0, "test": 1}
     picked = [x for i, x in enumerate(picked) if a.split == "all" or i % 2 == split[a.split]]
+    if a.subs:
+        picked = [x for x in picked if x[0] in a.subs]
     print(f"표본 {len(picked)}건: " + ", ".join(f"{sub}={pid}" for sub, pid, _ in picked))
 
     llm = build_llm_client(s)
