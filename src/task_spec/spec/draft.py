@@ -13,9 +13,11 @@ review_flags 에 남긴다. LLM 이 실패하면 골격만 두고 review_flags �
 from __future__ import annotations
 
 import logging
+import random
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Any
 
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
@@ -82,6 +84,9 @@ class DraftResult:
     provenance_id: str | None = None  # 채택한 답의 provenance
     incident_id: str | None = None  # 프롬프트에 실제로 넣은 공개 사례
     first_problems: list[str] = field(default_factory=list)  # 첫 답의 검증 실패 사유 (평가용)
+    fail_reasons: list[str] = field(
+        default_factory=list
+    )  # LLM 실패 사유 (필드 위치·오류 종류만, 원문 없음)
     provenance: list[Provenance] = field(default_factory=list)
     errors: list[NodeError] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
@@ -158,9 +163,117 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", "", s).lower()
 
 
+def shuffle_artifacts(out: DraftTaskOutput, seed: str) -> DraftTaskOutput:
+    """자료 순서를 섞고 a1… 로 다시 번호를 매긴다 — 생성 모델이 핵심 자료를 앞에 두는 경향이 정답을 흘린다
+    (2026-11-03 AI 단독 풀이 테스트). requests_artifact 관찰 행동의 id 도 함께 바꾼다. 같은 seed → 같은 순서."""
+    arts = list(getattr(out, "artifacts", []) or [])
+    if not arts:
+        return out
+    order = list(arts)
+    random.Random(seed).shuffle(order)
+    remap = {a.artifact_id: f"a{i}" for i, a in enumerate(order, 1)}
+    new_arts = [a.model_copy(update={"artifact_id": remap[a.artifact_id]}) for a in order]
+    obs = [
+        o.model_copy(update={"value": remap.get(o.value, o.value)})
+        if o.kind == "requests_artifact"
+        else o
+        for o in out.observables
+    ]
+
+    def ids(
+        text: str,
+    ) -> str:  # 본문에 적힌 자료 번호도 한 번에 바꾼다 (a1→a7, a7→a2 가 서로 덮어쓰지 않게)
+        return _ART_ID.sub(lambda m: remap.get(m.group(0), m.group(0)), text)
+
+    anchors = out.behavioral_anchors
+    new_anchors = anchors.model_copy(
+        update={
+            k: getattr(anchors, k).model_copy(
+                update={"behavior": ids(getattr(anchors, k).behavior)}
+            )
+            for k in ("level_1", "level_3", "level_5")
+        }
+    )
+    return out.model_copy(
+        update={
+            "artifacts": new_arts,
+            "observables": obs,
+            "scenario": ids(out.scenario),
+            "deliverables": [ids(d) for d in out.deliverables],
+            "invariant": ids(out.invariant),
+            "traps": [
+                t.model_copy(
+                    update={"description": ids(t.description), "why_ai_fails": ids(t.why_ai_fails)}
+                )
+                for t in out.traps
+            ],
+            "behavioral_anchors": new_anchors,
+        }
+    )
+
+
+_ART_ID = re.compile(r"(?<![A-Za-z0-9_])a\d{1,2}(?![A-Za-z0-9_])")
+# 자료 제목에 결론을 암시하는 말 / 핵심 자료 본문의 판정 문구 (2026-11-03: 대조표가 정답을 그대로 보여 nano 도 풀었음)
+_TITLE_TELLS = ("대조", "비교", "차이", "불일치", "vs", "누락", "원인", "요약", "분석 결과", "결론")
+_CONTENT_TELLS = (
+    "불일치",
+    "누락",
+    "원인",
+    "mismatch",
+    "missing",
+    "root cause",
+    "→ 문제",
+    "O / X",
+    "✓",
+    "✗",
+)
+
+
+def _check_artifacts(out: DraftTaskOutput, arts: list[Any]) -> list[str]:
+    """자료 점진 공개(v3): id 고유, 핵심 1개 이상·방해 3개 이상, 요청 한도 ≤ max(핵심+1, 자료/3), 상황에 자료 본문을 미리 싣지 않음."""
+    problems: list[str] = []
+    ids = [a.artifact_id for a in arts]
+    if len(set(ids)) != len(ids):
+        problems.append("artifact_id 가 겹침")
+    roles = [a.role for a in arts]
+    if roles.count("key") < 1 or roles.count("distractor") < 3:
+        problems.append("자료는 핵심(key) 1개 이상, 방해(distractor) 3개 이상이어야 함")
+    limit = getattr(out, "max_requests", None)
+    if limit is not None and limit > max(roles.count("key") + 1, len(arts) // 3):
+        problems.append(
+            "max_requests 는 핵심 자료 수 + 1 또는 자료 수의 3분의 1 이하여야 함 (골라서 요청하게)"
+        )
+    if limit is not None and limit < roles.count("key"):
+        problems.append(
+            "max_requests 가 핵심 자료 수보다 작음 (정답에 필요한 자료를 다 볼 수 없음)"
+        )
+    for a in arts:
+        if (
+            a.role == "key"
+            and len(_norm(a.content)) >= 40
+            and _norm(a.content)[:40] in _norm(out.scenario)
+        ):
+            problems.append(
+                f"핵심 자료 {a.artifact_id} 본문이 상황에 미리 실림 (요청해야만 보이게)"
+            )
+        tells = [w for w in _TITLE_TELLS if w.lower() in a.title.lower()]
+        if tells:
+            problems.append(
+                f"자료 {a.artifact_id} 제목이 결론을 암시함 ({', '.join(tells)}) — 자료 종류만 쓸 것"
+            )
+        if a.role == "key":
+            said = [w for w in _CONTENT_TELLS if w.lower() in a.content.lower()]
+            if said:
+                problems.append(
+                    f"핵심 자료 {a.artifact_id} 가 결론을 직접 말함 ({', '.join(said)}) — 원시 로그·지표·설정만"
+                )
+    return problems
+
+
 def check(out: DraftTaskOutput, ctx: DraftContext) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다 — 온톨로지·공고 값만 담는다."""
     problems: list[str] = []
+    arts = list(getattr(out, "artifacts", []) or [])
     allowed = ctx.criterion_ids
     anchors = out.behavioral_anchors
     cited: set[str] = set()
@@ -178,16 +291,21 @@ def check(out: DraftTaskOutput, ctx: DraftContext) -> list[str]:
     trap_ids = [t.trap_id for t in out.traps]
     if len(set(trap_ids)) != len(trap_ids):
         problems.append("trap_id 가 겹침")
+    if arts:
+        problems += _check_artifacts(out, arts)
     for o in out.observables:
         if o.kind == "catches_trap" and o.value not in trap_ids:
             problems.append(f"catches_trap 값 {o.value} 가 traps 의 trap_id 가 아님")
+        if o.kind == "requests_artifact" and o.value not in {a.artifact_id for a in arts}:
+            problems.append(f"requests_artifact 값 {o.value} 가 artifacts 의 artifact_id 가 아님")
     tech_ok = _allowed_tech(ctx.env)
     langs = _names(ctx.language_labels)
     # 언어만 검사한다 (도구·개념 이름은 온톨로지 언어 목록에 없으므로 통과)
     extra = [x for x in out.tech_used if x.strip().lower() in langs - tech_ok]
     if extra:
         problems.append(f"기술 환경 밖 언어 요구: {', '.join(extra)}")
-    text = "\n".join([out.title, out.scenario, *out.deliverables])
+    # 지원자에게 처음 보이는 것: 제목·상황·제출물 + 자료 목록(이름만)
+    text = "\n".join([out.title, out.scenario, *out.deliverables, *(a.title for a in arts)])
     env_langs = {p.lower() for p in _lang_patterns(ctx.env.languages)}
     mentioned = [
         name
@@ -265,6 +383,8 @@ def apply(task: TaskItem, res: DraftResult) -> TaskItem:
             "invariant": out.invariant,
             "variable": list(out.variable),
             "traps": list(out.traps),
+            "artifacts": list(getattr(out, "artifacts", []) or []),
+            "max_requests": getattr(out, "max_requests", None),
             "observables": list(out.observables),
             "behavioral_anchors": out.behavioral_anchors if res.anchors_ok else None,
             "provenance_id": res.provenance_id,
@@ -315,13 +435,16 @@ async def draft_task(
         inp = build_input(ctx, note, template.input_model)  # type: ignore[arg-type]
         prompt = assemble(template, inp, ontology_version=ctx.ontology_version)
         try:
-            r = await llm.call(prompt, DraftTaskOutput)
+            r = await llm.call(prompt, template.output_model)  # type: ignore[arg-type]
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
             res.errors.append(
                 NodeError(node=TASK, code=type(exc).__name__, message="과제 서술 생성 실패")
             )
+            res.fail_reasons.append(f"{type(exc).__name__}: {str(exc)[:300]}")
             continue
         res.provenance.append(r.provenance)
+        parsed = shuffle_artifacts(r.parsed, f"{ctx.sub_label}|{ctx.industry_label}|{attempt}")
+        r = r.model_copy(update={"parsed": parsed})
         problems = check(r.parsed, ctx)
         logger.info(
             "draft_task attempt=%d problems=%d latency_ms=%d",
