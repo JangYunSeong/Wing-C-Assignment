@@ -105,6 +105,15 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 모델 비교: `eval/spec/run_draft.py` (시범 공고 직군별 1건, 12건 dev/test, 판정 `judge_draft_task` gpt-4.1 이 이름 가린 초안 비교 채점·순위).
 - 승인자 수정 요청은 가명화와 같은 로컬 탐지기(이름·학교·회사·연락처)에 하나라도 걸리거나 1000자를 넘으면 보내지 않는다.
 
+## 공개 사례로 함정·원리 근거 [확정: 2026-11-03] (`incidents/public_v1/`, `spec/incidents.py`)
+
+- 부서 결정적 사건이 모이기 전까지 직군마다 공개 사례 1건(사후 분석·기술 블로그·논문 요약, 출처 URL)을 쓴다. sw.game 보류.
+- draft_task v2 입력 `incident` 에는 원리·증상·원인·흔한 처방·단서·표면만 — 조직명·제목·URL·원문 수치는 넣지 않는다.
+- 자동 검증에 `avoid_terms`(원 사례 회사·제품·사건 이름) 노출 검사를 더한다. 명세 `source_incident` = 사례 id,
+  `review_flags` 는 "부서 사례 없음" 대신 "공개 사례 기반 — 부서 사례 아님".
+- 과제 형태 `qa_mutation`(sw.qa): 요구사항 + 작은 모듈 + 커버리지 높고 단언 약한 테스트 → 채점은 비공개로 심은 결함 검출 수.
+  실행 채점(돌연변이 실행·커버리지 측정)은 응시 플랫폼 몫 [미정].
+
 ## 공고 단위 공통 과제 재사용 [확정: 2026-11-03] (`spec/store.py`, task_db `public.common_task`)
 
 - 같은 공고 지원자는 같은 공통 과제를 받는다 (context.md §3). 키 = (posting_id, ontology_version, draft_task@N | skeleton).
