@@ -12,6 +12,7 @@
 | LLM 호출 공통 규칙 | `.claude/skills/llm-client/SKILL.md` |
 | 온톨로지 산출물 읽기 | `.claude/skills/ontology-artifact/SKILL.md` |
 | 가명화 | `.claude/skills/pseudonymization/SKILL.md` |
+| 컨테이너·내부망 배포 | `.claude/skills/deployment/SKILL.md` |
 | 스킬·에이전트·훅 전량 | `docs/claude-config-catalog.md` |
 
 ## 목적

@@ -25,6 +25,11 @@ DATABASE_URL=postgresql://task:<pw>@127.0.0.1:5434/task_db
 TEST_DATABASE_URL=postgresql://task:<pw>@127.0.0.1:5434/task_db_test
 ```
 
+## 네트워크
+
+`docker/db/run.sh` 는 컨테이너를 podman 네트워크 `task-net` 에 붙인다 — `task-api` 컨테이너는 `task_db:5432` 로 접속한다
+(deployment 스킬). 이미지를 `podman load` 로 받은 서버에서는 `TASK_DB_SKIP_BUILD=1`.
+
 ## 주의
 
 - 체크포인트 테이블에는 LangGraph State 가 들어간다 = **지원자 파생물**. 볼륨·덤프를 레포나 외부로 내보내지 않는다.
