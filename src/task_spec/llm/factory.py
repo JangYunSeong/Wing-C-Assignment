@@ -10,9 +10,13 @@ from task_spec.llm.openai_compat import OpenAICompatBackend
 def build_llm_client(settings: Settings) -> LLMClient:
     return LLMClient(
         {
-            "openai": OpenAICompatBackend(api_key=settings.openai_api_key),
+            "openai": OpenAICompatBackend(
+                api_key=settings.openai_api_key, timeout=settings.llm_timeout_seconds
+            ),
             "opencode": OpenAICompatBackend(
-                api_key=settings.opencode_api_key, base_url=settings.opencode_base_url
+                api_key=settings.opencode_api_key,
+                base_url=settings.opencode_base_url,
+                timeout=settings.llm_timeout_seconds,
             ),
         }
     )

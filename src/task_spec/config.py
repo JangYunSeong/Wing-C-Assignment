@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr
     opencode_api_key: SecretStr
     opencode_base_url: str
+    # LLM 요청 1건 제한 시간(초). 공통 과제 생성처럼 출력이 긴 호출은 120초를 넘는다 (2026-11-03 운영)
+    llm_timeout_seconds: float = Field(default=300.0, gt=0)
+
+    # 로깅 (logging_setup.py). 원문·키는 어느 수준에서도 남기지 않는다
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["text", "json"] = "text"
 
 
 @lru_cache(maxsize=1)

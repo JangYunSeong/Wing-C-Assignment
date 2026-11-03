@@ -43,7 +43,7 @@ def _usage(msg: AIMessage) -> Usage:
 
 class OpenAICompatBackend:
     def __init__(
-        self, *, api_key: SecretStr, base_url: str | None = None, timeout: float = 120.0
+        self, *, api_key: SecretStr, base_url: str | None = None, timeout: float = 300.0
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url or None

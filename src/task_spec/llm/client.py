@@ -3,9 +3,11 @@
 재시도 정책 (이 한 곳에만 있다)
 | 증상                               | 처리                                         |
 | 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회                   |
-| TransientLLMError (타임아웃·429·5xx) | 지수 백오프 최대 3회                          |
+| TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
+| 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
 
+재시도·포기는 WARNING/ERROR 로그(프롬프트 ref·모델·사유·경과 ms)로 남긴다.
 메시지 본문·키 값은 로그·provenance·예외 메시지에 넣지 않는다.
 """
 
@@ -48,6 +50,10 @@ ALLOWED_PARAMS: dict[str, frozenset[str]] = {
 }
 
 MAX_TRANSIENT_RETRIES = 3
+# 시간 초과는 1번만 다시 시도한다 — 출력이 길어 생긴 초과는 같은 요청을 반복해도 대개 다시 넘는다
+# (2026-11-03 운영: 120초 × 4회 × 호출 여러 번으로 draft_spec 이 수십 분 멈춤)
+MAX_TIMEOUT_RETRIES = 1
+_TIMEOUT_ERRORS = frozenset({"APITimeoutError", "TimeoutError", "ReadTimeout"})
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
@@ -116,7 +122,7 @@ class LLMClient:
 
         while True:
             completion = await self._complete_with_backoff(
-                backend, model, messages, params, retries
+                backend, model, messages, params, retries, ref=prompt.template.ref, started=started
             )
             total = Usage(
                 total.input + completion.usage.input,
@@ -129,6 +135,12 @@ class LLMClient:
                     raise EmptyResponse(f"{prompt.template.ref}: 빈 응답")
                 empty_retry_used = True
                 retries.append("empty_response->reasoning_effort=low")
+                logger.warning(
+                    "llm retry prompt=%s model=%s reason=empty_response elapsed_ms=%d",
+                    prompt.template.ref,
+                    prompt.model,
+                    int((time.monotonic() - started) * 1000),
+                )
                 params = {**params, "reasoning_effort": "low"}
                 continue
 
@@ -141,6 +153,12 @@ class LLMClient:
                     raise SchemaViolation(f"{prompt.template.ref}: {summary}") from None
                 schema_retry_used = True
                 retries.append("schema_violation")
+                logger.warning(
+                    "llm retry prompt=%s model=%s reason=schema_violation elapsed_ms=%d",
+                    prompt.template.ref,
+                    prompt.model,
+                    int((time.monotonic() - started) * 1000),
+                )
                 messages = [
                     *prompt.messages,
                     Message(
@@ -188,14 +206,41 @@ class LLMClient:
         messages: list[Message],
         params: dict[str, Any],
         retries: list[str],
+        *,
+        ref: str = "",
+        started: float | None = None,
     ) -> Completion:
         attempt = 0
+        timeouts = 0
+        t0 = started if started is not None else time.monotonic()
         while True:
             try:
                 return await backend.complete(model, messages, params)
             except TransientLLMError as exc:
-                if attempt >= MAX_TRANSIENT_RETRIES:
+                kind = str(exc)
+                is_timeout = kind in _TIMEOUT_ERRORS
+                elapsed = int((time.monotonic() - t0) * 1000)
+                if attempt >= MAX_TRANSIENT_RETRIES or (
+                    is_timeout and timeouts >= MAX_TIMEOUT_RETRIES
+                ):
+                    logger.error(
+                        "llm give up prompt=%s model=%s reason=%s attempts=%d elapsed_ms=%d",
+                        ref,
+                        model,
+                        kind,
+                        attempt + 1,
+                        elapsed,
+                    )
                     raise
-                retries.append(f"transient:{exc}")
+                timeouts += int(is_timeout)
+                retries.append(f"transient:{kind}")
+                logger.warning(
+                    "llm retry prompt=%s model=%s reason=%s attempt=%d elapsed_ms=%d",
+                    ref,
+                    model,
+                    kind,
+                    attempt + 1,
+                    elapsed,
+                )
                 await self._sleep(self._backoff * (2**attempt))
                 attempt += 1

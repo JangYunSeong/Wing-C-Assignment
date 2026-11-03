@@ -145,3 +145,26 @@ def test_unknown_model_has_no_cost_and_reasoning_model_drops_temperature() -> No
     assert not is_reasoning_model("openai", "gpt-4.1") and not is_reasoning_model(
         "opencode", "gpt-5.5"
     )
+
+
+async def test_timeout_is_retried_only_once_and_logged(caplog) -> None:  # type: ignore[no-untyped-def]
+    import logging
+
+    fake = FakeBackend().push(
+        TransientLLMError("APITimeoutError"),
+        TransientLLMError("APITimeoutError"),
+        Completion(GOOD),
+    )
+    with caplog.at_level(logging.WARNING, logger="task_spec.llm.client"):
+        with pytest.raises(TransientLLMError):
+            await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert len(fake.calls) == 2  # 처음 + 시간 초과 재시도 1번 (예전엔 4번)
+    text = caplog.text
+    assert "llm retry" in text and "llm give up" in text and "APITimeoutError" in text
+    assert "가상 데이터" not in text  # 원문은 로그에 없음
+
+
+async def test_rate_limit_still_retried_three_times() -> None:
+    fake = FakeBackend().push(*[TransientLLMError("RateLimitError")] * 3, Completion(GOOD))
+    r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert r.provenance.retries == 3
