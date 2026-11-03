@@ -206,7 +206,7 @@ class Comparison(Schema):
 
 AiAxis = Literal["delegation", "communication", "verification", "responsibility"]
 AI_AXES: tuple[AiAxis, ...] = ("delegation", "communication", "verification", "responsibility")
-Track = Literal["common", "claim_verification"]
+Track = Literal["common", "claim_verification", "extension_slot"]
 Difficulty = Literal["high", "medium", "low"]
 
 
@@ -279,6 +279,10 @@ class TaskItem(Schema):
     claims_to_verify: list[str] = Field(default_factory=list)  # claim_verification 트랙일 때만
     # 경험 검증 확장 문항이 붙는 공통 과제 (같은 상황을 이어 씀) [제안: 2026-11-03 — context §3 두 트랙을 한 과제로 냄]
     parent_task_id: str | None = None
+    # 확장 슬롯 [확정: 2026-11-03] — 공통 과제(track=common)에만. 공고당 한 번 생성·승인, 그 공고 지원자 모두 같음.
+    # 슬롯도 TaskItem(track=extension_slot, task_id=s1…) — 지원자별 확장 문항은 slot_id 로 가리킨다 (PR-B)
+    slots: list[TaskItem] = Field(default_factory=list, max_length=6)
+    slot_id: str | None = None
     tech_env: TechEnv
     difficulty_target: Difficulty
     time_limit_min: int = Field(ge=10, le=240)

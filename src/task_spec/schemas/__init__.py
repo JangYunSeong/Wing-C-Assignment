@@ -35,6 +35,8 @@ from task_spec.schemas.domain import (
     VerifyTarget,
 )
 from task_spec.schemas.draft import (
+    DraftSlotInput,
+    DraftSlotOutput,
     DraftTaskInput,
     DraftTaskInputV2,
     DraftTaskOutput,
@@ -99,6 +101,8 @@ __all__ = [
     "OutsideBrief",
     "TaskBrief",
     "VerifyBrief",
+    "DraftSlotInput",
+    "DraftSlotOutput",
     "DraftTaskInput",
     "DraftTaskInputV2",
     "PublicIncident",
