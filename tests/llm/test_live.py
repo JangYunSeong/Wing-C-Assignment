@@ -62,7 +62,9 @@ async def test_live_draft_task() -> None:
     ctx = _ctx()
     res = await draft_task(ctx, llm=build_llm_client(Settings()), prompts=PROMPTS)  # type: ignore[call-arg]
     assert res.output is not None and FLAG_DRAFT_FAILED not in res.flags
-    if not res.flags:  # 재요청 후에도 어긋나면 flags 로 남으므로, flags 가 없을 때만 검증 통과를 요구
+    if (
+        not res.flags
+    ):  # 재요청 후에도 어긋나면 flags 로 남으므로, flags 가 없을 때만 검증 통과를 요구
         assert check(res.output, ctx) == []
     p = res.provenance[-1]
     print(
