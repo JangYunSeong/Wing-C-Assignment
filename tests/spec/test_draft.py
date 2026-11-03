@@ -229,3 +229,12 @@ def test_tools_in_tech_used_and_log_ids_are_not_languages() -> None:
     assert check(ok, _ctx()) == []
     bad = _out(scenario="모듈은 C 언어로 작성되어 있다.")
     assert check(bad, _ctx()) == ["본문에 기술 환경 밖 언어가 나옴: C"]
+
+
+def test_check_flags_root_cause_revealed_in_visible_text() -> None:
+    # first_mention_of = 지원자가 먼저 말해야 할 원인 — 제목·상황에 나오면 정답 노출
+    leaked = _out(title="잠금 경합으로 인한 배치 지연 분석")
+    assert any("핵심 원인 개념" in p for p in check(leaked, _ctx()))
+    spaced = _out(scenario="가상의 회사에서 잠금  경합 이 의심된다.")  # 띄어쓰기만 다른 경우도
+    assert any("핵심 원인 개념" in p for p in check(spaced, _ctx()))
+    assert check(_out(), _ctx()) == []  # invariant 에만 있는 것은 괜찮다 (지원자에게 안 보임)
