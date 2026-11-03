@@ -147,15 +147,18 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 저장 키 프롬프트 = `draft_task@N+draft_slot@M` (어느 쪽이 바뀌어도 새 판). 저장 시 슬롯 `parent_task_id` 를 공통 과제 저장 id 로.
 - 승인 요약 `slots`.
 
-## 경험 검증 = 공통 과제 안의 확장 문항 [제안: 2026-11-03 사용자 결정 — context §3 두 트랙을 한 과제로 냄] (`spec/verify.py`, `prompts/verify_task`)
+## 경험 검증 = 슬롯 배정 + 면접 질문 [확정: 2026-11-03 사용자] (`spec/assign.py`, `spec/questions.py`, `prompts/slot_questions`) — PR-B
 
-- 채점은 두 트랙 그대로: 공통 과제 본체 = 점수 비교 / 확장 문항 = 확인됨·의심됨 + 면접 질문(비교 점수 제외, `review_flags` 고정 문구).
-- 명세 `verification_tasks`: `track=claim_verification`, `parent_task_id`=공통 과제 id, `claims_to_verify`=[주장 id], `follow_up_questions` 2~3개, 30분.
-- 주장 고르기 [확정, 방식 B]: compare 점수 순, 공통 과제 역량과 겹치면 −1.5(빼지 않음), 문항끼리 역량 안 겹치게 최대 2개.
-- 기술 환경 [확정]: 주장 언어 ∩ 공고 언어 → 없으면 공고 언어 (`basis`). 난이도 = 그 역량의 공고 요구 수준(공고 밖 = medium) — 역할로 바꾸지 않음.
-- LLM 입력: 가명화본에서 다시 뽑은 주장(`derive_pseudonymized`) + 공통 과제의 **보이는 부분(제목·상황)만** — 함정·정답 제외.
-- 검증: 인용 id, 관찰 행동은 first_mention_of 만, 기술 환경, **원문 베끼기 금지**(가명화 토큰·인용 수치·인용과 12자 이상 겹침 — 본문과 면접 질문 모두), 핵심 개념 노출.
-- revise: `ApprovalDecision.revise_target` = common(공통 과제 새 판, 확장 문항 유지) / verification(공통 과제 재사용, 확장 문항만 재생성) / all(기본).
+- 채점은 두 트랙 그대로: 공통 과제 본체 = 점수 비교 / 확장 슬롯 = 확인됨·의심됨 + 면접 질문 (비교 점수 제외).
+- 지원자마다: 검증할 주장 고르기(`pick_targets` — 점수 순, 공통 과제 역량 −1.5, 역량 안 겹치게 최대 2) →
+  **슬롯 배정(규칙)**: 승인자 지정(`reassign`) > 같은 역량 슬롯 > 근접·기반 관계 슬롯 > 없음. 한 슬롯은 한 주장. 근거(`basis`) 기록.
+  → **면접 질문(LLM)**: 연결 문구(행동 요약, 지원자에게 보임) + 면접 확인 질문 2~3개. 입력은 가명화본에서 다시 뽑은 주장만.
+  검사: 원문 베끼기(가명화 토큰·인용 수치·12자 겹침), 연결 문구 수치·과제 정답 개념. 1회 재요청.
+- 명세 `slot_assignments`(모든 고른 주장 — 슬롯 없으면 면접 질문만) + `verification_tasks`(슬롯이 배정된 주장만:
+  `slot_id`·`parent_task_id`·`link_text`·`follow_up_questions`, 시간·역량은 슬롯 것). 승인 전 슬롯이면 review_flags.
+- revise: `revise_target` = common(공통 과제·슬롯 새 판, 배정 유지) / verification(공통 과제·슬롯 재사용, 배정·질문만 다시 + `reassign` 반영) / all.
+  `reassign {주장 id: 슬롯 id | null}` 은 revise 에서만.
+- 지원자별 확장 문항 서술(`verify_task`)은 폐기 — 서면 문항이 경험을 가리지 못함 (AI 단독 풀이 테스트 22/22 수준 3 이상).
 
 ## 공고 단위 공통 과제 재사용 [확정: 2026-11-03] (`spec/store.py`, task_db `public.common_task`)
 
