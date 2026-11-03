@@ -105,6 +105,17 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 모델 비교: `eval/spec/run_draft.py` (시범 공고 직군별 1건, 12건 dev/test, 판정 `judge_draft_task` gpt-4.1 이 이름 가린 초안 비교 채점·순위).
 - 승인자 수정 요청은 가명화와 같은 로컬 탐지기(이름·학교·회사·연락처)에 하나라도 걸리거나 1000자를 넘으면 보내지 않는다.
 
+## 공고 단위 공통 과제 재사용 [확정: 2026-11-03] (`spec/store.py`, task_db `public.common_task`)
+
+- 같은 공고 지원자는 같은 공통 과제를 받는다 (context.md §3). 키 = (posting_id, ontology_version, draft_task@N | skeleton).
+- draft_spec: revise 가 아니면 저장소에서 **승인된 최신 판 → 없으면 최신 초안**을 재사용 (LLM 호출 없음, 저장된 provenance 를 State 에 싣는다).
+  없으면 생성 후 초안으로 저장. task_id = 저장 id(`ct-…`). 명세 `common_refs` 에 판 번호·재사용 여부를 남긴다.
+- revise: 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.
+- finalize: 그 판을 approved 로, 같은 키의 이전 approved 판은 superseded 로 (이미 그 판을 받은 지원자의 명세는 그대로).
+- 승인 payload: `summary`(`schemas/summary.py ApprovalSummary` — 과제별 review_flags·시간 합계·공통 과제 판·대조 요약·검증 후보 claim_id·점수·사유) + `spec` + `provenance`.
+  API `RunView.approval_summary` 로 노출. **주장 인용은 인증 전까지 넣지 않는다** [제안: 인증 후 가명화 인용 추가].
+- 저장소에는 지원자 실행과 연결되는 값(run_id 등)을 두지 않는다. 미승인 초안을 재사용하면 `review_flags` 로 표시.
+
 ## 노드 규칙
 
 - 노드 = `async def node(state: RunState) -> dict`. 하나의 노드는 하나의 단계만.
