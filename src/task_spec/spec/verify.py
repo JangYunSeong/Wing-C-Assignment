@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -47,6 +48,7 @@ from task_spec.schemas.domain import Anchor, BehavioralAnchors
 from task_spec.spec.common import DIFFICULTY, LEVEL_RANK
 from task_spec.spec.draft import DIFFICULTY_KO, NONE, _lang_patterns, _names, _norm
 
+logger = logging.getLogger(__name__)
 TASK = "verify_task"
 MAX_ITEMS = 2
 TIME_LIMIT_MIN = 30
@@ -262,6 +264,12 @@ async def draft_verify(
             continue
         res.provenance.append(r.provenance)
         problems = check(r.parsed, ctx)
+        logger.info(
+            "verify_task attempt=%d problems=%d latency_ms=%d",
+            attempt + 1,
+            len(problems),
+            r.provenance.latency_ms,
+        )
         if best is None or len(problems) < len(best[1]):
             best = (r.parsed, problems, r.provenance.provenance_id)
         if not problems:
@@ -344,6 +352,7 @@ async def build_verifications(
     prov: list[Provenance] = []
     errors: list[NodeError] = []
     sources: dict[str, PseudonymizedText | None] = {}
+    prepared: list[tuple[TaskItem, VerifyContext]] = []  # 근거 조회는 차례로, LLM 생성은 동시에
     for i, vt in enumerate(picked, 1):
         claim = claims.get(vt.claim_id)
         if claim is None:
@@ -429,7 +438,15 @@ async def build_verifications(
             ontology_version=state.ontology_version,
             language_labels=language_labels,
         )
-        res = await draft_verify(ctx, llm=llm, prompts=prompts, reviewer_note=reviewer_note)
+        prepared.append((base, ctx))
+    # 확장 문항끼리는 독립이라 동시에 만든다 (차례로 하면 draft_spec 대기 시간이 문항 수만큼 늘어남)
+    results = await asyncio.gather(
+        *(
+            draft_verify(ctx, llm=llm, prompts=prompts, reviewer_note=reviewer_note)
+            for _, ctx in prepared
+        )
+    )
+    for (base, _), res in zip(prepared, results, strict=True):
         items.append(apply_verify(base, res))
         prov += res.provenance
         errors += res.errors
