@@ -73,8 +73,11 @@ from task_spec.schemas.summary import (
     TaskBrief,
     VerifyBrief,
 )
+from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
 
 __all__ = [
+    "VerifyTaskInput",
+    "VerifyTaskOutput",
     "ApprovalSummary",
     "ComparisonBrief",
     "OutsideBrief",
