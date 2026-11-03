@@ -28,7 +28,7 @@ from task_spec.nodes.pseudonymize import (
 )
 from task_spec.nodes.retrieve import make_evidence, make_retrieve_t1, retrieve_t2
 from task_spec.nodes.roles import assign_roles
-from task_spec.nodes.spec import approval, finalize, make_draft_spec
+from task_spec.nodes.spec import approval, make_draft_spec, make_finalize
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
@@ -36,6 +36,7 @@ from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve.t1 import T1Retriever
 from task_spec.schemas import RunInput, RunState
+from task_spec.spec.store import CommonTaskRepo
 
 
 def _route_after_profile(state: RunState) -> Literal["ingest", "evidence", "__end__"]:
@@ -62,6 +63,7 @@ def build_graph(
     ontology_lists: OntologyLists | None = None,
     retriever: T1Retriever | None = None,
     relatedness: Relatedness | None = None,
+    common_store: CommonTaskRepo | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -74,9 +76,9 @@ def build_graph(
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", make_evidence(ontology))
     g.add_node("compare", make_compare(relatedness))
-    g.add_node("draft_spec", make_draft_spec(ontology, relatedness, llm, prompts))
+    g.add_node("draft_spec", make_draft_spec(ontology, relatedness, llm, prompts, common_store))
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))
-    g.add_node("finalize", finalize)
+    g.add_node("finalize", make_finalize(common_store))
 
     g.add_edge(START, "posting_profile")
     g.add_conditional_edges("posting_profile", _route_after_profile, ["ingest", "evidence", END])

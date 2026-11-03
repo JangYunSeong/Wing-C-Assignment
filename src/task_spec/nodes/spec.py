@@ -17,14 +17,29 @@ from task_spec.llm import LLMClient
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import ApprovalDecision, RunState, TaskItem, TaskSpec
+from task_spec.schemas import (
+    ApprovalDecision,
+    ApprovalSummary,
+    CommonRef,
+    ComparisonBrief,
+    OutsideBrief,
+    RunState,
+    TaskBrief,
+    TaskItem,
+    TaskSpec,
+    VerifyBrief,
+)
 from task_spec.spec.build import build_common
+from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
+from task_spec.spec.store import CommonKey, CommonTaskRepo
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 
 
 FLAG_NO_DRAFTER = "draft_task 미연결 — 결정적 골격만 (제목·상황·행동 기준 없음)"
+SKELETON_REF = "skeleton"
+FLAG_REUSED_DRAFT = "이 공고의 공통 과제가 아직 승인되지 않은 초안을 재사용함 — 이 명세를 승인하면 그 판이 공고 공통 과제로 승인됨"
 
 
 def make_draft_spec(
@@ -32,16 +47,20 @@ def make_draft_spec(
     rel: Relatedness | None = None,
     llm: LLMClient | None = None,
     prompts: PromptRegistry | None = None,
+    store: CommonTaskRepo | None = None,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     """공통 과제 = 결정적 골격 + 서술(LLM). 공고·온톨로지만 쓴다 — 지원자 문서·주장을 읽지 않는다 (불변식 3).
 
-    revise 로 돌아오면 revision 을 올리고 승인자 수정 요청을 서술 입력에 넣는다. 경험 검증 과제는 PR-4.
+    공고 단위 저장소(store)가 있으면 같은 (공고, 온톨로지 버전, 프롬프트) 의 판을 재사용한다 — 승인된 판 우선.
+    revise 로 돌아오면 재사용하지 않고 승인자 수정 요청을 넣어 새 판을 만든다. 경험 검증 과제는 PR-4b.
     """
+    drafter_ready = llm is not None and prompts is not None
 
     async def draft_spec(state: RunState) -> dict[str, Any]:
         revision = state.spec.revision + 1 if state.spec is not None else 1
         spec_id = f"{state.run_id}-r{revision}"
         common: list[TaskItem] = []
+        refs: list[CommonRef] = []
         flags: list[str] = []
         update: dict[str, Any] = {}
         p = state.posting_profile
@@ -57,21 +76,55 @@ def make_draft_spec(
             flags = built.flags
             task = built.task
             if task is not None:
-                if built.ctx is None or llm is None or prompts is None:
-                    task = task.model_copy(
-                        update={"review_flags": [*task.review_flags, FLAG_NO_DRAFTER]}
+                use_llm = built.ctx is not None and drafter_ready
+                prompt_ref = prompts.get(DRAFT_TASK).ref if use_llm and prompts else SKELETON_REF
+                key = CommonKey(state.posting_id, state.ontology_version, prompt_ref)
+                revise = (
+                    state.approval if state.approval and state.approval.status == "revise" else None
+                )
+                reused = await store.reusable(key) if store is not None and revise is None else None
+                if reused is not None:
+                    task = reused.task
+                    if reused.status != "approved":
+                        task = task.model_copy(
+                            update={"review_flags": [*task.review_flags, FLAG_REUSED_DRAFT]}
+                        )
+                    update = {"provenance": reused.provenance}
+                    refs.append(
+                        CommonRef(
+                            common_id=reused.id,
+                            revision=reused.revision,
+                            status=reused.status,
+                            reused=True,
+                            prompt_ref=prompt_ref,
+                        )
                     )
                 else:
-                    revise = (
-                        state.approval
-                        if state.approval and state.approval.status == "revise"
-                        else None
-                    )
-                    note, note_flags = safe_reviewer_note(revise.comment if revise else None)
-                    res = await draft_task(built.ctx, llm=llm, prompts=prompts, reviewer_note=note)
-                    res.flags[:0] = note_flags
-                    task = apply(task, res)
-                    update = {"provenance": res.provenance, "errors": res.errors}
+                    if not use_llm:
+                        task = task.model_copy(
+                            update={"review_flags": [*task.review_flags, FLAG_NO_DRAFTER]}
+                        )
+                    else:
+                        assert built.ctx is not None and llm is not None and prompts is not None
+                        note, note_flags = safe_reviewer_note(revise.comment if revise else None)
+                        res = await draft_task(
+                            built.ctx, llm=llm, prompts=prompts, reviewer_note=note
+                        )
+                        res.flags[:0] = note_flags
+                        task = apply(task, res)
+                        update = {"provenance": res.provenance, "errors": res.errors}
+                    if store is not None:
+                        saved = await store.save_draft(key, task, update.get("provenance", []))
+                        task = saved.task
+                        refs.append(
+                            CommonRef(
+                                common_id=saved.id,
+                                revision=saved.revision,
+                                status=saved.status,
+                                reused=False,
+                                prompt_ref=prompt_ref,
+                            )
+                        )
                 common.append(task)
         spec = TaskSpec(
             spec_id=spec_id,
@@ -80,11 +133,56 @@ def make_draft_spec(
             ontology_version=state.ontology_version,
             revision=revision,
             common_tasks=common,
+            common_refs=refs,
             review_flags=flags,
         )
         return {"spec": spec, "approval": None, **update}
 
     return draft_spec
+
+
+def approval_summary(state: RunState) -> ApprovalSummary:
+    """승인자가 먼저 볼 것. 원문·가명화 매핑·주장 인용은 넣지 않는다 (인증 전 — privacy-auditor W1)."""
+    spec = state.spec
+    assert spec is not None
+    tasks = [
+        TaskBrief(
+            task_id=t.task_id,
+            track=t.track,
+            title=t.title,
+            competencies=[c.label for c in t.target_competencies],
+            difficulty=t.difficulty_target,
+            time_limit_min=t.time_limit_min,
+            n_traps=len(t.traps),
+            has_anchors=t.behavioral_anchors is not None,
+            review_flags=t.review_flags,
+        )
+        for t in [*spec.common_tasks, *spec.verification_tasks]
+    ]
+    c = state.comparison
+    comparison = (
+        ComparisonBrief(
+            overlap=[m.label for m in c.overlap],
+            posting_only=[m.label for m in c.posting_only],
+            applicant_only=[
+                OutsideBrief(label=m.label, relatedness=m.relatedness) for m in c.applicant_only
+            ],
+            uncovered_claims=len(c.uncovered),
+            claims_to_verify=[
+                VerifyBrief(claim_id=v.claim_id, score=v.score, reasons=v.reasons)
+                for v in c.claims_to_verify
+            ],
+        )
+        if c is not None
+        else None
+    )
+    return ApprovalSummary(
+        review_flags=spec.review_flags,
+        tasks=tasks,
+        common=spec.common_refs,
+        total_time_min=sum(t.time_limit_min for t in tasks),
+        comparison=comparison,
+    )
 
 
 async def approval(state: RunState) -> Command[ApprovalRoute]:
@@ -96,6 +194,7 @@ async def approval(state: RunState) -> Command[ApprovalRoute]:
         raise RuntimeError("approval: spec 이 없습니다")
     payload: dict[str, Any] = {
         "run_id": state.run_id,
+        "summary": approval_summary(state).model_dump(mode="json"),
         "spec": state.spec.model_dump(mode="json"),
         "provenance": [p.model_dump(mode="json", by_alias=True) for p in state.provenance],
         "error": None,
@@ -116,10 +215,23 @@ async def approval(state: RunState) -> Command[ApprovalRoute]:
     return Command(update={"approval": decision}, goto=goto[decision.status])
 
 
-async def finalize(state: RunState) -> dict[str, Any]:
-    if state.spec is None or state.approval is None or state.approval.status != "approved":
-        raise RuntimeError("finalize: 승인되지 않은 명세는 확정할 수 없습니다")
-    return {"spec": state.spec.model_copy(update={"approval": state.approval})}
+def make_finalize(
+    store: CommonTaskRepo | None = None,
+) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
+    """승인된 명세 확정. 공통 과제 판도 승인 상태로 바꾼다 (이전 승인 판은 superseded)."""
+
+    async def finalize(state: RunState) -> dict[str, Any]:
+        if state.spec is None or state.approval is None or state.approval.status != "approved":
+            raise RuntimeError("finalize: 승인되지 않은 명세는 확정할 수 없습니다")
+        if store is not None:
+            for r in state.spec.common_refs:
+                await store.approve(r.common_id, state.approval.reviewer, state.approval.at)
+        return {"spec": state.spec.model_copy(update={"approval": state.approval})}
+
+    return finalize
+
+
+finalize = make_finalize()
 
 
 def _summarize(exc: ValidationError) -> str:
