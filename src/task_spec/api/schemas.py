@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from task_spec.schemas import NodeError, TaskSpec
+from task_spec.schemas import ApprovalSummary, NodeError, TaskSpec
 
 RunStatus = Literal["running", "awaiting_approval", "done", "rejected", "failed"]
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "rejected", "failed"})
@@ -29,6 +29,8 @@ class RunView(BaseModel):
     revision: int | None = None
     spec: TaskSpec | None = None  # awaiting_approval 일 때만 (승인 대기 초안)
     approval_error: str | None = None  # 직전 결정이 거부된 사유 (interrupt payload.error)
+    # 승인자가 먼저 볼 요약 (interrupt payload.summary — nodes/spec.py approval_summary). 주장 인용 없음.
+    approval_summary: ApprovalSummary | None = None
     errors: list[NodeError] = []
 
 

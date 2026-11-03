@@ -8,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from task_spec.api.launcher import RunLauncher
 from task_spec.api.schemas import RunView
-from task_spec.schemas import TaskSpec
+from task_spec.schemas import ApprovalSummary, TaskSpec
 
 
 def _pending_interrupt(snapshot: Any) -> dict[str, Any] | None:
@@ -53,6 +53,11 @@ async def load_run_view(
             revision=draft.revision if draft else None,
             spec=draft,
             approval_error=pending.get("error"),
+            approval_summary=(
+                ApprovalSummary.model_validate(pending["summary"])
+                if pending.get("summary")
+                else None
+            ),
         )
 
     if launcher.failure(run_id) is not None:
