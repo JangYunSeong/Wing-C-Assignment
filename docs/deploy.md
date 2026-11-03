@@ -1,6 +1,6 @@
-# 운영 서버 배포 가이드 (podman, 내부망)
+# 운영 서버 배포 가이드 (podman)
 
-P1 과제 명세 서비스를 내부망 운영 서버에 올리는 절차. 규칙·불변식은 `.claude/skills/deployment/SKILL.md` 가 SSOT.
+P1 과제 명세 서비스를 운영 서버에 올리는 절차. 인터넷이 막힌 서버는 이미지를 파일로 반입하고, 사내망 밖에서 접속하는 서버는 nginx(2-6, TLS + Basic 인증)를 반드시 앞에 둔다. 규칙·불변식은 `.claude/skills/deployment/SKILL.md` 가 SSOT.
 
 ## 0. 준비물
 
@@ -55,13 +55,45 @@ sudo vi /etc/task-spec/env                # 키·DB 비밀번호·ONTOLOGY_VERSI
 
 # 2-5. API 기동
 TASK_API_IMAGE=task-api:<버전> docker/api/run.sh
-#   내부망 다른 PC 에서 접속하려면 TASK_API_BIND=<서버IP>:8001 (인증 없음 — 접근 대상을 방화벽으로 제한)
+#   nginx 앞단(2-6)을 쓰면 TASK_API_BIND=none — API 는 호스트에 포트를 열지 않는다
+#   nginx 없이 내부망에서만: TASK_API_BIND=<서버IP>:8001 (인증 없음 — 접근 대상을 방화벽으로 제한)
 ```
+
+### 2-6. nginx (TLS + Basic 인증) — 사내망 밖에서 접속할 때 필수
+
+앱에는 아직 인증이 없다. 사내망 밖에서 접속하는 서버라면 **nginx 의 TLS 와 Basic 인증이 유일한 보호막**이다.
+
+```bash
+# 인증서 (사내 CA·공인 인증서). privkey 권한 600
+sudo install -d -m 700 /etc/task-spec/certs
+sudo install -m 644 fullchain.pem /etc/task-spec/certs/fullchain.pem
+sudo install -m 600 privkey.pem   /etc/task-spec/certs/privkey.pem
+
+# Basic 인증 계정 (bcrypt). 승인자마다 계정을 따로 만든다
+sudo podman run --rm --entrypoint htpasswd docker.io/library/httpd:2.4-alpine -nbB <계정> '<비밀번호>' \
+  | sudo tee -a /etc/task-spec/htpasswd >/dev/null
+sudo chmod 600 /etc/task-spec/htpasswd
+
+# (선택) 접속 IP 제한 — 'allow 203.0.113.0/24;' 줄들 + 마지막 줄 'deny all;'
+# sudo vi /etc/task-spec/allow.conf
+
+# API 를 포트 없이 다시 띄우고 nginx 기동 (443·80 은 특권 포트 — root podman 또는 net.ipv4.ip_unprivileged_port_start 조정)
+podman rm -f task-api && TASK_API_IMAGE=task-api:<버전> TASK_API_BIND=none docker/api/run.sh
+sudo TASK_NGINX_CERTS=/etc/task-spec/certs TASK_NGINX_AUTH=/etc/task-spec/htpasswd \
+     [TASK_NGINX_ALLOW=/etc/task-spec/allow.conf] docker/nginx/run.sh
+```
+
+nginx 설정(`docker/nginx/nginx.conf`) 요점: HTTP→HTTPS, TLS 1.2+, HSTS·보안 헤더, 모든 경로 Basic 인증(`/healthz` 만 예외),
+SSE(`/runs/{id}/events`) 버퍼링 끔·1시간, 일반 요청 600초(과제 생성), 업로드 25 MB, IP 당 10 r/s 제한,
+접근 로그에 쿼리·본문 없음, Basic 인증 헤더는 앱으로 넘기지 않음.
+nginx 와 API 컨테이너는 같은 podman 네트워크(`task-net`)에 있어야 한다.
 
 ## 3. 확인
 
 ```bash
 curl -s http://127.0.0.1:8001/healthz     # status ok, database ok, ontology_resolved = 고정 버전
+# nginx 앞단이면: curl -s https://<서버 주소>/healthz  (인증 없이 ok)
+#                 curl -s -o /dev/null -w '%{http_code}' https://<서버 주소>/runs/x  → 401 (Basic 인증 동작)
 podman logs --tail 50 task-api            # 원문·키가 찍히지 않아야 함
 ```
 
@@ -82,7 +114,7 @@ DB·`task_data` 볼륨은 그대로 남는다. 새 테이블은 앱이 기동할
 
 ## 5. 정해야 할 것 [미정]
 
-- API 를 열 주소와 접근 제한 방법 (인증 없음)
+- 앱 인증 (지금은 nginx Basic 인증이 임시 대책 — 승인자 식별이 요청 본문의 reviewer 값뿐)
 - DB 백업 주기·보관 위치·기간 (덤프와 `task_data` 볼륨에 지원자 파생물이 있음 — 외부 반출 금지)
 - `DATA_DIR`(`task_data` 볼륨) 보관 기간·삭제 정책
 
@@ -94,3 +126,6 @@ DB·`task_data` 볼륨은 그대로 남는다. 새 테이블은 앱이 기동할
 | `database: error` | 두 컨테이너가 `task-net` 에 있는지 (`podman network inspect task-net`), DATABASE_URL 호스트가 `task_db` 인지 |
 | pg 테스트 skip | `task_db_test` 에 덤프가 복원됐는지, `TEST_DATABASE_URL` ≠ `DATABASE_URL` |
 | `pg_restore` 에서 vector 오류 | `task-db:1` 이미지(pgvector 포함)를 쓰는지 |
+| nginx 502 | `task-api` 가 `task-net` 에 있는지, `podman logs task-api` |
+| 진행 상황(SSE)이 늦게·한꺼번에 옴 | nginx 설정의 events 경로 `proxy_buffering off` 가 적용됐는지 (`podman exec task-nginx nginx -T`) |
+| nginx 가 443 에 못 붙음 | rootless podman 특권 포트 — root 로 실행하거나 `sysctl net.ipv4.ip_unprivileged_port_start=80` |
