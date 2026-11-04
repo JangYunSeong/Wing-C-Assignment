@@ -16,6 +16,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from task_spec.postings.search import SearchTerm
 from task_spec.postings.suggest import OntologyLists
 from task_spec.schemas import (
     AnalyzedLine,
@@ -166,6 +167,25 @@ class PostingStore:
 
     async def get_provisional(self, pid: str) -> dict[str, Any] | None:
         return await self._one("SELECT * FROM public.provisional_posting WHERE id = %s", (pid,))
+
+    async def search_provisional(self, terms: list[SearchTerm], limit: int) -> list[dict[str, Any]]:
+        """임시 공고를 회사·직무명·id·직군으로 (postings/search.search_terms), 최근 것부터."""
+        where = ["TRUE"]
+        params: list[Any] = []
+        for t in terms:
+            where.append(
+                "(company ILIKE %s ESCAPE '\\' OR title ILIKE %s ESCAPE '\\'"
+                " OR id ILIKE %s ESCAPE '\\' OR sub ILIKE %s ESCAPE '\\' OR sub = ANY(%s))"
+            )
+            params += [t.pattern] * 4 + [list(t.subs)]
+        params.append(limit)
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, company, title, sub, industry_id FROM public.provisional_posting"  # type: ignore[arg-type]
+                f" WHERE {' AND '.join(where)} ORDER BY created_at DESC LIMIT %s",
+                tuple(params),
+            )
+            return await cur.fetchall()
 
 
 def provisional_profile(row: dict[str, Any], lists: OntologyLists) -> PostingProfile:
