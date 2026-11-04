@@ -532,7 +532,7 @@ async function applyView(view) {
     $("#run-meta").textContent = "";
   }
   renderSummary(view, s);
-  renderCompare(view.approval_summary);
+  renderCompare(view.approval_summary, view.status);
   renderCommon(s);
   renderSlots(s);
   renderVerify(s);
@@ -614,11 +614,13 @@ function renderSummary(view, s) {
 }
 
 /* 대조 */
-function renderCompare(sum) {
+function renderCompare(sum, status) {
   const el = $("#compare");
   const c = sum && sum.comparison;
   if (!c) {
-    el.innerHTML = `<p class="placeholder">승인 대기가 되면 대조 결과가 나옵니다.</p>`;
+    el.innerHTML = `<p class="placeholder">${
+      status === "running" ? "명세 초안이 나오면 대조 결과가 나옵니다." : "대조 결과가 없습니다 (주장을 뽑지 못했거나 중간에 멈춘 실행)."
+    }</p>`;
     return;
   }
   const chips = (xs) => (xs.length ? `<div class="chips">${xs.join("")}</div>` : `<span class="placeholder">없음</span>`);
