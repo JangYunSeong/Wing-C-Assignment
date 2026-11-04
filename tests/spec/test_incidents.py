@@ -86,3 +86,70 @@ def test_hidden_terms_only_blocked_in_visible_text() -> None:
     assert check(in_trap, ctx) == []  # 승인자용 함정 설명에는 허용
     shown = _out(scenario="재시작 뒤 SYN cookie 카운터가 늘었다.")
     assert any("원인 용어" in p for p in check(shown, ctx))
+
+
+def test_block_has_accepted_fixes_but_not_curator_notes() -> None:
+    incs = load_incidents(ROOT)
+    assert all(i.accepted_fixes for i in incs.values())
+    inc = incs["sw.backend"]
+    block = incident_block(inc)
+    assert "정답으로 인정할 조치" in block and inc.accepted_fixes[0] in block
+    assert inc.notes not in block  # 큐레이터 메모(출처 URL 등)는 넣지 않는다
+
+
+def test_check_flags_copied_incident_text_and_numbers() -> None:
+    """원 사례의 오류 문구·풀 지표를 그대로 쓰면 재요청 (2026-11-03 sw.backend 5판 모두)."""
+    ctx = _ctx()
+    ctx.incident = load_incidents(ROOT)["sw.backend"]
+    copied = _out(
+        scenario=(
+            "배치에서 'Connection is not available, request timed out after 30000ms' 가 난다. "
+            "풀 지표는 total=10, active=10, idle=0 이다."
+        )
+    )
+    problems = "\n".join(check(copied, ctx))
+    assert "원 사례 문구·수치를 그대로 씀" in problems and "total=10" in problems
+    changed = _out(
+        scenario="정산 작업에서 '대기 시간 초과' 가 난다. 풀 지표는 사용 8/8, 대기 12 이다."
+    )
+    assert not any("원 사례" in p for p in check(changed, ctx))
+    # 라이브러리 기본 오류 문구 하나만으로는 원 사례가 특정되지 않는다
+    generic = _out(
+        scenario=(
+            "'Connection is not available, request timed out after 30000ms' 가 난다. "
+            "풀 지표는 사용 8/8 이다."
+        )
+    )
+    assert not any("원 사례" in p for p in check(generic, ctx))
+
+
+def test_source_literals_are_not_in_prompt_block() -> None:
+    inc = load_incidents(ROOT)["sw.backend"]
+    block = incident_block(inc)
+    assert inc.source_literals and not any(x in block for x in inc.source_literals)
+
+
+def test_incident_ref_changes_only_with_content() -> None:
+    from task_spec.spec.incidents import incident_ref
+
+    inc = load_incidents(ROOT)["sw.backend"]
+    assert incident_ref(inc) == incident_ref(inc.model_copy()) and incident_ref(inc).startswith(
+        inc.incident_id + "#"
+    )
+    edited = inc.model_copy(update={"accepted_fixes": [*inc.accepted_fixes, "새 조치"]})
+    assert incident_ref(edited) != incident_ref(inc)
+
+
+def test_avoid_terms_checked_in_artifacts_by_word_boundary() -> None:
+    from tests.spec.test_artifacts import _v3
+
+    ctx = _ctx()
+    ctx.incident = load_incidents(ROOT)["sw.backend"]
+    out = _v3()
+    arts = [a.model_copy() for a in out.artifacts]
+    arts[0] = arts[0].model_copy(update={"content": "select next_val from hibernate_sequence"})
+    leaked = check(out.model_copy(update={"artifacts": arts}), ctx)
+    assert any("고유어" in p and "hibernate_sequence" in p for p in leaked)
+    ctx.incident = load_incidents(ROOT)["data.analytics"]  # avoid_terms 에 'ExP'
+    arts[0] = arts[0].model_copy(update={"content": "experiment_id=7 expected=0.42"})
+    assert not any("고유어" in p for p in check(out.model_copy(update={"artifacts": arts}), ctx))

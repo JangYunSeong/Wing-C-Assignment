@@ -69,6 +69,30 @@ def test_tells_in_titles_and_key_content_are_flagged() -> None:
     assert not any("암시" in p or "직접 말함" in p for p in check(out, _ctx()))
 
 
+def test_conclusion_lines_in_key_or_support_are_flagged_but_config_keys_are_not() -> None:
+    """2026-11-03 웹 예시: 핵심 자료 끝 'Pattern: …' 줄이 정답을 말함. YAML 의 pattern: "^…" 는 원시 설정."""
+    out = _v3()
+    arts = [a.model_copy() for a in out.artifacts]
+    arts[0] = arts[0].model_copy(
+        update={
+            "content": "w-3 t=0 get c7\nPattern: workers that hold one and wait for another fail"
+        }
+    )
+    arts[1] = arts[1].model_copy(update={"content": "# 결론: 저장 경로는 정상이고 지연도 없음"})
+    problems = "\n".join(check(out.model_copy(update={"artifacts": arts}), _ctx()))
+    assert "a1 에 판정·요약 줄" in problems and "a2 에 판정·요약 줄" in problems
+    cfg = [a.model_copy() for a in out.artifacts]
+    cfg[0] = cfg[0].model_copy(
+        update={
+            "content": 'rules:\n  - pattern: "^(GET|POST) /api/v[0-9]+/[a-z]+$"\n    action: allow'
+        }
+    )
+    cfg[2] = cfg[2].model_copy(update={"content": "Summary: this distractor says a lot of things"})
+    assert not any(
+        "판정·요약" in p for p in check(out.model_copy(update={"artifacts": cfg}), _ctx())
+    )
+
+
 async def test_v3_current_draft_shuffles_and_carries_artifacts_into_task() -> None:
     """CURRENT(v3) 로 생성: 자료가 섞여 TaskItem 에 실리고, 요청 한도·source_incident 도 붙는다."""
     import json
