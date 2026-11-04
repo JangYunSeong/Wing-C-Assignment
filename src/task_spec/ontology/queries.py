@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from task_spec.ontology.repository import OntologyRepository
+from task_spec.postings.search import SearchTerm
 from task_spec.schemas import (
     CompetencyEvidence,
     EscoRef,
@@ -36,6 +37,26 @@ def _sections(values: list[str] | None) -> list[str]:
 async def posting_exists(repo: OntologyRepository, posting_id: str) -> bool:
     rows = await repo.fetch("SELECT 1 AS ok FROM position WHERE id = %s", (posting_id,))
     return bool(rows)
+
+
+async def search_positions(
+    repo: OntologyRepository, terms: list[SearchTerm], *, pilot_only: bool, limit: int
+) -> list[dict[str, object]]:
+    """회사·직무·원 표기·id·직군에 검색어가 모두 들어 있는 공고 (postings/search.search_terms)."""
+    where = ["(NOT %s OR in_pilot)"]
+    params: list[object] = [pilot_only]
+    for t in terms:
+        where.append(
+            "(company ILIKE %s ESCAPE '\\' OR job ILIKE %s ESCAPE '\\' OR position_name ILIKE %s ESCAPE '\\'"
+            " OR id ILIKE %s ESCAPE '\\' OR sub ILIKE %s ESCAPE '\\' OR sub = ANY(%s))"
+        )
+        params += [t.pattern] * 5 + [list(t.subs)]
+    params.append(limit)
+    return await repo.fetch(
+        "SELECT id, company, job, position_name, sub, industry_id, in_pilot FROM position"
+        f" WHERE {' AND '.join(where)} ORDER BY company, id LIMIT %s",
+        tuple(params),
+    )
 
 
 async def posting_profile(repo: OntologyRepository, posting_id: str) -> PostingProfile | None:
