@@ -42,7 +42,7 @@ LG에너지솔루션
 넷마블|Netmarble
 스마일게이트|Smilegate
 펄어비스|Pearl Abyss
-하이브|HYBE
+!하이브|HYBE
 KT|케이티|Korea Telecom
 KB국민은행|국민은행|KB Kookmin Bank
 KB증권

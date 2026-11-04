@@ -11,7 +11,12 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from task_spec.nodes.pseudonymize.dictionaries import LEFT, RIGHT, Dictionaries
+from task_spec.nodes.pseudonymize.dictionaries import (
+    LEFT,
+    RIGHT,
+    SCHOOL_ONLY_SUFFIX,
+    Dictionaries,
+)
 
 REMOVE = "REMOVE"
 CATEGORIES = ("PERSON", "CONTACT", "LINK", "SCHOOL", "ORG", "PRODUCT", "COURSE")
@@ -41,8 +46,12 @@ _PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
         re.compile(
             r"(?:https?://|www\.)[^\s<>()\[\]가-힣]+"
             r"|(?<![\w.])(?:github\.com|gitlab\.com|linkedin\.com|velog\.io|medium\.com|brunch\.co\.kr"
-            r"|blog\.naver\.com|[a-z0-9-]+\.github\.io|[a-z0-9-]+\.tistory\.com|[a-z0-9-]+\.notion\.site)"
-            r"(?:/[^\s<>()\[\]가-힣]*)?",
+            r"|blog\.naver\.com|[a-z0-9-]+\.github\.io|[a-z0-9-]+\.tistory\.com|[a-z0-9-]+\.notion\.site"
+            # 스킴 없는 배포 주소 — 개인 프로젝트 주소가 이름·학교를 드러낸다 (2026-11-04 분석). 다단계 서브도메인 허용
+            r"|(?:[a-z0-9-]+\.)+(?:vercel\.app|netlify\.app|herokuapp\.com|pages\.dev|web\.app|firebaseapp\.com"
+            r"|streamlit\.app|onrender\.com|fly\.dev|gitlab\.io|glitch\.me|repl\.co))"
+            # 도메인 뒤 우측 경계 — "self.web.application", "config.web.app_name", "x.fly.developer" 는 주소가 아님
+            r"(?![A-Za-z0-9_-])(?:/[^\s<>()\[\]가-힣]*)?",
             re.IGNORECASE,
         ),
     ),
@@ -98,12 +107,69 @@ def detect_address(text: str) -> list[Span]:
     return spans
 
 
+# 라벨 붙은 계정 핸들: "GitHub: gru-eats", "깃허브: @gruswap". 맨 '@핸들' 은 코드 애노테이션(@Transactional)과
+# 구분할 수 없어 라벨 뒤일 때만. 핸들 바로 뒤에 한글이 붙으면("Actions로") 계정이 아니라 문장으로 본다.
+_HANDLE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:github|gitlab|깃허브|깃헙|깃랩)[ \t]*[:：][ \t]*@?"
+    # 핸들 뒤 '.' 은 문장 끝 마침표일 때(뒤가 공백·줄끝)만 허용 — "GitHub: gru-eats."
+    r"(?P<h>[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,38}[A-Za-z0-9])?)(?![A-Za-z0-9_:/-]|[가-힣]|\.(?=[A-Za-z0-9_-]))"
+)
+
+
+# 라벨 뒤에 와도 계정이 아닌 것: 버전("v1.2.3", "3.11"), 파일명("main.py"), GitHub 기능·흔한 단어 (짧은 목록, 대소문자 그대로)
+_NOT_HANDLE_VERSION = re.compile(r"v?\d+(?:\.\d+)+", re.IGNORECASE)
+_NOT_HANDLE_FILE = re.compile(
+    r".+\.(?:py|js|ts|tsx|jsx|java|kt|go|rs|rb|php|c|h|cpp|cs|md|txt|json|ya?ml|toml|cfg|ini|sh|html|css|sql|ipynb)",
+    re.IGNORECASE,
+)
+_NOT_HANDLE_WORDS = frozenset(
+    {
+        "README",
+        "Issues",
+        "Issue",
+        "Actions",
+        "Pages",
+        "Wiki",
+        "Projects",
+        "Releases",
+        "Packages",
+        "Discussions",
+        "Copilot",
+        "Python",
+        "Java",
+        "Docker",
+        "Kubernetes",
+        "main",
+        "master",
+        "develop",
+    }
+)
+
+
+def detect_handles(text: str) -> list[Span]:
+    spans = []
+    for m in _HANDLE.finditer(text):
+        h = m.group("h")
+        if (
+            h in _NOT_HANDLE_WORDS
+            or _NOT_HANDLE_VERSION.fullmatch(h)
+            or _NOT_HANDLE_FILE.fullmatch(h)
+        ):
+            continue
+        spans.append(Span(m.start("h"), m.end("h"), "LINK", 3, "handle"))
+    return spans
+
+
 def detect_patterns(text: str) -> list[Span]:
-    return [
-        Span(m.start(), m.end(), cat, 3, name)
-        for name, cat, rx in _PATTERNS
-        for m in rx.finditer(text)
-    ] + detect_address(text)
+    return (
+        [
+            Span(m.start(), m.end(), cat, 3, name)
+            for name, cat, rx in _PATTERNS
+            for m in rx.finditer(text)
+        ]
+        + detect_address(text)
+        + detect_handles(text)
+    )
 
 
 # ---------------------------------------------------------------- 인구통계 삭제 (priority 2)
@@ -222,22 +288,31 @@ _QUOTED_PRODUCT = re.compile(
 )
 
 
+def _line_of(text: str, start: int, end: int) -> str:
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    return text[line_start : line_end if line_end != -1 else len(text)]
+
+
 def detect_dictionary(text: str, dicts: Dictionaries) -> list[Span]:
     spans = []
     for m in _QUOTED_PRODUCT.finditer(text):
         g = "name" if m.group("name") is not None else "name2"
         spans.append(Span(m.start(g), m.end(g), "PRODUCT", 2, "quoted"))
-    for m in dicts.pattern().finditer(text):
-        entry = dicts.entry_for(m.group(0))
-        if entry is None:
-            continue
-        if entry.needs_context:
-            line_start = text.rfind("\n", 0, m.start()) + 1
-            line_end = text.find("\n", m.end())
-            line = text[line_start : line_end if line_end != -1 else len(text)]
-            if not _CONTEXT_RX.search(line):
+    for name, rx in (("dict", dicts.pattern()), ("dict_attached", dicts.attached_pattern())):
+        for m in rx.finditer(text):
+            entry = dicts.entry_for(m.group(0))
+            if entry is None:
                 continue
-        spans.append(Span(m.start(), m.end(), entry.category, 2, "dict", entry.canonical))
+            if (
+                name == "dict_attached"
+                and text.startswith(SCHOOL_ONLY_SUFFIX, m.end())
+                and entry.category != "SCHOOL"
+            ):
+                continue  # '…생' 은 학교 뒤에서만 (회사+생 은 다른 단어일 수 있다)
+            if entry.needs_context and not _CONTEXT_RX.search(_line_of(text, m.start(), m.end())):
+                continue
+            spans.append(Span(m.start(), m.end(), entry.category, 2, name, entry.canonical))
     for m in _SCHOOL_SUFFIX.finditer(text):
         spans.append(Span(m.start(), m.end(), "SCHOOL", 2, "suffix"))
     for rx in (_ORG_PREFIXED, _ORG_SUFFIXED):
@@ -251,7 +326,10 @@ def detect_dictionary(text: str, dicts: Dictionaries) -> list[Span]:
 _TITLES = (
     "선배님|후배님|멘토님|대표님|이사님|교수님|박사님|강사님|팀장님|매니저님|"
     "님|씨|선임|책임|수석|대리|과장|차장|부장|팀장|파트장|실장|본부장|매니저|교수|박사|"
-    "선배|후배|멘토|대표|이사|주임|사원|연구원|조교|강사"
+    "선배|후배|멘토|대표|이사|주임|사원|연구원|조교|강사|"
+    # 이름 뒤 협업 명사 ("{이름} 팀원이") — 2026-11-04. '학생'·'멘티' 는 "장학금 학생" 같은 오탐이 나서 넣지 않는다.
+    # 이름 앞에 오는 쪽(_TITLE_BEFORE_NAME)에는 넣지 않는다 — "팀원 성과를", "학생 정보를" 이 이름으로 잡힌다.
+    "팀원|동료"
 )
 _NAME_BEFORE_TITLE = re.compile(rf"(?<![가-힣])(?P<name>[가-힣]{{2,4}})[ \t]?(?P<title>{_TITLES})")
 _TITLE_BEFORE_NAME = re.compile(
@@ -302,10 +380,51 @@ def detect_intro_names(text: str, dicts: Dictionaries) -> list[Span]:
     return spans
 
 
+# '팀원·동료' 앞에는 꾸미는 말이 흔하다 ("함께한 동료", "새로 합류한 팀원"). 끝음절로 거르면 실제 이름(정우한·최가난)과
+# 겹치므로, 흔한 관형형 **단어 목록**일 때만 이름으로 보지 않는다 (privacy-auditor 2차 W3 후속).
+_PEER_TITLES = ("팀원", "동료")
+_PEER_MODIFIERS = frozenset(
+    {
+        "함께한",
+        "참여한",
+        "협업한",
+        "같이한",
+        "근무한",
+        "일한",
+        "일했던",
+        "함께했던",
+        "소속된",
+        "배정된",
+        "합류한",
+        "새로운",
+        "기존",
+        "성실한",
+        "유능한",
+        "우수한",
+        "든든한",
+        "소중한",
+        "훌륭한",
+        "좋은",
+        "다른",
+        "모든",
+        "같은",
+        "여러",
+        "신규",
+        "주니어",
+        "시니어",
+        "담당",
+        "현재",
+        "이전",
+    }
+)
+
+
 def detect_titled_names(text: str, dicts: Dictionaries) -> list[Span]:
     spans = []
     for m in _NAME_BEFORE_TITLE.finditer(text):
         name = m.group("name")
+        if m.group("title") in _PEER_TITLES and name in _PEER_MODIFIERS:
+            continue
         honorific = m.group("title") in ("님", "씨")
         if _is_name(name, dicts, allow_two=honorific):
             spans.append(Span(m.start("name"), m.end("name"), "PERSON", 2, "title"))
@@ -330,6 +449,21 @@ def _get_kiwi() -> Any:
         return _kiwi
 
 
+# Kiwi 이름 후보 오탐 줄이기 (2026-11-04 분석 — 성씨로 시작하는 3음절 명사 26% 가 어떤 문맥에선 이름으로 잡힘).
+# 재현율(누출 방지)이 우선이다 — 문맥 규칙은 실제 이름을 놓치게 한다 ("김민재 값 비교" 처럼 뒤에 기술어가 오는 일상 문장,
+# privacy-auditor 2차 H-new1). 그래서 오탐 명사는 **단어 목록(`tech_terms.txt`)으로** 막고, 규칙은 하나만 둔다:
+# 이름에 쓰이지 않는 외래어 음절(튜·뷰·큐·셋 …)이 있으면 명사. 이름에 있을 법한 음절(량·률·스·크·트·플·값 …)은 넣지 않고,
+# 바로 뒤에 조사가 붙으면 면제한다 (privacy-auditor 1차 H2·2차 W1). Kiwi 신뢰도·사전 밖 여부로 거르지 않는다.
+_FOREIGN_SYLLABLES = frozenset("튜퓨뷰챗쿼큐셋웨엑텍젝렉펙픽")
+_PARTICLE_AFTER = re.compile(r"(?:에게|에서|으로|이랑|이|가|과|와|은|는|을|를|의|도|로|랑|께)")
+
+
+def _kiwi_noun_like(text: str, start: int, end: int) -> bool:
+    if _PARTICLE_AFTER.match(text, end):
+        return False
+    return any(ch in _FOREIGN_SYLLABLES for ch in text[start + 1 : end])
+
+
 def detect_kiwi_names(text: str, dicts: Dictionaries) -> list[Span]:
     """Kiwi 고유명사(NNP) 중 '성씨 + 이름' 모양만 사람 이름으로 본다. 붙어 있는 NNP 는 합친다 (박+지훈)."""
     tokens = [t for t in _get_kiwi().tokenize(text)]
@@ -346,7 +480,11 @@ def detect_kiwi_names(text: str, dicts: Dictionaries) -> list[Span]:
             end = tokens[j].start + tokens[j].len
             j += 1
         cand = text[start:end]
-        if re.fullmatch(r"[가-힣]{3,4}", cand) and _is_name(cand, dicts, allow_two=False):
+        if (
+            re.fullmatch(r"[가-힣]{3,4}", cand)
+            and _is_name(cand, dicts, allow_two=False)
+            and not _kiwi_noun_like(text, start, end)
+        ):
             spans.append(Span(start, end, "PERSON", 1, "kiwi"))
         i = j
     return spans
