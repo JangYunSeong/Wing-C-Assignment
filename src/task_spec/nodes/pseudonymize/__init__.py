@@ -11,6 +11,7 @@ from task_spec.nodes.pseudonymize.node import (
     make_pseudonymize,
     mint_pseudonymized,
     pseudonymization_passed,
+    split_pseudonymized,
     stub_pseudonymizer,
 )
 from task_spec.nodes.pseudonymize.rule_pseudonymizer import RulePseudonymizer
@@ -25,5 +26,6 @@ __all__ = [
     "make_pseudonymize",
     "mint_pseudonymized",
     "pseudonymization_passed",
+    "split_pseudonymized",
     "stub_pseudonymizer",
 ]
