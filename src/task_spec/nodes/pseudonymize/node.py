@@ -38,8 +38,14 @@ def make_pseudonymize(
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     async def pseudonymize(state: RunState) -> dict[str, Any]:
         # 추출에 실패한 문서는 가명화하지 않고 같은 사유로 실패시킨다 (→ END)
+        ok_docs = [r for r in state.extracted if r.ok]
+        batch = getattr(pseudonymizer, "batch", None)
+        if batch is not None:  # 한 run 의 문서를 함께 (전부 탐지한 뒤 전파 — code review M5)
+            done = iter(await batch(state.run_id, ok_docs))
+        else:
+            done = iter([await pseudonymizer(state.run_id, r) for r in ok_docs])
         results = [
-            await pseudonymizer(state.run_id, r)
+            next(done)
             if r.ok
             else PseudoDocRef(
                 doc_id=r.doc_id,
