@@ -28,6 +28,8 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 | `POST` | `/runs/{run_id}/approve` | `ApprovalDecision` 로 `Command(resume=...)`. 승인 대기 상태가 아니면 `409` |
 | `GET` | `/runs/{run_id}/spec` | 확정 명세 (승인된 경우만, 아니면 `404`) |
 | `GET` | `/healthz` | 프로세스·Postgres 연결·온톨로지 산출물 버전 (키 값은 노출하지 않고 설정 여부만) |
+| `GET` | `/postings?q=` | 공고 찾기 — 회사·직무명·id·직군 이름으로 임시 공고와 온톨로지 공고(기본 시범만, `pilot_only`), 최대 `limit` 건. 검색어는 공백으로 나눠 AND, LIKE 특수문자는 글자 그대로 [제안: 2026-11-04] |
+| `GET` | `/postings/{id}` | 공고 프로필 — 임시 공고(`prov-…`)와 온톨로지 공고 모두 (`#` 이 든 id 는 URL 인코딩) |
 | `GET` | `/`, `/ui/` | 임시 화면 "과제 명세 작업대" (`api/routers/ui.py`, `api/static/`). `UI_ENABLED=false` 면 `404` [제안: 2026-11-04] |
 
 - 상태는 `graph.aget_state(config)` 에서 계산한다. 별도 상태 테이블을 두지 않는다 (체크포인터가 SSOT).
@@ -76,7 +78,8 @@ async def lifespan(app: FastAPI):
 ## 임시 화면 (/ui/) [제안: 2026-11-04 사용자 요청]
 
 - 정적 파일 세 개(`index.html`·`app.css`·`app.js`)만. 빌드 도구·CDN·웹폰트 없음 (사내망). 라우터는 정해 둔 파일명만 돌려준다 (디렉터리 마운트 금지 — 경로 조작).
-- 화면은 **기존 API 만** 부른다: `/postings/suggest` → `/postings` → `/runs` → SSE → `/runs/{id}` → `/approve` → `/spec`. 화면 전용 엔드포인트를 만들지 않는다.
+- 화면은 **기존·일반 API 만** 부른다: `/postings/suggest` → `/postings` → `/runs` → SSE → `/runs/{id}` → `/approve` → `/spec`, 공고 고르기는 `GET /postings?q=`·`GET /postings/{id}`. 화면 전용 엔드포인트를 만들지 않는다 (공고 찾기는 화면이 아니어도 쓰는 조회 API).
+- 공고는 id 대신 이름으로 보여준다 — 온톨로지 원 표기("회사 / 직무 (경력)")에 회사가 들어 있으면 그대로, 아니면 "회사 · 직무".
 - API 가 준 글(LLM 출력 포함)은 전부 이스케이프해서 넣는다. 브라우저 저장소에는 실행 id·공고 id·승인자/확인자 이름만 (지원서 내용 금지).
 - 인증이 없으므로 운영에서는 nginx Basic 인증 뒤에서만 켠다. 인증이 붙으면 화면의 승인자 입력칸을 인증 사용자로 바꾼다 [TODO(auth)].
 
