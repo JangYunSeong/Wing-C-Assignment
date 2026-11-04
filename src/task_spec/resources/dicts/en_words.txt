@@ -1,0 +1,30 @@
+# 로마자 이름 변형과 겹칠 수 있는 영어·기술 단어 (소문자). 한글 이름의 '이름만' 로마자 변형(예: 가온 → Gaon)을
+# 문서 전체에서 바꿀 때, 변형이 이 단어와 같으면 이름만 따로 바꾸지 않는다 (성+이름 전체 표기는 그대로 바꾼다).
+# 공개 채용 공고 문장의 영어 단어 중 로마자 음절로 나뉘는 것 + 흔한 영어 단어 (2026-11-04, 지원자 데이터 아님).
+aaai abap agile amesim angular antenna apache api appium area asil atlassian audio auto autogen autosar
+aware bang bar base baseline beam bean bep bim bin bit bom bonding boot bootrom bot
+bun can cane chain chip chunking code coin come cone core dam damper dan dana data
+database dataset date dead deal dean delete delta den dense die digital dine diode dog domain
+don done dong door down dual eai eda emi engine engineering eplan gaa gain game gan
+gang gap gate gaussian gemini gen genai gene generator gin git golang gold gone good goroutine
+gui guide guideline gun gurobi hadoop hair hall ham hana hang hara harbor hardware hen hero
+hibernate hill hint hipaa home hook hope hot house hug hum human hun hung hunting iam
+ide image ing ion iot iron isa isir iso issue item itom jam jar jean jenkin
+jira jitter join joke jotai jun june junior kam kernel kia kibana kimi kin king kit
+kotlin lake lamp lan land lane langchain language lap large late layer layout leading learning lidar
+lin line linear lion load loan lock logit long looker loom loop lot machine main man
+manager mane manner map mapper margin maria market marketing marking material mean meet megatron mentalmodel mentor
+metal mil mina mine minio mint mip mirrormaker mitre moan mobile mode model modeling modem module
+mom mongo monitor monitoring monk monte moon more motion motor mount multi multimodal nail name nana
+near need net neural nine node noise non none noon nora note nun oauth odata oem
+one online oom oop open operator optuna orbit osi pain pan parallel parameter park parser partition
+path patrol patterning peri peta pim pin pine pinia pink pipeline polarion pool pop portal pose
+pot power ppa ppap ppo radio rain ram raman rancher random ranking rare rate real reasoning
+regulator reranker rich ride ring rise road robot rock role room root rotation route router routing
+rule run runner runtime sale same san sand sang sap sea seal seat seed seen selenium
+sell sem send sense sensing sensor set setup siem sim sing single sink site soap soar
+soi solder solution son song soon sop sora sorter sota sso suite sun sung switching tag
+tail take tan tank target tea teacher team telerik tem ten tensor tent tia tibero tier
+time timing tin tone tool toolchain tooling top toss town tree tune tuning twin ubuntu uni
+unit unreal update use user wall wan wane want war warm wash way week well west
+wide wind wine wing wire wise wood word working yard yarn year yes

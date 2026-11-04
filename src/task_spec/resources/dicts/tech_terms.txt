@@ -29,3 +29,12 @@
 인턴십 멘토링 해커톤 스터디 세미나 컨퍼런스 워크숍 공모전 경진대회 인공지능 안드로이드 이커머스
 # 역할 명사 (머리줄·자기소개 이름 오탐 방지)
 지원자 담당자 면접관 신입생 졸업생 재학생 전공자 개발자 기획자 분석가 연구자 관리자 사용자 고객사 협력사 수강생 교육생 주니어 시니어
+# 영문 기술·도구 단어 (영문 여러 단어 회사 후보·영문 이름 후보에서 뺀다, 대소문자 무시 — 2026-11-04 2차)
+Spring Boot Batch Security Gateway Kafka Streams Python Java Kotlin Scala Ruby Rails Rust Golang PHP Laravel
+React Native Vue Angular Svelte Node Express Nest Next Nuxt Django Flask FastAPI Docker Kubernetes Helm Terraform
+Ansible Jenkins Argo AWS GCP Azure Oracle MySQL MariaDB PostgreSQL Redis MongoDB Elasticsearch OpenSearch Kibana
+Logstash Grafana Prometheus Datadog Sentry Spark Hadoop Hive Presto Trino Flink Airflow Snowflake Databricks BigQuery
+Redshift TensorFlow PyTorch Keras Tableau Looker Power BI Excel Visual Studio Code IntelliJ Eclipse Xcode Android iOS
+Swift Flutter Unity Unreal Figma Jira Confluence Notion Slack GitHub GitLab Bitbucket Linux Ubuntu CentOS Windows
+Nginx Apache Tomcat JPA Hibernate MyBatis QueryDSL GraphQL REST gRPC Guard Golden Gate Active Directory SQL Server
+Lambda Fargate Kinesis DynamoDB Aurora CloudFront CloudWatch Cognito Firebase Supabase Vercel Netlify Heroku Webpack Vite
