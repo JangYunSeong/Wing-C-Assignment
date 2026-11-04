@@ -119,6 +119,21 @@ textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .confirmed { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--r-ctl); background: var(--ok-soft); font-size: 12.5px; }
 .confirmed .mono { color: var(--ok); font-weight: 700; }
 
+.inline-check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.inline-check input { accent-color: var(--accent); margin: 0; }
+.hits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-ctl); max-height: 320px; overflow-y: auto; }
+.hits:empty { display: none; }
+.hits li + li { border-top: 1px solid var(--line); }
+.hits button { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; }
+.hits button:hover, .hits button[aria-pressed="true"] { background: var(--accent-soft); }
+.hits button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.hit-name { font-size: 13px; font-weight: 600; }
+.hit-meta { font-size: 11.5px; color: var(--faint); display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.hit-meta .src { color: var(--accent-ink); font-weight: 700; }
+.picked { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--r-ctl); background: var(--ok-soft); font-size: 12.5px; }
+.picked strong { font-size: 13.5px; }
+.picked .row { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.picked .mono { color: var(--muted); font-size: 11px; }
 .drop {
   border: 1.5px dashed var(--line); border-radius: var(--r-box); background: var(--sunk);
   padding: 18px 14px; text-align: center; display: flex; flex-direction: column; gap: 4px; align-items: center; cursor: pointer;
@@ -150,6 +165,8 @@ textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .recent button:hover .mono { color: var(--accent-ink); }
 .recent button:focus-visible { outline: 2px solid var(--accent); }
 .recent .sub { color: var(--faint); font-size: 11.5px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent .recent-name { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent button > span:first-child { min-width: 0; }
 .recent-empty { color: var(--faint); font-size: 12.5px; }
 
 /* ── 상태 알약 ─────────────────────── */
