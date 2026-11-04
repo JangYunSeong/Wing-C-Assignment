@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import ValidationError
 
 from task_spec.api.launcher import RunLauncher
 from task_spec.api.schemas import RunView
-from task_spec.schemas import ApprovalSummary, TaskSpec
+from task_spec.schemas import ApprovalSummary, RunState, TaskSpec
+from task_spec.spec.summary import approval_summary
 
 
 def _pending_interrupt(snapshot: Any) -> dict[str, Any] | None:
@@ -70,7 +72,19 @@ async def load_run_view(
     approval = values.get("approval")
     revision = spec.revision if spec else None
     if approval is not None and approval.status == "rejected":
-        return RunView(**base, status="rejected", revision=revision)
+        return RunView(
+            **base, status="rejected", revision=revision, approval_summary=_summary(values)
+        )
     if approval is not None and approval.status == "approved" and spec and spec.approval:
-        return RunView(**base, status="done", revision=revision)
+        return RunView(**base, status="done", revision=revision, approval_summary=_summary(values))
     return RunView(**base, status="failed", revision=revision)
+
+
+def _summary(values: dict[str, Any]) -> ApprovalSummary | None:
+    """승인이 끝난 실행도 승인 대기 때와 같은 요약(대조·배정)을 — 저장된 State 에서 다시 계산한다."""
+    if values.get("spec") is None:
+        return None
+    try:
+        return approval_summary(RunState.model_validate(values))
+    except ValidationError:
+        return None  # 예전 형식 체크포인트 — 요약 없이 상태만

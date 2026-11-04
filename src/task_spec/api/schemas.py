@@ -31,7 +31,8 @@ class RunView(BaseModel):
     revision: int | None = None
     spec: TaskSpec | None = None  # awaiting_approval 일 때만 (승인 대기 초안)
     approval_error: str | None = None  # 직전 결정이 거부된 사유 (interrupt payload.error)
-    # 승인자가 먼저 볼 요약 (interrupt payload.summary — nodes/spec.py approval_summary). 주장 인용 없음.
+    # 승인자가 먼저 볼 요약 (spec/summary.py approval_summary). 승인 대기 = interrupt payload.summary,
+    # done·rejected = 저장된 State 에서 다시 계산 (확정 뒤에도 대조·배정을 보게). 주장 인용 없음.
     approval_summary: ApprovalSummary | None = None
     errors: list[NodeError] = []
 
