@@ -115,6 +115,28 @@ def join_pseudonymized(
     )
 
 
+def split_pseudonymized(
+    source: PseudonymizedText, line: int
+) -> tuple[PseudonymizedText, PseudonymizedText]:
+    """가명화본을 줄 경계에서 둘로 나눈다 — 긴 문서를 조각내 LLM 에 보낼 때 (주장 추출 출력 잘림).
+
+    누락 검사를 통과한 가명화본(load_pseudonymized 결과)이나 그 조각만 받는다 — PseudonymizedText 가
+    아닌 텍스트는 거부한다.
+
+    내용을 바꾸지 않고 줄 단위로만 자르므로 가명화 토큰이 끊기지 않고 가명화 상태가 유지된다.
+    두 조각을 줄바꿈으로 다시 이으면 source 와 같다.
+    """
+    if not isinstance(source, PseudonymizedText):
+        raise ValueError("가명화되지 않은 텍스트는 나눌 수 없습니다")
+    lines = source.split("\n")
+    if not 0 < line < len(lines):
+        raise ValueError("나눌 줄 위치가 범위 밖")
+    return (
+        PseudonymizedText("\n".join(lines[:line]), _token=_MINT),
+        PseudonymizedText("\n".join(lines[line:]), _token=_MINT),
+    )
+
+
 class PseudonymizedNotAvailable(Exception):
     """가명화본이 없거나 검사를 통과하지 못한 문서."""
 
