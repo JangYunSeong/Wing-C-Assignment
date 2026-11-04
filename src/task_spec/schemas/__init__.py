@@ -45,6 +45,8 @@ from task_spec.schemas.draft import (
     JudgedDraft,
     JudgeDraftInput,
     JudgeDraftOutput,
+    JudgeTrapsInput,
+    JudgeTrapsOutput,
 )
 from task_spec.schemas.incident import PublicIncident
 from task_spec.schemas.ingest import (
@@ -118,6 +120,8 @@ __all__ = [
     "Artifact",
     "JudgeDraftInput",
     "JudgeDraftOutput",
+    "JudgeTrapsInput",
+    "JudgeTrapsOutput",
     "JudgedDraft",
     "NcsCriterion",
     "NcsKsa",

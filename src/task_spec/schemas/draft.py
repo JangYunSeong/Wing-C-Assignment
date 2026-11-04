@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
@@ -104,3 +104,40 @@ class JudgedDraft(Schema):
 class JudgeDraftOutput(Schema):
     items: list[JudgedDraft] = Field(min_length=1, max_length=8)
     ranking: list[str] = Field(min_length=1, max_length=8, description="좋은 순서의 ref")
+
+
+class JudgeTrapsInput(Schema):
+    """평가 전용 함정 사실 판정(judge_trap_facts) 입력 — 숨김 부분까지 다 보인 과제 + 원 사례 기준."""
+
+    task: str = Field(min_length=1)  # 과제 JSON (상황·제출물·자료 본문·역할·함정·행동 기준)
+    reference: str = Field(
+        min_length=1
+    )  # 원 사례 원인·흔한 처방이 틀리는 이유·인정할 조치, 없으면 "(없음)"
+
+
+class TrapVerdict(Schema):
+    trap_id: str = Field(min_length=1)
+    check: str = Field(
+        default="",
+        max_length=800,
+        description="문제가 생기는 조건·사라지는 최소 조건을 직접 계산한 것",
+    )
+    verdict: Literal["sound", "unsound", "unclear"] = Field(
+        description="sound=어떤 근거 있는 형태로도 그 처방은 문제를 못 푼다(함정 맞음) / "
+        "unsound=근거 있는 형태로는 그 처방이 통한다(함정이 정답을 감점) / unclear=자료로 가릴 수 없음"
+    )
+    reason: str = Field(min_length=1, max_length=600)
+
+
+class JudgeTrapsOutput(Schema):
+    traps: list[TrapVerdict] = Field(min_length=1, max_length=6)
+    correct_but_penalized: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="실제로 문제를 해결하는데 함정·수준 1 기준대로면 감점될 답 (틀린 답은 적지 않음)",
+    )
+    inconsistencies: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="상황·자료·행동 기준 사이 수치·사실이 안 맞는 곳",
+    )
