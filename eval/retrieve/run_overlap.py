@@ -10,11 +10,18 @@
   - 같은 정답 기준으로 L0·L0+L1·L0+L1+L2 를 비교하는 표 (첫 판은 줄마다 기준이 달라 정밀도가 오르는 것처럼 보였다).
 층: L0 지금 겹침 / L1 고른 공고 밖 역량과 온톨로지 근접·기반 관계인 공고 역량 / L2 공고 매처를 이력서 문장에 (로컬·결정적).
 --legacy-quotes: 인용 대조를 예전 규칙(공백을 하나로만 줄임)으로 — 줄바꿈 수정 전후 비교용.
-입력: --resumes 디렉터리의 *.txt (지원자 데이터 — git 밖 data/ 에만), --postings 공고 id 들.
+입력: --resumes 디렉터리의 *.txt (지원자 데이터 — git 밖 data/ 에만), --postings 공고 id 들 (모든 이력서 공통).
+     또는 --pairs pairs.json — 이력서마다 다른 공고 묶음 ({"pairs": [{resume, split, posting_id}, ...]},
+     이력서 파일은 pairs.json 옆 <split>/<resume>.txt). 쌍의 다른 필드(작성 의도 등)는 읽지 않는다.
      외부 LLM 에는 파이프라인의 로컬 가명화를 통과한 글만 간다 (불변식 2).
-출력: data/eval/overlap/<날짜>-<tag>/ (report.json, samples.md) — git 밖.
+판정 비용: 주장 추출을 모두 끝낸 뒤 판정 프롬프트 길이로 비용을 어림하고 --judge-budget 을 넘으면 판정 전에 멈춘다.
+지표: --report-splits(기본 dev)에 든 split 의 행만 지표·samples.md 에 넣는다. 다른 split(held-out test)의 행은
+     report.json 에 원자료로만 남긴다 — 결정 때 한 번만 채점한다. split 이 없는 행(--resumes)은 항상 지표에 든다.
+출력: data/eval/overlap/<날짜>-<tag>/ 또는 --out (report.json, samples.md) — git 밖.
 사용: uv run python -m eval.retrieve.run_overlap --resumes data/eval/overlap/2026-11-04/resumes \\
         --postings comtus_2026#007 naver_2026#002 kakaobank_2026#002 --openai-key-env OPENAI_PREMIUM_API_KEY
+     uv run python -m eval.retrieve.run_overlap --pairs data/eval/overlap/synth-2026-11-04/pairs.json \\
+        --out data/eval/overlap/synth-2026-11-04-run --openai-key-env OPENAI_PREMIUM_API_KEY
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ import hashlib
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -42,7 +50,7 @@ from task_spec.ontology.queries import posting_profile
 from task_spec.ontology.relatedness import load_relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.suggest import analyze, load_lists
-from task_spec.prompting import PromptRegistry, assemble
+from task_spec.prompting import AssembledPrompt, PromptRegistry, assemble
 from task_spec.retrieve import build_retriever
 from task_spec.schemas import (
     DocumentRef,
@@ -54,7 +62,7 @@ from task_spec.schemas import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "data" / "eval" / "overlap"
+OUT_SUB = ("eval", "overlap")  # 결과는 설정의 data_dir(git 밖) 아래
 JUDGE = "judge_overlap"
 EVIDENCE_SPAN = 8  # 정답 근거와 주장 인용이 공백 빼고 이만큼 겹치면 그 주장이 근거를 덮는다
 STANDARDS = {
@@ -63,6 +71,66 @@ STANDARDS = {
     "any": {"action", "related", "mention"},
 }
 LAYERS = {"L0": ("L0",), "L0+L1": ("L0", "L1"), "L0+L1+L2": ("L0", "L1", "L2")}
+# 판정 비용 어림 (gpt-4.1 USD/토큰). 보수적으로: 한국어 1.3자당 1토큰, 판정 항목 하나에 출력 60토큰
+JUDGE_PRICE = {"in": 2.0e-6, "out": 8.0e-6}
+CHARS_PER_TOKEN = 1.3
+OUT_TOKENS_PER_ITEM = 60
+
+
+@dataclass(frozen=True)
+class Job:
+    """이력서 하나 — 이 이력서와 대조할 공고들, 평가 split (pairs 입력일 때만)."""
+
+    resume: Path
+    postings: tuple[str, ...]
+    split: str | None = None
+
+
+def jobs_from_dir(resumes: Path, postings: list[str]) -> list[Job]:
+    return [Job(r, tuple(postings)) for r in sorted(resumes.glob("*.txt"))]
+
+
+def load_pairs(path: Path) -> list[Job]:
+    """pairs.json → 이력서별 Job. resume·split·posting_id 만 읽는다 (작성 의도 필드는 판정·지표에 쓰지 않음)."""
+    data = json.loads(path.read_text("utf-8"))
+    by: dict[str, tuple[str | None, list[str]]] = {}
+    for p in data["pairs"]:
+        split = p.get("split")
+        prev = by.setdefault(p["resume"], (split, []))
+        if prev[0] != split:
+            raise ValueError(f"{p['resume']}: split 이 쌍마다 다름 ({prev[0]} / {split})")
+        if p["posting_id"] not in prev[1]:
+            prev[1].append(p["posting_id"])
+    return [
+        Job(path.parent / (split or "") / f"{name}.txt", tuple(pids), split)
+        for name, (split, pids) in sorted(by.items())
+    ]
+
+
+def judge_prompt(
+    prompts: PromptRegistry, resume: Any, union: dict[str, str], version: str
+) -> AssembledPrompt:
+    """정답 판정 프롬프트 — 가명화본 이력서 + 공고 역량 합집합("id — 이름" 줄). Claude 판정 패킷도 이것을 쓴다."""
+    return assemble(
+        prompts.get(JUDGE),
+        JudgeOverlapInput(
+            resume=resume,
+            competencies="\n".join(f"{k} — {v}" for k, v in sorted(union.items())),
+        ),
+        ontology_version=version,
+    )
+
+
+def estimate_judge_cost(prompt_chars: int, n_items: int) -> float:
+    return (prompt_chars / CHARS_PER_TOKEN) * JUDGE_PRICE["in"] + (
+        n_items * OUT_TOKENS_PER_ITEM
+    ) * JUDGE_PRICE["out"]
+
+
+def in_report(row: dict[str, Any], splits: set[str] | None) -> bool:
+    """지표에 넣을 행인가 — split 이 없는 행은 늘, 있으면 splits 에 들 때만 (held-out 은 원자료로만)."""
+    split = row.get("split")
+    return split is None or splits is None or split in splits
 
 
 def use_legacy_quotes() -> None:
@@ -112,15 +180,41 @@ def covers(quote: str, evidence: str) -> bool:
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--resumes", type=Path, required=True)
-    ap.add_argument("--postings", nargs="+", required=True)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--resumes", type=Path)
+    src.add_argument("--pairs", type=Path, help="이력서마다 다른 공고 묶음 (pairs.json)")
+    ap.add_argument("--postings", nargs="+", help="--resumes 와 함께: 모든 이력서 공통 공고 id")
     ap.add_argument("--tag", default="overlap")
+    ap.add_argument(
+        "--out", type=Path, default=None, help="결과 폴더 (기본 data/eval/overlap/<날짜>-<tag>)"
+    )
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--legacy-quotes", action="store_true")
     ap.add_argument("--openai-key-env", default=None, help="판정용 OpenAI 키를 읽을 .env 변수 이름")
+    ap.add_argument(
+        "--judge-budget",
+        type=float,
+        default=0.5,
+        help="판정 비용 어림 상한(USD) — 넘으면 판정 전에 멈춘다",
+    )
+    ap.add_argument(
+        "--report-splits", default="dev", help="지표에 넣을 split (쉼표). 'all' 이면 전부"
+    )
+    ap.add_argument(
+        "--only", default=None, help="이 이력서만 (쉼표, 파일 이름 stem) — 실패한 이력서 재실행용"
+    )
     a = ap.parse_args()
+    if a.resumes and not a.postings:
+        ap.error("--resumes 에는 --postings 가 필요합니다")
     if a.legacy_quotes:
         use_legacy_quotes()
+    jobs = load_pairs(a.pairs) if a.pairs else jobs_from_dir(a.resumes, a.postings)
+    if a.only:
+        jobs = [j for j in jobs if j.resume.stem in set(a.only.split(","))]
+    missing_files = [str(j.resume) for j in jobs if not j.resume.is_file()]
+    if missing_files:
+        raise SystemExit(f"없는 이력서 파일: {missing_files}")
+    report_splits = None if a.report_splits == "all" else set(a.report_splits.split(","))
 
     st = Settings()
     repo = await OntologyRepository.open(st.database_url.get_secret_value(), st.ontology_version)
@@ -132,7 +226,8 @@ async def main() -> None:
     pseudo = RulePseudonymizer(st.data_dir)
     await pseudo.warm_up()
     judge_llm = _client(a.openai_key_env)
-    profiles = {pid: await posting_profile(repo, pid) for pid in a.postings}
+    all_pids = sorted({pid for j in jobs for pid in j.postings})
+    profiles = {pid: await posting_profile(repo, pid) for pid in all_pids}
     missing = [pid for pid, p in profiles.items() if p is None]
     if missing:
         raise SystemExit(f"없는 공고: {missing}")
@@ -153,10 +248,11 @@ async def main() -> None:
             relatedness=rel,
         )
 
-        async def one_resume(resume: Path) -> list[dict[str, Any]]:
+        async def extract(job: Job) -> dict[str, Any]:
+            """주장 추출·역할 판정까지 이력서마다 한 번 — 공고마다 바뀌는 검색·선택·대조는 judge_and_compare 에서."""
             async with sem:
                 run_id = f"ovl{uuid.uuid4().hex[:12]}"
-                raw = resume.read_bytes()
+                raw = job.resume.read_bytes()
                 dest = st.data_dir / "raw" / run_id / "resume-1.txt"
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(raw)
@@ -169,83 +265,150 @@ async def main() -> None:
                 inp = RunInput(
                     run_id=run_id,
                     ontology_version=repo.version.version,
-                    posting_id=a.postings[0],
+                    posting_id=job.postings[0],
                     documents=[doc],
                 )
                 cfg = {"configurable": {"thread_id": run_id}}
-                # 주장 추출·역할 판정까지 한 번 — 공고마다 바뀌는 검색·선택·대조는 아래에서 공고별로
                 await graph.ainvoke(
                     inp.model_dump(mode="json"), cfg, interrupt_before=["retrieve_t1"]
                 )
                 values = (await graph.aget_state(cfg)).values
-                base_errors = [e.code for e in values.get("errors") or []]
-                if not values.get("claims") or not values.get("pseudo_docs"):
-                    return [
-                        {"resume": resume.stem, "error": "주장 없음", "node_errors": base_errors}
-                    ]
-                ptext = await asyncio.to_thread(load_pseudonymized, values["pseudo_docs"][0])
-                union = {
-                    c.competency_id: c.label for p in profiles.values() for c in p.competencies
-                }  # type: ignore[union-attr]
-                prompt = assemble(
-                    prompts.get(JUDGE),
-                    JudgeOverlapInput(
-                        resume=ptext,
-                        competencies="\n".join(f"{k} — {v}" for k, v in sorted(union.items())),
-                    ),
-                    ontology_version=repo.version.version,
-                )
-                j = await judge_llm.call(prompt, JudgeOverlapOutput)
-                answered = [x.competency_id for x in j.parsed.items]
-                gt = {x.competency_id: x for x in j.parsed.items if x.competency_id in union}
-                judge_check = {
-                    "asked": len(union),
-                    "answered": len(set(answered) & set(union)),
-                    "duplicates": len(answered) - len(set(answered)),
-                    "unknown_ids": sorted(set(answered) - set(union)),
-                }
-                rows = []
-                for pid, prof in profiles.items():
-                    s2 = RunState.model_validate(
-                        {**values, "posting_id": pid, "posting_profile": prof, "candidates": []}
-                    )
-                    r = await retrieve(s2)
-                    s3 = s2.model_copy(update={"candidates": r["candidates"]})
-                    cmp = (await compare(s3))["comparison"]
-                    row = {
-                        "resume": resume.stem,
-                        "posting": pid,
-                        "run_id": run_id,
-                        "extract_errors": base_errors,
-                        "judge_check": judge_check,
-                        "judge_cost_usd": (j.provenance.cost_usd or 0.0) / len(profiles),
-                        # 주장 추출 비용은 공고 수로 나눠 싣고, 선택 비용은 그 공고 몫 그대로
-                        "pipeline_cost_usd": sum(
-                            p.cost_usd or 0.0 for p in values.get("provenance") or []
-                        )
-                        / len(profiles)
-                        + sum(p.cost_usd or 0.0 for p in r.get("provenance", [])),
+                out: dict[str, Any] = {"job": job, "run_id": run_id, "values": values}
+                if values.get("claims") and values.get("pseudo_docs"):
+                    ptext = await asyncio.to_thread(load_pseudonymized, values["pseudo_docs"][0])
+                    union = {
+                        c.competency_id: c.label
+                        for pid in job.postings
+                        for c in profiles[pid].competencies  # type: ignore[union-attr]
                     }
-                    row.update(analyse(s3, cmp, gt, resume.read_text("utf-8"), lists, rel))
-                    rows.append(row)
-                return rows
+                    out["union"] = union
+                    out["prompt"] = judge_prompt(prompts, ptext, union, repo.version.version)
+                return out
 
-        nested = await asyncio.gather(*(one_resume(r) for r in sorted(a.resumes.glob("*.txt"))))
+        extracted = await asyncio.gather(*(extract(j) for j in jobs))
+
+    estimate = sum(
+        estimate_judge_cost(sum(len(m.content) for m in x["prompt"].messages), len(x["union"]))
+        for x in extracted
+        if "prompt" in x
+    )
+    print(f"판정 비용 어림 ${estimate:.3f} (상한 ${a.judge_budget}) — 이력서 {len(extracted)}개")
+    if estimate > a.judge_budget:
+        await repo.close()
+        raise SystemExit("판정 비용 어림이 상한을 넘어 판정 전에 멈춤")
+
+    async def judge_and_compare(x: dict[str, Any]) -> list[dict[str, Any]]:
+        job: Job = x["job"]
+        values = x["values"]
+        base_errors = [e.code for e in values.get("errors") or []]
+        if "prompt" not in x:
+            return [
+                {
+                    "resume": job.resume.stem,
+                    "split": job.split,
+                    "error": "주장 없음",
+                    "node_errors": base_errors,
+                }
+            ]
+        async with sem:
+            prompt, union = x["prompt"], x["union"]
+            j = await judge_llm.call(prompt, JudgeOverlapOutput)
+            answered = [v.competency_id for v in j.parsed.items]
+            gt = {v.competency_id: v for v in j.parsed.items if v.competency_id in union}
+            judge_check = {
+                "asked": len(union),
+                "answered": len(set(answered) & set(union)),
+                "duplicates": len(answered) - len(set(answered)),
+                "unknown_ids": sorted(set(answered) - set(union)),
+            }
+            rows = []
+            for pid in job.postings:
+                prof = profiles[pid]
+                s2 = RunState.model_validate(
+                    {**values, "posting_id": pid, "posting_profile": prof, "candidates": []}
+                )
+                r = await retrieve(s2)
+                s3 = s2.model_copy(update={"candidates": r["candidates"]})
+                cmp = (await compare(s3))["comparison"]
+                row = {
+                    "resume": job.resume.stem,
+                    "split": job.split,
+                    "posting": pid,
+                    "run_id": x["run_id"],
+                    "extract_errors": base_errors,
+                    # 판정만 다시 돌릴 수 있게 가명화본 참조·판정 원본 (data/ 아래에만 저장된다)
+                    "pseudo_doc": values["pseudo_docs"][0].model_dump(mode="json"),
+                    "judge_model": prompt.model,
+                    "judge_asked": union,
+                    "judge_items": [v.model_dump() for v in j.parsed.items],
+                    "judge_check": judge_check,
+                    "judge_cost_usd": (j.provenance.cost_usd or 0.0) / len(job.postings),
+                    # 주장 추출 비용은 공고 수로 나눠 싣고, 선택 비용은 그 공고 몫 그대로
+                    "pipeline_cost_usd": sum(
+                        p.cost_usd or 0.0 for p in values.get("provenance") or []
+                    )
+                    / len(job.postings)
+                    + sum(p.cost_usd or 0.0 for p in r.get("provenance", [])),
+                }
+                row.update(
+                    analyse(s3, cmp, gt, job.resume.read_text("utf-8"), lists, rel, retriever)
+                )
+                rows.append(row)
+            return rows
+
+    nested = await asyncio.gather(*(judge_and_compare(x) for x in extracted))
     await repo.close()
-    write_report(a.tag, [r for rs in nested for r in rs], legacy=a.legacy_quotes)
+    write_report(
+        a.tag,
+        [r for rs in nested for r in rs],
+        legacy=a.legacy_quotes,
+        out_root=Path(st.data_dir).joinpath(*OUT_SUB),
+        out_dir=a.out,
+        report_splits=report_splits,
+    )
+
+
+TOP_STORE = 30  # 검색 실험용으로 주장마다 저장하는 후보 수 (retrieve 노드는 10개만 쓴다)
+
+
+def search_top(
+    retriever: Any, query: str, sub: str | None, posting: dict[str, bool], k: int = TOP_STORE
+) -> list[dict[str, Any]]:
+    """retrieve 노드와 같은 조건(scope=soft, 공고 가산점)으로 상위 k 를 채널 순위와 함께."""
+    return [
+        {"id": h.competency_id, "score": round(h.score, 5), "ranks": dict(h.ranks)}
+        for h in retriever.search(query, sub, scope="soft", posting=posting, k=k)
+    ]
 
 
 def analyse(
-    state: RunState, cmp: Any, gt: dict[str, Any], raw_text: str, lists: Any, rel: Any
+    state: RunState,
+    cmp: Any,
+    gt: dict[str, Any],
+    raw_text: str,
+    lists: Any,
+    rel: Any,
+    retriever: Any = None,
 ) -> dict[str, Any]:
     prof = state.posting_profile
     assert prof is not None
     posting = {c.competency_id: c for c in prof.competencies}
     claims = {c.claim_id: c for c in state.claims}
+    bonus = {k: c.primary for k, c in posting.items()}
     per_claim = {
         x.claim_id: {
             "picked": list(x.competency_ids),
             "top10": [r.competency_id for r in x.candidates],
+            "top30": (
+                search_top(
+                    retriever,
+                    f"{claims[x.claim_id].action}. {claims[x.claim_id].quote}",
+                    prof.sub,
+                    bonus,
+                )
+                if retriever is not None and x.claim_id in claims
+                else []
+            ),
         }
         for x in state.candidates
     }
@@ -291,8 +454,16 @@ def analyse(
         )
     return {
         "sub": prof.sub,
+        # 인용(quote)은 가명화본에서 온 것 — 결과는 git 밖 data/ 에만 쓴다
         "claims": [
-            {"claim_id": c.claim_id, "action": c.action, "role": c.role, "field": c.field}
+            {
+                "claim_id": c.claim_id,
+                "action": c.action,
+                "result": c.result,
+                "quote": c.quote,
+                "role": c.role,
+                "field": c.field,
+            }
             for c in claims.values()
         ],
         "per_claim": per_claim,
@@ -301,8 +472,17 @@ def analyse(
     }
 
 
-def write_report(tag: str, rows: list[dict[str, Any]], *, legacy: bool) -> None:
-    ok = [r for r in rows if "table" in r]
+def write_report(
+    tag: str,
+    rows: list[dict[str, Any]],
+    *,
+    legacy: bool,
+    out_root: Path,
+    out_dir: Path | None = None,
+    report_splits: set[str] | None = None,
+) -> None:
+    held_out = [r for r in rows if "table" in r and not in_report(r, report_splits)]
+    ok = [r for r in rows if "table" in r and in_report(r, report_splits)]
     t = [x for r in ok for x in r["table"] if x["gt"] is not None]
 
     def pr(layers: tuple[str, ...], pos: set[str]) -> dict[str, Any]:
@@ -334,6 +514,10 @@ def write_report(tag: str, rows: list[dict[str, Any]], *, legacy: bool) -> None:
         "legacy_quotes": legacy,
         "pairs": len(rows),
         "ok": len(ok),
+        "report_splits": sorted(report_splits) if report_splits else "all",
+        # held-out 행은 지표 없이 원자료(rows)로만 — 쌍 수만 적는다
+        "held_out_pairs": len(held_out),
+        "held_out_resumes": sorted({r["resume"] for r in held_out}),
         "posting_competencies_judged": len(t),
         "judge_missing": sum(1 for r in ok for x in r["table"] if x["gt"] is None),
         "gold": {
@@ -345,14 +529,16 @@ def write_report(tag: str, rows: list[dict[str, Any]], *, legacy: bool) -> None:
         },
         "missed_action_causes": causes,
         "by_resume": by_resume,
-        "cost_usd": round(
-            sum(r.get("judge_cost_usd", 0) + r.get("pipeline_cost_usd", 0) for r in ok), 4
-        ),
+        # 비용은 held-out 행까지 전부 (판정 키와 파이프라인 키가 달라 따로)
+        "cost_usd": {
+            "judge": round(sum(r.get("judge_cost_usd", 0) for r in ok + held_out), 4),
+            "pipeline": round(sum(r.get("pipeline_cost_usd", 0) for r in ok + held_out), 4),
+        },
         "errors": [
             {k: r.get(k) for k in ("resume", "error", "node_errors")} for r in rows if "error" in r
         ],
     }
-    out = OUT / f"{date.today()}-{tag}"
+    out = out_dir or out_root / f"{date.today()}-{tag}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(
         json.dumps({**report, "rows": rows}, ensure_ascii=False, indent=1), "utf-8"
