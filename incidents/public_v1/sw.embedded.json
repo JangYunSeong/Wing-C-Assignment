@@ -37,5 +37,9 @@
   "JPL",
   "VxWorks"
  ],
+ "accepted_fixes": [
+  "mutex 를 우선순위 상속(또는 우선순위 상한)을 켠 상태로 만들기",
+  "공유 자원을 쥐는 구간을 짧게 줄이기 — 우선순위 상속과 함께면 인정"
+ ],
  "task_pattern": null
 }

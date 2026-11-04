@@ -30,5 +30,10 @@
   "Quicksilver",
   "WAF Managed Rules"
  ],
+ "accepted_fixes": [
+  "문제 규칙을 끄거나 이전 규칙으로 되돌리기 (전역 차단 스위치)",
+  "선형 시간 정규식 엔진으로 바꾸거나 규칙 실행에 CPU·시간 한도 두기",
+  "규칙 배포를 단계적(카나리)으로 바꾸고 배포 전 CPU 사용량 검사 추가"
+ ],
  "task_pattern": null
 }
