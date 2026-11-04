@@ -25,6 +25,7 @@ from task_spec.schemas.domain import (
 )
 from task_spec.schemas.ingest import ExtractedRef
 from task_spec.schemas.provenance import NodeError, Provenance
+from task_spec.schemas.verify_overlap import OverlapCheckResult
 
 
 class RunState(BaseModel):
@@ -46,6 +47,8 @@ class RunState(BaseModel):
     candidates: list[ClaimCandidates] = Field(default_factory=list)
     links: list[CrossDocLink] = Field(default_factory=list)
     evidence: list[CompetencyEvidence] = Field(default_factory=list)
+    # ④ top-down 확인 (verify_overlap). None = 하지 않음 — 예전 체크포인트도 그대로 읽힌다
+    overlap_check: OverlapCheckResult | None = None
     comparison: Comparison | None = None
     spec: TaskSpec | None = None
     approval: ApprovalDecision | None = None

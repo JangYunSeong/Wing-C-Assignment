@@ -9,8 +9,11 @@ from __future__ import annotations
 from task_spec.schemas import (
     ApprovalSummary,
     AssignmentBrief,
+    Comparison,
     ComparisonBrief,
+    CompetencyMatch,
     OutsideBrief,
+    PostingCheckBrief,
     RunState,
     TaskBrief,
     TaskItem,
@@ -42,6 +45,7 @@ def approval_summary(state: RunState) -> ApprovalSummary:
     comparison = (
         ComparisonBrief(
             overlap=[m.label for m in c.overlap],
+            related=[m.label for m in c.related],
             posting_only=[m.label for m in c.posting_only],
             applicant_only=[
                 OutsideBrief(label=m.label, relatedness=m.relatedness) for m in c.applicant_only
@@ -51,6 +55,8 @@ def approval_summary(state: RunState) -> ApprovalSummary:
                 VerifyBrief(claim_id=v.claim_id, score=v.score, reasons=v.reasons)
                 for v in c.claims_to_verify
             ],
+            check_status=c.check_status,
+            posting_checks=posting_checks(state, c),
         )
         if c is not None
         else None
@@ -73,3 +79,32 @@ def approval_summary(state: RunState) -> ApprovalSummary:
         total_time_min=sum(t.time_limit_min for t in tasks),
         comparison=comparison,
     )
+
+
+def posting_checks(state: RunState, c: Comparison) -> list[PostingCheckBrief]:
+    """공고 역량마다 대조 결과 한 줄 (공고 프로필 순서). 근거는 주장 id 만."""
+
+    def brief(m: CompetencyMatch, status: str) -> PostingCheckBrief:
+        return PostingCheckBrief(
+            competency_id=m.competency_id,
+            label=m.label,
+            primary=m.primary,
+            status=status,  # type: ignore[arg-type]
+            source=m.overlap_source,
+            check_label=m.check_label,
+            claim_ids=list(m.check_claim_ids or m.claim_ids),
+            role=m.role,
+            downgraded=m.downgraded,
+        )
+
+    rows = {
+        m.competency_id: brief(m, status)
+        for status, ms in (
+            ("overlap", c.overlap),
+            ("related", c.related),
+            ("posting_only", c.posting_only),
+        )
+        for m in ms
+    }
+    order = state.posting_profile.competency_ids if state.posting_profile else []
+    return [rows[k] for k in order if k in rows] + [r for k, r in rows.items() if k not in order]

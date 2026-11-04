@@ -14,12 +14,14 @@ from langgraph.types import Command, interrupt
 from pydantic import ValidationError
 
 from task_spec.llm import LLMClient
+from task_spec.nodes.compare import compare_claims
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptError, PromptRegistry
 from task_spec.schemas import (
     ApprovalDecision,
     CommonRef,
+    NodeError,
     PublicIncident,
     RunState,
     SlotAssignment,
@@ -75,6 +77,7 @@ def make_draft_spec(
     drafter_ready = llm is not None and prompts is not None
 
     async def draft_spec(state: RunState) -> dict[str, Any]:
+        state, lowered = _apply_downgrade(state, rel)
         revision = state.spec.revision + 1 if state.spec is not None else 1
         spec_id = f"{state.run_id}-r{revision}"
         common: list[TaskItem] = []
@@ -224,9 +227,56 @@ def make_draft_spec(
             slot_assignments=assignments,
             review_flags=flags,
         )
-        return {"spec": spec, "approval": None, **update}
+        out: dict[str, Any] = {"spec": spec, "approval": None, **update}
+        if lowered is not None:
+            out["comparison"] = state.comparison
+            out["errors"] = [*lowered, *out.get("errors", [])]
+        return out
 
     return draft_spec
+
+
+def _apply_downgrade(
+    state: RunState, rel: Relatedness | None
+) -> tuple[RunState, list[NodeError] | None]:
+    """revise 의 겹침 낮추기·되돌리기 → 대조를 다시 계산 (낮춘 역량은 관련 경험, 검증 후보에서도 뺀다).
+
+    낮춘 역량은 대조(State)에 누적된다 — 다음 revise 에서 다시 보내지 않아도 유지, 되돌리기로만 뺀다.
+    이미 낮춘 역량을 다시 낮추라는 것은 조용히 무시. 겹침이 아닌 역량 낮추기·낮추지 않은 역량 되돌리기는
+    무시하고 기록만 (승인자 입력이므로 공고 역량 id 일 때만 ref_id 로 남긴다).
+    """
+    d = state.approval
+    if (
+        d is None
+        or d.status != "revise"
+        or not (d.downgrade_overlap or d.restore_overlap)
+        or state.comparison is None
+    ):
+        return state, None
+    cmp = state.comparison
+    overlap = {m.competency_id for m in cmp.overlap}
+    lowered = set(cmp.downgraded)
+    posting = set(state.posting_profile.competency_ids) if state.posting_profile else set()
+
+    def ignored(code: str, message: str, c: str) -> NodeError:
+        return NodeError(
+            node="draft_spec", code=code, message=message, ref_id=c if c in posting else None
+        )
+
+    down = list(dict.fromkeys(d.downgrade_overlap))
+    back = list(dict.fromkeys(d.restore_overlap))
+    notes = [
+        ignored("downgrade_ignored", "겹침이 아닌 역량은 낮출 수 없음", c)
+        for c in down
+        if c not in overlap and c not in lowered
+    ] + [
+        ignored("restore_ignored", "낮추지 않은 역량은 되돌릴 수 없음", c)
+        for c in back
+        if c not in lowered
+    ]
+    keep = [c for c in [*cmp.downgraded, *(c for c in down if c in overlap)] if c not in back]
+    new = compare_claims(state, rel, keep)
+    return state.model_copy(update={"comparison": new}), notes
 
 
 async def approval(state: RunState) -> Command[ApprovalRoute]:

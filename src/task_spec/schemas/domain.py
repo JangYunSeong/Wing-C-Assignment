@@ -14,6 +14,11 @@ from task_spec.schemas.approval import ApprovalDecision
 from task_spec.schemas.base import Schema
 
 Role = Literal["participate", "lead", "design"]
+# 공고 역량을 이력서가 얼마나 보여주는가 (judge_overlap 정답 판정·verify_overlap 운영 판정 공통)
+OverlapLabel = Literal["action", "related", "mention", "none"]
+# 겹침의 출처 [확정: 2026-11-04 사용자]: both = 두 경로 일치(선택 ∩ 확인) / verify = 공고 역량 확인(top-down 만)
+# / select = 선택 경로만 (top-down 은 action 아님 — 승인자 확인 필요)
+OverlapSource = Literal["both", "verify", "select"]
 
 
 PostingSection = Literal["duties", "required", "preferred"]
@@ -178,10 +183,16 @@ class CompetencyMatch(Schema):
     label: str
     in_posting: bool
     primary: bool | None = None  # 공고 역량일 때만: 주(담당업무·자격요건) / 보조(우대)
-    claim_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)  # 선택 경로(주장 → 역량)의 근거 주장
     # 공고 밖 역량일 때만: 직무 연계 강·중·약 (ontology/relatedness.py). None = 판정 데이터 없음
     relatedness: Literal["strong", "medium", "weak"] | None = None
     relatedness_reason: str | None = None
+    # 공고 역량일 때만 — top-down 확인(verify_overlap). check_label None = 확인 안 함(예전 실행·실패·빠짐)
+    check_label: OverlapLabel | None = None
+    check_claim_ids: list[str] = Field(default_factory=list)  # 확인 경로의 근거 주장
+    overlap_source: OverlapSource | None = None  # 겹침일 때만
+    role: Role | None = None  # 근거 주장의 칸 규칙 역할 중 가장 높은 것 (불변식 6)
+    downgraded: bool = False  # 승인자가 겹침 → 관련 경험으로 내림
 
 
 class VerifyTarget(Schema):
@@ -195,13 +206,20 @@ class VerifyTarget(Schema):
 
 
 class Comparison(Schema):
-    """④ 공고 역량 vs 지원자 주장에서 고른 역량 (nodes/compare.py, 결정적)."""
+    """④ 공고 역량 vs 지원자 주장 (nodes/compare.py, 결정적 — top-down 확인 결과를 규칙으로 합친다).
+
+    공고 역량은 overlap / related / posting_only 중 하나에만 들어간다.
+    check_status None = top-down 확인을 하지 않은 실행 (예전 체크포인트 포함) — 겹침은 선택 경로만.
+    """
 
     overlap: list[CompetencyMatch] = Field(default_factory=list)
+    related: list[CompetencyMatch] = Field(default_factory=list)  # 관련 경험 (겹침 아님)
     posting_only: list[CompetencyMatch] = Field(default_factory=list)
     applicant_only: list[CompetencyMatch] = Field(default_factory=list)
     uncovered: list[str] = Field(default_factory=list)  # 맞는 역량이 없는 주장 id
     claims_to_verify: list[VerifyTarget] = Field(default_factory=list)
+    check_status: Literal["ok", "partial", "failed"] | None = None
+    downgraded: list[str] = Field(default_factory=list)  # 승인자가 관련 경험으로 내린 공고 역량 id
 
 
 AiAxis = Literal["delegation", "communication", "verification", "responsibility"]

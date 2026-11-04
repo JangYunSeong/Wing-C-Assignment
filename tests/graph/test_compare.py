@@ -9,6 +9,8 @@ from task_spec.schemas import (
     Claim,
     ClaimCandidates,
     CrossDocLink,
+    OverlapCheck,
+    OverlapCheckResult,
     PostingCompetency,
     PostingProfile,
     RunState,
@@ -137,3 +139,113 @@ def test_share_and_scope_give_medium_weak_is_excluded() -> None:
         "weak",
         ["d1-c3"],
     )  # 목록엔 남음
+
+
+# ── 두 경로 합치기 (선택 경로 + 공고 역량 확인) [확정: 2026-11-04] ─────────────
+
+
+def _checked(*items: tuple[str, str, list[str]], status: str = "ok") -> RunState:
+    res = OverlapCheckResult(
+        status=status,  # type: ignore[arg-type]
+        items=[OverlapCheck(competency_id=c, label=lab, claim_ids=ids) for c, lab, ids in items],  # type: ignore[arg-type]
+    )
+    return _state(overlap_check=res)
+
+
+def test_sources_both_verify_select() -> None:
+    # 선택: a ← c1·c5, b ← c2 / 확인: a action(c1), b none, c action(c3)
+    cmp = compare_claims(
+        _checked(
+            ("comp:a", "action", ["d1-c1"]),
+            ("comp:b", "none", []),
+            ("comp:c", "action", ["d1-c3"]),
+        )
+    )
+    assert [(m.competency_id, m.overlap_source, m.check_label) for m in cmp.overlap] == [
+        ("comp:a", "both", "action"),
+        ("comp:b", "select", "none"),  # 선택만 — 승인자 확인 표시
+        ("comp:c", "verify", "action"),
+    ]
+    assert cmp.related == [] and cmp.posting_only == [] and cmp.check_status == "ok"
+    c = cmp.overlap[2]
+    assert (c.check_claim_ids, c.claim_ids, c.role) == (["d1-c3"], [], "lead")  # 근거 주장 칸 역할
+
+
+def test_related_and_mention_are_not_overlap() -> None:
+    cmp = compare_claims(
+        _checked(
+            ("comp:a", "action", ["d1-c1"]),
+            ("comp:b", "action", ["d1-c2"]),
+            ("comp:c", "related", ["d1-c3"]),
+        )
+    )
+    assert [m.competency_id for m in cmp.related] == ["comp:c"]
+    assert cmp.related[0].overlap_source is None and cmp.related[0].role == "lead"
+    mention = compare_claims(
+        _checked(("comp:a", "action", ["d1-c1"]), ("comp:c", "mention", ["d1-c3"]))
+    )
+    assert [m.competency_id for m in mention.posting_only] == ["comp:c"]
+    # comp:b 는 확인 답이 없음(partial) → 선택 경로만으로 겹침, 출처 없음
+    b = next(m for m in mention.overlap if m.competency_id == "comp:b")
+    assert (b.overlap_source, b.check_label, b.role) == (None, None, "participate")
+
+
+def test_roles_prefer_check_evidence() -> None:
+    # a 의 확인 근거 c5(역할 없음)·c3(주도) → 주도. 선택 근거 c1(설계)는 확인 근거가 있으면 쓰지 않는다
+    cmp = compare_claims(_checked(("comp:a", "action", ["d1-c5", "d1-c3"])))
+    a = cmp.overlap[0]
+    assert (a.overlap_source, a.role) == ("both", "lead")
+
+
+def test_check_links_feed_verify_targets() -> None:
+    # c3 은 선택 경로에서 공고 밖 comp:x 만 — 확인 경로에서 공고 주 역량 comp:c 근거가 되면 공고 주 역량 점수
+    base = compare_claims(_state())
+    cmp = compare_claims(_checked(("comp:c", "action", ["d1-c3"]), ("comp:a", "none", [])))
+    c3 = next(x for x in cmp.claims_to_verify if x.claim_id == "d1-c3")
+    old = next(x for x in base.claims_to_verify if x.claim_id == "d1-c3")
+    assert (old.score, c3.score) == (3.5, 5.5)  # 밖1 → 주3 (+ 주도 1.5 + 수치 1)
+    assert c3.competency_ids == ["comp:x", "comp:c"]
+    assert c3.reasons[0] == "공고 주 역량: C(확인)"
+    # 확인 근거가 된 uncovered 주장은 uncovered 에서 뺀다
+    unc = compare_claims(_checked(("comp:b", "action", ["d1-c4"])))
+    assert unc.uncovered == [] and "d1-c4" in [x.claim_id for x in unc.claims_to_verify]
+
+
+def test_downgrade_moves_to_related_and_drops_links() -> None:
+    s = _checked(("comp:c", "action", ["d1-c3"]), ("comp:a", "action", ["d1-c1"]))
+    cmp = compare_claims(s, downgraded=["comp:c", "comp:nope"])
+    assert [m.competency_id for m in cmp.related] == ["comp:c"] and cmp.related[0].downgraded
+    assert cmp.downgraded == ["comp:c"]  # 공고 밖 id 는 무시
+    c3 = next(x for x in cmp.claims_to_verify if x.claim_id == "d1-c3")
+    assert c3.competency_ids == ["comp:x"]
+
+
+def test_failed_check_falls_back_to_select_path() -> None:
+    cmp = compare_claims(_checked(status="failed"))
+    base = compare_claims(_state())
+    assert [m.competency_id for m in cmp.overlap] == [m.competency_id for m in base.overlap]
+    assert all(m.overlap_source is None and m.check_label is None for m in cmp.overlap)
+    assert cmp.check_status == "failed" and base.check_status is None
+    assert cmp.claims_to_verify == base.claims_to_verify
+
+
+def test_role_falls_back_to_select_evidence() -> None:
+    # 확인 근거 c5 는 칸 밖(역할 없음) → 선택 경로 근거 c1(설계)·c5 의 역할로
+    cmp = compare_claims(_checked(("comp:a", "action", ["d1-c5"])))
+    a = next(m for m in cmp.overlap if m.competency_id == "comp:a")
+    assert (a.check_claim_ids, a.role) == (["d1-c5"], "design")
+
+
+def test_select_only_is_marked_in_verify_reasons() -> None:
+    from task_spec.nodes.compare import SELECT_ONLY
+
+    cmp = compare_claims(_checked(("comp:a", "action", ["d1-c1"]), ("comp:b", "none", [])))
+    c2 = next(x for x in cmp.claims_to_verify if x.claim_id == "d1-c2")
+    assert f"{SELECT_ONLY}: B" in c2.reasons  # 확인 경로 none + 선택만 → 겹침(select), 사유 표시
+    c1 = next(x for x in cmp.claims_to_verify if x.claim_id == "d1-c1")
+    assert not any(r.startswith(SELECT_ONLY) for r in c1.reasons)
+    assert SELECT_ONLY == "선택만 일치(확인 경로 근거 없음)"
+    from pathlib import Path
+
+    ui = Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js"
+    assert f'select: "{SELECT_ONLY}"' in ui.read_text("utf-8")  # 승인 화면 경고와 같은 문구
