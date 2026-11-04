@@ -6,16 +6,16 @@
  "url": "https://blog.sentry.io/transaction-id-wraparound-in-postgres/",
  "published": "2015-07",
  "source_lang": "en",
- "symptom": "미국 업무 시간 대부분 동안 서비스가 멈췄다. Postgres가 쓰기를 받지 않아 이벤트 적체가 쌓였고 Redis 버퍼가 가득 찼다.",
- "naive_fix": "하드웨어 증설(CPU·메모리)이나 failover, 느린 쿼리 튜닝·인덱스 추가, 커넥션 풀 확대, DB 재시작.",
- "root_cause": "쓰기가 많은 부하에 비해 autovacuum 설정이 보수적이었다(높은 autovacuum_freeze_max_age, worker 3개, cost delay). 그래서 freeze가 따라가지 못했고 transaction ID(XID)가 wraparound 한계에 다가가자, Postgres가 데이터 가시성 손상을 막으려고 스스로 쓰기를 멈췄다.",
+ "symptom": "업무 시간 내내 서비스가 멈췄다. Postgres가 쓰기를 받지 않아 이벤트 적체가 쌓였고 앞단 버퍼가 가득 찼다.",
+ "naive_fix": "하드웨어 증설(CPU·메모리)이나 failover, 느린 쿼리 튜닝·인덱스 추가, 커넥션 풀 확대, 정리 작업 없이 DB 재시작만 하기.",
+ "root_cause": "쓰기가 많은 부하에 비해 autovacuum 설정이 보수적이었다(높은 freeze 시작 나이, 적은 작업자 수, 큰 cost delay). 그래서 freeze가 따라가지 못했고 transaction ID(XID)가 wraparound 한계에 다가가자, Postgres가 데이터 가시성 손상을 막으려고 스스로 쓰기를 멈췄다.",
  "why_naive_fails": "성능 문제가 아니라 MVCC가 지키는 안전장치가 작동한 것이다. 인덱스 추가나 쿼리 튜닝은 XID 소모와 상관이 없다. 재시작하면 진행 중이던 vacuum만 날아가 복구가 더 늦어진다. 하드웨어를 늘려도 vacuum이 끝나야만 풀린다.",
  "key_insight": "쓰기만 거부되고 읽기는 되는 상황이면 리소스 부족보다 엔진의 보호 정지를 먼저 의심한다. age(datfrozenxid)와 autovacuum 진행 상태를 확인하는 것이 출발점이다.",
  "deep_structure": "평소 미뤄 온 백그라운드 정리 작업의 부채가 임계에 닿으면 시스템이 안전을 위해 전면 정지하고, 정지를 풀 수 있는 것은 그 정리 작업을 끝내는 것뿐이다.",
  "surface": [
   "DB 엔진(PostgreSQL→MySQL undo/purge 지연 등)",
   "서비스 업종(에러 수집→결제·로그)",
-  "적체 버퍼(Redis→Kafka)",
+  "적체 버퍼(인메모리 큐→Kafka)",
   "가장 큰 테이블의 성격"
  ],
  "tech": [
@@ -30,9 +30,16 @@
   "Sentry"
  ],
  "accepted_fixes": [
-  "수동 freeze vacuum 으로 트랜잭션 ID 나이를 낮추기 — 원문의 최종 조치(테이블 비우기)만 정답이 아님",
-  "나이가 가장 많은 테이블부터 우선 처리하고, 오래 열린 트랜잭션·복제 슬롯처럼 freeze 를 막는 요인 정리",
-  "autovacuum 작업자 수·비용 한도·freeze 기준을 쓰기 부하에 맞게 조정하고 트랜잭션 ID 나이 경보 추가"
+  "[복구] 나이가 가장 많은 테이블부터 수동 VACUUM 으로 트랜잭션 ID 나이 낮추기 — 조건: FREEZE 옵션은 느릴 뿐 인정 — 함정: 이 상태에서 VACUUM FULL(트랜잭션 ID 가 필요해 실패함)",
+  "[복구] freeze 를 막는 요인 정리 — 준비된 트랜잭션(2단계 커밋), 오래 열린 트랜잭션, 복제 슬롯과 대기 서버 피드백이 잡은 xmin",
+  "[복구] 버려도 되는 큰 테이블을 비우거나 지워 정리 대상 줄이기 — 조건: 데이터 손실 판단을 밝힘",
+  "[복구] (구버전 절차) 단일 사용자 모드로 띄워 VACUUM 을 끝내기 — 조건: 재시작이 목적이 아니라 정리를 끝내는 절차일 때, 현행 버전에서는 불필요",
+  "[재발 방지] autovacuum 비용 한도를 올리고 지연을 줄이며 freeze 시작 나이를 낮추고 트랜잭션 ID 나이 경보 추가 — 함정: 작업자 수만 늘리기(비용 한도가 작업자끼리 나뉘어 총 처리량이 그대로)"
+ ],
+ "source_literals": [
+  "미국 업무 시간",
+  "worker 3개",
+  "Redis 버퍼"
  ],
  "task_pattern": null
 }
