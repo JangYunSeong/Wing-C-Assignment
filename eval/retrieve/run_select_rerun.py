@@ -8,7 +8,8 @@ L2 매처만 원문 이력서를 로컬에서 읽는다 (외부 호출 없음, r
 결과는 git 밖 data/ 에만 쓴다 (지원자 데이터).
 사용:
   uv run python -m eval.retrieve.run_select_rerun --report <overlap3 report.json> --gold <gold.json> \\
-      --resumes <원문 이력서 폴더> --versions 1 2 --runs 2 --tag select-rerun
+      --resumes <원문 이력서 폴더> --versions 1 --runs 2 --tag select-rerun
+  새 버전(vN.md)을 만든 뒤에는 --versions 1 N 처럼 비교할 버전을 함께 준다 (기본은 v1 만).
 """
 
 from __future__ import annotations
@@ -88,7 +89,7 @@ async def main() -> None:
     ap.add_argument("--report", type=Path, required=True)
     ap.add_argument("--gold", type=Path, required=True)
     ap.add_argument("--resumes", type=Path, required=True, help="L2 매처용 원문 이력서 폴더 (로컬)")
-    ap.add_argument("--versions", nargs="+", type=int, default=[1, 2])
+    ap.add_argument("--versions", nargs="+", type=int, default=[1])
     ap.add_argument("--runs", type=int, default=2)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--tag", default="select-rerun")
