@@ -32,10 +32,12 @@ class PseudoCheck(Schema):
     passed: bool
     residual_count: int = Field(ge=0)
     detectors: list[str] = Field(default_factory=list)
-    # 실패 사유 코드. residual_pii(누락 검사) / ingest_required(텍스트 추출 전 형식) / read_error
+    # 실패 사유 코드. residual_pii(누락 검사) / ingest_required(텍스트 추출 전 형식) / read_error /
+    # batch_failed(같은 실행의 다른 문서가 누락 검사에 걸려 이 문서도 내보내지 않음)
     reason: (
         Literal[
             "residual_pii",
+            "batch_failed",
             "read_error",
             "unsupported_format",
             "empty_text",

@@ -20,7 +20,7 @@ from task_spec.nodes.pseudonymize.engine import (
     Detectors,
     RunMapping,
     ensure_private_dir,
-    pseudonymize_text,
+    pseudonymize_documents,
 )
 from task_spec.schemas import ExtractedRef, PseudoCheck, PseudoDocRef
 
@@ -59,9 +59,13 @@ class RulePseudonymizer:
         await asyncio.to_thread(self._detectors.detect, "가상 데이터 워밍업")
 
     async def __call__(self, run_id: str, doc: ExtractedRef) -> PseudoDocRef:
-        return await asyncio.to_thread(self._run, run_id, doc)
+        return (await self.batch(run_id, [doc]))[0]
 
-    def _run(self, run_id: str, doc: ExtractedRef) -> PseudoDocRef:
+    async def batch(self, run_id: str, docs: list[ExtractedRef]) -> list[PseudoDocRef]:
+        """한 run 의 문서를 함께 처리한다 — 전부 탐지한 뒤 전파한다 (code review M5, `pseudonymize_documents`)."""
+        return await asyncio.to_thread(self._run_batch, run_id, docs)
+
+    def _read(self, run_id: str, doc: ExtractedRef) -> str | PseudoDocRef:
         # 경로 가두기: id 형식 검사 + 추출본은 data_dir/extracted/<run_id>/ 아래만 (privacy-auditor W2)
         if not (SAFE_ID.match(run_id) and SAFE_ID.match(doc.doc_id)):
             return _failed(doc, "read_error")
@@ -77,40 +81,58 @@ class RulePseudonymizer:
             raw = src.read_bytes()
             if hashlib.sha256(raw).hexdigest() != doc.sha256:
                 return _failed(doc, "read_error")
-            text = raw.decode("utf-8")
+            return raw.decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return _failed(doc, "read_error")
 
+    def _run_batch(self, run_id: str, docs: list[ExtractedRef]) -> list[PseudoDocRef]:
+        read = [self._read(run_id, d) for d in docs]
+        todo = [(i, r) for i, r in enumerate(read) if isinstance(r, str)]
+        out: list[PseudoDocRef | None] = [r if isinstance(r, PseudoDocRef) else None for r in read]
+        if not todo:
+            return [r for r in out if r is not None]
         out_dir = self._root / run_id
         with self._lock:
             mapping_path = out_dir / "mapping.json"
             mapping = RunMapping.load(mapping_path)
-            result = pseudonymize_text(text, mapping, self._detectors)
-            if not result.residual:  # 실패한 문서의 원 값은 디스크에 남기지 않는다 (W5)
+            results = pseudonymize_documents([t for _, t in todo], mapping, self._detectors)
+            if not any(
+                r.residual for r in results
+            ):  # 실패한 문서의 원 값은 디스크에 남기지 않는다 (W5)
                 ensure_private_dir(self._root)
                 mapping.save(mapping_path)
-
-        logger.info(
-            "pseudonymized run=%s doc=%s counts=%s residual=%d",
-            run_id,
-            doc.doc_id,
-            ",".join(f"{k}={v}" for k, v in sorted(result.counts.items())) or "-",
-            result.residual,
-        )
-        if result.residual:
-            return _failed(doc, "residual_pii", result.residual)
-
-        out_path = out_dir / f"{doc.doc_id}.txt"
-        _write_private(out_path, result.text)
-        return PseudoDocRef(
-            doc_id=doc.doc_id,
-            kind=doc.kind,
-            path=str(out_path),
-            sha256=hashlib.sha256(result.text.encode("utf-8")).hexdigest(),
-            check=PseudoCheck(
-                passed=True,
-                residual_count=0,
-                detectors=result.detectors,
-                counts=result.counts,
-            ),
-        )
+        any_failed = any(r.residual for r in results)
+        for (i, _), result in zip(todo, results, strict=True):
+            doc = docs[i]
+            logger.info(
+                "pseudonymized run=%s doc=%s counts=%s residual=%d",
+                run_id,
+                doc.doc_id,
+                ",".join(f"{k}={v}" for k, v in sorted(result.counts.items())) or "-",
+                result.residual,
+            )
+            out_path = out_dir / f"{doc.doc_id}.txt"
+            if result.residual:
+                out[i] = _failed(doc, "residual_pii", result.residual)
+                out_path.unlink(missing_ok=True)
+                continue
+            if any_failed:
+                # 같은 batch 의 다른 문서가 걸리면 실행이 멈춘다 — 통과한 문서도 쓰지 않고, 앞서 쓴 것이 있으면 지운다
+                # (마지막 점검 L2: 매핑을 저장하지 않으므로 남길 이유가 없다)
+                out[i] = _failed(doc, "batch_failed")
+                out_path.unlink(missing_ok=True)
+                continue
+            _write_private(out_path, result.text)
+            out[i] = PseudoDocRef(
+                doc_id=doc.doc_id,
+                kind=doc.kind,
+                path=str(out_path),
+                sha256=hashlib.sha256(result.text.encode("utf-8")).hexdigest(),
+                check=PseudoCheck(
+                    passed=True,
+                    residual_count=0,
+                    detectors=result.detectors,
+                    counts=result.counts,
+                ),
+            )
+        return [r for r in out if r is not None]
