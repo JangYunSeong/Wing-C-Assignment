@@ -49,6 +49,7 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 ## 기록
 
 호출마다 provenance 를 채운다: 실제 사용 모델·params(재시도로 바뀐 값 포함), 입력/출력/추론 토큰, 지연, 비용.
+실패로 끝난 호출(`SchemaViolation`·`EmptyResponse`)도 예외의 `.provenance` 에 그때까지의 토큰·비용을 싣는다 (본문 없음) — 노드가 비용 기록에 넣을 수 있게 (지금은 verify_overlap 만 씀) [2026-11-04].
 참고치(시험): 이력서 1건 주장 추출 106초, $0.005.
 
 로그에는 메시지 본문을 남기지 않는다 — 프롬프트 id·해시·토큰 수만.
