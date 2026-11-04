@@ -124,9 +124,27 @@ def test_check_flags_copied_incident_text_and_numbers() -> None:
 
 
 def test_source_literals_are_not_in_prompt_block() -> None:
-    inc = load_incidents(ROOT)["sw.backend"]
-    block = incident_block(inc)
-    assert inc.source_literals and not any(x in block for x in inc.source_literals)
+    """원문 수치·문구는 생성 입력(사례 블록)에 들어가지 않는다 — 증상·원인·표면은 관계로 요약."""
+
+    def norm(s: str) -> str:
+        return "".join(s.split()).lower()
+
+    incs = load_incidents(ROOT)
+    assert incs["sw.backend"].source_literals
+    for sub, inc in incs.items():
+        block = norm(incident_block(inc))
+        assert not [x for x in inc.source_literals if norm(x) in block], sub
+
+
+def test_accepted_fixes_follow_one_format() -> None:
+    """[복구|재발 방지|진단] 조치 — 조건: … — 함정: … , 블록이 ' / ' 로 잇기 때문에 항목 안에 ' / ' 없음."""
+    import re
+
+    tag = re.compile(r"^\[(복구|재발 방지|진단)\] \S")
+    for sub, inc in load_incidents(ROOT).items():
+        for fix in inc.accepted_fixes:
+            assert tag.match(fix) and " / " not in fix, (sub, fix)
+        assert any(f.startswith("[복구]") for f in inc.accepted_fixes), sub
 
 
 def test_incident_ref_changes_only_with_content() -> None:
