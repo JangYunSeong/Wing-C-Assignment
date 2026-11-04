@@ -56,6 +56,7 @@ from task_spec.schemas.ingest import (
     ExtractedSection,
     SectionHeader,
 )
+from task_spec.schemas.judge_overlap import JudgeOverlapInput, JudgeOverlapOutput, OverlapVerdict
 from task_spec.schemas.postings import (
     AnalyzedLine,
     Candidate,
@@ -94,6 +95,7 @@ from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
 
 __all__ = [
     "SlotAssignment",
+    "OverlapVerdict",
     "SlotQuestionsInput",
     "SlotQuestionsOutput",
     "GradeSoloInput",
@@ -120,6 +122,8 @@ __all__ = [
     "Artifact",
     "JudgeDraftInput",
     "JudgeDraftOutput",
+    "JudgeOverlapInput",
+    "JudgeOverlapOutput",
     "JudgeTrapsInput",
     "JudgeTrapsOutput",
     "JudgedDraft",
