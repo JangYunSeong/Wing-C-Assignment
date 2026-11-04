@@ -35,6 +35,7 @@ from task_spec.schemas import (
 from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
+from task_spec.spec.incidents import incident_ref
 from task_spec.spec.questions import TASK as Q_TASK
 from task_spec.spec.questions import build_slot_verifications
 from task_spec.spec.slots import TASK as SLOT_TASK
@@ -47,6 +48,10 @@ ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 FLAG_NO_DRAFTER = "draft_task 미연결 — 결정적 골격만 (제목·상황·행동 기준 없음)"
 SKELETON_REF = "skeleton"
 FLAG_REUSED_DRAFT = "이 공고의 공통 과제가 아직 승인되지 않은 초안을 재사용함 — 이 명세를 승인하면 그 판이 공고 공통 과제로 승인됨"
+
+
+def _uses_incident(prompts: PromptRegistry) -> bool:
+    return "incident" in prompts.get(DRAFT_TASK).input_model.model_fields
 
 
 def _has_prompt(prompts: PromptRegistry | None, task: str) -> bool:
@@ -103,6 +108,10 @@ def make_draft_spec(
                 if use_slots and prompts is not None:
                     # 슬롯 프롬프트가 바뀌어도 새 판 — 공통 과제와 슬롯은 함께 승인된다
                     prompt_ref = f"{prompt_ref}+{prompts.get(SLOT_TASK).ref}"
+                inc = built.ctx.incident if built.ctx is not None else None
+                if use_llm and prompts is not None and inc is not None and _uses_incident(prompts):
+                    # 사례 내용이 바뀌어도 새 판 — 고치기 전 사례로 만든 초안을 다시 쓰지 않게
+                    prompt_ref = f"{prompt_ref}+{incident_ref(inc)}"
                 key = CommonKey(state.posting_id, state.ontology_version, prompt_ref)
                 revise = (
                     state.approval if state.approval and state.approval.status == "revise" else None

@@ -234,6 +234,45 @@ _CONTENT_TELLS = (
 )
 
 
+# 핵심·보조 자료 안의 판정·요약 줄 (2026-11-03 웹 예시: 핵심 자료 끝 'Pattern: workers that hold 1st and wait for 2nd fail').
+# 줄머리 이름표 + 콜론 뒤 네 단어 이상 문장만 — YAML 'pattern: "^(GET|…"' 같은 설정 키는 따옴표·괄호로 시작해 빠진다.
+_CONCLUSION_LINE = re.compile(
+    r"(?im)^[ \t#/*>|-]*(?:pattern|conclusion|summary|findings?|insight|analysis|diagnosis|"
+    r"root cause|explanation|takeaway|observation|결론|요약|분석|패턴|진단|해석|시사점|관찰)"
+    r"[ \t]*[:：][ \t]*(?=[^\s'\"`\[\](){}^0-9])\S+(?:[ \t]+\S+){3,}"
+)
+# 원 사례 문구·수치 복사 (2026-11-03: sw.backend 공통 과제 5판 모두 원 블로그의 오류 문구·풀 지표를 그대로 옮김 → 검색하면 원 사례)
+_KV = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\s*[=:]\s*-?\d+(?:\.\d+)?")
+_BIG_NUM = re.compile(r"(?<![\d.])\d{3,}(?:\.\d+)?\s*(?:ms|s|초|분|%|MB|GB|KB)?")
+_QUOTED = re.compile(r"['\"‘“`]([^'\"’”`]{10,})['\"’”`]")
+INCIDENT_SPAN = 20  # 원 사례 증상·원인과 이만큼(공백 제외) 같은 글이면 복사
+INCIDENT_NUMS = (
+    2  # 원문 표지(증상의 키=값·세 자리 이상 수 + source_literals) 중 이만큼 함께 나오면 복사
+)
+
+
+def incident_copied(text: str, inc: PublicIncident) -> list[str]:
+    """과제(자료 본문 포함)가 원 사례의 문구·수치를 그대로 쓴 곳. 검색 한 번이면 원 사례·정답이 나온다."""
+    found: list[str] = []
+    flat = _norm(text)
+    # 표지 하나(라이브러리 기본 오류 문구, idle=0 같은 흔한 값)는 우연히도 나온다 — 여럿이 함께 나와야 원 사례로 특정된다
+    marks = {_norm(m.group(0)) for rx in (_KV, _BIG_NUM) for m in rx.finditer(inc.symptom)}
+    marks |= {_norm(x) for x in inc.source_literals}
+    hits = sorted(m for m in marks if m in flat)
+    if len(hits) >= INCIDENT_NUMS:
+        found.append("원 사례 문구·수치 " + ", ".join(hits))
+    src = "\n".join([inc.symptom, inc.root_cause, inc.key_insight])
+    ns = _norm(src)
+    quotes = [q for q in _QUOTED.findall(src) if _norm(q) in flat]
+    if quotes:
+        found.append("원 사례 문구 " + ", ".join(f"'{q}'" for q in quotes))
+    elif any(
+        ns[i : i + INCIDENT_SPAN] in flat for i in range(0, max(0, len(ns) - INCIDENT_SPAN + 1))
+    ):
+        found.append(f"원 사례 문장과 {INCIDENT_SPAN}자 이상 같음")
+    return found
+
+
 def _check_artifacts(out: DraftTaskOutput, arts: list[Any]) -> list[str]:
     """자료 점진 공개(v3): id 고유, 핵심 1개 이상·방해 3개 이상, 요청 한도 ≤ max(핵심+1, 자료/3), 상황에 자료 본문을 미리 싣지 않음."""
     problems: list[str] = []
@@ -271,6 +310,13 @@ def _check_artifacts(out: DraftTaskOutput, arts: list[Any]) -> list[str]:
             if said:
                 problems.append(
                     f"핵심 자료 {a.artifact_id} 가 결론을 직접 말함 ({', '.join(said)}) — 원시 로그·지표·설정만"
+                )
+        if a.role in ("key", "support"):
+            line = _CONCLUSION_LINE.search(a.content)
+            if line:
+                problems.append(
+                    f"자료 {a.artifact_id} 에 판정·요약 줄이 있음 ('{line.group(0).strip()[:60]}') — "
+                    "해석은 지원자 몫, 원시 로그·지표·설정만"
                 )
     return problems
 
@@ -338,11 +384,25 @@ def check(out: DraftTaskOutput, ctx: DraftContext) -> list[str]:
             problems.append(
                 f"원 사례의 원인 용어가 제목·상황·제출물에 드러남 (증상만 써야 함): {', '.join(shown)}"
             )
+    if ctx.incident is not None:
+        copied = incident_copied("\n".join([text, *(a.content for a in arts)]), ctx.incident)
+        if copied:
+            problems.append(
+                f"원 사례 문구·수치를 그대로 씀 ({'; '.join(copied)}) — "
+                "검색하면 원 사례가 나옴, 오류 문구·이름·수치를 새로 만들 것 (비율·구조는 유지)"
+            )
     if ctx.incident is not None and ctx.incident.avoid_terms:
+        # 자료 본문까지 (2026-11-03: sw.backend 3판이 원 사례 테이블 이름을 로그에 씀). 단어 경계로만 —
+        # 부분 문자열이면 'ExP' 가 experiment·expected 에 걸린다
         full = "\n".join(
-            [text, out.invariant, *(f"{t.description} {t.why_ai_fails}" for t in out.traps)]
-        ).lower()
-        leaked = [w for w in ctx.incident.avoid_terms if w.lower() in full]
+            [
+                text,
+                out.invariant,
+                *(f"{t.description} {t.why_ai_fails}" for t in out.traps),
+                *(a.content for a in arts),
+            ]
+        )
+        leaked = [w for w in ctx.incident.avoid_terms if _phrase(w).search(full)]
         if leaked:
             problems.append(f"원 사례의 고유어가 나옴 (소재를 바꿔야 함): {', '.join(leaked)}")
     return problems
