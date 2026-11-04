@@ -41,6 +41,7 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 | 5xx·연결 오류·429 | 지수 백오프 최대 3회 |
 | 시간 초과 | **1회만** 다시 [확정: 2026-11-03 — 운영에서 120초 × 4회 재시도로 draft_spec 이 수십 분 멈춤]. 요청 제한 시간 `LLM_TIMEOUT_SECONDS`(기본 300초) |
 | JSON 파싱·스키마 검증 실패 | 검증 에러 메시지를 붙여 1회 재요청. 그래도 실패면 `SchemaViolation` |
+| 출력 잘림 (`finish_reason=length`) | 기본은 위 규칙 그대로(형식 재요청 1회). 입력을 나눌 수 있는 호출자만 `call(..., split_on_truncation=True)`: 추론 설정이 low 가 아니면 low 로 1회 → 그래도 잘리면 형식 재요청 없이 `OutputTruncated`(`EmptyResponse` 하위, `.provenance` 에 쓴 비용). 잘렸어도 JSON 이 완전하면 받는다. 지금은 주장 추출만 켠다 — 문서를 칸 밖 경계에서 반씩 나눠 다시 (최대 3단계·문서당 9호출·동시 3) [확정: 2026-11-04 — 추론 토큰이 상한 4096 을 먼저 써서 입력 1.8k 토큰 이력서도 잘림]. WARNING `llm truncated …` |
 | 4xx(인증·요청 오류) | 재시도 없음 |
 
 재시도 횟수·사유는 provenance `retries` 에 남긴다. 재시도는 WARNING(`llm retry prompt=… model=… reason=… elapsed_ms=…`),
@@ -68,5 +69,5 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 
 - `FakeBackend` (`llm/fake.py`): 입력 해시별(없으면 default) 응답 큐. 예외도 넣을 수 있다. 네트워크 없이 그래프 전체 테스트.
 - 실제 API 스모크: `uv run pytest -m llm -q -s` — 가상 텍스트만, 비용 발생, 기본 실행에서 제외.
-- 재시도 경로(빈 응답 → low 재시도, 스키마 실패 → 재요청 → 실패)를 각각 테스트.
+- 재시도 경로(빈 응답 → low 재시도, 스키마 실패 → 재요청 → 실패, 출력 잘림 — 기본은 재요청 유지·split 모드는 재요청 없이 OutputTruncated)를 각각 테스트.
 - 가명화되지 않은 입력 → 예외 테스트 (네거티브).

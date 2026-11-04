@@ -6,6 +6,7 @@
 | TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
 | 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
+| 출력 잘림 (finish_reason=length)     | 호출자가 split_on_truncation=True 일 때만: (추론 설정이 low 가 아니면 low 로 1회) → OutputTruncated, 형식 재요청 없음 — 호출자가 입력을 나눈다. 기본(False)은 위 규칙 그대로 |
 
 재시도·포기는 WARNING/ERROR 로그(프롬프트 ref·모델·사유·경과 ms)로 남긴다.
 메시지 본문·키 값은 로그·provenance·예외 메시지에 넣지 않는다.
@@ -69,6 +70,16 @@ class EmptyResponse(Exception):
     provenance: Provenance | None = None
 
 
+class OutputTruncated(EmptyResponse):
+    """출력 상한(max_tokens)에 걸려 응답이 잘림 (finish_reason=length) — split_on_truncation=True 호출에서만.
+
+    같은 입력을 다시 보내도 같은 곳에서 잘리므로 형식 재요청을 하지 않는다 — 호출자가 입력을 나눠 다시 부른다.
+    추론 모델은 추론 토큰이 상한을 먼저 써서 짧은 입력에서도 잘린다 (2026-11-04 진단: 입력 1.8k 토큰,
+    추론 2.9k~4.1k 토큰 / 상한 4096). EmptyResponse 의 하위 클래스라 호출자의 실패 처리는 그대로 받는다.
+    provenance = 잘린 호출까지 쓴 토큰·비용 (본문 없음).
+    """
+
+
 class LLMResult(BaseModel, Generic[T]):
     parsed: T
     provenance: Provenance
@@ -101,7 +112,15 @@ class LLMClient:
     def has_provider(self, provider: str) -> bool:
         return provider in self._backends
 
-    async def call(self, prompt: AssembledPrompt, output: type[T] | None = None) -> LLMResult[T]:
+    async def call(
+        self,
+        prompt: AssembledPrompt,
+        output: type[T] | None = None,
+        *,
+        split_on_truncation: bool = False,
+    ) -> LLMResult[T]:
+        """split_on_truncation=True: 잘린 응답(finish_reason=length)을 형식 재요청 없이 OutputTruncated 로
+        돌려준다 (추론 설정이 low 가 아니면 low 로 1회 먼저). 입력을 나눠 다시 부를 수 있는 호출자만 켠다."""
         out_model: type[T] = output or prompt.output_model  # type: ignore[assignment]
         provider, _, model = prompt.model.partition(":")
         backend = self._backends.get(provider)
@@ -154,6 +173,35 @@ class LLMClient:
                 total.output + completion.usage.output,
                 total.reasoning + completion.usage.reasoning,
             )
+
+            if split_on_truncation and completion.finish_reason == "length":
+                summary = "빈 응답"
+                if completion.content.strip():
+                    try:  # 상한에 딱 맞게 끝난 완전한 JSON 은 그대로 받는다
+                        parsed = out_model.model_validate(_parse_json(completion.content))
+                        break
+                    except (ValueError, ValidationError) as exc:
+                        summary = _validation_summary(exc)
+                if not empty_retry_used and params.get("reasoning_effort") != "low":
+                    empty_retry_used = True
+                    retries.append("output_truncated->reasoning_effort=low")
+                    logger.warning(
+                        "llm retry prompt=%s model=%s reason=output_truncated elapsed_ms=%d",
+                        prompt.template.ref,
+                        prompt.model,
+                        int((time.monotonic() - started) * 1000),
+                    )
+                    params = {**params, "reasoning_effort": "low"}
+                    continue
+                cut = OutputTruncated(f"{prompt.template.ref}: 출력 잘림 — {summary}")
+                cut.provenance = record()
+                logger.warning(
+                    "llm truncated prompt=%s model=%s reason=output_truncated elapsed_ms=%d",
+                    prompt.template.ref,
+                    prompt.model,
+                    cut.provenance.latency_ms,
+                )
+                raise cut
 
             if not completion.content.strip():
                 if empty_retry_used or params.get("reasoning_effort") == "low":
