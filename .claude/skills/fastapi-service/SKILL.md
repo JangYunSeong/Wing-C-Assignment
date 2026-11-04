@@ -23,7 +23,7 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 | 메서드 | 경로 | 동작 |
 |---|---|---|
 | `POST` | `/runs` | 공고 id + 업로드 문서 → `run_id` 발급, 백그라운드 실행 시작. `202` |
-| `GET` | `/runs/{run_id}` | 상태(`running`/`awaiting_approval`/`done`/`rejected`/`failed`) + 현재 노드 + (승인 대기 시) 명세 초안 |
+| `GET` | `/runs/{run_id}` | 상태(`running`/`awaiting_approval`/`done`/`rejected`/`failed`) + 현재 노드 + (승인 대기 시) 명세 초안 + 승인 요약(`approval_summary` — 승인 대기·`done`·`rejected`, `spec/summary.py`) |
 | `GET` | `/runs/{run_id}/events` | SSE. 노드 진행·interrupt 발생 이벤트 |
 | `POST` | `/runs/{run_id}/approve` | `ApprovalDecision` 로 `Command(resume=...)`. 승인 대기 상태가 아니면 `409` |
 | `GET` | `/runs/{run_id}/spec` | 확정 명세 (승인된 경우만, 아니면 `404`) |
