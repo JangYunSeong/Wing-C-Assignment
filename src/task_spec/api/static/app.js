@@ -105,9 +105,82 @@ function ago(iso) {
   return `${Math.round(m / 1440)}일 전`;
 }
 
+/* ── 공고 이름 ─────────────────────── */
+// 온톨로지 원 표기는 "회사 / 직무 (경력)" 처럼 회사가 이미 들어 있다 — 그때는 그대로, 아니면 "회사 · 직무"
+function postingName(p) {
+  const pos = p.position_name || "";
+  if (pos && p.company && pos.includes(p.company)) return pos;
+  return [p.company, p.title || pos].filter(Boolean).join(" · ") || p.posting_id || "";
+}
+function rememberLabel(id, label) {
+  if (!id || !label) return;
+  const labels = keep.get("labels", {});
+  labels[id] = label;
+  const ids = Object.keys(labels);
+  if (ids.length > 200) delete labels[ids[0]];
+  keep.set("labels", labels);
+}
+const labelOf = (id) => keep.get("labels", {})[id] || id;
+
 /* ── STEP 1 공고 ───────────────────── */
-const posting = { mode: 0, bodyMode: 0, suggestion: null, confirmedId: null };
-seg(["pm-text", "pm-id"], ["posting-text-pane", "posting-id-pane"], (i) => (posting.mode = i));
+const posting = { mode: 0, bodyMode: 0, suggestion: null, confirmedId: null, picked: null, searched: false };
+seg(["pm-text", "pm-id"], ["posting-text-pane", "posting-id-pane"], (i) => {
+  posting.mode = i;
+  if (i === 1 && !posting.searched) searchPostings();
+});
+
+let searchTimer = null;
+let searchSeq = 0;
+async function searchPostings() {
+  posting.searched = true;
+  const seq = ++searchSeq;
+  const msg = $("#search-msg");
+  const params = new URLSearchParams({ q: $("#posting-q").value.trim(), pilot_only: String($("#pilot-only").checked), limit: "20" });
+  try {
+    const hits = await api("GET", `/postings?${params}`);
+    if (seq !== searchSeq) return; // 늦게 온 이전 검색 결과는 버린다
+    renderHits(hits);
+    say(msg, hits.length ? (hits.length === 20 ? "앞의 20건만 보입니다. 검색어를 더 넣어 좁히세요." : "") : "찾은 공고가 없습니다.");
+  } catch (e) {
+    if (seq === searchSeq) say(msg, e.message, "err");
+  }
+}
+function renderHits(hits) {
+  const ul = $("#posting-hits");
+  ul.innerHTML = hits
+    .map(
+      (h, i) => `<li><button type="button" data-i="${i}" aria-pressed="${posting.picked && posting.picked.id === h.posting_id}">
+        <span class="hit-name">${esc(postingName(h))}</span>
+        <span class="hit-meta"><span class="src">${h.source === "provisional" ? "임시 공고" : h.in_pilot ? "시범" : "온톨로지"}</span><span>${esc([h.sub, h.industry_id].filter(Boolean).join(" · "))}</span><span class="mono">${esc(h.posting_id)}</span></span>
+      </button></li>`,
+    )
+    .join("");
+  ul.querySelectorAll("button[data-i]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const h = hits[Number(b.dataset.i)];
+      pickPosting({ id: h.posting_id, label: postingName(h), meta: [h.sub, h.industry_id].filter(Boolean).join(" · ") });
+      ul.querySelectorAll("button[data-i]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    }),
+  );
+}
+function pickPosting(p) {
+  posting.picked = p;
+  rememberLabel(p.id, p.label);
+  const box = $("#posting-picked");
+  box.innerHTML = `<span class="eyebrow">고른 공고</span><div class="row"><strong>${esc(p.label)}</strong><button type="button" class="link-btn" id="unpick">다시 고르기</button></div><span class="mono">${esc(p.id)}${p.meta ? ` · ${esc(p.meta)}` : ""}</span>`;
+  box.hidden = false;
+  $("#unpick").addEventListener("click", () => {
+    posting.picked = null;
+    box.hidden = true;
+    $("#posting-hits").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", "false"));
+    $("#posting-q").focus();
+  });
+}
+$("#posting-q").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(searchPostings, 250);
+});
+$("#pilot-only").addEventListener("change", searchPostings);
 seg(["pb-text", "pb-file"], ["p-text-wrap", "p-file-wrap"], (i) => {
   posting.bodyMode = i;
   invalidateSuggestion();
@@ -197,7 +270,7 @@ $("#confirm-btn").addEventListener("click", async () => {
       }),
     );
     posting.confirmedId = r.posting_id;
-    rememberPosting(r.posting_id);
+    rememberLabel(r.posting_id, [$("#p-company").value.trim(), $("#p-title").value.trim()].filter(Boolean).join(" · "));
     const box = $("#confirmed");
     box.innerHTML = `<span class="mono">${esc(r.posting_id)}</span><span>임시 공고 · 역량 <b class="num">${r.competencies}</b>개 · 매칭 안 된 문장 <b class="num">${r.unmatched_lines}</b>개</span>`;
     box.hidden = false;
@@ -207,15 +280,6 @@ $("#confirm-btn").addEventListener("click", async () => {
   }
 });
 
-function rememberPosting(id) {
-  const list = [id, ...keep.get("postings", []).filter((x) => x !== id)].slice(0, 12);
-  keep.set("postings", list);
-  renderPostingList();
-}
-function renderPostingList() {
-  $("#posting-list").innerHTML = keep.get("postings", []).map((id) => `<option value="${esc(id)}"></option>`).join("");
-}
-renderPostingList();
 
 /* ── STEP 2 이력서 ─────────────────── */
 const resume = { mode: 0, file: null };
@@ -252,9 +316,9 @@ $("#file-clear").addEventListener("click", () => {
 $("#run-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const msg = $("#run-msg");
-  const pid = posting.mode === 0 ? posting.confirmedId : $("#posting-id").value.trim();
+  const pid = posting.mode === 0 ? posting.confirmedId : posting.picked && posting.picked.id;
   if (!pid) {
-    return say(msg, posting.mode === 0 ? "STEP 1 에서 공고를 확정하세요." : "공고 ID 를 넣으세요.", "err");
+    return say(msg, posting.mode === 0 ? "STEP 1 에서 공고를 확정하세요." : "STEP 1 에서 공고를 찾아 고르세요.", "err");
   }
   let file = null;
   if (resume.mode === 0) file = resume.file;
@@ -268,7 +332,6 @@ $("#run-form").addEventListener("submit", async (ev) => {
   fd.append("resumes", file, file.name);
   try {
     const r = await busy($("#run-btn"), "보내는 중…", () => api("POST", "/runs", { form: fd }));
-    rememberPosting(pid);
     rememberRun(r.run_id, pid);
     say(msg, "실행을 시작했습니다. 처음 보는 공고면 공통 과제를 만드느라 3~5분 걸립니다.", "ok");
     openRun(r.run_id, { live: true });
@@ -283,6 +346,15 @@ function rememberRun(runId, postingId) {
   keep.set("runs", list);
   renderRecent();
 }
+function renderRecentNames() {
+  const runs = new Map(keep.get("runs", []).map((r) => [r.run_id, r.posting_id]));
+  $("#recent")
+    .querySelectorAll("button[data-run]")
+    .forEach((b) => {
+      const el = b.querySelector(".recent-name");
+      if (el && runs.has(b.dataset.run)) el.textContent = labelOf(runs.get(b.dataset.run));
+    });
+}
 async function renderRecent() {
   const list = keep.get("runs", []);
   const ul = $("#recent");
@@ -293,7 +365,7 @@ async function renderRecent() {
   ul.innerHTML = list
     .map(
       (r) => `<li><button type="button" data-run="${esc(r.run_id)}">
-        <span><span class="mono">${esc(r.run_id.slice(0, 8))}</span><span class="sub">${esc(r.posting_id)} · ${esc(ago(r.at))}</span></span>
+        <span><span class="recent-name">${esc(labelOf(r.posting_id))}</span><span class="sub">${esc(ago(r.at))} · 실행 <span class="mono">${esc(r.run_id.slice(0, 8))}</span></span></span>
         <span class="pill" data-pill="${esc(r.run_id)}">…</span></button></li>`,
     )
     .join("");
@@ -471,17 +543,20 @@ async function loadPostingLabel(pid) {
   const total = run.view && run.view.approval_summary ? run.view.approval_summary.total_time_min : null;
   const meta = [`<span class="mono">${esc(pid)}</span>`];
   if (total) meta.push(`<span>응시 시간 합계 <b class="num">${total}분</b></span>`);
-  $("#run-title").textContent = pid;
+  $("#run-title").textContent = labelOf(pid);
   $("#run-meta").innerHTML = meta.join("");
-  if (!pid.startsWith("prov-")) return;
   try {
     const p = await api("GET", `/postings/${encodeURIComponent(pid)}`);
-    const name = [p.company, p.position_name].filter(Boolean).join(" · ");
-    if (name) $("#run-title").textContent = name;
-    const sub = [p.sub, p.industry_id].filter(Boolean).join(" · ");
-    if (sub) $("#run-meta").insertAdjacentHTML("beforeend", `<span>${esc(sub)}</span>`);
+    const name = postingName(p);
+    if (name) {
+      $("#run-title").textContent = name;
+      rememberLabel(pid, name);
+      renderRecentNames();
+    }
+    const sub = [p.source === "provisional" ? "임시 공고" : p.in_pilot ? "시범 공고" : "온톨로지 공고", p.sub, p.industry_id].filter(Boolean).join(" · ");
+    $("#run-meta").insertAdjacentHTML("beforeend", `<span>${esc(sub)}</span>`);
   } catch {
-    /* 임시 공고 정보가 없어도 id 로 보여준다 */
+    /* 공고 정보를 못 가져와도 id 로 보여준다 */
   }
 }
 

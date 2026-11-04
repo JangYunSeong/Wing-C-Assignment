@@ -29,7 +29,7 @@
       <div class="step-head"><span class="step-no">STEP 1</span><h2>공고</h2><span class="hint">어떤 공고의 과제인가</span></div>
       <div class="seg" role="group" aria-label="공고 입력 방식">
         <button type="button" id="pm-text" aria-pressed="true">공고 원문</button>
-        <button type="button" id="pm-id" aria-pressed="false">등록된 공고 ID</button>
+        <button type="button" id="pm-id" aria-pressed="false">등록된 공고 찾기</button>
       </div>
 
       <div id="posting-text-pane" class="stack">
@@ -72,11 +72,13 @@
       </div>
 
       <div id="posting-id-pane" class="stack" hidden>
-        <label class="field" for="posting-id">공고 ID
-          <input type="text" id="posting-id" list="posting-list" spellcheck="false" placeholder="예: autoever_1_both#051 또는 prov-…">
+        <label class="field" for="posting-q">회사·직무명으로 찾기
+          <input type="text" id="posting-q" maxlength="100" spellcheck="false" placeholder="예: 네이버 백엔드">
         </label>
-        <datalist id="posting-list"></datalist>
-        <p class="note">온톨로지에 적재된 시범 공고나 앞서 확정한 임시 공고(prov-…)입니다.</p>
+        <label class="inline-check" for="pilot-only"><input type="checkbox" id="pilot-only" checked>시범 공고만 (끄면 온톨로지 전체)</label>
+        <div class="picked" id="posting-picked" hidden></div>
+        <ul class="hits" id="posting-hits" aria-label="찾은 공고"></ul>
+        <p class="msg" id="search-msg" role="status"></p>
       </div>
     </div>
 
