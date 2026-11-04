@@ -89,5 +89,5 @@ def test_field_ends_at_header_and_section() -> None:
 
 
 def test_locate_field_with_line_break_inside_a_word() -> None:
-    text = "⟦과정⟧ 모델을 배포했다.\n⟦기여한 점⟧ 크롤링 및 전처리, 데이터베\n이스 및 서비스 아키텍쳐 설계"
-    assert locate_field(text, "데이터베이스 및 서비스 아키텍쳐 설계") == "기여한 점"
+    text = "⟦과정⟧ 모델을 배포했다.\n⟦기여한 점⟧ 주문 집계를 개선하고, 정산 배치 스케줄\n러 및 알림 서비스 아키텍처 설계"
+    assert locate_field(text, "정산 배치 스케줄러 및 알림 서비스 아키텍처 설계") == "기여한 점"

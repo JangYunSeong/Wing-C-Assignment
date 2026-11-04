@@ -98,6 +98,6 @@ def test_derive_accepts_quote_across_a_broken_word() -> None:
     """인용 대조(verify_quote)를 통과한 주장은 derive 도 통과해야 한다 — 같은 규칙."""
     from task_spec.nodes.pseudonymize import derive_pseudonymized, mint_pseudonymized
 
-    src = mint_pseudonymized("[ORG_1] 에서 데이터베\n이스 구조를 설계했다.")
-    out = derive_pseudonymized(src, quote="데이터베이스 구조를 설계했다.", summary="DB 설계")
-    assert "데이터베이스 구조" in str(out)
+    src = mint_pseudonymized("[ORG_1] 에서 정산 스케줄\n러 구조를 설계했다.")
+    out = derive_pseudonymized(src, quote="정산 스케줄러 구조를 설계했다.", summary="스케줄러 설계")
+    assert "정산 스케줄러 구조" in str(out)
