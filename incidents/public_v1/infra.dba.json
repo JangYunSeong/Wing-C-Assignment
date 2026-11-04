@@ -29,5 +29,10 @@
  "avoid_terms": [
   "Sentry"
  ],
+ "accepted_fixes": [
+  "수동 freeze vacuum 으로 트랜잭션 ID 나이를 낮추기 — 원문의 최종 조치(테이블 비우기)만 정답이 아님",
+  "나이가 가장 많은 테이블부터 우선 처리하고, 오래 열린 트랜잭션·복제 슬롯처럼 freeze 를 막는 요인 정리",
+  "autovacuum 작업자 수·비용 한도·freeze 기준을 쓰기 부하에 맞게 조정하고 트랜잭션 ID 나이 경보 추가"
+ ],
  "task_pattern": null
 }
