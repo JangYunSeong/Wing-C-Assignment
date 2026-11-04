@@ -100,3 +100,98 @@ def test_context_required_entry_replaced_with_employment_context() -> None:
 def test_newlines_preserved_around_removed_lines() -> None:
     out = run("학점: 3.9/4.5\nGPA: 4.1/4.5\n다음 줄")
     assert out.endswith("\n다음 줄")
+
+
+# ---- 2026-11-04 탐지 보강 (가상 데이터) ----
+
+
+@pytest.mark.parametrize(
+    ("text", "gone"),
+    [
+        ("배포: gruswap.vercel.app", "gruswap.vercel.app"),
+        ("데모는 gru-eats.netlify.app 에서", "gru-eats.netlify.app"),
+        ("API 서버 grumap-api.herokuapp.com 운영", "grumap-api.herokuapp.com"),
+        ("문서 사이트 gruboard.pages.dev", "gruboard.pages.dev"),
+        ("GitHub: gru-eats", "gru-eats"),
+        ("깃허브: gruswap-dev 참고", "gruswap-dev"),
+        ("GitLab: @hrmn-lab / 블로그", "hrmn-lab"),
+        ("GitHub: gru-eats.", "gru-eats"),  # 문장 끝 마침표 (privacy-auditor M3)
+        ("api.gruswap.vercel.app 배포", "api.gruswap.vercel.app"),  # 다단계 서브도메인
+        ("데모 gruswap.vercel.app.", "gruswap.vercel.app"),
+    ],
+)
+def test_schemeless_deploy_links_and_labeled_handles(text: str, gone: str) -> None:
+    out = run(text)
+    assert gone not in out and "[LINK_1]" in out
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "트랜잭션은 @Transactional 로 묶었다",  # 맨 @ 는 코드 애노테이션 — 라벨 뒤만 핸들
+        "GitHub Actions 로 CI 를 구성했다",
+        "GitHub: Actions로 배포를 자동화했다",  # 핸들 뒤에 한글이 붙으면 문장
+        "Apache 하이브 쿼리를 튜닝했다",  # 하이브(회사)는 재직 맥락에서만
+        "카카오톡 챗봇과 KakaoTalk 알림, 카카오생활 앱",  # 붙은 표기 허용 목록 밖
+        "self.web.application.run",  # 도메인 뒤 우측 경계 (privacy-auditor M3)
+        "config.web.app_name = 1",
+        "x.fly.developer",
+        "GitHub: Python 3.11",  # 라벨 뒤라도 버전·파일명·흔한 단어는 계정이 아님 (2차 W4)
+        "GitHub: main.py",
+        "GitHub: v1.2.3",
+        "GitHub: Issues",
+        "Github: README 참고",
+    ],
+)
+def test_no_over_replacement_after_detector_additions(text: str) -> None:
+    assert run(text) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "gone", "kept"),
+    [
+        ("서울대생 200명 설문", "서울대", "생 200명"),
+        ("2022.01 ~ 2023.06 삼성전자DS 부문 인턴", "삼성전자", "DS 부문"),
+        ("개인 프로젝트 TossClone 으로", "Toss", "Clone"),
+        ("네이버클라우드 인턴", "네이버", "클라우드"),
+    ],
+)
+def test_dictionary_entity_with_attached_suffix(text: str, gone: str, kept: str) -> None:
+    out = run(text)
+    assert gone not in out and kept in out
+
+
+def test_hive_company_needs_employment_context() -> None:
+    assert "하이브" not in run("하이브 (2021.03 ~ 2022.02) 데이터 엔지니어")
+
+
+@pytest.mark.parametrize(
+    ("text", "gone"),
+    [("윤도겸 팀원이 로그 수집을 맡았다", "윤도겸"), ("표서진 동료와 페어 프로그래밍", "표서진")],
+)
+def test_teammate_titles(text: str, gone: str) -> None:
+    assert gone not in run(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "학생 정보를 관리하는 시스템을 만들었다",  # 이름 앞 호칭으로는 넣지 않음
+        "팀원 성과를 공유했다",
+        "장학금 학생 선발 기준을 정리했다",  # '학생' 은 이름 뒤 호칭으로도 넣지 않음
+        "주니어 팀원 교육 자료를 만들었다",
+        "함께한 동료가 많다",  # 관형형 + 팀원·동료 (2차 W3)
+        "성실한 팀원과 일했다",
+        "새로 합류한 팀원이 늘었다",
+        "배정된 팀원이 바뀌었다",
+    ],
+)
+def test_teammate_titles_do_not_catch_nouns(text: str) -> None:
+    assert run(text) == text
+
+
+@pytest.mark.parametrize("name", ["김지한", "정우한", "최가난", "윤도된", "오지던"])
+@pytest.mark.parametrize("pattern", ["{n} 팀원이 서버를 맡았다.", "{n} 동료와 함께 배포했다."])
+def test_peer_titles_keep_names_ending_like_modifiers(name: str, pattern: str) -> None:
+    """관형형은 끝음절이 아니라 단어 목록으로 거른다 — 실제 이름 끝음절(한·난·된·던)과 겹치지 않게 (2차 W3 후속)."""
+    assert name not in run(pattern.format(n=name))
