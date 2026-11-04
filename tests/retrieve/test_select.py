@@ -92,3 +92,12 @@ async def test_select_filters_out_of_list_and_missing_answers() -> None:
     assert all("Airflow" not in e.message for e in res.errors)  # 에러에 원문 없음
     assert len(res.provenance) == 1 and by["d1-c1"].provenance_id == res.provenance[0].provenance_id
     assert fake.calls[0][0] == PROMPTS.get("select_competency").meta.model.split(":", 1)[1]
+
+
+def test_derive_accepts_quote_across_a_broken_word() -> None:
+    """인용 대조(verify_quote)를 통과한 주장은 derive 도 통과해야 한다 — 같은 규칙."""
+    from task_spec.nodes.pseudonymize import derive_pseudonymized, mint_pseudonymized
+
+    src = mint_pseudonymized("[ORG_1] 에서 데이터베\n이스 구조를 설계했다.")
+    out = derive_pseudonymized(src, quote="데이터베이스 구조를 설계했다.", summary="DB 설계")
+    assert "데이터베이스 구조" in str(out)
