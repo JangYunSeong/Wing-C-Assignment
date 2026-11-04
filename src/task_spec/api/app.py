@@ -14,7 +14,7 @@ from langgraph.graph.state import CompiledStateGraph
 from task_spec.api.deps import PostingsContext
 from task_spec.api.errors import install_error_handlers
 from task_spec.api.launcher import RunLauncher
-from task_spec.api.routers import health, postings, runs
+from task_spec.api.routers import health, postings, runs, ui
 from task_spec.config import Settings, get_settings
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm.factory import build_llm_client
@@ -97,6 +97,7 @@ def create_app(
     app.include_router(runs.router)
     app.include_router(postings.router)
     app.include_router(health.router)
+    app.include_router(ui.router)
     return app
 
 

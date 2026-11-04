@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>과제 명세 작업대</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">명세</div>
+    <div>
+      <h1>과제 명세 작업대</h1>
+      <small>공고와 이력서를 넣고 과제 명세 초안을 받아 승인합니다 · 내부 시험용</small>
+    </div>
+  </div>
+  <div class="top-meta">
+    <span class="tag mono" id="meta-onto" hidden></span>
+    <span class="tag mono" id="meta-prompts" hidden></span>
+  </div>
+</header>
+
+<main class="workbench">
+  <!-- ── 입력 ── -->
+  <aside class="rail" aria-label="입력">
+    <div class="rail-step">
+      <div class="step-head"><span class="step-no">STEP 1</span><h2>공고</h2><span class="hint">어떤 공고의 과제인가</span></div>
+      <div class="seg" role="group" aria-label="공고 입력 방식">
+        <button type="button" id="pm-text" aria-pressed="true">공고 원문</button>
+        <button type="button" id="pm-id" aria-pressed="false">등록된 공고 ID</button>
+      </div>
+
+      <div id="posting-text-pane" class="stack">
+        <div class="row2">
+          <label class="field" for="p-company">회사<input type="text" id="p-company" maxlength="200"></label>
+          <label class="field" for="p-title">직무명<input type="text" id="p-title" maxlength="300"></label>
+        </div>
+        <div class="seg" role="group" aria-label="공고 원문 형식">
+          <button type="button" id="pb-text" aria-pressed="true">붙여넣기</button>
+          <button type="button" id="pb-file" aria-pressed="false">파일</button>
+        </div>
+        <div id="p-text-wrap">
+          <label class="field" for="p-body">공고 원문
+            <textarea id="p-body" rows="7" maxlength="40000" placeholder="[담당업무] … [자격요건] … 처럼 공고 본문을 그대로 붙여 넣으세요."></textarea>
+          </label>
+        </div>
+        <div id="p-file-wrap" class="stack" hidden>
+          <label class="drop" for="p-file"><strong id="p-file-label">공고 파일 고르기</strong><span>PDF · DOCX · HWPX · TXT</span></label>
+          <input type="file" id="p-file" accept=".pdf,.docx,.hwpx,.txt" hidden>
+        </div>
+        <button type="button" class="btn small" id="suggest-btn">문장 나누고 직군 추천받기</button>
+        <p class="msg" id="suggest-msg" role="status"></p>
+
+        <div id="cands" class="cands" hidden>
+          <div class="stack" style="gap:6px">
+            <span class="eyebrow" id="lines-head">나눈 문장</span>
+            <div class="sec-counts" id="sec-counts"></div>
+            <details class="lines"><summary>문장 보기</summary><ul id="lines-list"></ul></details>
+          </div>
+          <span class="eyebrow">직군 — 하나를 확인하세요</span>
+          <div id="sub-list" class="stack" style="gap:6px"></div>
+          <div class="row2">
+            <label class="field" for="industry">업종<select id="industry"></select></label>
+            <label class="field" for="confirmed-by">확인자<input type="text" id="confirmed-by" maxlength="200"></label>
+          </div>
+          <button type="button" class="btn small" id="confirm-btn">이 공고로 확정</button>
+          <p class="msg" id="confirm-msg" role="status"></p>
+          <div class="confirmed" id="confirmed" hidden></div>
+        </div>
+      </div>
+
+      <div id="posting-id-pane" class="stack" hidden>
+        <label class="field" for="posting-id">공고 ID
+          <input type="text" id="posting-id" list="posting-list" spellcheck="false" placeholder="예: autoever_1_both#051 또는 prov-…">
+        </label>
+        <datalist id="posting-list"></datalist>
+        <p class="note">온톨로지에 적재된 시범 공고나 앞서 확정한 임시 공고(prov-…)입니다.</p>
+      </div>
+    </div>
+
+    <form class="rail-step" id="run-form" autocomplete="off">
+      <div class="step-head"><span class="step-no">STEP 2</span><h2>이력서</h2><span class="hint">한 명분</span></div>
+      <div class="seg" role="group" aria-label="이력서 입력 방식">
+        <button type="button" id="rm-file" aria-pressed="true">파일</button>
+        <button type="button" id="rm-text" aria-pressed="false">텍스트</button>
+      </div>
+      <div id="resume-file-pane" class="stack">
+        <label class="drop" id="drop" for="resume-file">
+          <strong>이력서 파일을 끌어다 놓거나 눌러서 고르기</strong>
+          <span>PDF · DOCX · HWPX · TXT</span>
+        </label>
+        <input type="file" id="resume-file" accept=".pdf,.docx,.hwpx,.txt" hidden>
+        <div class="file-row" id="file-row" hidden>
+          <span class="file-ext" id="file-ext"></span>
+          <span class="file-name" id="file-name"></span>
+          <button type="button" class="link-btn" id="file-clear">빼기</button>
+        </div>
+      </div>
+      <div id="resume-text-pane" class="stack" hidden>
+        <label class="field" for="resume-text">이력서 본문
+          <textarea id="resume-text" rows="7" placeholder="이력서 내용을 붙여 넣으세요. resume.txt 로 올립니다."></textarea>
+        </label>
+      </div>
+      <p class="note">가명화를 거친 글만 외부 LLM에 보냅니다. 원본은 서버 data/ 에만 남습니다.</p>
+      <p class="note">자기소개서는 지금 쓰지 않습니다.</p>
+      <button type="submit" class="btn primary" id="run-btn">명세 만들기</button>
+      <p class="msg" id="run-msg" role="status"></p>
+    </form>
+
+    <div class="rail-step">
+      <div class="step-head"><h2>최근 실행</h2><span class="hint">이 브라우저에만 저장</span></div>
+      <ul class="recent" id="recent"></ul>
+    </div>
+  </aside>
+
+  <!-- ── 결과 ── -->
+  <article class="sheet" aria-label="결과">
+    <div class="empty" id="sheet-empty">
+      <h2>아직 연 실행이 없습니다</h2>
+      <p>왼쪽에서 공고를 고르고 이력서를 넣은 뒤 <b>명세 만들기</b>를 누르세요. 최근 실행을 눌러 이전 결과를 다시 볼 수도 있습니다.</p>
+      <ol>
+        <li>공고 원문을 붙여 넣으면 문장을 나누고 직군·업종 후보를 줍니다. 확인하면 임시 공고가 만들어집니다.</li>
+        <li>이력서 파일이나 텍스트를 넣고 실행하면 가명화 → 주장 추출 → 대조 → 명세 초안 순서로 진행합니다.</li>
+        <li>승인 대기가 되면 공통 과제·확장 슬롯·경험 검증을 보고 승인하거나 수정을 요청합니다.</li>
+      </ol>
+    </div>
+
+    <div id="sheet-run" hidden>
+      <div class="sheet-head">
+        <div>
+          <span class="eyebrow">실행 <span class="mono" id="run-id"></span> · <span id="run-rev"></span></span>
+          <h2 id="run-title"></h2>
+          <div class="meta" id="run-meta"></div>
+        </div>
+        <div class="right"><span class="pill" id="run-status"></span></div>
+      </div>
+      <nav class="jump" aria-label="결과 안에서 이동">
+        <a href="#s-progress">진행</a><a href="#s-summary">요약</a><a href="#s-compare">대조</a>
+        <a href="#s-common">공통 과제</a><a href="#s-slots">확장 슬롯</a><a href="#s-verify">경험 검증</a><a href="#s-decide">승인</a>
+      </nav>
+
+      <section class="block" id="s-progress">
+        <div class="block-head"><h3>진행</h3><span class="aside" id="progress-aside"></span></div>
+        <div class="pipe" id="pipe"></div>
+      </section>
+      <section class="block" id="s-summary">
+        <div class="block-head"><h3>요약</h3><span class="aside">승인 전에 먼저 볼 것</span></div>
+        <div id="summary"></div>
+      </section>
+      <section class="block" id="s-compare">
+        <div class="block-head"><h3>대조</h3><span class="aside">공고 역량 ↔ 이력서 주장 (온톨로지 기준)</span></div>
+        <div id="compare"></div>
+      </section>
+      <section class="block" id="s-common">
+        <div class="block-head"><h3>공통 과제</h3><span class="aside">이 공고 지원자 모두 같은 과제</span></div>
+        <div id="common"></div>
+      </section>
+      <section class="block" id="s-slots">
+        <div class="block-head"><h3>확장 슬롯</h3><span class="aside">같은 시스템 위의 30분 문항 · 공통 과제와 함께 승인</span></div>
+        <div id="slots"></div>
+      </section>
+      <section class="block" id="s-verify">
+        <div class="block-head"><h3>경험 검증</h3><span class="aside">이 지원자만 · 비교 점수에 넣지 않음</span></div>
+        <div id="verify"></div>
+      </section>
+      <section class="block" id="s-decide">
+        <div class="block-head"><h3>승인</h3><span class="aside">사람이 최종 판단합니다</span></div>
+        <div id="decide"></div>
+      </section>
+    </div>
+  </article>
+</main>
+<script src="app.js" defer></script>
+</body>
+</html>
