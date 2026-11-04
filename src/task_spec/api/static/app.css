@@ -19,7 +19,7 @@
   --ok-soft: #E5F3EC;
   --info: #3657A0;
   --info-soft: #EAF0FB;
-  --font-sans: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono: ui-monospace, "SFMono-Regular", "D2Coding", "Cascadia Mono", Consolas, monospace;
   --r-ctl: 6px;
   --r-box: 10px;
