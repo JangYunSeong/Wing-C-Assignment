@@ -28,23 +28,24 @@ from eval.claims.generate import Doc, docs
 from task_spec.config import Settings
 from task_spec.llm import LLMClient, normalize_for_quote, verify_quote
 from task_spec.llm.factory import build_llm_client
+from task_spec.nodes.claims import extract_parts
 from task_spec.nodes.pseudonymize import mint_pseudonymized
 from task_spec.nodes.roles import decide_role, locate_field
-from task_spec.prompting import PromptRegistry, assemble
-from task_spec.schemas import Claim, ClaimExtractionInput, ClaimExtractionOutput
+from task_spec.prompting import PromptRegistry, PromptTemplate
+from task_spec.schemas import Claim
 
 HERE = Path(__file__).parent
 PROMPTS = PromptRegistry(HERE.parents[1] / "prompts")
 GPT_PARAMS = {"temperature": 0, "max_tokens": 2048}  # gpt-4.1-mini 는 reasoning_effort 미지원
 
 
-def _with_model(prompt, model: str):  # type: ignore[no-untyped-def]
-    if prompt.model == model:
-        return prompt
-    meta = prompt.template.meta.model_copy(update={"model": model})
-    tpl = prompt.template.model_copy(update={"meta": meta})
-    params = GPT_PARAMS if model.startswith("openai:") else prompt.params
-    return prompt.model_copy(update={"template": tpl, "params": params})
+def _with_model(template: PromptTemplate, model: str) -> PromptTemplate:
+    """평가 비교용으로 템플릿의 모델·설정만 바꾼다 (본문·sha256 그대로)."""
+    if template.meta.model == model:
+        return template
+    params = GPT_PARAMS if model.startswith("openai:") else template.meta.params
+    meta = template.meta.model_copy(update={"model": model, "params": params})
+    return template.model_copy(update={"meta": meta})
 
 
 def _sim(quote: str, sentence: str) -> float:
@@ -71,36 +72,37 @@ def _best(quote: str, sentences):  # type: ignore[no-untyped-def]
 async def _extract(
     client: LLMClient, doc: Doc, model: str, version: int | None = None
 ) -> tuple[list[Claim], dict]:
+    """운영 노드와 같은 경로(nodes.claims.extract_parts — 출력 잘림이면 나눠 다시)로 뽑는다."""
     text = mint_pseudonymized(doc.text)
-    prompt = _with_model(
-        assemble(
-            PROMPTS.get("extract_claims", version),
-            ClaimExtractionInput(doc_kind=doc.kind, text=text),
-            ontology_version="eval",
-        ),
-        model,
+    template = _with_model(PROMPTS.get("extract_claims", version), model)
+    got = await extract_parts(
+        client, template, doc.kind, text, ontology_version="eval", doc_id=doc.id
     )
-    try:
-        r = await client.call(prompt, ClaimExtractionOutput)
-    except Exception as exc:  # 스키마 위반·빈 응답 등 — 이 문서는 0건으로
-        return [], {"error": type(exc).__name__}
+    provs = [p for _, _, p in got.parts] + got.spent
+    if not got.parts:  # 스키마 위반·빈 응답 등 — 이 문서는 0건으로
+        return [], {"error": got.failures[0] if got.failures else "EmptyResponse"}
     claims = []
-    for i, it in enumerate(r.parsed.claims, 1):
-        c = Claim(
-            claim_id=f"{doc.id}-c{i}",
-            doc_id=doc.id,
-            action=it.action,
-            quote=it.quote,
-            field=locate_field(doc.text, it.quote),
-        )
-        role, _ = decide_role(c)
-        claims.append(c.model_copy(update={"role": role}))
-    p = r.provenance
+    i = 0
+    for _part, parsed, _prov in got.parts:
+        for it in parsed.claims:
+            i += 1
+            c = Claim(
+                claim_id=f"{doc.id}-c{i}",
+                doc_id=doc.id,
+                action=it.action,
+                quote=it.quote,
+                field=locate_field(doc.text, it.quote),
+            )
+            role, _ = decide_role(c)
+            claims.append(c.model_copy(update={"role": role}))
     return claims, {
-        "retries": p.retries,
-        "tokens_out": p.tokens.out,
-        "tokens_reasoning": p.tokens.reasoning,
-        "latency_ms": p.latency_ms,
+        "retries": sum(p.retries for p in provs),
+        "tokens_out": sum(p.tokens.out for p in provs),
+        "tokens_reasoning": sum(p.tokens.reasoning for p in provs),
+        "latency_ms": max(p.latency_ms for p in provs),
+        "parts": len(got.parts),
+        "calls": got.calls,
+        "partial": bool(got.failures),
     }
 
 
