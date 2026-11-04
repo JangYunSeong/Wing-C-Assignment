@@ -70,3 +70,75 @@ async def test_live_draft_task() -> None:
     print(
         f"\ndraft_task: calls={len(res.provenance)} flags={res.flags} out={p.tokens.out} latency_ms={p.latency_ms}"
     )
+
+
+async def test_live_verify_overlap(tmp_path: Path) -> None:
+    """공고 역량 → 주장 확인 (CURRENT, OpenCode) — 가상 이력서·가상 주장만. 노드 경로 그대로."""
+    import hashlib
+
+    from task_spec.nodes.verify_overlap import make_verify_overlap
+    from task_spec.schemas import (
+        Claim,
+        PostingCompetency,
+        PostingProfile,
+        PseudoCheck,
+        PseudoDocRef,
+        RunState,
+    )
+
+    path = tmp_path / "pseudonymized" / "live" / "d1.txt"
+    path.parent.mkdir(parents=True)
+    path.write_text(FAKE_RESUME, encoding="utf-8")
+    ref = PseudoDocRef(
+        doc_id="d1",
+        kind="resume",
+        path=str(path),
+        sha256=hashlib.sha256(FAKE_RESUME.encode()).hexdigest(),
+        check=PseudoCheck(passed=True, residual_count=0),
+    )
+    comps = [
+        ("comp:data.pipeline", "데이터 수집·파이프라인 설계·구축·운영", True),
+        ("comp:data.bigdata", "Hadoop·Spark 분산 데이터 처리", True),
+        ("comp:fe.react", "React·Vue 기반 프론트엔드 개발", False),
+    ]
+    state = RunState(
+        run_id="live",
+        ontology_version="dev",
+        posting_id="p-fake",
+        posting_profile=PostingProfile(
+            posting_id="p-fake",
+            ontology_version="dev",
+            competencies=[
+                PostingCompetency(competency_id=c, label=lab, primary=p) for c, lab, p in comps
+            ],
+        ),
+        pseudo_docs=[ref],
+        claims=[
+            Claim(
+                claim_id="d1-c1",
+                doc_id="d1",
+                action="Airflow DAG 재구성과 Spark 집계 잡 분할",
+                quote="Airflow DAG 를 재구성하고 Spark 집계 잡을 파티션 단위로 나눴다.",
+                field="과정",
+            ),
+            Claim(
+                claim_id="d1-c2",
+                doc_id="d1",
+                action="집계 시간 단축",
+                quote="집계 시간을 6시간에서 40분으로 줄였다.",
+                field="기여한 점",
+            ),
+        ],
+    )
+    out = await make_verify_overlap(build_llm_client(Settings()), PROMPTS)(state)  # type: ignore[call-arg]
+    res = out["overlap_check"]
+    assert res is not None and res.status in ("ok", "partial")
+    got = {c.competency_id: c for c in res.items}
+    assert got["comp:data.pipeline"].label in ("action", "related")
+    assert got["comp:data.pipeline"].claim_ids
+    assert "comp:fe.react" not in got or got["comp:fe.react"].label in ("none", "mention")
+    cost = sum(p.cost_usd or 0.0 for p in out["provenance"])
+    print(
+        f"\nverify_overlap: status={res.status} calls={len(out['provenance'])} "
+        f"labels={ {k: v.label for k, v in got.items()} } cost=${cost:.5f}"
+    )

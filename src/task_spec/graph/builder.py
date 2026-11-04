@@ -2,8 +2,8 @@
 
 START → posting_profile ─┬─ (문서 있음) ingest → pseudonymize ─┬─ (통과) extract_claims → assign_roles
                          │                                      └─ (실패) END
-                         └─ (문서 없음) compare
-assign_roles → [retrieve_t1 ∥ retrieve_t2] → evidence → compare → draft_spec → approval
+                         └─ (문서 없음) evidence
+assign_roles → [retrieve_t1 ∥ retrieve_t2] → evidence → verify_overlap → compare → draft_spec → approval
 approval ─ approved → finalize → END / revise → draft_spec / rejected → END
 """
 
@@ -29,6 +29,7 @@ from task_spec.nodes.pseudonymize import (
 from task_spec.nodes.retrieve import make_evidence, make_retrieve_t1, retrieve_t2
 from task_spec.nodes.roles import assign_roles
 from task_spec.nodes.spec import approval, make_draft_spec, make_finalize
+from task_spec.nodes.verify_overlap import make_verify_overlap
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
@@ -77,6 +78,11 @@ def build_graph(
     g.add_node("retrieve_t1", make_retrieve_t1(retriever, llm, prompts))
     g.add_node("retrieve_t2", retrieve_t2)
     g.add_node("evidence", make_evidence(ontology))
+    # ④ 공고 역량 → 주장 확인 (top-down). 주장·공고 역량이 없으면 아무것도 하지 않는다
+    g.add_node(
+        "verify_overlap",
+        make_verify_overlap(llm, prompts, retriever.cards if retriever is not None else None),
+    )
     g.add_node("compare", make_compare(relatedness))
     g.add_node(
         "draft_spec", make_draft_spec(ontology, relatedness, llm, prompts, common_store, incidents)
@@ -92,7 +98,8 @@ def build_graph(
     g.add_edge("assign_roles", "retrieve_t1")
     g.add_edge("assign_roles", "retrieve_t2")
     g.add_edge(["retrieve_t1", "retrieve_t2"], "evidence")  # 둘 다 끝나야 합류
-    g.add_edge("evidence", "compare")
+    g.add_edge("evidence", "verify_overlap")
+    g.add_edge("verify_overlap", "compare")
     g.add_edge("compare", "draft_spec")
     g.add_edge("draft_spec", "approval")
     g.add_edge("finalize", END)
