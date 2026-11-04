@@ -14,6 +14,11 @@ _PARTICLES = (
 )
 LEFT = r"(?<![가-힣A-Za-z0-9])"
 RIGHT = rf"(?=$|[^가-힣A-Za-z0-9]|(?:{_PARTICLES}))"
+# 별칭 바로 뒤에 붙어도 같은 실체로 보는 접미 (허용 목록 — "카카오톡" 같은 제품명은 지키도록 좁게, 2026-11-04).
+# 학교+생("서울대생"), 회사+조직 약어("삼성전자DS"·"LG전자CTO"), 회사+클론·클라우드("TossClone"·"네이버클라우드").
+# 별칭 부분만 치환하고 접미는 남긴다 ("[ORG_1]DS"). 'Clone'·'Cloud' 와 대문자 약어는 대소문자를 구분한다.
+SUFFIX_ATTACHED = r"(?=생(?![가-힣])|클론|클라우드|Clone|Cloud|[A-Z]{2,4}(?![a-z]))"
+SCHOOL_ONLY_SUFFIX = "생"
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,16 @@ class Dictionaries:
     def pattern(self) -> re.Pattern[str]:
         """모든 별칭을 긴 것부터 하나의 정규식으로 (한 번만 컴파일)."""
         return self._pattern
+
+    @cached_property
+    def _attached_pattern(self) -> re.Pattern[str]:
+        aliases = sorted(self.all_aliases, key=len, reverse=True)
+        alt = "|".join(re.escape(a) for a in aliases)
+        return re.compile(rf"{LEFT}(?i:{alt}){SUFFIX_ATTACHED}")
+
+    def attached_pattern(self) -> re.Pattern[str]:
+        """별칭 + 허용 접미 (SUFFIX_ATTACHED). 매치는 별칭 부분만."""
+        return self._attached_pattern
 
     def entry_for(self, alias: str) -> DictEntry | None:
         return self._by_alias.get(alias.casefold())
