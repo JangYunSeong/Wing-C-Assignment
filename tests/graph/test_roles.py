@@ -86,3 +86,8 @@ def test_design_term_ignored_outside_design_fields() -> None:
 def test_field_ends_at_header_and_section() -> None:
     fields = field_of_lines("⟦과정⟧ a\nb\n가상회사 2022.01 ~ 2023.01\nc\n학력\nd")
     assert fields == ["과정", "과정", None, None, None, None]
+
+
+def test_locate_field_with_line_break_inside_a_word() -> None:
+    text = "⟦과정⟧ 모델을 배포했다.\n⟦기여한 점⟧ 크롤링 및 전처리, 데이터베\n이스 및 서비스 아키텍쳐 설계"
+    assert locate_field(text, "데이터베이스 및 서비스 아키텍쳐 설계") == "기여한 점"
