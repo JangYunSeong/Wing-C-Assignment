@@ -5,7 +5,7 @@ from __future__ import annotations
 from task_spec.llm.backend import ChatBackend, Completion, TransientLLMError, Usage
 from task_spec.llm.client import LLMClient, LLMResult, SchemaViolation
 from task_spec.llm.fake import FakeBackend
-from task_spec.llm.quotes import normalize_for_quote, verify_quote
+from task_spec.llm.quotes import compact_for_quote, normalize_for_quote, quote_in, verify_quote
 
 __all__ = [
     "ChatBackend",
@@ -16,6 +16,8 @@ __all__ = [
     "SchemaViolation",
     "TransientLLMError",
     "Usage",
+    "compact_for_quote",
     "normalize_for_quote",
+    "quote_in",
     "verify_quote",
 ]

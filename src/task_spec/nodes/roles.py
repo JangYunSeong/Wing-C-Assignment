@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from task_spec.llm.quotes import SECTION_MARKER, normalize_for_quote
+from task_spec.llm.quotes import SECTION_MARKER, compact_for_quote
 from task_spec.nodes.ingest.structure import _PERIOD, _section_kind
 from task_spec.schemas import Claim, RunState
 from task_spec.schemas.domain import Role
@@ -48,16 +48,23 @@ def field_of_lines(text: str) -> list[str | None]:
 
 
 def locate_field(text: str, quote: str) -> FieldLabel | None:
-    """인용이 시작하는 줄의 칸. 인용이 여러 줄이면 첫 줄 기준."""
-    q = normalize_for_quote(quote)
+    """인용이 시작하는 줄의 칸. 인용이 여러 줄이면 첫 줄 기준.
+
+    공백·줄바꿈은 무시하고 찾는다 (llm/quotes.quote_in 과 같은 규칙) — 단어 중간에서 끊긴 줄도 이어 본다.
+    """
+    q = compact_for_quote(quote)
     if not q:
         return None
     lines = text.split("\n")
     fields = field_of_lines(text)
     head = q[: min(len(q), 30)]
     for i, line in enumerate(lines):
-        joined = normalize_for_quote(" ".join(lines[i : i + 4]))
-        if joined.startswith(head) or (head in normalize_for_quote(line)):
+        own = compact_for_quote(line)
+        if not own:
+            continue
+        # 이 줄부터 몇 줄을 이어 붙였을 때 인용 머리가 **이 줄 안에서** 시작하면 이 줄의 칸
+        pos = compact_for_quote("".join(lines[i : i + 4])).find(head)
+        if 0 <= pos < len(own):
             return fields[i]  # type: ignore[return-value]
     return None
 
