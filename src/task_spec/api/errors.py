@@ -61,6 +61,14 @@ class PostingNotFound(DomainError):
         super().__init__(f"공고를 찾을 수 없습니다: {posting_id}")
 
 
+class UiDisabled(DomainError):
+    code = "not_found"
+    status_code = 404
+
+    def __init__(self) -> None:
+        super().__init__("화면이 꺼져 있거나 없는 파일입니다 (UI_ENABLED)")
+
+
 class ApprovalNotPending(DomainError):
     code = "approval_not_pending"
     status_code = 409

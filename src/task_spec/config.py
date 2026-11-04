@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     upload_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     # SSE 상태 폴링 간격(초)
     sse_poll_seconds: float = Field(default=0.5, gt=0)
+    # 임시 화면 /ui/ (과제 명세 작업대, api/routers/ui.py). 인증이 없으니 운영에서는 nginx Basic 인증 뒤에서만 켠다
+    ui_enabled: bool = True
 
     # LLM 프로바이더 (llm-client 스킬). 값은 로그·provenance·/healthz 에 넣지 않는다.
     openai_api_key: SecretStr
