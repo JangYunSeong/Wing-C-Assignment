@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 import psycopg
@@ -175,6 +176,32 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     and prof["sub"] == sub
                     and prof["ontology_version"] == VERSION
                 )
+
+                # 공고 찾기: 임시 공고는 회사·직무명으로, 온톨로지 공고는 시범만 기본 [제안: 2026-11-04]
+                hits = (await client.get("/postings", params={"q": "가상테크 데이터"})).json()
+                assert any(h["posting_id"] == pid and h["source"] == "provisional" for h in hits)
+                onto = (await client.get("/postings", params={"q": "", "limit": 5})).json()
+                onto = [h for h in onto if h["source"] == "ontology"]
+                assert onto and all(h["in_pilot"] and h["company"] for h in onto)
+                first = onto[0]
+                narrowed = (
+                    await client.get(
+                        "/postings", params={"q": f"{first['company']} {first['sub']}"}
+                    )
+                ).json()
+                assert any(h["posting_id"] == first["posting_id"] for h in narrowed)
+                # 직군 이름으로도 — 시범 sw.backend 공고의 직무명은 영어가 많다
+                be = (await client.get("/postings", params={"q": "백엔드"})).json()
+                assert any(h["sub"] == "sw.backend" and h["source"] == "ontology" for h in be)
+                # LIKE 와일드카드는 글자 그대로 — '%' 가 들어간 공고는 없다
+                assert (await client.get("/postings", params={"q": "%"})).json() == []
+                prof_o = (
+                    await client.get(f"/postings/{quote(first['posting_id'], safe='')}")
+                ).json()
+                assert prof_o["source"] == "ontology" and prof_o["company"] == first["company"]
+                assert (
+                    await client.get(f"/postings/{quote('없는공고#999', safe='')}")
+                ).status_code == 404
 
                 r = await client.post("/runs", data={"posting_id": pid})
                 assert r.status_code == 202
