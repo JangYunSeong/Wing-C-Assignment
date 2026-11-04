@@ -14,7 +14,7 @@ description: P1 과제 명세 서비스의 컨테이너 구성·내부망 배포
 |---|---|---|---|
 | API | `task-api:<버전>` (`docker/api/Dockerfile`) | `task-net`, 기본 `127.0.0.1:8001 → 8000` | `task_data:/data` (권한 700) |
 | DB | `task-db:1` (`docker/db/Dockerfile`, PG16 + pgvector) | `task-net`(이름 `task_db`), `127.0.0.1:5434 → 5432` | `task_db_data` |
-| nginx (사내망 밖 접속 시 필수) | `nginx:1.27-alpine` + `docker/nginx/nginx.conf` | `task-net`, `443`·`80` 공개, API 는 `TASK_API_BIND=none` | 인증서·htpasswd 읽기 전용 마운트 |
+| nginx (사내망 밖 접속 시 필수) | `nginx:1.27-alpine` + `docker/nginx/nginx.conf` | **호스트 네트워크**, `443`·`80` 직접 수신, API 는 `127.0.0.1:8001` | 인증서·htpasswd·ACME webroot 읽기 전용 마운트 |
 
 ## 1. 이미지 규칙 (불변식)
 
@@ -59,8 +59,16 @@ env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한
 - HTTP→HTTPS, TLS 1.2+, HSTS·nosniff·frame DENY. Basic 인증 헤더는 앱으로 넘기지 않는다.
 - SSE `/runs/{id}/events`: `proxy_buffering off`, read 1h. 그 밖 read 600s (LLM_TIMEOUT_SECONDS 300 + 여유). 업로드 25 MB.
 - 접근 로그 형식에 쿼리·본문을 넣지 않는다 (지원서 경로). IP 당 10 r/s.
-- API 는 호스트 포트 없이(`TASK_API_BIND=none`) nginx 를 통해서만. 인증서 privkey 600, htpasswd 600.
-- 설정을 바꾸면 이 서버에서 `nginx -t` 로 문법만 확인 (더미 인증서, `--add-host task-api:127.0.0.1`).
+- **rootless podman + 호스트 네트워크** [확정: 2026-11-04]. root podman 은 사용자의 `task-net`·`task-api` 를 못 보고,
+  rootless 포트 전달(rootlessport)은 접속자 IP 를 `10.89.0.x` 로 바꿔 IP 당 제한·허용 목록이 무력해진다.
+  nginx 는 80·443 을 직접 받고(`net.ipv4.ip_unprivileged_port_start=80`) API 로컬 포트 `127.0.0.1:8001` 로 붙는다 — API 를 `TASK_API_BIND=none` 으로 띄우지 않는다.
+- 인증서: Let's Encrypt webroot(`/etc/task-spec/acme`, 80 의 `/.well-known/acme-challenge/` 만 인증·허용 목록 예외).
+  IP 주소 인증서는 6일짜리(shortlived) — `renew_before_expiry = 4 days`. deploy hook(`docker/nginx/certbot-deploy-hook.sh`)은
+  root 소유 사본을 `renewal-hooks/deploy/` 에 등록 (레포 파일을 root 가 실행하지 않게). 사용자 linger 를 켠다.
+- 인증서 받기 전 HTTP 모드(`TASK_NGINX_MODE=http`, `nginx.http.conf`)는 임시 단계 — 평문이므로 실제 지원서 금지.
+- privkey 600. htpasswd 는 640(그룹 = 컨테이너 nginx gid 101, `run.sh` 가 맞춤) — worker 가 요청마다 읽는다.
+  `run.sh` 가 만드는 설정 조각은 `/etc/task-spec/nginx/` (재부팅 후 재시작에 필요 — `/tmp` 금지).
+- 설정을 바꾸면 이 서버에서 `nginx -t` 로 문법만 확인 (더미 인증서·htpasswd, `upstream.conf` 에 `127.0.0.1:8001`).
 
 ## 4. 업그레이드·롤백·백업
 
