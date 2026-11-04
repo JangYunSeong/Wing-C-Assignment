@@ -167,11 +167,11 @@ async def test_failed_document_does_not_persist_mapping(
     from task_spec.nodes.pseudonymize import rule_pseudonymizer as mod
     from task_spec.nodes.pseudonymize.engine import PseudoResult
 
-    def leaky(text, mapping, detectors):  # type: ignore[no-untyped-def]
+    def leaky(texts, mapping, detectors):  # type: ignore[no-untyped-def]
         mapping.token_for("PERSON", "김가상", None)
-        return PseudoResult(text=text, counts={}, residual=1, detectors=[])
+        return [PseudoResult(text=t, counts={}, residual=1, detectors=[]) for t in texts]
 
-    monkeypatch.setattr(mod, "pseudonymize_text", leaky)
+    monkeypatch.setattr(mod, "pseudonymize_documents", leaky)
     await RulePseudonymizer(tmp_path)(
         "run1", _doc(tmp_path, "run1", "resume-1.txt", "성명: 김가상")
     )
