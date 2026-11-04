@@ -13,6 +13,16 @@ const STATUS_KO = { running: "진행 중", awaiting_approval: "승인 대기", d
 const SECTION_KO = { duties: "담당업무", required: "자격요건", preferred: "우대사항", other: "기타·제외" };
 const ROLE_KO = { key: "핵심", support: "보조", distractor: "방해" };
 const REL_KO = { strong: "관계 강함", medium: "관계 중간", weak: "관계 약함" };
+// 대조 (공고 역량 → 주장 확인 + 주장 → 역량 선택)
+const CHECK_KO = { action: "행동", related: "관련", mention: "기술 언급", none: "없음" };
+const PLACE_KO = { overlap: "겹침", related: "관련 경험", posting_only: "공고에만" };
+// select 문구는 nodes/compare.py SELECT_ONLY 와 같게 (검증 후보 사유에도 같은 말)
+const SOURCE_KO = { both: "두 경로 일치", verify: "공고 역량 확인", select: "선택만 일치(확인 경로 근거 없음)" };
+const CLAIM_ROLE_KO = { design: "설계", lead: "주도", participate: "참여" };
+const CHECK_STATUS_KO = {
+  failed: "공고 역량 확인이 실패해 선택 경로만으로 대조했습니다.",
+  partial: "일부 공고 역량은 확인 답이 없어 선택 경로만으로 대조했습니다 (판정 칸이 비어 있는 행).",
+};
 
 /* ── API ─────────────────────────── */
 class ApiError extends Error {
@@ -390,7 +400,7 @@ const PHASES = [
   { no: "①", name: "공고 프로필", steps: [["posting_profile", "공고 역량 조회"]] },
   { no: "②", name: "입력·가명화·주장", steps: [["ingest", "문서 읽기"], ["pseudonymize", "가명화"], "boundary", ["extract_claims", "주장 뽑기"], ["assign_roles", "역할 판정"]] },
   { no: "③", name: "근거", steps: [["retrieve_t1", "역량 카드 찾기"], ["evidence", "NCS·ESCO 근거"]] },
-  { no: "④", name: "대조·명세·승인", steps: [["compare", "대조"], ["draft_spec", "명세 초안"], ["approval", "승인"], ["finalize", "확정"]] },
+  { no: "④", name: "대조·명세·승인", steps: [["verify_overlap", "공고 역량 확인"], ["compare", "대조"], ["draft_spec", "명세 초안"], ["approval", "승인"], ["finalize", "확정"]] },
 ];
 const ALIAS = { retrieve_t2: "retrieve_t1" };
 const ORDER = PHASES.flatMap((p) => p.steps.filter((x) => x !== "boundary").map((x) => x[0]));
@@ -624,15 +634,35 @@ function renderCompare(sum, status) {
     return;
   }
   const chips = (xs) => (xs.length ? `<div class="chips">${xs.join("")}</div>` : `<span class="placeholder">없음</span>`);
+  const checks = c.posting_checks || [];
+  const note = CHECK_STATUS_KO[c.check_status];
   el.innerHTML = `
+    ${note ? `<div class="banner info" style="margin-bottom:12px"><strong>확인 경로</strong><span>${esc(note)}</span></div>` : ""}
     <div class="cmp">
       <div><h4>겹침</h4>${chips(c.overlap.map((x) => `<span class="chip">${esc(x)}</span>`))}</div>
+      <div><h4>관련 경험</h4>${chips((c.related || []).map((x) => `<span class="chip">${esc(x)}</span>`))}</div>
       <div><h4>공고에만</h4>${chips(c.posting_only.map((x) => `<span class="chip">${esc(x)}</span>`))}</div>
       <div><h4>지원자에게만</h4>${chips(
         c.applicant_only.map((x) => `<span class="chip ${x.relatedness === "weak" ? "weak" : ""}">${esc(x.label)}${x.relatedness ? `<span class="lv">${REL_KO[x.relatedness] || ""}</span>` : ""}</span>`),
       )}</div>
     </div>
     ${c.uncovered_claims ? `<p class="placeholder" style="margin-top:10px">역량에 맞지 않은 주장 ${c.uncovered_claims}건</p>` : ""}
+    ${
+      checks.length
+        ? `<div class="tbl-wrap" style="margin-top:12px"><table class="checks"><thead><tr><th>공고 역량</th><th>대조</th><th>경로</th><th>확인 판정</th><th>근거 주장</th><th>역할</th></tr></thead><tbody>
+          ${checks
+            .map(
+              (r) => `<tr class="${esc(r.status)}"><td>${esc(r.label)}${r.primary === false ? `<span class="lv">보조</span>` : ""}</td>
+              <td>${PLACE_KO[r.status] || esc(r.status)}${r.downgraded ? `<span class="src lowered">승인자가 내림</span>` : ""}</td>
+              <td>${r.source ? `<span class="src ${esc(r.source)}">${SOURCE_KO[r.source] || esc(r.source)}</span>` : `<span class="placeholder">—</span>`}</td>
+              <td>${r.check_label ? CHECK_KO[r.check_label] || esc(r.check_label) : `<span class="placeholder">확인 안 됨</span>`}</td>
+              <td class="mono">${r.claim_ids.length ? r.claim_ids.map(esc).join(", ") : `<span class="placeholder">—</span>`}</td>
+              <td>${r.role ? CLAIM_ROLE_KO[r.role] || esc(r.role) : `<span class="placeholder">—</span>`}</td></tr>`,
+            )
+            .join("")}
+        </tbody></table></div>`
+        : ""
+    }
     ${
       c.claims_to_verify.length
         ? `<div class="tbl-wrap" style="margin-top:12px"><table><thead><tr><th>주장</th><th>점수</th><th>왜 검증하나</th></tr></thead><tbody>
@@ -778,6 +808,9 @@ function renderDecide(view, s) {
   }
   const slots = s.common_tasks.flatMap((t) => t.slots || []);
   const assigns = s.slot_assignments || [];
+  const cmpSum = view.approval_summary && view.approval_summary.comparison;
+  const lowerable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.status === "overlap");
+  const restorable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.downgraded);
   el.innerHTML = `
     ${view.approval_error ? `<div class="banner risk" style="margin-bottom:12px"><strong>직전 결정이 거부되었습니다</strong><span>${esc(view.approval_error)}</span></div>` : ""}
     <form class="decide" id="decide-form" autocomplete="off">
@@ -810,6 +843,26 @@ function renderDecide(view, s) {
             .join("")}</div>`
           : ""
       }
+      ${
+        lowerable.length
+          ? `<div class="full lower" id="lower" hidden><span class="eyebrow">겹침 낮추기 (선택) — 관련 경험으로 내리고 경험 검증을 다시 만듭니다</span>
+          ${lowerable
+            .map(
+              (r, i) => `<label for="lw-${i}"><input type="checkbox" id="lw-${i}" data-lower="${esc(r.competency_id)}">${esc(r.label)}<span class="src ${esc(r.source || "")}">${r.source ? SOURCE_KO[r.source] || esc(r.source) : "선택 경로"}</span></label>`,
+            )
+            .join("")}</div>`
+          : ""
+      }
+      ${
+        restorable.length
+          ? `<div class="full lower" id="restore" hidden><span class="eyebrow">다시 겹침으로 (선택) — 낮춘 역량을 대조 규칙대로 되돌리고 경험 검증을 다시 만듭니다</span>
+          ${restorable
+            .map(
+              (r, i) => `<label for="rs-${i}"><input type="checkbox" id="rs-${i}" data-restore="${esc(r.competency_id)}">${esc(r.label)}<span class="src lowered">승인자가 내림</span></label>`,
+            )
+            .join("")}</div>`
+          : ""
+      }
       <div class="full actions"><button type="submit" class="btn primary" id="decide-btn">승인하기</button><span class="msg" id="decide-msg" role="status"></span></div>
     </form>`;
   const form = $("#decide-form");
@@ -817,6 +870,8 @@ function renderDecide(view, s) {
     const v = form.querySelector('input[name="decision"]:checked').value;
     $("#target-wrap").hidden = v !== "revise";
     if ($("#reassign")) $("#reassign").hidden = v !== "revise";
+    if ($("#lower")) $("#lower").hidden = v !== "revise";
+    if ($("#restore")) $("#restore").hidden = v !== "revise";
     $("#comment-wrap").firstChild.textContent = v === "revise" ? "고칠 점 (필수)" : "메모";
     $("#comment").placeholder = v === "revise" ? "예: 함정 t1 은 근거 없는 증설로 한정해 주세요." : v === "rejected" ? "반려 사유 (선택)" : "승인 메모 (선택)";
     $("#decide-btn").textContent = { approved: "승인하기", revise: "수정 요청 보내기", rejected: "반려하기" }[v];
@@ -844,6 +899,12 @@ function renderDecide(view, s) {
         if (sel.value) reassign[sel.dataset.claim] = sel.value === "__none__" ? null : sel.value;
       });
       body.reassign = reassign;
+      const lower = [...form.querySelectorAll("input[data-lower]:checked")].map((x) => x.dataset.lower);
+      const restore = [...form.querySelectorAll("input[data-restore]:checked")].map((x) => x.dataset.restore);
+      if ((lower.length || restore.length) && body.revise_target === "common")
+        return say(msg, "겹침을 낮추거나 되돌리면 경험 검증을 다시 만들어야 합니다 — '경험 검증만' 또는 '전부'를 고르세요.", "err");
+      body.downgrade_overlap = lower;
+      body.restore_overlap = restore;
     }
     try {
       await busy($("#decide-btn"), "보내는 중…", () => api("POST", `/runs/${encodeURIComponent(run.id)}/approve`, { json: body }));
