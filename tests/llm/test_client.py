@@ -13,7 +13,7 @@ from task_spec.llm import (
     TransientLLMError,
     Usage,
 )
-from task_spec.llm.client import EmptyResponse
+from task_spec.llm.client import EmptyResponse, OutputTruncated
 from task_spec.nodes.pseudonymize import mint_pseudonymized
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import ClaimExtractionInput, ClaimExtractionOutput
@@ -168,3 +168,60 @@ async def test_rate_limit_still_retried_three_times() -> None:
     fake = FakeBackend().push(*[TransientLLMError("RateLimitError")] * 3, Completion(GOOD))
     r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert r.provenance.retries == 3
+
+
+TRUNC_BROKEN = Completion('{"claims": [{"action": "가상 원문', Usage(500, 4096, 3000), "length")
+TRUNC_EMPTY = Completion("", Usage(500, 4096, 4096), "length")
+
+
+async def test_default_path_keeps_schema_reask_on_truncation() -> None:
+    # 기본(split_on_truncation=False): 잘림도 예전처럼 형식 재요청 1회 → 성공하면 받는다
+    fake = FakeBackend().push(TRUNC_BROKEN, Completion(GOOD))
+    r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert len(fake.calls) == 2
+    assert r.provenance.retries == 1
+
+
+async def test_default_path_raises_same_exception_types_as_before() -> None:
+    fake = FakeBackend().push(TRUNC_BROKEN, TRUNC_BROKEN)
+    with pytest.raises(SchemaViolation) as ei:
+        await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert type(ei.value) is SchemaViolation
+    fake = FakeBackend().push(TRUNC_EMPTY)
+    with pytest.raises(EmptyResponse) as ee:
+        await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert type(ee.value) is EmptyResponse  # OutputTruncated 가 아니다
+
+
+async def test_split_mode_truncated_raises_without_reask_and_without_content() -> None:
+    fake = FakeBackend().push(TRUNC_BROKEN)
+    with pytest.raises(OutputTruncated) as ei:
+        await _client(fake).call(_prompt(), ClaimExtractionOutput, split_on_truncation=True)
+    assert len(fake.calls) == 1  # 형식 오류를 알려 다시 물어도 같은 곳에서 잘린다
+    assert "가상 원문" not in str(ei.value)
+    assert isinstance(ei.value, EmptyResponse)  # 호출자의 실패 처리는 그대로 받는다
+    prov = ei.value.provenance
+    assert prov is not None and prov.tokens.out == 4096  # 잘린 호출의 비용도 남는다
+
+
+async def test_split_mode_truncated_empty_with_low_effort_raises_truncated() -> None:
+    fake = FakeBackend().push(TRUNC_EMPTY)
+    with pytest.raises(OutputTruncated):
+        await _client(fake).call(_prompt(), ClaimExtractionOutput, split_on_truncation=True)
+    assert len(fake.calls) == 1
+
+
+async def test_split_mode_tries_low_effort_first() -> None:
+    prompt = _prompt().model_copy(update={"params": {"temperature": 0}})
+    fake = FakeBackend().push(TRUNC_BROKEN, TRUNC_EMPTY)
+    with pytest.raises(OutputTruncated) as ei:
+        await _client(fake).call(prompt, ClaimExtractionOutput, split_on_truncation=True)
+    assert len(fake.calls) == 2
+    assert fake.calls[1][1]["reasoning_effort"] == "low"
+    assert ei.value.provenance is not None and ei.value.provenance.retries == 1
+
+
+async def test_split_mode_complete_json_at_length_is_accepted() -> None:
+    fake = FakeBackend().push(Completion(GOOD, Usage(100, 4096, 3000), "length"))
+    r = await _client(fake).call(_prompt(), ClaimExtractionOutput, split_on_truncation=True)
+    assert len(r.parsed.claims) == 1
