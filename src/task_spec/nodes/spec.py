@@ -19,18 +19,12 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptError, PromptRegistry
 from task_spec.schemas import (
     ApprovalDecision,
-    ApprovalSummary,
-    AssignmentBrief,
     CommonRef,
-    ComparisonBrief,
-    OutsideBrief,
     PublicIncident,
     RunState,
     SlotAssignment,
-    TaskBrief,
     TaskItem,
     TaskSpec,
-    VerifyBrief,
 )
 from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
@@ -41,6 +35,7 @@ from task_spec.spec.questions import build_slot_verifications
 from task_spec.spec.slots import TASK as SLOT_TASK
 from task_spec.spec.slots import build_slots
 from task_spec.spec.store import CommonKey, CommonTaskRepo
+from task_spec.spec.summary import approval_summary
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 
@@ -232,63 +227,6 @@ def make_draft_spec(
         return {"spec": spec, "approval": None, **update}
 
     return draft_spec
-
-
-def approval_summary(state: RunState) -> ApprovalSummary:
-    """승인자가 먼저 볼 것. 원문·가명화 매핑·주장 인용은 넣지 않는다 (인증 전 — privacy-auditor W1)."""
-    spec = state.spec
-    assert spec is not None
-
-    def brief(t: TaskItem) -> TaskBrief:
-        return TaskBrief(
-            task_id=t.task_id,
-            track=t.track,
-            title=t.title,
-            competencies=[c.label for c in t.target_competencies],
-            difficulty=t.difficulty_target,
-            time_limit_min=t.time_limit_min,
-            n_traps=len(t.traps),
-            has_anchors=t.behavioral_anchors is not None,
-            review_flags=t.review_flags,
-        )
-
-    tasks = [brief(t) for t in [*spec.common_tasks, *spec.verification_tasks]]
-    slots = [brief(x) for t in spec.common_tasks for x in t.slots]
-    c = state.comparison
-    comparison = (
-        ComparisonBrief(
-            overlap=[m.label for m in c.overlap],
-            posting_only=[m.label for m in c.posting_only],
-            applicant_only=[
-                OutsideBrief(label=m.label, relatedness=m.relatedness) for m in c.applicant_only
-            ],
-            uncovered_claims=len(c.uncovered),
-            claims_to_verify=[
-                VerifyBrief(claim_id=v.claim_id, score=v.score, reasons=v.reasons)
-                for v in c.claims_to_verify
-            ],
-        )
-        if c is not None
-        else None
-    )
-    return ApprovalSummary(
-        review_flags=spec.review_flags,
-        tasks=tasks,
-        slots=slots,
-        assignments=[
-            AssignmentBrief(
-                claim_id=a.claim_id,
-                slot_id=a.slot_id,
-                basis=a.basis,
-                n_questions=len(a.follow_up_questions),
-                review_flags=a.review_flags,
-            )
-            for a in spec.slot_assignments
-        ],
-        common=spec.common_refs,
-        total_time_min=sum(t.time_limit_min for t in tasks),
-        comparison=comparison,
-    )
 
 
 async def approval(state: RunState) -> Command[ApprovalRoute]:
