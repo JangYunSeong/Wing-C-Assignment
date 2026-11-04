@@ -49,6 +49,11 @@ async def test_create_approve_done_and_spec(client: httpx.AsyncClient, tmp_path:
     assert resp.status_code == 202
     done = await wait_status(client, run_id, "done")
     assert done["spec"] is None
+    # 확정 뒤에도 승인 요약(대조·배정)을 다시 계산해 준다 — 화면이 확정된 실행을 열 때
+    assert done["approval_summary"] is not None
+    assert (
+        done["approval_summary"]["total_time_min"] == awaiting["approval_summary"]["total_time_min"]
+    )
 
     spec = await client.get(f"/runs/{run_id}/spec")
     assert spec.status_code == 200
