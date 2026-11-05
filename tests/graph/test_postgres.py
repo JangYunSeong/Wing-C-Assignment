@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import anyio
 import pytest
 from langgraph.types import Command
 from pydantic import SecretStr
@@ -54,3 +55,20 @@ async def test_interrupt_resume_roundtrip_on_postgres(test_db_url: str) -> None:
         finally:
             await cp.adelete_thread(inp["run_id"])
         assert (await cp.aget_tuple(cfg)) is None
+
+
+async def test_cancelled_query_does_not_break_later_requests(test_db_url: str) -> None:
+    # 2026-11-05 운영: SSE 연결이 끊겨 조회가 anyio 취소 범위로 끊긴 뒤, 연결 하나가 "another command is
+    # already in progress" 상태로 남아 실행 조회·헬스체크가 재시작 전까지 전부 실패했다.
+    # asyncio task.cancel() 로는 재현되지 않는다 — sse-starlette 처럼 anyio 취소 범위로 끊어야 한다.
+    from task_spec.api.routers.health import _ping
+
+    cfg = {"configurable": {"thread_id": "cancel-probe", "checkpoint_ns": ""}}
+    async with make_checkpointer(kind="postgres", conn_string=test_db_url) as cp:
+        with anyio.move_on_after(0.3) as scope:
+            async with cp._cursor() as cur:
+                await cur.execute("SELECT pg_sleep(3)")
+        assert scope.cancelled_caught
+
+        assert await cp.aget_tuple(cfg) is None
+        assert await _ping(cp)

@@ -257,17 +257,28 @@ DB 는 `task_db` 컨테이너(`docker/db/`, PostgreSQL 16 + pgvector, `127.0.0.1
 
 ```python
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 
 @asynccontextmanager
 async def make_checkpointer(settings):
     if settings.checkpointer == "memory":
         yield InMemorySaver(); return
-    async with AsyncPostgresSaver.from_conn_string(settings.database_url) as cp:
+    pool = AsyncConnectionPool(url, open=False, check=AsyncConnectionPool.check_connection,
+                               kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
+    await pool.open(wait=True)
+    try:
+        cp = AsyncPostgresSaver(pool)
         await cp.setup()          # 체크포인트 테이블 생성 (멱등)
         yield cp
+    finally:
+        await pool.close()
 ```
 
 - 패키지: `langgraph-checkpoint-postgres`, `psycopg[binary,pool]`.
+- **연결 하나(`from_conn_string`) 금지, 연결 풀** [확정: 2026-11-05]. SSE 연결이 끊기면 sse-starlette 가 anyio 취소 범위로
+  조회를 끊고, psycopg 정리 대기까지 취소돼 연결이 `another command is already in progress` 로 남는다 — 연결 하나면
+  재시작 전까지 실행 조회·헬스체크가 전부 실패한다(운영 2026-11-05). 풀은 그런 연결을 돌려받을 때 버린다.
+  회귀 테스트: `tests/graph/test_postgres.py::test_cancelled_query_does_not_break_later_requests` (`-m pg`).
 - `thread_id = run_id`. 체크포인트 테이블은 State 를 담으므로 **지원자 파생물** — 원문·매핑을 State 에 넣지 않는 규칙이 여기서 중요해진다.
 - 통합 테스트는 실행마다 고유 `thread_id`, 끝나면 해당 thread 삭제(`adelete_thread`). 운영 DB URL 로 테스트를 돌리지 않는다
   (`TEST_DATABASE_URL` 이 `DATABASE_URL` 과 같으면 conftest 가 거부).
