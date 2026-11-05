@@ -95,6 +95,8 @@ def posting_checks(state: RunState, c: Comparison) -> list[PostingCheckBrief]:
             claim_ids=list(m.check_claim_ids or m.claim_ids),
             role=m.role,
             downgraded=m.downgraded,
+            select_only=m.select_only,
+            promoted=m.promoted,
         )
 
     rows = {

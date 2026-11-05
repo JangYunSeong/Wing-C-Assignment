@@ -239,23 +239,29 @@ def make_draft_spec(
 def _apply_downgrade(
     state: RunState, rel: Relatedness | None
 ) -> tuple[RunState, list[NodeError] | None]:
-    """revise 의 겹침 낮추기·되돌리기 → 대조를 다시 계산 (낮춘 역량은 관련 경험, 검증 후보에서도 뺀다).
+    """revise 의 겹침 낮추기·되돌리기·올리기 → 대조를 다시 계산.
 
-    낮춘 역량은 대조(State)에 누적된다 — 다음 revise 에서 다시 보내지 않아도 유지, 되돌리기로만 뺀다.
-    이미 낮춘 역량을 다시 낮추라는 것은 조용히 무시. 겹침이 아닌 역량 낮추기·낮추지 않은 역량 되돌리기는
-    무시하고 기록만 (승인자 입력이므로 공고 역량 id 일 때만 ref_id 로 남긴다).
+    - 낮추기: 겹침 → 관련 경험 (검증 후보에서도 그 연결을 뺀다). 승인자가 올린 역량을 낮추면 올림만 취소 (원래 자리로).
+    - 되돌리기: 낮춘 역량을 대조 규칙대로.
+    - 올리기 [2026-11-06]: 선택만 일치(select_only) 역량 → 겹침 (출처 promoted). 낮춘 역량은 바로 올리지 않는다
+      (되돌리기 restore 를 먼저 — 같은 결정에 같은 id 를 두 목록에 넣을 수 없다).
+    낮춤·올림은 대조(State)에 누적된다 — 다음 revise 에서 다시 보내지 않아도 유지.
+    이미 낮춘·올린 역량을 다시 보내면 조용히 무시. 그 밖에 맞지 않는 id 는 무시하고 기록만
+    (승인자 입력이므로 공고 역량 id 일 때만 ref_id 로 남긴다).
     """
     d = state.approval
     if (
         d is None
         or d.status != "revise"
-        or not (d.downgrade_overlap or d.restore_overlap)
+        or not (d.downgrade_overlap or d.restore_overlap or d.promote_overlap)
         or state.comparison is None
     ):
         return state, None
     cmp = state.comparison
     overlap = {m.competency_id for m in cmp.overlap}
     lowered = set(cmp.downgraded)
+    raised = set(cmp.promoted)
+    unsure = {m.competency_id for m in [*cmp.related, *cmp.posting_only] if m.select_only}
     posting = set(state.posting_profile.competency_ids) if state.posting_profile else set()
 
     def ignored(code: str, message: str, c: str) -> NodeError:
@@ -265,17 +271,43 @@ def _apply_downgrade(
 
     down = list(dict.fromkeys(d.downgrade_overlap))
     back = list(dict.fromkeys(d.restore_overlap))
-    notes = [
-        ignored("downgrade_ignored", "겹침이 아닌 역량은 낮출 수 없음", c)
-        for c in down
-        if c not in overlap and c not in lowered
-    ] + [
-        ignored("restore_ignored", "낮추지 않은 역량은 되돌릴 수 없음", c)
-        for c in back
-        if c not in lowered
+    up = list(dict.fromkeys(d.promote_overlap))
+    notes = (
+        [
+            ignored("downgrade_ignored", "겹침이 아닌 역량은 낮출 수 없음", c)
+            for c in down
+            if c not in overlap and c not in lowered
+        ]
+        + [
+            ignored("restore_ignored", "낮추지 않은 역량은 되돌릴 수 없음", c)
+            for c in back
+            if c not in lowered
+        ]
+        + [
+            ignored(
+                "promote_ignored", "낮춘 역량은 올릴 수 없음 — 되돌리기(restore)를 먼저 쓰세요", c
+            )
+            for c in up
+            if c in lowered
+        ]
+        + [
+            ignored("promote_ignored", "선택만 일치가 아닌 역량은 올릴 수 없음", c)
+            for c in up
+            if c not in lowered and c not in unsure and c not in raised
+        ]
+    )
+    # 올린 역량을 낮추면 올림 취소 (낮춘 목록에는 넣지 않는다 — 원래 자리가 겹침이 아니므로)
+    keep_up = [
+        c
+        for c in [*cmp.promoted, *(c for c in up if c in unsure and c not in lowered)]
+        if c not in down
     ]
-    keep = [c for c in [*cmp.downgraded, *(c for c in down if c in overlap)] if c not in back]
-    new = compare_claims(state, rel, keep)
+    keep_down = [
+        c
+        for c in [*cmp.downgraded, *(c for c in down if c in overlap and c not in raised)]
+        if c not in back
+    ]
+    new = compare_claims(state, rel, keep_down, keep_up)
     return state.model_copy(update={"comparison": new}), notes
 
 

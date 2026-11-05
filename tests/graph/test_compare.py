@@ -152,7 +152,7 @@ def _checked(*items: tuple[str, str, list[str]], status: str = "ok") -> RunState
     return _state(overlap_check=res)
 
 
-def test_sources_both_verify_select() -> None:
+def test_sources_both_verify_and_select_only_is_not_overlap() -> None:
     # 선택: a ← c1·c5, b ← c2 / 확인: a action(c1), b none, c action(c3)
     cmp = compare_claims(
         _checked(
@@ -163,12 +163,56 @@ def test_sources_both_verify_select() -> None:
     )
     assert [(m.competency_id, m.overlap_source, m.check_label) for m in cmp.overlap] == [
         ("comp:a", "both", "action"),
-        ("comp:b", "select", "none"),  # 선택만 — 승인자 확인 표시
         ("comp:c", "verify", "action"),
     ]
-    assert cmp.related == [] and cmp.posting_only == [] and cmp.check_status == "ok"
-    c = cmp.overlap[2]
+    # 선택만 일치 + 확인 none → 공고에만, select_only 표시 [2026-11-06]
+    assert [(m.competency_id, m.select_only, m.overlap_source) for m in cmp.posting_only] == [
+        ("comp:b", True, None)
+    ]
+    assert cmp.related == [] and cmp.check_status == "ok" and cmp.promoted == []
+    assert not any(m.select_only for m in cmp.overlap)
+    c = cmp.overlap[1]
     assert (c.check_claim_ids, c.claim_ids, c.role) == (["d1-c3"], [], "lead")  # 근거 주장 칸 역할
+
+
+def test_select_only_goes_to_related_or_posting_only() -> None:
+    # 선택 b ← c2. 확인 related → 관련 경험, mention → 공고에만. 둘 다 select_only
+    for label, where in (
+        ("related", "related"),
+        ("mention", "posting_only"),
+        ("none", "posting_only"),
+    ):
+        cmp = compare_claims(
+            _checked(
+                ("comp:a", "action", ["d1-c1"]),
+                ("comp:b", label, ["d1-c2"]),
+                ("comp:c", "none", []),
+            )
+        )
+        got = {m.competency_id: m for m in getattr(cmp, where)}
+        assert got["comp:b"].select_only and got["comp:b"].check_label == label
+        assert "comp:b" not in [m.competency_id for m in cmp.overlap]
+        assert (
+            not got.get("comp:c") or not got["comp:c"].select_only
+        )  # 선택이 안 고른 역량은 표시 없음
+    # 확인을 안 한 역량(답 빠짐)은 예전처럼 선택 경로만으로 겹침 — 출처·표시 없음
+    partial = compare_claims(_checked(("comp:a", "action", ["d1-c1"]), status="partial"))
+    b = next(m for m in partial.overlap if m.competency_id == "comp:b")
+    assert (b.overlap_source, b.select_only, b.check_label) == (None, False, None)
+
+
+def test_promoted_select_only_is_overlap_and_downgrade_wins() -> None:
+    s = _checked(
+        ("comp:a", "action", ["d1-c1"]), ("comp:b", "none", []), ("comp:c", "related", ["d1-c3"])
+    )
+    up = compare_claims(s, promoted=["comp:b", "comp:c", "comp:a", "comp:nope"])
+    b = next(m for m in up.overlap if m.competency_id == "comp:b")
+    assert (b.overlap_source, b.promoted, b.select_only) == ("promoted", True, True)
+    assert up.promoted == [
+        "comp:b"
+    ]  # 선택만 일치가 아닌 역량(c 는 선택이 안 고름, a 는 action)은 올리지 않음
+    both = compare_claims(s, downgraded=["comp:b"], promoted=["comp:b"])
+    assert both.promoted == [] and [m.competency_id for m in both.related] == ["comp:b", "comp:c"]
 
 
 def test_related_and_mention_are_not_overlap() -> None:
@@ -241,11 +285,36 @@ def test_select_only_is_marked_in_verify_reasons() -> None:
 
     cmp = compare_claims(_checked(("comp:a", "action", ["d1-c1"]), ("comp:b", "none", [])))
     c2 = next(x for x in cmp.claims_to_verify if x.claim_id == "d1-c2")
-    assert f"{SELECT_ONLY}: B" in c2.reasons  # 확인 경로 none + 선택만 → 겹침(select), 사유 표시
+    assert (
+        f"{SELECT_ONLY}: B" in c2.reasons
+    )  # 확인 경로 none + 선택만 → 공고에만, 검증 후보로 남고 사유 표시
+    assert (
+        c2.competency_ids == ["comp:b"] and c2.score == 2.5
+    )  # 점수 규칙 그대로 (보조 2 + 참여 0.5)
     c1 = next(x for x in cmp.claims_to_verify if x.claim_id == "d1-c1")
     assert not any(r.startswith(SELECT_ONLY) for r in c1.reasons)
     assert SELECT_ONLY == "선택만 일치(확인 경로 근거 없음)"
     from pathlib import Path
 
     ui = Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js"
-    assert f'select: "{SELECT_ONLY}"' in ui.read_text("utf-8")  # 승인 화면 경고와 같은 문구
+    assert f'const SELECT_ONLY_KO = "{SELECT_ONLY}"' in ui.read_text(
+        "utf-8"
+    )  # 승인 화면 표시와 같은 문구
+
+
+def test_promoted_reason_replaces_select_only_reason() -> None:
+    from task_spec.nodes.compare import PROMOTED_KO, SELECT_ONLY
+
+    s = _checked(("comp:a", "action", ["d1-c1"]), ("comp:b", "none", []))
+    c2 = next(
+        x for x in compare_claims(s, promoted=["comp:b"]).claims_to_verify if x.claim_id == "d1-c2"
+    )
+    assert f"{PROMOTED_KO}: B" in c2.reasons
+    assert not any(r.startswith(SELECT_ONLY) for r in c2.reasons)
+    from pathlib import Path
+
+    ui = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
+        "utf-8"
+    )
+    assert f'promoted: "{PROMOTED_KO}"' in ui  # 승인 화면과 같은 말
+    assert 'select: "선택만 일치(예전 실행) — 확인 필요"' in ui

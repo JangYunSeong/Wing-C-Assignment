@@ -228,3 +228,140 @@ async def test_downgrade_needs_revise_and_verification(tmp_path: Path, patched_p
         }
         r = await graph.ainvoke(Command(resume=common_only), cfg)
         assert "revise_target" in r["__interrupt__"][0].value["error"]
+
+
+# 선택만 일치: 선택 경로가 pipeline 을 골랐는데 확인 경로는 none [2026-11-06]
+CHECK_SELECT_ONLY = {
+    "items": [
+        {"competency_id": "comp:data.pipeline", "evidence_claims": [], "label": "none"},
+        {"competency_id": "comp:sw.cache", "evidence_claims": ["c2"], "label": "action"},
+        {"competency_id": "comp:data.stat_ml", "evidence_claims": [], "label": "none"},
+    ]
+}
+
+
+async def test_select_only_promote_and_lower_again(tmp_path: Path, patched_profile) -> None:
+    fake = FakeBackend().push(_json(CLAIMS), _json(PICKS), _json(CHECK_SELECT_ONLY))
+    cards, m = cardset()
+    async with make_checkpointer(kind="memory") as cp:
+        graph = build_graph(
+            cp,
+            pseudonymizer=_writer(tmp_path),
+            llm=LLMClient({"opencode": fake}),
+            prompts=PROMPTS,
+            retriever=T1Retriever(cards, m),
+        )
+        inp = run_input(docs=[fake_doc("d1", "resume")])
+        cfg = config_for(inp)
+        result = await graph.ainvoke(inp, cfg)
+
+        def rows(r: dict[str, Any]) -> dict[str, dict[str, Any]]:
+            s = r["__interrupt__"][0].value["summary"]["comparison"]
+            return {x["competency_id"]: x for x in s["posting_checks"]}
+
+        p0 = rows(result)["comp:data.pipeline"]
+        assert (p0["status"], p0["select_only"], p0["source"], p0["promoted"]) == (
+            "posting_only",
+            True,
+            None,
+            False,
+        )
+        assert result["comparison"].overlap[0].competency_id == "comp:sw.cache"
+        # 검증 후보에는 남는다 (주장 → 역량 연결은 그대로, 사유 표시)
+        t = next(x for x in result["comparison"].claims_to_verify if x.claim_id == "d1-c1")
+        assert any(r.startswith("선택만 일치(확인 경로 근거 없음)") for r in t.reasons)
+
+        # 승인자가 겹침으로 올림 (선택만 일치가 아닌 stat_ml 은 무시 기록)
+        up = {
+            **decision("revise", "파이프라인 근거 확인함"),
+            "revise_target": "verification",
+            "promote_overlap": ["comp:data.pipeline", "comp:data.stat_ml"],
+        }
+        r1 = await graph.ainvoke(Command(resume=up), cfg)
+        p1 = rows(r1)["comp:data.pipeline"]
+        assert (p1["status"], p1["source"], p1["promoted"], p1["select_only"]) == (
+            "overlap",
+            "promoted",
+            True,
+            True,
+        )
+        assert r1["comparison"].promoted == ["comp:data.pipeline"]
+        assert ("promote_ignored", "comp:data.stat_ml") in [
+            (e.code, e.ref_id) for e in r1["errors"]
+        ]
+
+        # 다시 올리면 조용히 무시, 다음 revise 에도 유지
+        r2 = await graph.ainvoke(
+            Command(
+                resume={
+                    **decision("revise", "한 번 더"),
+                    "revise_target": "all",
+                    "promote_overlap": ["comp:data.pipeline"],
+                }
+            ),
+            cfg,
+        )
+        assert r2["comparison"].promoted == ["comp:data.pipeline"]
+        assert [e.code for e in r2["errors"]].count("promote_ignored") == 1
+
+        # 올린 겹침을 낮추면 올림 취소 → 원래 자리(공고에만, select_only)
+        down = {
+            **decision("revise", "다시 내림"),
+            "revise_target": "verification",
+            "downgrade_overlap": ["comp:data.pipeline"],
+        }
+        r3 = await graph.ainvoke(Command(resume=down), cfg)
+        p3 = rows(r3)["comp:data.pipeline"]
+        assert (p3["status"], p3["promoted"], p3["downgraded"], p3["select_only"]) == (
+            "posting_only",
+            False,
+            False,
+            True,
+        )
+        assert r3["comparison"].promoted == [] and r3["comparison"].downgraded == []
+
+        def revise(comment: str, **lists: list[str]) -> Command:
+            return Command(
+                resume={**decision("revise", comment), "revise_target": "verification", **lists}
+            )
+
+        # 올림 → 내림 → 다시 올림
+        r4 = await graph.ainvoke(revise("다시 올림", promote_overlap=["comp:data.pipeline"]), cfg)
+        assert r4["comparison"].promoted == ["comp:data.pipeline"]
+        # 확인 action 겹침(cache)을 낮추고, 올린 pipeline 도 같은 결정에서 내림
+        r5 = await graph.ainvoke(
+            revise("둘 다 내림", downgrade_overlap=["comp:sw.cache", "comp:data.pipeline"]), cfg
+        )
+        assert r5["comparison"].downgraded == ["comp:sw.cache"] and r5["comparison"].promoted == []
+        # 낮춘 역량을 바로 올리면 무시 기록 + 되돌리기 안내
+        r6 = await graph.ainvoke(revise("캐시 올림", promote_overlap=["comp:sw.cache"]), cfg)
+        msgs = [(e.code, e.message, e.ref_id) for e in r6["errors"]]
+        assert (
+            "promote_ignored",
+            "낮춘 역량은 올릴 수 없음 — 되돌리기(restore)를 먼저 쓰세요",
+            "comp:sw.cache",
+        ) in msgs
+        assert r6["comparison"].downgraded == ["comp:sw.cache"] and r6["comparison"].promoted == []
+        # 같은 revise 에서 되돌리기(cache)와 올리기(pipeline)를 함께
+        r7 = await graph.ainvoke(
+            revise(
+                "되돌리고 올림",
+                restore_overlap=["comp:sw.cache"],
+                promote_overlap=["comp:data.pipeline"],
+            ),
+            cfg,
+        )
+        p7 = rows(r7)
+        assert (p7["comp:sw.cache"]["status"], p7["comp:sw.cache"]["source"]) == (
+            "overlap",
+            "verify",
+        )
+        assert (p7["comp:data.pipeline"]["status"], p7["comp:data.pipeline"]["source"]) == (
+            "overlap",
+            "promoted",
+        )
+        assert r7["comparison"].downgraded == [] and r7["comparison"].promoted == [
+            "comp:data.pipeline"
+        ]
+        done = await graph.ainvoke(Command(resume=decision("approved")), cfg)
+        assert done["spec"].approval is not None

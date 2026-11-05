@@ -31,6 +31,8 @@ class ApprovalDecision(Schema):
     downgrade_overlap: list[CompetencyRef] = Field(default_factory=list, max_length=60)
     # 낮춘 겹침 되돌리기 (revise 일 때만): 낮춘 역량 id — 다시 대조 규칙대로
     restore_overlap: list[CompetencyRef] = Field(default_factory=list, max_length=60)
+    # 겹침으로 올리기 (revise 일 때만): 선택 경로만 고른(select_only) 공고 역량 id [2026-11-06]
+    promote_overlap: list[CompetencyRef] = Field(default_factory=list, max_length=60)
     at: AwareDatetime
 
     @model_validator(mode="after")
@@ -44,6 +46,7 @@ class ApprovalDecision(Schema):
         for name, ids in (
             ("downgrade_overlap(겹침 낮추기)", self.downgrade_overlap),
             ("restore_overlap(낮춘 겹침 되돌리기)", self.restore_overlap),
+            ("promote_overlap(겹침으로 올리기)", self.promote_overlap),
         ):
             if ids and self.status != "revise":
                 raise ValueError(f"{name}은 revise 결정에서만 쓸 수 있습니다")
@@ -51,6 +54,7 @@ class ApprovalDecision(Schema):
                 raise ValueError(
                     f"{name}은 경험 검증을 다시 만들어야 합니다 — revise_target 을 verification 또는 all 로"
                 )
-        if set(self.downgrade_overlap) & set(self.restore_overlap):
-            raise ValueError("같은 역량을 낮추기와 되돌리기에 함께 넣을 수 없습니다")
+        lists = (self.downgrade_overlap, self.restore_overlap, self.promote_overlap)
+        if any(set(a) & set(b) for i, a in enumerate(lists) for b in lists[i + 1 :]):
+            raise ValueError("같은 역량을 낮추기·되돌리기·올리기에 함께 넣을 수 없습니다")
         return self
