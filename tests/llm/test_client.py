@@ -187,7 +187,7 @@ async def test_default_path_raises_same_exception_types_as_before() -> None:
     with pytest.raises(SchemaViolation) as ei:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert type(ei.value) is SchemaViolation
-    fake = FakeBackend().push(TRUNC_EMPTY)
+    fake = FakeBackend().push(TRUNC_EMPTY, TRUNC_EMPTY)  # 같은 설정 재시도 뒤에도 빔
     with pytest.raises(EmptyResponse) as ee:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert type(ee.value) is EmptyResponse  # OutputTruncated 가 아니다
@@ -204,24 +204,65 @@ async def test_split_mode_truncated_raises_without_reask_and_without_content() -
     assert prov is not None and prov.tokens.out == 4096  # 잘린 호출의 비용도 남는다
 
 
-async def test_split_mode_truncated_empty_with_low_effort_raises_truncated() -> None:
-    fake = FakeBackend().push(TRUNC_EMPTY)
-    with pytest.raises(OutputTruncated):
+async def test_split_mode_truncated_empty_with_low_effort_resamples_then_raises() -> None:
+    fake = FakeBackend().push(TRUNC_EMPTY, TRUNC_EMPTY)
+    with pytest.raises(OutputTruncated) as ei:
         await _client(fake).call(_prompt(), ClaimExtractionOutput, split_on_truncation=True)
-    assert len(fake.calls) == 1
+    assert len(fake.calls) == 2  # 같은 설정으로 1회 다시 부른 뒤에야 나누라고 돌려준다
+    assert fake.calls[0][1] == fake.calls[1][1]
+    prov = ei.value.provenance
+    assert prov is not None and prov.retries == 1 and prov.tokens.out == 2 * 4096
+
+
+async def test_split_mode_truncated_empty_resample_can_succeed() -> None:
+    fake = FakeBackend().push(TRUNC_EMPTY, Completion(GOOD, Usage(500, 900, 600)))
+    r = await _client(fake).call(_prompt(), ClaimExtractionOutput, split_on_truncation=True)
+    assert len(r.parsed.claims) == 1
+    assert r.provenance.retries == 1
+    assert r.provenance.tokens.out == 4096 + 900
 
 
 async def test_split_mode_tries_low_effort_first() -> None:
     prompt = _prompt().model_copy(update={"params": {"temperature": 0}})
-    fake = FakeBackend().push(TRUNC_BROKEN, TRUNC_EMPTY)
+    fake = FakeBackend().push(TRUNC_BROKEN, TRUNC_EMPTY, TRUNC_EMPTY)
     with pytest.raises(OutputTruncated) as ei:
         await _client(fake).call(prompt, ClaimExtractionOutput, split_on_truncation=True)
-    assert len(fake.calls) == 2
+    assert len(fake.calls) == 3  # low 로 1회 → 빈+잘림이라 같은 설정으로 1회 → 포기
     assert fake.calls[1][1]["reasoning_effort"] == "low"
-    assert ei.value.provenance is not None and ei.value.provenance.retries == 1
+    assert fake.calls[2][1]["reasoning_effort"] == "low"
+    assert ei.value.provenance is not None and ei.value.provenance.retries == 2
 
 
 async def test_split_mode_complete_json_at_length_is_accepted() -> None:
     fake = FakeBackend().push(Completion(GOOD, Usage(100, 4096, 3000), "length"))
     r = await _client(fake).call(_prompt(), ClaimExtractionOutput, split_on_truncation=True)
     assert len(r.parsed.claims) == 1
+
+
+async def test_default_path_empty_truncated_resamples_and_succeeds() -> None:
+    fake = FakeBackend().push(TRUNC_EMPTY, Completion(GOOD, Usage(500, 900, 600)))
+    r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert len(r.parsed.claims) == 1
+    assert len(fake.calls) == 2
+    assert fake.calls[0][1] == fake.calls[1][1]  # 같은 설정 (이미 low)
+    assert r.provenance.retries == 1
+    # 두 호출 비용을 모두 남긴다
+    assert (r.provenance.tokens.in_, r.provenance.tokens.out) == (1000, 4096 + 900)
+
+
+async def test_default_path_empty_truncated_twice_raises_with_both_costs() -> None:
+    fake = FakeBackend().push(TRUNC_EMPTY, TRUNC_EMPTY)
+    with pytest.raises(EmptyResponse) as ei:
+        await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert type(ei.value) is EmptyResponse
+    assert len(fake.calls) == 2
+    prov = ei.value.provenance
+    assert prov is not None and prov.retries == 1 and prov.tokens.out == 2 * 4096
+
+
+async def test_empty_without_truncation_keeps_old_behavior() -> None:
+    # 잘리지 않은 빈 응답(이미 low) → 다시 부르지 않고 바로 EmptyResponse (예전 그대로)
+    fake = FakeBackend().push(Completion("", Usage(500, 10, 0), "stop"), Completion(GOOD))
+    with pytest.raises(EmptyResponse):
+        await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert len(fake.calls) == 1
