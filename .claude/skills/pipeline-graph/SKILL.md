@@ -15,7 +15,7 @@ START
   └─ posting_profile          ① 온톨로지 조회. LLM 없음. 공고 없으면 END(posting_not_found)
   └─ ingest                   ② 문서별 텍스트 추출(PDF 텍스트층 → 스캔본만 OCR) + 칸 분리
   └─ pseudonymize             ② 치환 + 누락 검사. 실패 시 END(error) — 다음 노드로 절대 넘기지 않음
-  └─ extract_claims           ② LLM. 주장마다 인용이 속한 ⟦칸⟧(field)을 기록 · 출력 잘림이면 칸 밖 경계에서 나눠 다시 (nodes/claims.extract_parts, 문서당 9호출·동시 3, 일부 조각 실패는 claims_partial)
+  └─ extract_claims           ② LLM. 주장마다 인용이 속한 ⟦칸⟧(field)을 기록 · 1,500자 넘는 문서는 칸 밖 경계에서 처음부터 나눠 병렬 · 출력 잘림이면 반씩 다시 (nodes/claims.extract_parts, 호출 상한 2×조각+1 (9~25)·동시 3, 일부 조각 실패는 claims_partial)
   └─ assign_roles             ② 칸 → 역할 규칙 판정 (LLM 아님, nodes/roles.py)
   ├─ retrieve_t1              ③ 주장 → 역량 후보 (패턴+BM25(카드·예문) RRF, 범위 soft, 공고 가산점 → LLM 0~2개 선택·uncovered)
   └─ retrieve_t2              ③ 이력서↔자기소개서 연결·어긋남 — [보류] 자기소개서를 쓰지 않아 동작하지 않음

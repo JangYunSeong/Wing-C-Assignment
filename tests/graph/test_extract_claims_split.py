@@ -16,8 +16,13 @@ from task_spec.llm.fake import input_key
 from task_spec.nodes.claims import (
     MAX_CALLS_PER_DOC,
     MAX_CONCURRENCY,
+    MIN_CALLS_PER_DOC,
+    PRESPLIT_CHARS,
+    call_budget,
     extract_parts,
     make_extract_claims,
+    presplit,
+    presplit_lines,
     split_line,
 )
 from task_spec.nodes.pseudonymize import mint_pseudonymized, split_pseudonymized
@@ -200,8 +205,9 @@ async def test_call_budget_caps_calls_exactly() -> None:
         ontology_version="onto-v2026.11.02",
         doc_id="d1",
     )
-    # 1 + 2 + 4 = 7 호출 뒤 깊이 3 조각 8개 중 2개만 상한 안 → 9 호출, 나머지 6개는 상한 초과
-    assert got.calls == MAX_CALLS_PER_DOC == 9
+    # 짧은 문서 상한 9: 1 + 2 + 4 = 7 호출 뒤 깊이 3 조각 8개 중 2개만 상한 안 → 나머지 6개는 상한 초과
+    assert call_budget(len(BLOCKS)) == MIN_CALLS_PER_DOC == 9
+    assert got.calls == 9
     assert len(fake.calls) == 9
     assert got.parts == []
     assert Counter(got.failures) == {"OutputTruncated": 2, "call_budget": 6}
@@ -237,3 +243,54 @@ async def test_concurrency_is_capped_per_document() -> None:
     )
     assert got.calls == 9
     assert backend.peak == MAX_CONCURRENCY == 3
+
+
+# ── 처음부터 나누기·호출 상한 ──────────────────────────────────────────
+
+# 빈 줄로 나뉜 프로젝트 블록 24개 (블록당 약 110자) — PRESPLIT_CHARS 를 넘는 긴 가상 문서
+LONG = "\n\n".join(
+    f"프로젝트 {k}: 가상 물류 과제 {k} 2021.0{k % 9 + 1} ~ 2022.0{k % 9 + 1}\n"
+    f"⟦과정⟧ 가상 창고 {k} 의 재고 조회 배치를 이벤트 방식으로 바꿨다.\n"
+    f"⟦성과⟧ 가상 처리 시간 {k} 단축."
+    for k in range(24)
+)
+
+
+def test_call_budget_scales_with_length_and_is_capped() -> None:
+    assert call_budget(300) == 9  # 짧은 문서는 예전 상한 그대로
+    assert call_budget(8614) == 2 * 6 + 1  # ⌈8614/1500⌉ = 6 조각
+    assert call_budget(100_000) == MAX_CALLS_PER_DOC == 25
+
+
+def test_presplit_keeps_short_documents_whole() -> None:
+    assert presplit_lines(DOC) == []
+    assert presplit(mint_pseudonymized(DOC)) == [DOC]
+
+
+def test_presplit_long_document_into_bounded_chunks_at_field_free_boundaries() -> None:
+    assert len(LONG) > PRESPLIT_CHARS
+    parts = presplit(mint_pseudonymized(LONG))
+    assert len(parts) == len(LONG) // PRESPLIT_CHARS + 1
+    assert all(len(p) <= PRESPLIT_CHARS for p in parts)
+    assert "\n".join(parts) == LONG  # 내용을 바꾸지 않는다
+    fields = field_of_lines(LONG)
+    for cut in presplit_lines(LONG):
+        assert fields[cut] is None  # 칸 본문 중간에서 자르지 않는다
+
+
+async def test_long_document_is_presplit_before_first_call(tmp_path: Path) -> None:
+    parts = presplit(mint_pseudonymized(LONG))
+    fake = FakeBackend()
+    for k, part in enumerate(parts):
+        fake.push(
+            _body((f"가상 배치 변경 {k}", part.split("\n")[1].removeprefix("⟦과정⟧ "))),
+            key=_key(part),
+        )
+    node = make_extract_claims(LLMClient({"opencode": fake}), PROMPTS)
+    out = await node(_state(tmp_path, LONG))
+    # 문서 전체로 한 번 부르지 않고 처음부터 조각마다 — 조각 수만큼만 호출
+    assert len(fake.calls) == len(parts)
+    assert out["errors"] == []
+    assert [c.claim_id for c in out["claims"]] == [f"d1-c{i + 1}" for i in range(len(parts))]
+    assert all(c.field == "과정" for c in out["claims"])
+    assert len(out["provenance"]) == len(parts)
