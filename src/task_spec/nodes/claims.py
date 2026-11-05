@@ -9,7 +9,11 @@ extract_claims 는 검사를 통과한 가명화본만 읽어(PseudonymizedText)
 - 경계: 칸 밖 줄(roles.field_of_lines 가 None) 중 빈 줄 다음 줄·절 제목·기간 머리말 — 칸 본문 중간에서
   자르지 않는다. 프로젝트 머리말(기간)과 칸 본문이 같은 조각에 남아야 기간·칸 문맥이 산다.
 - 칸 위치(field)는 늘 문서 전체에서 찾는다 (불변식 6).
-- 문서당 호출 상한 MAX_CALLS_PER_DOC, 동시 호출 상한 MAX_CONCURRENCY. 상한을 넘은 조각은 실패로 친다.
+- 처음부터 나누기: PRESPLIT_CHARS 보다 긴 문서는 첫 호출 전에 같은 경계에서 그 길이 이하 조각으로 나눠 병렬로
+  부른다 (잘린 큰 호출에 상한·시간을 버리지 않게 — 2026-11-05 진단: 2,000자 넘는 조각은 상한 4,096 에서 8/8 잘림).
+  짧은 문서는 예전처럼 한 번에 부른다.
+- 문서당 호출 상한 = call_budget(글자 수) (조각 수에 비례, 최소 MIN_CALLS_PER_DOC·최대 MAX_CALLS_PER_DOC),
+  동시 호출 상한 MAX_CONCURRENCY. 상한을 넘은 조각은 실패로 친다.
 - 부분 성공: 성공한 조각의 주장은 살리고 문서 단위로 claims_partial 을 남긴다. 전부 실패면 문서 실패.
 - 잘리거나 실패한 호출의 비용도 provenance 로 남긴다 (예외의 .provenance).
 프롬프트·CURRENT 는 그대로다.
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,34 +47,91 @@ from task_spec.schemas import (
 )
 
 TASK = "extract_claims"
-MAX_SPLIT_DEPTH = 3  # 잘린 문서를 최대 2³ = 8 조각까지 나눈다
-MAX_CALLS_PER_DOC = 9  # 문서 하나에 쓰는 LLM 호출 상한 (잘린 호출 포함)
+MAX_SPLIT_DEPTH = 3  # 잘린 조각을 반씩 최대 3번 더 나눈다
+PRESPLIT_CHARS = 1500  # 이보다 긴 문서는 첫 호출 전에 칸 밖 경계에서 이 길이 이하로 나눈다
+CALLS_PER_CHUNK = 2  # 처음 조각 하나당 호출 여유 (잘림 → 반 나누기)
+MIN_CALLS_PER_DOC = 9  # 짧은 문서도 잘림 → 반 나누기를 몇 번 할 수 있게 (예전 고정 상한)
+MAX_CALLS_PER_DOC = 25  # 문서 하나에 쓰는 LLM 호출 상한의 상한 (잘린 호출 포함)
 MAX_CONCURRENCY = 3  # 문서 하나의 조각 동시 호출 상한
 
 logger = logging.getLogger(__name__)
 
 
-def split_line(text: str) -> int | None:
-    """문서를 나눌 줄 번호 — 경계 줄 중 앞 조각 글자 수가 전체의 반에 가장 가까운 곳. 경계가 없으면 None.
+def call_budget(chars: int) -> int:
+    """문서당 호출 상한 — 처음 조각 수에 비례 (2 × ⌈글자 수 / PRESPLIT_CHARS⌉ + 1), 9 이상 25 이하."""
+    by_size = CALLS_PER_CHUNK * math.ceil(max(chars, 1) / PRESPLIT_CHARS) + 1
+    return min(MAX_CALLS_PER_DOC, max(MIN_CALLS_PER_DOC, by_size))
+
+
+def _line_starts(lines: list[str]) -> list[int]:
+    """줄마다 시작 글자 위치 (마지막 원소 = 끝 + 1)."""
+    out = [0]
+    for line in lines:
+        out.append(out[-1] + len(line) + 1)
+    return out
+
+
+def boundary_lines(text: str) -> list[int]:
+    """문서를 나눌 수 있는 줄 번호 (오름차순).
 
     경계 = 칸 밖(field_of_lines 가 None)의 비지 않은 줄 가운데 (빈 줄 다음 줄 | 절 제목 | 기간이 든 머리말 줄).
-    ⟦칸⟧ 표시 줄과 칸 본문이 이어지는 줄은 칸 안이라 경계가 아니다.
+    ⟦칸⟧ 표시 줄과 칸 본문이 이어지는 줄은 칸 안이라 경계가 아니다. 첫 줄은 경계가 아니다.
     """
     lines = text.split("\n")
     fields = field_of_lines(text)
-    half = len(text) / 2
-    best: int | None = None
-    best_gap = 0.0
-    pos = 0
+    out: list[int] = []
     for i, line in enumerate(lines):
         stripped = line.strip()
         if i > 0 and stripped and fields[i] is None:
             if not lines[i - 1].strip() or _section_kind(stripped) or _PERIOD.search(stripped):
-                gap = abs(pos - half)
-                if best is None or gap < best_gap:
-                    best, best_gap = i, gap
-        pos += len(line) + 1
+                out.append(i)
+    return out
+
+
+def split_line(text: str) -> int | None:
+    """문서를 나눌 줄 번호 — 경계 줄 중 앞 조각 글자 수가 전체의 반에 가장 가까운 곳. 경계가 없으면 None."""
+    starts = _line_starts(text.split("\n"))
+    half = len(text) / 2
+    best: int | None = None
+    best_gap = 0.0
+    for i in boundary_lines(text):
+        gap = abs(starts[i] - half)
+        if best is None or gap < best_gap:
+            best, best_gap = i, gap
     return best
+
+
+def presplit_lines(text: str, limit: int = PRESPLIT_CHARS) -> list[int]:
+    """처음부터 나눌 줄 번호들 — 경계 사이 덩어리를 앞에서부터 limit 글자 이하로 채워 묶는다 (탐욕).
+
+    limit 이하 문서는 [] (나누지 않음). 경계 없이 limit 을 넘는 덩어리는 그대로 한 조각으로 둔다.
+    """
+    if len(text) <= limit:
+        return []
+    lines = text.split("\n")
+    starts = _line_starts(lines)
+    bounds = boundary_lines(text)
+    cuts: list[int] = []
+    begin = 0
+    for k, b in enumerate(bounds):
+        nxt = bounds[k + 1] if k + 1 < len(bounds) else len(lines)
+        if b > begin and starts[nxt] - starts[begin] > limit + 1:
+            cuts.append(b)
+            begin = b
+    return cuts
+
+
+def presplit(text: PseudonymizedText, limit: int = PRESPLIT_CHARS) -> list[PseudonymizedText]:
+    """문서를 presplit_lines 위치에서 조각들로 (조각을 줄바꿈으로 이으면 원문). 짧은 문서는 [text]."""
+    parts: list[PseudonymizedText] = []
+    rest = text
+    taken = 0
+    for cut in presplit_lines(text, limit):
+        left, rest = split_pseudonymized(rest, cut - taken)
+        parts.append(left)
+        taken = cut
+    parts.append(rest)
+    return parts
 
 
 @dataclass
@@ -146,10 +208,12 @@ async def extract_parts(
     *,
     ontology_version: str,
     doc_id: str,
-    max_calls: int = MAX_CALLS_PER_DOC,
+    max_calls: int | None = None,
     concurrency: int = MAX_CONCURRENCY,
 ) -> Extraction:
-    """문서에서 주장을 뽑는다. 출력이 잘리면 경계에서 나눠 다시 (조각 순서 = 문서 순서).
+    """문서에서 주장을 뽑는다. 긴 문서는 처음부터 나누고, 출력이 잘리면 경계에서 반씩 나눠 다시.
+
+    조각 순서 = 문서 순서. max_calls 기본은 call_budget(글자 수).
 
     예외를 올리지 않는다 — 조각마다 성공(parts)·실패 사유(failures)·쓴 비용(spent)을 모아 돌려준다.
     평가(eval/claims)도 이 함수를 써서 운영과 같은 경로로 잰다.
@@ -161,15 +225,26 @@ async def extract_parts(
         doc_kind=doc_kind,
         doc_id=doc_id,
         ontology_version=ontology_version,
-        max_calls=max_calls,
+        max_calls=max_calls if max_calls is not None else call_budget(len(text)),
         sem=asyncio.Semaphore(concurrency),
         out=out,
     )
-    for item in await _run_part(ctx, text, 0):
-        if isinstance(item, str):
-            out.failures.append(item)
-        else:
-            out.parts.append(item)
+    chunks = presplit(text)
+    if len(chunks) > 1:
+        logger.info(
+            "extract_claims presplit doc=%s chars=%d chunks=%d budget=%d",
+            doc_id,
+            len(text),
+            len(chunks),
+            ctx.max_calls,
+        )
+    results = await asyncio.gather(*(_run_part(ctx, c, 0) for c in chunks))
+    for res in results:
+        for item in res:
+            if isinstance(item, str):
+                out.failures.append(item)
+            else:
+                out.parts.append(item)
     return out
 
 
