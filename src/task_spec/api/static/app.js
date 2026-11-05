@@ -16,8 +16,11 @@ const REL_KO = { strong: "관계 강함", medium: "관계 중간", weak: "관계
 // 대조 (공고 역량 → 주장 확인 + 주장 → 역량 선택)
 const CHECK_KO = { action: "행동", related: "관련", mention: "기술 언급", none: "없음" };
 const PLACE_KO = { overlap: "겹침", related: "관련 경험", posting_only: "공고에만" };
-// select 문구는 nodes/compare.py SELECT_ONLY 와 같게 (검증 후보 사유에도 같은 말)
-const SOURCE_KO = { both: "두 경로 일치", verify: "공고 역량 확인", select: "선택만 일치(확인 경로 근거 없음)" };
+// 겹침 출처 [2026-11-06]: promoted = 승인자가 올린 선택만 일치 (compare.PROMOTED_KO 와 같은 말)
+// select = 예전 규칙(2026-11-06 이전 실행)의 자동 겹침 — 확인 필요, 겹침 낮추기로 내릴 수 있다
+const SOURCE_KO = { both: "두 경로 일치", verify: "공고 역량 확인", promoted: "승인자가 올림", select: "선택만 일치(예전 실행) — 확인 필요" };
+// 선택만 일치 표시 — nodes/compare.py SELECT_ONLY 와 같은 문구 (검증 후보 사유에도 같은 말)
+const SELECT_ONLY_KO = "선택만 일치(확인 경로 근거 없음)";
 const CLAIM_ROLE_KO = { design: "설계", lead: "주도", participate: "참여" };
 const CHECK_STATUS_KO = {
   failed: "공고 역량 확인이 실패해 선택 경로만으로 대조했습니다.",
@@ -654,7 +657,13 @@ function renderCompare(sum, status) {
             .map(
               (r) => `<tr class="${esc(r.status)}"><td>${esc(r.label)}${r.primary === false ? `<span class="lv">보조</span>` : ""}</td>
               <td>${PLACE_KO[r.status] || esc(r.status)}${r.downgraded ? `<span class="src lowered">승인자가 내림</span>` : ""}</td>
-              <td>${r.source ? `<span class="src ${esc(r.source)}">${SOURCE_KO[r.source] || esc(r.source)}</span>` : `<span class="placeholder">—</span>`}</td>
+              <td>${
+                r.select_only && r.status !== "overlap"
+                  ? `<span class="src select">${esc(SELECT_ONLY_KO)}</span>`
+                  : r.source
+                    ? `<span class="src ${esc(r.source)}">${SOURCE_KO[r.source] || esc(r.source)}</span>`
+                    : `<span class="placeholder">—</span>`
+              }</td>
               <td>${r.check_label ? CHECK_KO[r.check_label] || esc(r.check_label) : `<span class="placeholder">확인 안 됨</span>`}</td>
               <td class="mono">${r.claim_ids.length ? r.claim_ids.map(esc).join(", ") : `<span class="placeholder">—</span>`}</td>
               <td>${r.role ? CLAIM_ROLE_KO[r.role] || esc(r.role) : `<span class="placeholder">—</span>`}</td></tr>`,
@@ -811,6 +820,7 @@ function renderDecide(view, s) {
   const cmpSum = view.approval_summary && view.approval_summary.comparison;
   const lowerable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.status === "overlap");
   const restorable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.downgraded);
+  const promotable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.select_only && r.status !== "overlap");
   el.innerHTML = `
     ${view.approval_error ? `<div class="banner risk" style="margin-bottom:12px"><strong>직전 결정이 거부되었습니다</strong><span>${esc(view.approval_error)}</span></div>` : ""}
     <form class="decide" id="decide-form" autocomplete="off">
@@ -863,6 +873,16 @@ function renderDecide(view, s) {
             .join("")}</div>`
           : ""
       }
+      ${
+        promotable.length
+          ? `<div class="full lower" id="promote" hidden><span class="eyebrow">겹침으로 올리기 (선택) — 선택만 일치한 역량을 겹침으로 두고 경험 검증을 다시 만듭니다</span>
+          ${promotable
+            .map(
+              (r, i) => `<label for="pm-${i}"><input type="checkbox" id="pm-${i}" data-promote="${esc(r.competency_id)}">${esc(r.label)}<span class="src select">${esc(SELECT_ONLY_KO)}</span></label>`,
+            )
+            .join("")}</div>`
+          : ""
+      }
       <div class="full actions"><button type="submit" class="btn primary" id="decide-btn">승인하기</button><span class="msg" id="decide-msg" role="status"></span></div>
     </form>`;
   const form = $("#decide-form");
@@ -872,6 +892,7 @@ function renderDecide(view, s) {
     if ($("#reassign")) $("#reassign").hidden = v !== "revise";
     if ($("#lower")) $("#lower").hidden = v !== "revise";
     if ($("#restore")) $("#restore").hidden = v !== "revise";
+    if ($("#promote")) $("#promote").hidden = v !== "revise";
     $("#comment-wrap").firstChild.textContent = v === "revise" ? "고칠 점 (필수)" : "메모";
     $("#comment").placeholder = v === "revise" ? "예: 함정 t1 은 근거 없는 증설로 한정해 주세요." : v === "rejected" ? "반려 사유 (선택)" : "승인 메모 (선택)";
     $("#decide-btn").textContent = { approved: "승인하기", revise: "수정 요청 보내기", rejected: "반려하기" }[v];
@@ -901,10 +922,12 @@ function renderDecide(view, s) {
       body.reassign = reassign;
       const lower = [...form.querySelectorAll("input[data-lower]:checked")].map((x) => x.dataset.lower);
       const restore = [...form.querySelectorAll("input[data-restore]:checked")].map((x) => x.dataset.restore);
-      if ((lower.length || restore.length) && body.revise_target === "common")
-        return say(msg, "겹침을 낮추거나 되돌리면 경험 검증을 다시 만들어야 합니다 — '경험 검증만' 또는 '전부'를 고르세요.", "err");
+      const promote = [...form.querySelectorAll("input[data-promote]:checked")].map((x) => x.dataset.promote);
+      if ((lower.length || restore.length || promote.length) && body.revise_target === "common")
+        return say(msg, "겹침을 낮추거나 되돌리거나 올리면 경험 검증을 다시 만들어야 합니다 — '경험 검증만' 또는 '전부'를 고르세요.", "err");
       body.downgrade_overlap = lower;
       body.restore_overlap = restore;
+      body.promote_overlap = promote;
     }
     try {
       await busy($("#decide-btn"), "보내는 중…", () => api("POST", `/runs/${encodeURIComponent(run.id)}/approve`, { json: body }));
