@@ -3,17 +3,27 @@
 - 선택 경로 (L0): retrieve_t1 이 주장마다 고른 역량 (주장 → 역량)
 - 확인 경로 (TD): verify_overlap 이 공고 역량마다 주장 전체를 보고 판정 (공고 역량 → 주장)
 
-합치는 규칙 [확정: 2026-11-04 사용자] — 공고 역량 하나는 아래 셋 중 하나에만:
+합치는 규칙 [확정: 2026-11-04 사용자, 선택만 일치 제외 2026-11-06 사용자] — 공고 역량 하나는 아래 셋 중 하나에만:
 - overlap        확인 action → 겹침. 선택도 고르면 출처 both(두 경로 일치), 아니면 verify(공고 역량 확인)
-                 확인이 action 이 아닌데 선택만 고르면 출처 select (드묾 — 승인자 확인 표시)
                  확인을 하지 않은 역량(예전 실행·실패·빠짐)은 선택 경로만으로 겹침 (출처 없음)
+                 승인자가 올린 선택만 일치 역량 (promoted, 출처 promoted)
 - related        확인 related → 관련 경험 (겹침 아님). 승인자가 내린 겹침도 여기 (downgraded)
 - posting_only   그 밖 (확인 mention·none 포함)
+선택만 일치(select_only) [확정: 2026-11-06 사용자]: 확인 경로가 있고 action 이 아닌데 선택 경로만 고른 공고 역량은
+  겹침이 아니다 — 확인 related 면 related, none·mention 이면 posting_only, 둘 다 select_only=True (확인 필요 표시).
+  근거: v2 e2e (25쌍 × 2회, 최종 정답)에서 선택만 일치의 action 정밀도 0.14–0.2. 빼면 운영 겹침
+  정밀도 0.733 → 0.827 · 0.719 → 0.830, 재현율 0.901 → 0.878 · 0.939 → 0.893 (오프라인 재계산).
+  주장 → 역량 연결(선택 경로)은 그대로라 그 주장은 검증 후보로 남고 사유에 SELECT_ONLY 를 붙인다 (확인 질문 대상).
+  승인자가 revise + promote_overlap 으로 겹침으로 올릴 수 있다 (출처 promoted, Comparison.promoted 에 누적,
+  downgrade_overlap 으로 다시 내리면 promoted 에서 빠지고 원래 자리로). 올린 역량의 검증 후보 사유는 '승인자가 올림'.
+  출처 select 는 예전 규칙의 자동 겹침 — 새 계산은 만들지 않는다. 예전 실행을 revise 로 다시 계산하면 새 규칙으로
+  자리가 바뀌고, 승인자는 예전 select 겹침을 겹침 낮추기로 내릴 수 있다.
 - applicant_only 선택 경로에서 고른 역량 중 공고에 없는 것
 - uncovered      맞는 역량이 온톨로지에 없는 주장 (온톨로지 공백 후보) — 확인 경로 근거가 된 주장은 뺀다
 - claims_to_verify 경험 검증 과제 후보 주장 (점수 순, 최대 MAX_VERIFY)
 역할은 근거 주장의 칸 규칙 역할 (assign_roles, 불변식 6) — 확인 경로 근거로 정해지면 그것, 아니면 선택 경로 근거.
-선택만 일치(select)인 공고 역량이 걸린 검증 후보는 사유에 SELECT_ONLY 문구를 붙인다 (승인 화면 경고와 같은 말).
+선택만 일치(select_only)인 공고 역량이 걸린 검증 후보는 사유에 SELECT_ONLY 문구를 붙인다 (승인 화면 표시와 같은 말).
+승인자가 올린 역량이면 SELECT_ONLY 대신 PROMOTED_KO('승인자가 올림').
 
 검증 후보 점수 [확정: 2026-11-02] — 공고와 관련 있고, 지원자 기여가 크고, 확인할 거리가 있는 주장 먼저.
   공고 주 역량 +3 · 공고 보조 역량 +2
@@ -55,8 +65,9 @@ LEVEL_KO = {"strong": "강", "medium": "중", "weak": "약"}
 ROLE_KO = {"design": "설계", "lead": "주도", "participate": "참여"}
 ROLE_RANK = {"design": 3, "lead": 2, "participate": 1}
 CHECKED = "(확인)"  # 검증 후보 사유에서 확인 경로로만 이어진 공고 역량 표시
-# 출처 select 의 표시 문구 — 검증 후보 사유와 승인 화면(app.js SOURCE_KO.select)이 같은 말을 쓴다
+# 선택만 일치(select_only) 표시 문구 — 검증 후보 사유와 승인 화면(app.js SELECT_ONLY_KO)이 같은 말을 쓴다
 SELECT_ONLY = "선택만 일치(확인 경로 근거 없음)"
+PROMOTED_KO = "승인자가 올림"  # 승인 화면 SOURCE_KO.promoted 와 같은 말
 _NUM = re.compile(r"\d")
 
 
@@ -70,9 +81,13 @@ def best_role(claim_ids: Iterable[str], claims: dict[str, Claim]) -> Role | None
 
 
 def compare_claims(
-    state: RunState, rel: Relatedness | None = None, downgraded: Iterable[str] = ()
+    state: RunState,
+    rel: Relatedness | None = None,
+    downgraded: Iterable[str] = (),
+    promoted: Iterable[str] = (),
 ) -> Comparison:
-    """downgraded = 승인자가 겹침에서 관련 경험으로 내린 공고 역량 id (draft_spec 이 revise 때 넘긴다)."""
+    """downgraded = 승인자가 겹침에서 관련 경험으로 내린 공고 역량 id,
+    promoted = 승인자가 겹침으로 올린 선택만 일치 공고 역량 id (둘 다 draft_spec 이 revise 때 넘긴다)."""
     p = state.posting_profile
     posting = {x.competency_id: x for x in p.competencies} if p else {}
     claims = {c.claim_id: c for c in state.claims}
@@ -92,6 +107,9 @@ def compare_claims(
         {c.competency_id: c for c in td.items if c.competency_id in posting} if td else {}
     )
     down = set(downgraded) & set(posting)
+    # 선택만 일치: 확인 경로가 있고 action 이 아닌데 선택 경로만 고름 [2026-11-06]
+    select_only = {k for k, ck in checks.items() if ck.label != "action" and k in by_comp}
+    up = (set(promoted) & select_only) - down
 
     sub = p.sub if p else None
     levels = {
@@ -99,17 +117,18 @@ def compare_claims(
     }
 
     def place(comp: str) -> tuple[str, OverlapSource | None]:
-        """공고 역량 → ('overlap'|'related'|'posting_only', 출처)."""
+        """공고 역량 → ('overlap'|'related'|'posting_only', 출처). select_only 표시는 match 가 붙인다."""
         l0 = comp in by_comp
         ck = checks.get(comp)
         if comp in down:
             return "related", None
+        if comp in up:
+            return "overlap", "promoted"  # 승인자가 올린 선택만 일치
         if ck is None:
-            return ("overlap", None) if l0 else ("posting_only", None)
+            return ("overlap", None) if l0 else ("posting_only", None)  # 확인 안 함 — 예전 규칙
         if ck.label == "action":
             return "overlap", "both" if l0 else "verify"
-        if l0:
-            return "overlap", "select"
+        # 확인 related·mention·none — 선택만 일치(select_only)여도 겹침이 아니다
         return ("related", None) if ck.label == "related" else ("posting_only", None)
 
     def match(comp: str, source: OverlapSource | None = None) -> CompetencyMatch:
@@ -131,6 +150,8 @@ def compare_claims(
             # 확인 경로 근거의 칸 역할 → 없으면 선택 경로 근거의 칸 역할 (불변식 6)
             role=best_role(ev, claims) or best_role(by_comp.get(comp, []), claims),
             downgraded=comp in down,
+            select_only=comp in select_only,
+            promoted=comp in up,
         )
 
     placed = {k: place(k) for k in posting}
@@ -196,9 +217,12 @@ def compare_claims(
         if cid in mismatch:
             score += W_MISMATCH
             reasons.append("이력서·자기소개서 어긋남")
-        select_only = [k for k in comps if placed.get(k) == ("overlap", "select")]
-        if select_only:
-            reasons.append(f"{SELECT_ONLY}: " + ", ".join(labels.get(k, k) for k in select_only))
+        unsure = [k for k in comps if k in select_only and k not in up]
+        if unsure:
+            reasons.append(f"{SELECT_ONLY}: " + ", ".join(labels.get(k, k) for k in unsure))
+        raised = [k for k in comps if k in up]
+        if raised:
+            reasons.append(f"{PROMOTED_KO}: " + ", ".join(labels.get(k, k) for k in raised))
         targets.append(
             VerifyTarget(
                 claim_id=cid,
@@ -222,6 +246,7 @@ def compare_claims(
         claims_to_verify=targets[:MAX_VERIFY],
         check_status=td.status if td else None,
         downgraded=sorted(down),
+        promoted=sorted(up),
     )
 
 

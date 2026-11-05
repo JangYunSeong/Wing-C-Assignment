@@ -58,6 +58,10 @@ class PostingCheckBrief(Schema):
     claim_ids: list[str] = Field(default_factory=list)  # 근거 주장 id (확인 경로 우선)
     role: Role | None = None  # 근거 주장의 칸 규칙 역할
     downgraded: bool = False  # 승인자가 관련 경험으로 내림
+    select_only: bool = (
+        False  # 선택 경로만 (확인 경로 근거 없음) — 겹침 아님, 확인 필요 [2026-11-06]
+    )
+    promoted: bool = False  # 승인자가 겹침으로 올림
 
 
 class ComparisonBrief(Schema):

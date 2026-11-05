@@ -16,9 +16,10 @@ from task_spec.schemas.base import Schema
 Role = Literal["participate", "lead", "design"]
 # 공고 역량을 이력서가 얼마나 보여주는가 (judge_overlap 정답 판정·verify_overlap 운영 판정 공통)
 OverlapLabel = Literal["action", "related", "mention", "none"]
-# 겹침의 출처 [확정: 2026-11-04 사용자]: both = 두 경로 일치(선택 ∩ 확인) / verify = 공고 역량 확인(top-down 만)
-# / select = 선택 경로만 (top-down 은 action 아님 — 승인자 확인 필요)
-OverlapSource = Literal["both", "verify", "select"]
+# 겹침의 출처 [확정: 2026-11-04 사용자, 2026-11-06 변경]: both = 두 경로 일치(선택 ∩ 확인) / verify = 공고 역량 확인(top-down 만)
+# / promoted = 승인자가 겹침으로 올린 선택만 일치 / select = 예전 규칙(2026-11-06 이전 실행)의 자동 겹침(선택만 일치) —
+# 새 코드는 select 를 만들지 않는다 (예전 체크포인트 읽기용). 예전 select 겹침은 승인자가 겹침 낮추기로 내릴 수 있다.
+OverlapSource = Literal["both", "verify", "promoted", "select"]
 
 
 PostingSection = Literal["duties", "required", "preferred"]
@@ -193,6 +194,9 @@ class CompetencyMatch(Schema):
     overlap_source: OverlapSource | None = None  # 겹침일 때만
     role: Role | None = None  # 근거 주장의 칸 규칙 역할 중 가장 높은 것 (불변식 6)
     downgraded: bool = False  # 승인자가 겹침 → 관련 경험으로 내림
+    # 선택 경로만 고르고 확인 경로는 action 이 아님 (확인 related → 관련 경험, none·mention → 공고에만) [2026-11-06]
+    select_only: bool = False
+    promoted: bool = False  # 승인자가 select_only 역량을 겹침으로 올림 (출처 promoted)
 
 
 class VerifyTarget(Schema):
@@ -220,6 +224,9 @@ class Comparison(Schema):
     claims_to_verify: list[VerifyTarget] = Field(default_factory=list)
     check_status: Literal["ok", "partial", "failed"] | None = None
     downgraded: list[str] = Field(default_factory=list)  # 승인자가 관련 경험으로 내린 공고 역량 id
+    promoted: list[str] = Field(
+        default_factory=list
+    )  # 승인자가 겹침으로 올린 select_only 공고 역량 id
 
 
 AiAxis = Literal["delegation", "communication", "verification", "responsibility"]
