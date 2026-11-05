@@ -241,11 +241,22 @@ section.block:last-child { border-bottom: 0; }
 .chip { font-size: 12.5px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
 .chip .lv { color: var(--accent-ink); font-weight: 700; margin-left: 4px; font-size: 11.5px; }
 .chip.weak { color: var(--faint); }
-.cmp { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.cmp { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 1100px) { .cmp { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .cmp { grid-template-columns: minmax(0, 1fr); } }
 .cmp > div { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .cmp h4 { font-size: 12.5px; color: var(--muted); font-weight: 700; }
 .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r-box); }
+/* 대조 — 공고 역량별 확인 */
+.checks .lv { color: var(--faint); font-size: 11.5px; margin-left: 6px; }
+.checks tr.related td:first-child, .checks tr.posting_only td:first-child { color: var(--muted); }
+.src { display: inline-block; font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.src.both { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.src.verify { color: var(--info); background: var(--info-soft); border-color: transparent; }
+.src.select, .src.lowered { color: var(--risk); background: var(--risk-soft); border-color: transparent; margin-left: 6px; }
+td .src.select { margin-left: 0; }
+.lower { display: flex; flex-direction: column; gap: 6px; }
+.lower label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--line); vertical-align: top; }
 thead th { border-top: 0; font-size: 11.5px; color: var(--muted); font-weight: 700; background: var(--sunk); white-space: nowrap; }

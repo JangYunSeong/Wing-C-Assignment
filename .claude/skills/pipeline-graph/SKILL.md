@@ -20,16 +20,51 @@ START
   ├─ retrieve_t1              ③ 주장 → 역량 후보 (패턴+BM25(카드·예문) RRF, 범위 soft, 공고 가산점 → LLM 0~2개 선택·uncovered)
   └─ retrieve_t2              ③ 이력서↔자기소개서 연결·어긋남 — [보류] 자기소개서를 쓰지 않아 동작하지 않음
   └─ evidence                 ③ 역량 → NCS 수행준거·KSA / ESCO 그래프 조인 (결정적)
-  └─ compare                  ④ 겹침 / 공고에만 / 지원자에만(직무 연계 강·중·약) / uncovered + 검증 후보 주장 점수 순 (결정적, nodes/compare.py)
+  └─ verify_overlap           ④ LLM. 공고 역량 → 주장 전체 확인 (top-down, 공고 1건 호출 1번) — nodes/verify_overlap.py
+  └─ compare                  ④ 선택 경로 + 확인 경로 → 겹침(출처) / 관련 경험 / 공고에만 / 지원자에만 / uncovered
+                                 + 검증 후보 주장 점수 순 (결정적, nodes/compare.py)
   └─ draft_spec               ④ 공통 과제(공고 기준) + 경험 검증 과제(claims_to_verify)
   └─ approval                 ④ interrupt() — 사람 승인/반려/수정 요청
        ├─ approved  → finalize → END
-       ├─ revise    → draft_spec (반려 사유를 State 에 넣고 재생성)
+       ├─ revise    → draft_spec (반려 사유를 State 에 넣고 재생성. 겹침 낮추기가 있으면 대조를 다시 계산)
        └─ rejected  → END
 ```
 
 - `retrieve_t1` 과 `retrieve_t2` 는 서로 독립 → 병렬 분기 후 `evidence` 에서 합류.
 - 지원자 문서 없이 공고만 들어오면 ② 와 ③ retrieve 를 건너뛰고 **evidence(공고 역량의 평가 근거)** → 공통 과제 (조건부 엣지).
+  verify_overlap 은 주장이 없으면 아무것도 하지 않는다 (`overlap_check=None`).
+
+## 대조: 두 경로 합치기 [확정: 2026-11-04 사용자]
+
+- **선택 경로 (L0)**: retrieve_t1 — 주장 → 검색 상위 10 → 주장별 0~2개. 공고와 무관한 프로필·온톨로지 공백(uncovered)용.
+  공고 역량은 검색 가산점만 (불변식 5 — 이 경로는 그대로).
+- **확인 경로 (TD)**: verify_overlap — 공고 역량마다 그 이력서의 **주장 전체**(가명화본 주장 텍스트만, 불변식 2·3)를 보고
+  action / related / mention / none + 근거 주장 id. 프롬프트에 '공고 역량' 이라는 사실은 알리지 않는다.
+  - 답 검증: 목록 밖 id 버림 · 중복은 앞의 것 · 근거 주장 없는 판정은 none.
+  - 다시 묻기 (공고 역량 40개 묶음 하나당 첫 호출 + 최대 2번): 답에서 **빠진 역량만** 한 번에 다시 묻고,
+    묶음 호출이 **예외로 실패**(빈 응답·추론 토큰 소진·잘림·스키마 등)하면 그 묶음을 **반씩 나눠** 다시 묻는다 [2026-11-05 G안 —
+    긴 이력서(주장 50개+)에서 첫 묶음이 통째로 실패한 사례]. 그래도 빠지거나 다시 묻기가 실패한 역량은 `status=partial`
+    (그 역량은 '확인 안 됨' — 선택 경로만). **모든 호출이 실패했을 때만** `status=failed` → 선택 경로만 (예전 동작).
+  - 판정 이유(LLM 자유 텍스트)는 State 에 남기지 않는다. provenance 는 호출마다.
+- **합치는 규칙** (compare, 결정적) — 공고 역량 하나는 overlap / related / posting_only 중 하나에만:
+
+| 확인 경로 | 선택 경로가 고름 | 결과 | 출처 (`overlap_source`) |
+|---|---|---|---|
+| action | 예 | 겹침 | `both` — 두 경로 일치 |
+| action | 아니오 | 겹침 | `verify` — 공고 역량 확인 (근거 주장 표시) |
+| related·mention·none | 예 | 겹침 | `select` — 선택만 일치 (드묾, 승인자 확인 표시) |
+| related | 아니오 | 관련 경험 (겹침 아님) | — |
+| mention·none | 아니오 | 공고에만 | — |
+| 확인 안 함 (예전 실행·실패·빠짐) | 예 / 아니오 | 겹침 / 공고에만 | 없음 |
+| 승인자가 내림 (`downgrade_overlap`) | — | 관련 경험 (`downgraded`) | — |
+
+- 역할: 근거 주장의 칸 규칙 역할(assign_roles, 불변식 6) 중 가장 높은 것 — 확인 경로 근거가 있으면 그것, 없으면 선택 경로 근거.
+- 검증 후보(claims_to_verify): 주장의 역량 = 선택 경로 역량 + 그 주장이 확인 경로 **action 근거**인 공고 역량 (승인자가 내린 것 제외).
+  공고 주·보조 가산점·슬롯 배정·공통 과제 겹침 감점이 이 합집합으로 계산된다. 확인 경로로만 이어진 역량은 사유에 `(확인)`.
+  확인 경로 근거가 된 uncovered 주장은 uncovered 에서 뺀다.
+- 겹침 낮추기: 승인자가 `revise` + `downgrade_overlap: [공고 역량 id]` (revise_target 은 verification·all — 경험 검증을 다시 만들어야 하므로).
+  draft_spec 이 대조를 다시 계산해 State 에 쓰고 낮춘 역량은 누적된다 (다음 revise 에서 다시 보내지 않아도 유지). 겹침이 아닌 id 는 무시 + `downgrade_ignored`.
+- 공통 과제는 이 결과로 바꾸지 않는다 (불변식 3).
 
 ## State
 
@@ -50,6 +85,7 @@ class RunState(BaseModel):
     candidates: list[ClaimCandidates] = []
     links: list[CrossDocLink] = []
     evidence: list[CompetencyEvidence] = []
+    overlap_check: OverlapCheckResult | None = None   # ④ 확인 경로. None = 하지 않음 (예전 체크포인트도 읽힘)
     comparison: Comparison | None = None
     spec: TaskSpec | None = None
     approval: ApprovalDecision | None = None
@@ -177,7 +213,8 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - revise: 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.
 - finalize: 그 판을 approved 로, 같은 키의 이전 approved 판은 superseded 로 (이미 그 판을 받은 지원자의 명세는 그대로).
 - 승인 payload: `summary`(`schemas/summary.py ApprovalSummary` — 과제별 review_flags·시간 합계·공통 과제 판·대조 요약·검증 후보 claim_id·점수·사유) + `spec` + `provenance`.
-  API `RunView.approval_summary` 로 노출. **주장 인용은 인증 전까지 넣지 않는다** [제안: 인증 후 가명화 인용 추가].
+  대조 요약의 `posting_checks` = 공고 역량마다 대조 결과·출처·확인 판정·근거 주장 id·역할·낮춤 여부 (`check_status` 함께).
+  API `RunView.approval_summary` 로 노출. **주장 인용·판정 이유는 인증 전까지 넣지 않는다** — 근거는 주장 id 만 [제안: 인증 후 가명화 인용 추가].
 - 저장소에는 지원자 실행과 연결되는 값(run_id 등)을 두지 않는다. 미승인 초안을 재사용하면 `review_flags` 로 표시.
 
 ## 노드 규칙
@@ -186,7 +223,7 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - LLM 을 부르는 노드는 `prompting.assemble()` + `llm.call()` 만 쓴다 — 직접 모델 클라이언트 생성 금지.
   반환에 `provenance` 를 반드시 포함.
 - `pseudonymize` 이전 노드(`posting_profile`, `ingest`)는 LLM·임베딩을 import 하지 않는다.
-- 결정적 노드(`posting_profile`, `assign_roles`, `evidence`)는 같은 입력 → 같은 출력. 테스트로 고정.
+- 결정적 노드(`posting_profile`, `assign_roles`, `evidence`, `compare`)는 같은 입력 → 같은 출력. 테스트로 고정.
 
 ## 승인 (interrupt)
 

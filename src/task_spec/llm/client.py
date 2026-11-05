@@ -58,11 +58,15 @@ _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
 class SchemaViolation(Exception):
-    """재요청 후에도 출력이 스키마를 만족하지 못함."""
+    """재요청 후에도 출력이 스키마를 만족하지 못함. provenance = 실패까지 쓴 토큰·비용 (본문 없음)."""
+
+    provenance: Provenance | None = None
 
 
 class EmptyResponse(Exception):
-    """재시도 후에도 빈 응답."""
+    """재시도 후에도 빈 응답. provenance = 실패까지 쓴 토큰·비용 (본문 없음)."""
+
+    provenance: Provenance | None = None
 
 
 class LLMResult(BaseModel, Generic[T]):
@@ -120,6 +124,27 @@ class LLMClient:
         schema_retry_used = False
         empty_retry_used = False
 
+        def record() -> Provenance:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            return Provenance(
+                provenance_id=f"prov-{uuid.uuid4().hex[:12]}",
+                prompt=prompt.template.ref,
+                prompt_sha256=prompt.template.sha256,
+                model=prompt.model,
+                params={**params, **({"dropped": dropped} if dropped else {})},
+                fewshot_ids=prompt.fewshot_ids,
+                criteria_ids=prompt.criteria_ids,
+                ontology_version=prompt.ontology_version,
+                retries=len(retries),
+                tokens=TokenUsage(
+                    **{"in": total.input}, out=total.output, reasoning=total.reasoning
+                ),
+                latency_ms=latency_ms,
+                cost_usd=cost_usd(
+                    prompt.model, total.input, total.output
+                ),  # output 에 추론 토큰 포함 (OpenAI 호환 usage)
+            )
+
         while True:
             completion = await self._complete_with_backoff(
                 backend, model, messages, params, retries, ref=prompt.template.ref, started=started
@@ -132,7 +157,9 @@ class LLMClient:
 
             if not completion.content.strip():
                 if empty_retry_used or params.get("reasoning_effort") == "low":
-                    raise EmptyResponse(f"{prompt.template.ref}: 빈 응답")
+                    empty = EmptyResponse(f"{prompt.template.ref}: 빈 응답")
+                    empty.provenance = record()
+                    raise empty
                 empty_retry_used = True
                 retries.append("empty_response->reasoning_effort=low")
                 logger.warning(
@@ -150,7 +177,9 @@ class LLMClient:
             except (ValueError, ValidationError) as exc:  # JSONDecodeError 는 ValueError
                 summary = _validation_summary(exc)
                 if schema_retry_used:
-                    raise SchemaViolation(f"{prompt.template.ref}: {summary}") from None
+                    bad = SchemaViolation(f"{prompt.template.ref}: {summary}")
+                    bad.provenance = record()
+                    raise bad from None
                 schema_retry_used = True
                 retries.append("schema_violation")
                 logger.warning(
@@ -170,23 +199,8 @@ class LLMClient:
                     ),
                 ]
 
-        latency_ms = int((time.monotonic() - started) * 1000)
-        prov = Provenance(
-            provenance_id=f"prov-{uuid.uuid4().hex[:12]}",
-            prompt=prompt.template.ref,
-            prompt_sha256=prompt.template.sha256,
-            model=prompt.model,
-            params={**params, **({"dropped": dropped} if dropped else {})},
-            fewshot_ids=prompt.fewshot_ids,
-            criteria_ids=prompt.criteria_ids,
-            ontology_version=prompt.ontology_version,
-            retries=len(retries),
-            tokens=TokenUsage(**{"in": total.input}, out=total.output, reasoning=total.reasoning),
-            latency_ms=latency_ms,
-            cost_usd=cost_usd(
-                prompt.model, total.input, total.output
-            ),  # output 에 추론 토큰 포함 (OpenAI 호환 usage)
-        )
+        prov = record()
+        latency_ms = prov.latency_ms
         logger.info(
             "llm call prompt=%s model=%s retries=%s reasons=%s tokens_in=%d tokens_out=%d latency_ms=%d",
             prov.prompt,

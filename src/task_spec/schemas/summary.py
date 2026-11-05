@@ -11,7 +11,14 @@ from typing import Literal
 from pydantic import Field
 
 from task_spec.schemas.base import Schema
-from task_spec.schemas.domain import CommonRef, Difficulty, Track
+from task_spec.schemas.domain import (
+    CommonRef,
+    Difficulty,
+    OverlapLabel,
+    OverlapSource,
+    Role,
+    Track,
+)
 
 
 class TaskBrief(Schema):
@@ -39,12 +46,30 @@ class VerifyBrief(Schema):
     )  # compare 규칙 문구 + 온톨로지 라벨 + 역할 근거 코드
 
 
+class PostingCheckBrief(Schema):
+    """공고 역량 1건의 대조 결과. 근거는 주장 id 만 — 인용·판정 이유는 인증 전까지 넣지 않는다 (W1·W2)."""
+
+    competency_id: str
+    label: str  # 온톨로지 역량 라벨
+    primary: bool | None = None
+    status: Literal["overlap", "related", "posting_only"]
+    source: OverlapSource | None = None  # 겹침일 때: both·verify·select (None = 확인 안 함)
+    check_label: OverlapLabel | None = None  # top-down 확인 판정 (None = 확인 안 함)
+    claim_ids: list[str] = Field(default_factory=list)  # 근거 주장 id (확인 경로 우선)
+    role: Role | None = None  # 근거 주장의 칸 규칙 역할
+    downgraded: bool = False  # 승인자가 관련 경험으로 내림
+
+
 class ComparisonBrief(Schema):
     overlap: list[str] = Field(default_factory=list)
+    related: list[str] = Field(default_factory=list)  # 관련 경험 (겹침 아님)
     posting_only: list[str] = Field(default_factory=list)
     applicant_only: list[OutsideBrief] = Field(default_factory=list)
     uncovered_claims: int = 0
     claims_to_verify: list[VerifyBrief] = Field(default_factory=list)
+    # top-down 확인: ok·partial·failed, None = 하지 않음 (예전 실행 포함)
+    check_status: Literal["ok", "partial", "failed"] | None = None
+    posting_checks: list[PostingCheckBrief] = Field(default_factory=list)  # 공고 역량 순서
 
 
 class AssignmentBrief(Schema):

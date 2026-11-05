@@ -88,10 +88,20 @@ from task_spec.schemas.summary import (
     AssignmentBrief,
     ComparisonBrief,
     OutsideBrief,
+    PostingCheckBrief,
     TaskBrief,
     VerifyBrief,
 )
 from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
+from task_spec.schemas.verify_overlap import (
+    OverlapCheck,
+    OverlapCheckResult,
+    VerifyOverlapInput,
+    VerifyOverlapOutput,
+    VerifyParsedOutput,
+    VerifyParsedVerdict,
+    VerifyVerdict,
+)
 
 __all__ = [
     "SlotAssignment",
@@ -106,9 +116,17 @@ __all__ = [
     "SolveTaskOutput",
     "VerifyTaskInput",
     "VerifyTaskOutput",
+    "OverlapCheck",
+    "OverlapCheckResult",
+    "VerifyOverlapInput",
+    "VerifyOverlapOutput",
+    "VerifyParsedOutput",
+    "VerifyParsedVerdict",
+    "VerifyVerdict",
     "ApprovalSummary",
     "AssignmentBrief",
     "ComparisonBrief",
+    "PostingCheckBrief",
     "OutsideBrief",
     "TaskBrief",
     "VerifyBrief",

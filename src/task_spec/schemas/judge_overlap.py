@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import Field
 
 from task_spec.schemas.base import Schema
+from task_spec.schemas.domain import OverlapLabel
 from task_spec.schemas.pseudo_text import PseudoTextField
 
 
 class JudgeOverlapInput(Schema):
     resume: PseudoTextField  # 가명화본 이력서 전체 (불변식 2)
     competencies: str = Field(min_length=1)  # "comp:id — 이름" 줄 목록 (공고 역량)
-
-
-OverlapLabel = Literal["action", "related", "mention", "none"]
 
 
 class OverlapVerdict(Schema):
