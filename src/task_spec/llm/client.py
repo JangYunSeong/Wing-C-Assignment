@@ -3,10 +3,11 @@
 재시도 정책 (이 한 곳에만 있다)
 | 증상                               | 처리                                         |
 | 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회                   |
+| 빈 응답 + 잘림, 추론 설정이 이미 low | 같은 설정으로 1회 다시 (추론 길이가 호출마다 달라 대개 살아난다) — 잘리지 않은 빈 응답은 예외 그대로 |
 | TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
 | 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
-| 출력 잘림 (finish_reason=length)     | 호출자가 split_on_truncation=True 일 때만: (추론 설정이 low 가 아니면 low 로 1회) → OutputTruncated, 형식 재요청 없음 — 호출자가 입력을 나눈다. 기본(False)은 위 규칙 그대로 |
+| 출력 잘림 (finish_reason=length)     | 호출자가 split_on_truncation=True 일 때만: (추론 설정이 low 가 아니면 low 로 1회 · 빈 응답이면 같은 설정으로 1회) → OutputTruncated, 형식 재요청 없음 — 호출자가 입력을 나눈다. 기본(False)은 위 규칙 그대로 |
 
 재시도·포기는 WARNING/ERROR 로그(프롬프트 ref·모델·사유·경과 ms)로 남긴다.
 메시지 본문·키 값은 로그·provenance·예외 메시지에 넣지 않는다.
@@ -142,6 +143,7 @@ class LLMClient:
         started = time.monotonic()
         schema_retry_used = False
         empty_retry_used = False
+        resample_used = False  # 빈 응답 + 잘림 (이미 low) → 같은 설정으로 1회
 
         def record() -> Provenance:
             latency_ms = int((time.monotonic() - started) * 1000)
@@ -182,6 +184,20 @@ class LLMClient:
                         break
                     except (ValueError, ValidationError) as exc:
                         summary = _validation_summary(exc)
+                if (
+                    not completion.content.strip()
+                    and params.get("reasoning_effort") == "low"
+                    and not resample_used
+                ):
+                    resample_used = True
+                    retries.append("empty_truncated->resample")
+                    logger.warning(
+                        "llm retry prompt=%s model=%s reason=empty_truncated elapsed_ms=%d",
+                        prompt.template.ref,
+                        prompt.model,
+                        int((time.monotonic() - started) * 1000),
+                    )
+                    continue
                 if not empty_retry_used and params.get("reasoning_effort") != "low":
                     empty_retry_used = True
                     retries.append("output_truncated->reasoning_effort=low")
@@ -204,6 +220,20 @@ class LLMClient:
                 raise cut
 
             if not completion.content.strip():
+                if (
+                    completion.finish_reason == "length"
+                    and params.get("reasoning_effort") == "low"
+                    and not resample_used
+                ):  # 추론이 상한을 다 씀 — 추론 길이는 호출마다 달라 같은 설정으로 다시 부르면 대개 산다
+                    resample_used = True
+                    retries.append("empty_truncated->resample")
+                    logger.warning(
+                        "llm retry prompt=%s model=%s reason=empty_truncated elapsed_ms=%d",
+                        prompt.template.ref,
+                        prompt.model,
+                        int((time.monotonic() - started) * 1000),
+                    )
+                    continue
                 if empty_retry_used or params.get("reasoning_effort") == "low":
                     empty = EmptyResponse(f"{prompt.template.ref}: 빈 응답")
                     empty.provenance = record()
