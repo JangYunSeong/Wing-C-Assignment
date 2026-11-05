@@ -64,11 +64,12 @@ NODE_OF_TASK = {
 }
 STANDARDS = {"action": {"action"}, "action+related": {"action", "related"}}
 LAYERS = ("L0", "TD", "TD+rel", "OP", "OP+rel")
-SOURCES = ("both", "verify", "select", None)
+SOURCES = ("both", "verify", "promoted", "select", None)
 SOURCE_KO = {
     "both": "두 경로 일치",
     "verify": "공고 역량 확인",
-    "select": "선택만",
+    "promoted": "승인자가 올림",  # e2e 는 승인하지 않으므로 보통 없음
+    "select": "선택만 일치(예전 규칙 — 자동 겹침)",  # 2026-11-06 이전 report 만 (새 규칙은 만들지 않음)
     None: "확인 안 됨",
 }
 REASK = "빠진 역량을 다시 물음"
@@ -248,6 +249,7 @@ def collect(
                 "OP": where == "overlap",
                 "op_status": where,
                 "source": m.overlap_source if m else None,
+                "select_only": bool(m.select_only) if m else False,
                 "role": m.role if m else None,
                 "miss_cause": None,
                 "op_miss_cause": None,
@@ -469,6 +471,18 @@ def score(
                     for src in SOURCES
                     if (xs := [x for x in overlap if x["source"] == src])
                 },
+                # 선택만 일치 (2026-11-06 부터 겹침 아님 — 관련 경험·공고에만에 확인 필요 표시)
+                "select_only": {
+                    "n": len(so := [x for x in it if x.get("select_only")]),
+                    "action_precision": round(sum(x["gt"] == "action" for x in so) / len(so), 3)
+                    if so
+                    else None,
+                    "action_related_precision": round(
+                        sum(x["gt"] in ("action", "related") for x in so) / len(so), 3
+                    )
+                    if so
+                    else None,
+                },
                 "role_rate": {
                     "overlap": round(sum(x["role"] is not None for x in overlap) / len(overlap), 3)
                     if overlap
@@ -546,7 +560,8 @@ def score_md(s: dict[str, Any], title: str) -> str:
     for r in s["per_run"]:
         src = {SOURCE_KO.get(None if k == "None" else k, k): v for k, v in r["by_source"].items()}
         lines.append(
-            f"- run {r['run']}: 출처 {src} · 역할 {r['role_rate']} · 운영 놓친 원인 {r['op_miss_causes']}"
+            f"- run {r['run']}: 출처 {src} · 선택만 일치(겹침 아님) {r.get('select_only')} · 역할 {r['role_rate']}"
+            f" · 운영 놓친 원인 {r['op_miss_causes']}"
         )
     return "\n".join(lines)
 

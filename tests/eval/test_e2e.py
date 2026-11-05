@@ -312,3 +312,38 @@ async def test_stop_before_draft(tmp_path: Path, patched_profile) -> None:
         )
     assert row["status"] == "stopped_before_draft" and row["approval_summary"] is None
     assert "draft_spec" not in row["node_wall_s"] and any(x["OP"] for x in row["table"])
+
+
+def test_select_only_rows_are_tracked_not_counted_as_overlap() -> None:
+    r = _row(
+        0,
+        {
+            "comp:a": (True, "action", "overlap", "both", None),
+            "comp:b": (True, "none", "posting_only", None, None),
+            "comp:c": (True, "related", "related", None, None),
+        },
+    )
+    for x in r["table"]:
+        x["select_only"] = x["competency_id"] in ("comp:b", "comp:c")
+    fill_judgement(r, JUDGED, ASKED)
+    s = score([r], provisional_gold([r]))["per_run"][0]
+    assert s["row_level"]["action"]["OP"]["predicted"] == 1  # 선택만 일치는 겹침 예측이 아님
+    assert s["select_only"] == {"n": 2, "action_precision": 0.5, "action_related_precision": 0.5}
+    assert "select" not in s["by_source"]
+
+
+def test_source_buckets_split_promoted_and_old_select() -> None:
+    old = _row(
+        0,
+        {
+            "comp:a": (True, "action", "overlap", "both", None),
+            "comp:b": (True, "none", "overlap", "select", None),  # 예전 규칙의 자동 겹침
+        },
+    )
+    fill_judgement(old, JUDGED, ASKED)
+    s = score([old], provisional_gold([old]))["per_run"][0]["by_source"]
+    assert set(s) == {"both", "select"}
+    new = _row(0, {"comp:b": (True, "none", "overlap", "promoted", None)})
+    new["table"][0]["select_only"] = True
+    fill_judgement(new, JUDGED, ASKED)
+    assert set(score([new], provisional_gold([new]))["per_run"][0]["by_source"]) == {"promoted"}
