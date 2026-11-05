@@ -206,3 +206,41 @@ async def test_sse_streams_until_terminal(client: httpx.AsyncClient) -> None:
     statuses = [e["status"] for e in events]
     assert statuses[0] == "awaiting_approval"
     assert statuses[-1] == "done"
+
+
+async def test_promote_overlap_via_approve(client: httpx.AsyncClient) -> None:
+    run_id = await _create(client)
+    await wait_status(client, run_id, "awaiting_approval")
+    bad = [
+        {**reviewer_decision("approved"), "promote_overlap": ["comp:fake-1"]},  # revise 만
+        {
+            **reviewer_decision("revise", "가상 사유"),
+            "revise_target": "common",  # 경험 검증을 다시 만들어야 한다
+            "promote_overlap": ["comp:fake-1"],
+        },
+        {
+            **reviewer_decision("revise", "가상 사유"),
+            "promote_overlap": ["comp:fake-1"],
+            "restore_overlap": ["comp:fake-1"],  # 같은 id 를 두 목록에
+        },
+        {**reviewer_decision("revise", "가상 사유"), "promote_overlap": ["x" * 121]},
+    ]
+    for body in bad:
+        resp = await client.post(f"/runs/{run_id}/approve", json=body)
+        assert resp.status_code == 422, body
+        assert resp.json()["error"]["code"] == "validation_error"
+    assert (await client.get(f"/runs/{run_id}")).json()["status"] == "awaiting_approval"
+
+    ok = {
+        **reviewer_decision("revise", "가상 사유"),
+        "revise_target": "verification",
+        "promote_overlap": ["comp:fake-1"],
+    }
+    resp = await client.post(f"/runs/{run_id}/approve", json=ok)
+    assert resp.status_code == 202, resp.text
+    async with asyncio.timeout(5):
+        while True:
+            body = await wait_status(client, run_id, "awaiting_approval")
+            if body["spec"]["revision"] == 2:
+                break
+            await asyncio.sleep(0.02)

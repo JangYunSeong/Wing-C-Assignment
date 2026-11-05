@@ -255,6 +255,7 @@ section.block:last-child { border-bottom: 0; }
 .src.verify { color: var(--info); background: var(--info-soft); border-color: transparent; }
 .src.select, .src.lowered { color: var(--risk); background: var(--risk-soft); border-color: transparent; margin-left: 6px; }
 td .src.select { margin-left: 0; }
+.src.promoted { color: var(--info); background: var(--info-soft); border-color: transparent; }
 .lower { display: flex; flex-direction: column; gap: 6px; }
 .lower label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
