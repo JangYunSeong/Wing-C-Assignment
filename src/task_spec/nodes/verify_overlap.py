@@ -10,9 +10,14 @@
 - 답은 느슨한 모델(VerifyParsedOutput)로 받고 normalize 가 정리한다 — 프롬프트에 그리는 스키마(VerifyOverlapOutput)는
   평가 때와 같게 두고, 한도 하나 때문에 호출 전체가 실패하지 않게. 목록 밖 id·네 값 밖 label 은 버림, 중복은 앞의 것,
   근거 주장은 아는 것만 MAX_EVIDENCE 개까지, 근거 없는 판정은 none. 판정 이유(reason)는 읽지 않는다.
-- 빠진 역량(실패한 묶음 포함)은 그 역량만 한 번 다시 묻는다. 다시 묻기가 실패하거나 그래도 빠지면 status=partial
-  (그 역량은 '확인 안 됨'). 첫 묻기가 전부 실패하면 status=failed — 대조는 선택 경로만으로 (예전 동작).
+- 다시 묻기 (묶음 하나당 호출 상한 = 첫 호출 + 다시 묻기 MAX_REASK(2)번):
+  · 답했는데 빠진 역량 → 그 역량만 한 번에 다시 (호출 1번)
+  · 묶음 호출이 예외로 실패(빈 응답·추론 토큰 소진·잘림·스키마 등) → 그 묶음 전부를 반으로 나눠 다시 (호출 2번)
+    — 긴 이력서(주장 50개+)에서 추론 토큰이 상한을 다 쓰면 첫 묶음이 통째로 실패한다 (2026-11-05 v2 e2e, G안)
+  다시 묻기가 실패하거나 그래도 빠진 역량은 status=partial ('확인 안 됨' — 그 역량은 선택 경로만).
+  모든 호출이 실패했을 때만 status=failed — 대조는 선택 경로만으로 (예전 동작).
   어떤 예외든 노드 밖으로 내보내지 않는다 (실행 전체가 죽지 않게). errors 에는 예외 이름만.
+  실패한 호출도 쓴 토큰·비용은 provenance 로 남긴다 (llm.client 가 예외에 싣는 것).
 - 판정 이유(LLM 자유 텍스트)는 State 에 남기지 않는다. 에러 메시지에는 id·고정 문구만.
 """
 
@@ -51,6 +56,8 @@ TASK = "verify_overlap"
 NODE = "verify_overlap"
 NOTE = "verify_answer_invalid"  # 정상 흐름의 재요청·보정 기록 (UI 는 *invalid 를 접어 둔다)
 BATCH = 40  # 한 번에 묻는 공고 역량 수
+MAX_REASK = 2  # 묶음 하나당 다시 묻기 호출 상한 (실패한 묶음은 반씩 2번, 빠진 역량은 1번)
+REASK = "빠진 역량을 다시 물음"
 MAX_EVIDENCE = 6  # 역량 하나에 남기는 근거 주장 수
 LABELS: frozenset[str] = frozenset({"action", "related", "mention", "none"})
 logger = logging.getLogger(__name__)
@@ -127,6 +134,14 @@ def normalize(
 
 def batches(ids: Sequence[str], size: int = BATCH) -> list[list[str]]:
     return [list(ids[i : i + size]) for i in range(0, len(ids), size)]
+
+
+def halves(ids: Sequence[str]) -> list[list[str]]:
+    """실패한 묶음을 다시 물을 단위로 — 반씩 (한 개면 그대로). 다시 묻기 호출 수 ≤ MAX_REASK."""
+    if len(ids) <= 1:
+        return [list(ids)]
+    mid = (len(ids) + 1) // 2
+    return [list(ids[:mid]), list(ids[mid:])]
 
 
 def _note(reason: str, ref: str) -> NodeError:
@@ -223,20 +238,37 @@ def make_verify_overlap(
 
         checks: dict[str, OverlapCheck] = {}
         notes: list[tuple[str, str]] = []
+        retry: list[list[str]] = []  # 다시 물을 묶음 (묶음마다 MAX_REASK 개까지)
         missing: list[str] = []
-        answered = False
+        succeeded = False
         for chunk in batches(asked):
             try:
                 got = await ask(chunk)
-            except Exception as exc:  # 어떤 예외든 실행을 죽이지 않는다 — 이 묶음은 빠진 것으로
+            except Exception as exc:  # 어떤 예외든 실행을 죽이지 않는다 — 이 묶음 전부를 반씩 다시
                 errors.append(_failure(exc, "공고 역량 확인 실패"))
-                missing += chunk
+                retry += halves(chunk)
                 continue
-            answered = True
+            succeeded = True
+            checks.update(got.checks)
+            notes += got.notes
+            if got.missing:
+                retry.append(got.missing)  # 답에서 빠진 역량은 한 번에
+
+        for group in retry:  # 차례로 (실패 때만 생기는 호출 — 동시 요청을 늘리지 않는다)
+            notes += [(REASK, c) for c in group]
+            try:
+                got = await ask(group)
+            except Exception as exc:  # 다시 묻기 실패 — 이미 받은 답은 지키고 이 묶음은 확인 안 됨
+                errors.append(_failure(exc, "빠진 역량 다시 묻기 실패"))
+                missing += group
+                continue
+            succeeded = True
             checks.update(got.checks)
             notes += got.notes
             missing += got.missing
-        if not answered:
+
+        if not succeeded:
+            errors += [_note(reason, ref) for reason, ref in notes]
             errors.append(
                 NodeError(
                     node=NODE, code="verify_failed", message="공고 역량 확인 실패 — 선택 경로만"
@@ -247,21 +279,6 @@ def make_verify_overlap(
                 "provenance": provenance,
                 "errors": errors,
             }
-
-        if missing:
-            notes += [("빠진 역량을 다시 물음", c) for c in missing]
-            still: list[str] = []
-            for chunk in batches(missing):
-                try:
-                    got = await ask(chunk)
-                except Exception as exc:  # 다시 묻기 실패 — 첫 답은 지키고 이 묶음은 확인 안 됨
-                    errors.append(_failure(exc, "빠진 역량 다시 묻기 실패"))
-                    still += chunk
-                    continue
-                checks.update(got.checks)
-                notes += got.notes
-                still += got.missing
-            missing = still
 
         errors += [_note(reason, ref) for reason, ref in notes]
         errors += [

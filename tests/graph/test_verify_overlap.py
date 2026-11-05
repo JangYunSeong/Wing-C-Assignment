@@ -164,24 +164,78 @@ async def test_invalid_ids_and_no_evidence_are_corrected(tmp_path: Path) -> None
 
 
 async def test_call_failure_falls_back_to_select_path(tmp_path: Path) -> None:
-    out, _ = await _run(_state(tmp_path), Completion("not json"), Completion("still not json"))
+    # 첫 묶음·반씩 다시 묻기 둘 다 스키마 위반 (호출마다 1회 재요청 포함) → 모든 호출 실패 → failed
+    out, fake = await _run(_state(tmp_path), *[Completion("not json")] * 6)
     assert out["overlap_check"].status == "failed" and out["overlap_check"].items == []
     codes = [e.code for e in out["errors"]]
-    assert "SchemaViolation" in codes and "verify_failed" in codes
+    assert codes.count("SchemaViolation") == 3 and codes[-1] == "verify_failed"
+    assert len(fake.calls) == 6  # 호출 3번 × 스키마 재요청 1번
     # 실패한 호출도 쓴 토큰·비용 기록은 남는다 (본문 없음)
-    assert [p.prompt for p in out["provenance"]] == ["verify_overlap@1"]
-    assert out["provenance"][0].retries == 1
+    assert [p.prompt for p in out["provenance"]] == ["verify_overlap@1"] * 3
+    assert all(p.retries == 1 for p in out["provenance"])
+
+
+async def test_failed_batch_is_split_and_asked_again(tmp_path: Path) -> None:
+    # G안: 첫 묶음이 빈 응답(추론 토큰 소진 등)으로 통째로 실패 → 반씩(2개 + 1개) 다시 → ok
+    out, fake = await _run(
+        _state(tmp_path),
+        Completion(""),
+        _answer(("comp:a", "action", ["c1"]), ("comp:b", "none", [])),
+        _answer(("comp:c", "related", ["c2"])),
+    )
+    res = out["overlap_check"]
+    assert res.status == "ok" and len(fake.calls) == 3  # 첫 호출 + 다시 묻기 2번 (상한)
+    assert [(c.competency_id, c.label) for c in res.items] == [
+        ("comp:a", "action"),
+        ("comp:b", "none"),
+        ("comp:c", "related"),
+    ]
+    assert ("EmptyResponse", "공고 역량 확인 실패") in [(e.code, e.message) for e in out["errors"]]
+    assert [ref for msg, ref in _notes(out) if msg == "빠진 역량을 다시 물음"] == [
+        "comp:a",
+        "comp:b",
+        "comp:c",
+    ]
+    assert len(out["provenance"]) == 3  # 실패한 첫 호출도 비용 기록
+
+
+async def test_split_retry_half_fails_is_partial(tmp_path: Path) -> None:
+    out, fake = await _run(
+        _state(tmp_path),
+        Completion(""),
+        _answer(("comp:a", "action", ["c1"]), ("comp:b", "related", ["c2"])),
+        Completion(""),
+    )
+    res = out["overlap_check"]
+    assert res.status == "partial" and len(fake.calls) == 3
+    assert [c.competency_id for c in res.items] == ["comp:a", "comp:b"]
+    errs = [(e.code, e.message, e.ref_id) for e in out["errors"] if e.code != NOTE]
+    assert ("EmptyResponse", "빠진 역량 다시 묻기 실패", None) in errs
+    assert (
+        "verify_missing_after_retry",
+        "다시 물어도 답이 없는 공고 역량 — 확인 안 됨",
+        "comp:c",
+    ) in errs
+
+
+async def test_all_calls_fail_is_failed_with_bounded_calls(tmp_path: Path) -> None:
+    out, fake = await _run(_state(tmp_path), Completion(""), Completion(""), Completion(""))
+    assert out["overlap_check"].status == "failed" and len(fake.calls) == 3
+    assert [e.code for e in out["errors"] if e.code == "EmptyResponse"] == ["EmptyResponse"] * 3
+    assert len(out["provenance"]) == 3
 
 
 async def test_any_exception_is_contained(tmp_path: Path) -> None:
     # 백엔드의 예상 밖 예외 (4xx 등) — 실행을 죽이지 않고 failed, 메시지에 예외 내용은 남기지 않는다
-    out, _ = await _run(_state(tmp_path), RuntimeError("400 bad request: 가상 본문"))
-    assert out["overlap_check"].status == "failed"
+    out, fake = await _run(_state(tmp_path), *[RuntimeError("400 bad request: 가상 본문")] * 3)
+    assert out["overlap_check"].status == "failed" and len(fake.calls) == 3
     errs = [
         (e.code, e.message) for e in out["errors"] if e.code not in (NOTE, "verify_labels_only")
     ]
     assert errs[1:] == [
         ("RuntimeError", "공고 역량 확인 실패"),
+        ("RuntimeError", "빠진 역량 다시 묻기 실패"),
+        ("RuntimeError", "빠진 역량 다시 묻기 실패"),
         ("verify_failed", "공고 역량 확인 실패 — 선택 경로만"),
     ]
     assert all("가상 본문" not in e.message for e in out["errors"])
@@ -324,3 +378,18 @@ async def test_skips_without_llm_claims_or_posting_competencies(tmp_path: Path) 
     assert out == {"overlap_check": None} and fake.calls == []
     out, fake = await _run(_state(tmp_path, comps=False))
     assert out == {"overlap_check": None} and fake.calls == []
+
+
+async def test_failed_batch_among_many_is_split(tmp_path: Path) -> None:
+    st = _many(tmp_path, 65)
+    ids = [c.competency_id for c in st.posting_profile.competencies]  # type: ignore[union-attr]
+    fake = _Capture().push(
+        Completion(""),  # 첫 묶음(40개) 실패
+        _answer(*[(c, "none", []) for c in ids[40:]]),  # 둘째 묶음(25개) 답
+        _answer(*[(c, "none", []) for c in ids[:20]]),  # 실패 묶음 앞 반
+        _answer(*[(c, "none", []) for c in ids[20:40]]),  # 뒤 반
+    )
+    out = await make_verify_overlap(LLMClient({"opencode": fake}), PROMPTS)(st)
+    res = out["overlap_check"]
+    assert res.status == "ok" and len(res.items) == 65
+    assert [sum(f"- {c} " in t for c in ids) for t in fake.texts] == [40, 25, 20, 20]
