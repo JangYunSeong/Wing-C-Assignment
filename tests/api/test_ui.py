@@ -44,3 +44,13 @@ def test_ui_shows_task_kind_and_sends_kind_switch() -> None:
     assert "if (kind) body.task_kind = kind;" in js
     # 서버와 같은 규칙: 유형을 바꾸면 경험 검증만 다시 만들 수는 없다
     assert 'kind && body.revise_target === "verification"' in js
+
+
+def test_ui_shows_two_tier_clarification_answers() -> None:
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
+        "utf-8"
+    )
+    assert "일반 질문 → ${esc(x.answer_hint)}" in js
+    assert '짚은 질문(${esc((x.match_terms || []).join(", "))}) → ${esc(x.answer)}' in js
