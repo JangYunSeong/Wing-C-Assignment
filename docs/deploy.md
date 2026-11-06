@@ -46,7 +46,7 @@ podman exec task_db createdb -U task task_db_test
 podman exec task_db pg_restore -U task -d task_db_test --no-owner --no-privileges -j 4 /tmp/restore.dump
 podman exec task_db rm /tmp/restore.dump
 podman exec task_db psql -U task -d task_db -tAc "select version from public.ontology_registry"
-#   → v2026-10-30e@b69d00f+dirty  (env 의 ONTOLOGY_VERSION 과 같아야 함)
+#   → v2026-11-06f@60d5031+dirty  (env 의 ONTOLOGY_VERSION 과 같아야 함)
 
 # 2-4. env 파일 (레포·이미지에 넣지 않음)
 sudo install -d -m 700 /etc/task-spec

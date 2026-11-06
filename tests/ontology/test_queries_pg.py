@@ -20,7 +20,7 @@ from tests.api.conftest import make_settings, reviewer_decision, wait_status
 from tests.conftest import config_for
 
 pytestmark = pytest.mark.pg
-VERSION = "v2026-10-30e@b69d00f+dirty"
+VERSION = "v2026-11-06f@60d5031+dirty"
 POSTING = "LIG_2026_2#001"
 
 

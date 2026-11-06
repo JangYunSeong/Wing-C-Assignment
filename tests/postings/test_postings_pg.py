@@ -26,7 +26,7 @@ from tests.api.conftest import make_settings, wait_status
 from tests.postings.fixtures import POSTING
 
 pytestmark = pytest.mark.pg
-VERSION = "v2026-10-30e@b69d00f+dirty"
+VERSION = "v2026-11-06f@60d5031+dirty"
 PROMPTS = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
 
 

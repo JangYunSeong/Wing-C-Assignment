@@ -31,21 +31,23 @@ description: 온톨로지 레포(job-competency-ontology)가 내보내는 버전
 - 앱 기동: 설정 버전이 레지스트리에 없으면 기동 실패. `/healthz` 의 `ontology_resolved` 가 실제 버전.
 - `ONTOLOGY_VERSION=dev` 는 개발용 별칭 — 가장 최근 적재 버전. 명세 `ontology_version` 에는 실제 버전 문자열을 적는다.
 
-### 현재 적재 (2026-11-02, 방법 a — 로컬 빌드)
+### 현재 적재 (2026-11-06, 방법 a — 로컬 빌드)
 
 | 항목 | 값 |
 |---|---|
-| 버전 | `v2026-10-30e@b69d00f+dirty` (온톨로지 레포 HEAD b69d00f, train v2026-10-30e) |
-| 스키마 | `onto_v2026_10_30e_b69d00f_dirty` (task_db, task_db_test) |
-| 규모 | 35 테이블, 866,161 행, 151 MB (NCS 수행준거 196,658 · KSA 574,279) |
-| `+dirty` | git 제외 원천(ESCO·NCS 정보망 DB·train)을 복사해 빌드한 표시. 규칙·코드 변경 없음 |
+| 버전 | `v2026-11-06f@60d5031+dirty` (온톨로지 레포 HEAD 60d5031, train v2026-11-06f) |
+| 스키마 | `onto_v2026_11_06f_60d5031_dirty` (task_db, task_db_test) |
+| 규모 | 35 테이블, 869,089 행, 200 MB · 포지션 733 · 역량 174 (NCS 수행준거 196,658 · KSA 574,279) |
+| `+dirty` | git 제외 원천(ESCO·NCS DB·train)을 복사해 빌드한 표시. 규칙·코드 변경 없음 (train manifest 규칙 해시 8개 = 60d5031) |
+| 이전 | `v2026-10-30e@b69d00f+dirty` (2026-11-02, 포지션 623) — 스키마 남겨 둠. 되돌리기 = `ONTOLOGY_VERSION` 만 교체 |
 
 재현:
 ```bash
 gh repo clone JangYunSeong/job-competency-ontology data/ontology/src -- --depth 1   # data/ 는 git 밖
-# git 제외 원천 복사 (현재 서버의 온톨로지 작업 사본에서, 읽기 전용):
-#   data/esco/v1.2.1/esco_v1.2.1.sqlite, data/ncs/ncs_infonet.sqlite, data/train/<버전>/
-(cd data/ontology/src && python3.11 -I scripts/db/build_db.py)
+# git 제외 원천 복사 (서버의 온톨로지 작업 사본 ~/job-competency-ontology 에서, 읽기 전용):
+#   data/esco/v1.2.1/esco_v1.2.1.sqlite, data/ncs/ncs.sqlite, data/ncs/ncs_infonet.sqlite, data/train/<버전>/
+#   train 은 ELT(transform)를 돌린 곳에서 받아 둔다 — 서버 작업 사본에 없을 수 있다
+(cd data/ontology/src && python3.11 -I scripts/db/build_db.py --train <버전>)
 uv run python -m task_spec.ontology.load_pg --sqlite data/ontology/src/data/build/ontology.sqlite \
     --schema-sql data/ontology/src/scripts/db/schema_pg.sql --rules-root data/ontology/src [--target test]
 ```
@@ -76,7 +78,7 @@ uv run python -m task_spec.ontology.load_pg --sqlite data/ontology/src/data/buil
 | 공고 역량 | `posting_line` ⋈ `line_competency` — 역량별 절·수준·근거 문장 id |
 | 주/보조 | **담당업무·자격요건 = 주, 우대에만 = 보조** (사용자 결정) |
 | 공고 도구 | `line_tool` ⋈ `tool` — `kind=language` 가 '공고 언어' (과제 기술 환경 입력) |
-| NCS 범위 | 온톨로지 뷰 `v_position_competency_ncs` 와 같은 규칙: 셀 `cell_ncs` → primary, 시범 직군 + 보조 직군 `sub_ncs` → secondary, 그 외 제외. 셀에 목록이 없으면 직군 `sub_ncs` → sub_fallback (아래). (역량, 직군, 업종)으로 받아 새 공고에도 씀. 623 포지션 전부 뷰와 일치 확인 |
+| NCS 범위 | 온톨로지 뷰 `v_position_competency_ncs` 와 같은 규칙: 셀 `cell_ncs` → primary, 시범 직군 + 보조 직군 `sub_ncs` → secondary, 그 외 제외. 셀에 목록이 없으면 직군 `sub_ncs` → sub_fallback (아래). (역량, 직군, 업종)으로 받아 새 공고에도 씀. 733 포지션 전부 뷰와 일치 확인 (v2026-11-06f) |
 | NCS 본문 | State 에는 능력단위·요소·수행준거·KSA **건수**만, 본문은 명세 생성 때 `v_ncs_unit_detail` 조회 |
 | ESCO | `competency_esco.representative` 만 (broad 제외) |
 
@@ -94,9 +96,9 @@ POST /runs              posting_id=prov-…  → posting_profile(source=provisio
 |---|---|
 | 절 분리 (`sections.py`) | 절 제목 사전(업무내용·지원자격·우대사항 등, 묶음 제목·글머리 제거) → 담당업무·자격요건을 못 찾으면 LLM(`prompts/segment_posting`). LLM 문장은 원문에 글자 그대로 있어야 남김 |
 | 업종 (`suggest.py`) | 등록 회사면 그 업종, 아니면 LLM(`prompts/suggest_field`) |
-| 직군 | 0.5·직무명 유사도(포지션 623, 평가 땐 자기 제외) + 0.5·직군별 역량 문장 비율. 약하거나 접전이면 LLM 섞음. 상위 3 + 근거 |
+| 직군 | 0.5·직무명 유사도(적재 버전의 포지션 전부, 평가 땐 자기 제외) + 0.5·직군별 역량 문장 비율. 약하거나 접전이면 LLM 섞음. 상위 3 + 근거 |
 | 확인 | 요청자가 직군·업종을 고른다 (`confirmed_by` — 인증 전까지 본문, TODO(auth)). 목록 밖 값 422 |
-| 문장 분석 | 매처 사본 `postings/matcher.py` (원본 b69d00f, 로직 동일) + **PG `public.ontology_rules`(같은 버전, json)** |
+| 문장 분석 | 매처 사본 `postings/matcher.py` (원본 b69d00f, 로직 동일 — 60d5031 까지 원본 변경 없음 확인 2026-11-06) + **PG `public.ontology_rules`(같은 버전, json)** |
 | 임시 공고 | `public.provisional_posting` — 버전·규칙 해시·문장별 결과·미매칭 수, 상태 pending_review. 실행 버전과 분석 버전이 다르면 그래프 END(`posting_version_mismatch`) |
 | 환류 | DB 저장까지. 온톨로지 레포로 내보내기는 보류 [미정] |
 | LLM | 공고는 PII 아님 → openai:gpt-4.1-mini (속도). 규칙이 실패할 때만 |

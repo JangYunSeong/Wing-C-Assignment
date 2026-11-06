@@ -116,7 +116,7 @@ async def test_dev_alias_resolves_latest_and_unknown_fails(mini, test_url: str) 
 async def test_real_ontology_views(test_url: str) -> None:
     """test DB 에 적재된 실제 온톨로지 — 뷰·주요 테이블이 조회되는지 (적재 안 됐으면 skip)."""
     try:
-        ver = await resolve_version(test_url, "v2026-10-30e@b69d00f+dirty")
+        ver = await resolve_version(test_url, "v2026-11-06f@60d5031+dirty")
     except OntologyNotLoaded:
         pytest.skip("실제 온톨로지 미적재 (load_pg --target test)")
     repo = await OntologyRepository.open(test_url, ver.version)
