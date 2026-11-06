@@ -431,3 +431,130 @@ async def test_all_pruned_is_flagged_without_reask() -> None:
     c1 = next(c for c in task.clarifications if c.clarification_id == "c1")
     assert c1.match_terms == [] and c1.answer_hint
     assert FLAG_HINT_ONLY + "c1" in task.review_flags
+
+
+# ── v5: 단서 추가 요구의 모호한 답 = 볼 곳 (코드가 만듦) [2026-11-06 사용자 (B)] ──
+
+POINTED = "'배송 서비스 설정 파일' 자료에서 확인할 수 있습니다."
+
+
+def _v5draft() -> dict[str, Any]:
+    d = _v4draft()
+    d["clarifications"] = [
+        {
+            "clarification_id": "c1",
+            "topic": "피크 요청량",
+            "match_terms": ["동시 요청 수", "max threads"],
+            "answer": "마감 직전 수십 건이 동시에 들어온다",
+            "reveals": ["t1"],
+            "hint_source": "배송 서비스 설정 파일",
+        },
+        {
+            "clarification_id": "c2",
+            "topic": "보존 기간",
+            "match_terms": ["보관 기간"],
+            "answer": "3년 보관",
+            "reveals": [],
+            "answer_hint": "기록은 일정 기간 보관합니다.",
+        },
+    ]
+    return d
+
+
+class _V5:
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return _REG.get(task, version or (5 if task == "draft_feature_task" else None))
+
+
+def test_v5_clarification_needs_its_tier_field() -> None:
+    from pydantic import ValidationError
+
+    from task_spec.schemas import ClarificationDraftV5
+
+    clue = _v5draft()["clarifications"][0]
+    with pytest.raises(ValidationError):
+        ClarificationDraftV5.model_validate({**clue, "hint_source": None})
+    other = _v5draft()["clarifications"][1]
+    with pytest.raises(ValidationError):
+        ClarificationDraftV5.model_validate({**other, "answer_hint": None})
+
+
+async def test_v5_clue_hint_points_to_artifact() -> None:
+    fake = FakeBackend().push(Completion(json.dumps(_v5draft(), ensure_ascii=False)))
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V5())  # type: ignore[arg-type]
+    assert res.flags == [] and res.provenance[0].prompt == "draft_feature_task@5"
+    task = apply_feature(_skeleton(), res)
+    by = {c.clarification_id: c for c in task.clarifications}
+    assert by["c1"].answer_hint == POINTED and by["c1"].match_terms == [
+        "동시 요청 수",
+        "max threads",
+    ]
+    assert by["c2"].answer_hint == "기록은 일정 기간 보관합니다."
+
+
+def test_v5_pointer_matches_title_loosely() -> None:
+    from task_spec.schemas import DraftFeatureOutputV5
+    from task_spec.spec.feature import fill_from_seed_v5
+
+    d = _v5draft()
+    d["clarifications"][0]["hint_source"] = "‘배송 서비스  설정 파일’"  # 따옴표·띄어쓰기 달라도
+    out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+    assert out.clarifications[0].answer_hint == POINTED
+    assert check_feature(out, _seed_ctx()) == []
+
+
+async def test_v5_bad_pointer_is_reasked() -> None:
+    bad = _v5draft()
+    bad["clarifications"][0]["hint_source"] = "운영 회의록"  # 1단계 자료에 없음
+    fake = (
+        FakeBackend()
+        .push(Completion(json.dumps(bad, ensure_ascii=False)))
+        .push(Completion(json.dumps(_v5draft(), ensure_ascii=False)))
+    )
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V5())  # type: ignore[arg-type]
+    assert len(fake.calls) == 2 and res.flags == []
+    assert [p for p in res.first_problems if "1단계 자료 제목에 없음" in p]
+
+
+def test_v5_pointer_to_distractor_is_a_problem() -> None:
+    from task_spec.schemas import DraftFeatureOutputV5
+    from task_spec.spec.feature import fill_from_seed_v5
+
+    d = _v5draft()
+    d["clarifications"][0]["hint_source"] = "포인트 서비스 코드"  # 방해 자료
+    out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+    assert [p for p in check_feature(out, _seed_ctx()) if "방해(distractor) 자료" in p]
+
+
+def test_trigger_terms_in_artifact_titles() -> None:
+    d = _v4draft()
+    d["artifacts"][0]["title"] = "배송 서비스 요청 처리 스레드 설정"  # 괄호 안 설명의 말 → 걸림
+    problems = check_feature(_v4full(artifacts=d["artifacts"]), _seed_ctx())
+    hit = [p for p in problems if p.startswith("운영 조건을 드러내는 말이 1단계 자료 제목")]
+    assert hit and "스레드" in hit[0]
+    d["artifacts"][0]["title"] = (
+        "배송 서비스 피크 시간대 요청 지표"  # 재료의 자료 종류 이름 → 괜찮음
+    )
+    problems = check_feature(_v4full(artifacts=d["artifacts"]), _seed_ctx())
+    assert not [p for p in problems if "1단계 자료 제목에 나옴" in p]
+
+
+def test_short_general_match_terms_are_pruned() -> None:
+    from task_spec.spec.feature import prune_match_terms
+
+    clars = _v3draft()["clarifications"]
+    clars[0]["match_terms"] = ["피크", "동시 요청 수", "DB", "설정"]
+    out = prune_match_terms(_v4full(clarifications=clars))
+    assert out.clarifications[0].match_terms == ["동시 요청 수"]
+
+
+def test_v5_prompt_uses_compact_schema_with_hint_source() -> None:
+    from task_spec.prompting import assemble
+    from task_spec.spec.draft import build_input
+    from task_spec.spec.feature import extra_input, seed_block
+
+    v5 = _REG.get("draft_feature_task", 5)
+    extra = {**extra_input(), "feature_seed": seed_block(BACKEND)}
+    sys5 = assemble(v5, build_input(_seed_ctx(), None, v5.input_model, extra), ontology_version="v")
+    assert "hint_source?: 문자열" in sys5.messages[0].content
+    assert "$defs" not in sys5.messages[0].content

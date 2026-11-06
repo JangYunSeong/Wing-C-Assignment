@@ -43,6 +43,7 @@ from task_spec.schemas.domain import (
 )
 from task_spec.schemas.draft import (
     ClarificationDraft,
+    ClarificationDraftV5,
     DebugStageDraft,
     DebugStageDraftV4,
     DraftFeatureInput,
@@ -51,6 +52,7 @@ from task_spec.schemas.draft import (
     DraftFeatureOutputV2,
     DraftFeatureOutputV3,
     DraftFeatureOutputV4,
+    DraftFeatureOutputV5,
     DraftSlotInput,
     DraftSlotOutput,
     DraftTaskInput,
@@ -120,6 +122,8 @@ from task_spec.schemas.verify_overlap import (
 
 __all__ = [
     "DraftFeatureOutputV4",
+    "DraftFeatureOutputV5",
+    "ClarificationDraftV5",
     "DebugStageDraftV4",
     "ClarificationDraft",
     "DraftFeatureOutputV3",

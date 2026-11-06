@@ -12,8 +12,10 @@
 - 구현 방법 지시 금지 (1차, 금지어): 제목·공개 요구·공개 수용 기준에 구현 수단 이름을 쓰지 않는다.
 - 2단계: 자료 id 가 1단계와 겹치지 않음, 2단계 자료 규칙(핵심 1·방해 1 이상), requests_artifact 는 2단계 자료 안에서만.
 - 운영 조건 노출 금지 (재료 trigger_terms): 1단계 제목·상황·공개 요구·공개 수용 기준에 운영 조건을 쓰지 않는다 — 자료·구체 답에서만.
-- 두 층 답의 매칭 낱말: 단서 추가 요구의 match_terms 중 공개 글에 이미 있는 말은 코드가 지운다 (재요청 없음).
+- 두 층 답의 매칭 낱말: 단서 추가 요구의 match_terms 중 공개 글에 이미 있는 말·두 글자 이하 일반어는 코드가 지운다 (재요청 없음).
   다 지워지면 진행자는 늘 모호한 답만 주고, 승인자 화면에 표시한다 (FLAG_HINT_ONLY).
+- v5 단서 자료: 단서 추가 요구의 모호한 답은 생성 모델이 지목한 1단계 자료로 코드가 만든다 ("'<제목>' 자료에서 확인할 수 있습니다.").
+  지목한 제목이 1단계 자료에 없거나 방해 자료면 재요청. 1단계 자료 제목의 운영 조건 표현도 재요청 (재료 자료 종류 이름의 말은 괜찮음).
 """
 
 from __future__ import annotations
@@ -26,10 +28,12 @@ from task_spec.llm import LLMClient
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import (
     AcceptedDesign,
+    ClarificationDraft,
     DebugStage,
     DraftFeatureOutput,
     DraftFeatureOutputV2,
     DraftFeatureOutputV4,
+    DraftFeatureOutputV5,
     FeatureSeed,
     Observable,
     PublicIncident,
@@ -97,7 +101,7 @@ def stage2_kinds_in_stage1(
 
 FLAG_SEED_UNREVIEWED = "기능형 재료(공개 사례 feature 블록)가 사람 검토 전 (reviewed=false) — 숨은 요구·허용 설계를 승인자가 확인"
 FLAG_HINT_ONLY = (
-    "추가 요구 단서 답에 구체 답 조건(match_terms)이 없음 — 매칭 낱말이 모두 공개 글에 이미 있는 말이라 지움, "
+    "추가 요구 단서 답에 구체 답 조건(match_terms)이 없음 — 매칭 낱말이 모두 공개 글에 이미 있는 말이거나 두 글자 이하 일반어라 지움, "
     "진행자는 늘 모호한 답만 줌 (구체 답이 필요하면 승인자가 매칭 낱말을 적어 수정 요청): "
 )
 FLAG_NO_STARTER = "이 기능형 재료에 연결된 시작 코드 예제가 없음 — 명세만 (시작 코드·숨은 테스트는 빌드 단계에서 만들어야 함)"
@@ -280,6 +284,55 @@ def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeat
     return DraftFeatureOutput.model_validate(data)
 
 
+HINT_POINTER = "'{title}' 자료에서 확인할 수 있습니다."
+_POINTER_RX = re.compile(r"^'(.+)' 자료에서 확인할 수 있습니다\.$")
+_QUOTES = "'\"“”‘’「」『』"
+
+
+def pointer_hint(title: str) -> str:
+    """v5 단서 추가 요구의 모호한 답 — 볼 곳만 (사실·수치·조건 없음). 자료 제목은 이미 누출 검사를 받는다."""
+    return HINT_POINTER.format(title=title)
+
+
+def _match_title(source: str, titles: list[str]) -> str:
+    """지목한 자료 → 1단계 자료 제목 (공백·대소문자·따옴표 무시, 하나로 정해질 때만). 못 정하면 그대로 — check_hints 가 재요청."""
+    want = _norm(source.strip().strip(_QUOTES))
+    same = [t for t in titles if _norm(t) == want]
+    if same:
+        return same[0]
+    near = [t for t in titles if want and (want in _norm(t) or _norm(t) in want)]
+    return near[0] if len(near) == 1 else source.strip()
+
+
+def fill_from_seed_v5(out: DraftFeatureOutputV5, seed: FeatureSeed) -> DraftFeatureOutput:
+    """v5 출력 → v4 출력 → 전체 기능형 출력 [2026-11-06 사용자 (B)].
+
+    단서 추가 요구(reveals 있음)의 모호한 답은 생성 모델이 지목한 1단계 자료(hint_source)로 코드가 만든다 —
+    생성 모델은 모호한 답 문장을 쓰지 않으니 운영 조건을 흘릴 자리가 없다. 단서가 아닌 추가 요구는 생성 모델의 모호한 답 그대로.
+    """
+    titles = [a.title for a in out.artifacts]
+    clars = [
+        ClarificationDraft(
+            clarification_id=c.clarification_id,
+            topic=c.topic,
+            match_terms=list(c.match_terms),
+            answer=c.answer,
+            reveals=list(c.reveals),
+            answer_hint=pointer_hint(_match_title(c.hint_source or "", titles))
+            if c.reveals
+            else (c.answer_hint or ""),
+        )
+        for c in out.clarifications
+    ]
+    v4 = DraftFeatureOutputV4.model_validate(
+        {
+            **out.model_dump(exclude={"clarifications"}),
+            "clarifications": [c.model_dump() for c in clars],
+        }
+    )
+    return fill_from_seed_v4(v4, seed)
+
+
 def extra_input() -> dict[str, Any]:
     return {"build_min": FEATURE_BUILD_MIN, "debug_min": FEATURE_DEBUG_MIN}
 
@@ -323,10 +376,17 @@ def public_text(out: DraftFeatureOutput) -> str:
     )
 
 
-def prune_match_terms(out: DraftFeatureOutput) -> DraftFeatureOutput:
-    """단서 추가 요구(reveals 있음·두 층 답)의 매칭 낱말 중 공개 글에 이미 있는 말을 지운다 [2026-11-06 사용자].
+def _too_general(term: str) -> bool:
+    """띄어쓰기 없는 두 글자 이하 낱말 ("연결"·"설정"·"제한"·"DB") — 일반 질문에도 들어간다 [2026-11-06 사용자]."""
+    t = term.strip()
+    return not re.search(r"\s", t) and len(_norm(t)) <= 2
 
-    공개 글의 말은 일반 질문에도 들어가므로 구체 답이 거의 늘 나간다 — 두 층 답이 갈리지 않는다.
+
+def prune_match_terms(out: DraftFeatureOutput) -> DraftFeatureOutput:
+    """단서 추가 요구(reveals 있음·두 층 답)의 매칭 낱말 중 공개 글에 이미 있는 말과 두 글자 이하 일반어를 지운다
+    [2026-11-06 사용자].
+
+    공개 글의 말·일반어는 일반 질문에도 들어가므로 구체 답이 거의 늘 나간다 — 두 층 답이 갈리지 않는다.
     지우기만 하고 재요청하지 않는다 (토큰 0). 다 지워지면 진행자는 늘 모호한 답을 주고 apply_feature 가 표시를 남긴다.
     단서가 아닌 추가 요구는 구체 답이 나가도 해가 없어 그대로 둔다.
     """
@@ -335,7 +395,7 @@ def prune_match_terms(out: DraftFeatureOutput) -> DraftFeatureOutput:
     changed = False
     for c in out.clarifications:
         if c.reveals and c.answer_hint is not None and c.match_terms:
-            kept = [t for t in c.match_terms if not _in_text(t, text)]
+            kept = [t for t in c.match_terms if not _in_text(t, text) and not _too_general(t)]
             if kept != c.match_terms:
                 c = c.model_copy(update={"match_terms": kept})
                 changed = True
@@ -359,7 +419,8 @@ def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     - 단서가 되는 추가 요구(reveals 있음)의 모호한 답에는 수치를 쓰지 않는다 — 운영 조건의 값은 정확히 짚은 질문에만.
     - 모호한 답과 구체 답이 같으면 두 층이 아니다.
     매칭 낱말이 비는 것은 재요청 사유가 아니다 — 공개 글의 말을 지운 결과다 (prune_match_terms, 승인자 표시).
-    운영 조건 표현(재료 trigger_terms)은 모호한 답에서 아직 보지 않는다 [미정: 모호한 답을 "어디를 보면 되는지"로 바꿀지 — v5].
+    v5 단서 자료 답("'<제목>' 자료에서 확인할 수 있습니다."): 제목이 1단계 자료에 있고 방해 자료가 아니어야 한다.
+    제목 자체의 금지어·운영 조건 표현은 check_feature 가 자료 제목으로 본다.
     """
     hints = [c for c in out.clarifications if c.answer_hint is not None]
     if not hints:
@@ -372,8 +433,24 @@ def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
         terms += [*seed.leak_terms, *seed.stage2_cause_terms]
     if inc is not None:
         terms += inc.hidden_terms
+    arts = {a.title: a for a in out.artifacts}
     for c in hints:
         hint = c.answer_hint or ""
+        pointed = _POINTER_RX.match(hint)
+        if pointed:
+            title = pointed.group(1)
+            art = arts.get(title)
+            if art is None:
+                problems.append(
+                    f"추가 요구 {c.clarification_id} 의 단서 자료 '{title}' 가 1단계 자료 제목에 없음 — "
+                    "hint_source 는 1단계 artifacts 의 title 을 글자 그대로"
+                )
+            elif art.role == "distractor":
+                problems.append(
+                    f"추가 요구 {c.clarification_id} 의 단서 자료 '{title}' 가 방해(distractor) 자료 — "
+                    "그 사실이 실제로 보이는 핵심·맥락 자료로"
+                )
+            continue
         shown = [t for t in dict.fromkeys(terms) if len(_norm(t)) >= 2 and _term_rx(t).search(hint)]
         if shown:
             problems.append(
@@ -531,6 +608,20 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
                 "운영 조건을 드러내는 말이 1단계 제목·상황·공개 요구·공개 수용 기준에 나옴: "
                 + ", ".join(dict.fromkeys(cond))
                 + " — 상황은 만들 기능만, 운영 조건은 자료(원시 값)와 정확히 짚은 질문의 구체 답에서만"
+            )
+        # 1단계 자료 제목 (요청 전부터 보이고, v5 단서 자료 답이 제목을 그대로 쓴다) — 재료의 자료 종류 이름(괄호 앞)에
+        # 나온 말은 그 자료의 이름이라 괜찮다 (예: DBA "DB 정리 작업 설정"). 괄호 안 설명의 말은 안 된다
+        names = "\n".join(re.split(r"[(（]", d, maxsplit=1)[0] for d in seed.discoverable_by)
+        allowed = "\n".join([seed.business_need, names])
+        art_titles = "\n".join(a.title for a in out.artifacts)
+        tcond = [
+            t for t in seed.trigger_terms if not _in_text(t, allowed) and _in_text(t, art_titles)
+        ]
+        if tcond:
+            problems.append(
+                "운영 조건을 드러내는 말이 1단계 자료 제목에 나옴: "
+                + ", ".join(dict.fromkeys(tcond))
+                + " — 제목은 '<구성 요소> <자료 종류>'만 (재료의 자료 종류 이름은 괜찮음), 조건은 본문의 원시 값으로"
             )
         mixed = stage2_kinds_in_stage1(
             [a.title for a in out.artifacts], seed.stage2_evidence, seed.discoverable_by
@@ -788,7 +879,9 @@ async def draft_feature_task(
     seed = inc.feature
 
     def fill_then_shuffle(out: Any, key: str) -> DraftFeatureOutput:
-        if isinstance(out, DraftFeatureOutputV4):
+        if isinstance(out, DraftFeatureOutputV5):  # v4 의 하위 모델이라 먼저
+            full = fill_from_seed_v5(out, seed)
+        elif isinstance(out, DraftFeatureOutputV4):
             full = fill_from_seed_v4(out, seed)
         elif isinstance(out, DraftFeatureOutputV2):  # v3 (두 층 답) 은 v2 의 하위 모델
             full = fill_from_seed(out, seed)
