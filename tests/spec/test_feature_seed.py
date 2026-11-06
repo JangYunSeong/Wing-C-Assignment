@@ -597,3 +597,8 @@ def test_reask_reason_quotes_the_sentence() -> None:
     ]
     assert hit and '고칠 문장: "피크 시간대에는 요청이 몰린다."' in hit[0]
 
+
+def test_v6_prompt_loads_with_v5_schema() -> None:
+    v6 = _REG.get("draft_feature_task", 6)
+    assert v6.output_model.__name__ == "DraftFeatureOutputV5"
+    assert "answer 는 모든 추가 요구에 쓴다" in v6.system
