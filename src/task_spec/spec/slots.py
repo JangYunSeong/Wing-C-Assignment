@@ -62,8 +62,13 @@ def plan_slots(
 
 
 def common_visible(common: TaskItem) -> str:
-    """지원자가 이미 본 공통 과제 — 제목·상황·자료 목록(이름만). 자료 본문·함정·정답은 넣지 않는다."""
+    """지원자가 이미 본 공통 과제 — 제목·상황·(기능형) 공개 요구·공개 수용 기준·자료 목록(이름만).
+    자료 본문·함정·숨은 요구·2단계는 넣지 않는다."""
     lines = [common.title or "", common.scenario or ""]
+    if common.requirements:
+        lines.append("공개 요구: " + " / ".join(r.text for r in common.requirements))
+    if common.acceptance_public:
+        lines.append("공개 수용 기준: " + " / ".join(a.text for a in common.acceptance_public))
     if common.artifacts:
         lines.append(
             "자료 목록: " + ", ".join(f"{a.artifact_id} {a.title}" for a in common.artifacts)
@@ -73,7 +78,8 @@ def common_visible(common: TaskItem) -> str:
 
 def common_secrets(common: TaskItem, ctx: DraftContext) -> list[str]:
     """슬롯 본문에 나오면 공통 과제 정답이 새는 말: 공통 과제의 핵심 개념 + 원 사례 원인 용어."""
-    out = [o.value for o in common.observables if o.kind == "first_mention_of"]
+    obs = [*common.observables, *(common.debug_stage.observables if common.debug_stage else [])]
+    out = [o.value for o in obs if o.kind == "first_mention_of"]  # 기능형은 2단계 원인 개념까지
     if ctx.incident is not None:
         out += ctx.incident.hidden_terms
     return [x for x in dict.fromkeys(out) if len(_norm(x)) >= 2]
