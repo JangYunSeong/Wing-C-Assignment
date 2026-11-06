@@ -350,3 +350,84 @@ def test_compact_schema_only_where_asked() -> None:
     v2 = _REG.get("draft_feature_task", 2)
     sys2 = assemble(v2, build_input(ctx, None, v2.input_model, extra), ontology_version="v")
     assert '"properties"' in sys2.messages[0].content  # 예전 프롬프트는 JSON Schema 그대로
+
+
+# ── 운영 조건 표현(trigger_terms)·매칭 낱말 정리 [2026-11-06 사용자] ──
+
+
+def test_seeds_have_trigger_terms() -> None:
+    from task_spec.spec.feature import _in_text
+
+    for sub, inc in INCIDENTS.items():
+        f = inc.feature
+        if f is None:
+            continue
+        assert len(f.trigger_terms) >= 3, sub
+        # 공개된 업무 요구에 나온 말은 검사에서 빠지니 목록에 둘 이유가 없다
+        assert not [t for t in f.trigger_terms if _in_text(t, f.business_need)], sub
+        assert not set(f.trigger_terms) & set(f.leak_terms), sub
+
+
+def _v4full(**over: Any) -> DraftFeatureOutput:
+    from task_spec.schemas import DraftFeatureOutputV4
+    from task_spec.spec.feature import fill_from_seed_v4
+
+    d = _v4draft()
+    for k, v in over.items():
+        d[k] = v
+    return fill_from_seed_v4(DraftFeatureOutputV4.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+
+
+def test_trigger_terms_blocked_in_story_only() -> None:
+    leak = (
+        "가상의 물류 회사가 주문 상태 변경마다 이력을 남기려 한다. 피크 시간대에는 요청이 몰린다."
+    )
+    problems = check_feature(_v4full(scenario=leak), _seed_ctx())
+    hit = [p for p in problems if p.startswith("운영 조건을 드러내는 말")]
+    assert hit and "피크" in hit[0] and "요청이 몰" in hit[0]
+    # 같은 사실이 자료 본문·구체 답에 있는 것은 단서라 괜찮다
+    d = _v4draft()
+    d["artifacts"][0]["content"] = "peak 15:00 동시 요청 80건, 요청이 몰리는 피크"
+    d["clarifications"][0]["answer"] = "피크 때 동시 요청이 수십 건 몰립니다"
+    out = _v4full(artifacts=d["artifacts"], clarifications=d["clarifications"])
+    assert not [p for p in check_feature(out, _seed_ctx()) if p.startswith("운영 조건")]
+
+
+def test_trigger_terms_skip_business_need_words() -> None:
+    seed = BACKEND.feature
+    assert seed is not None
+    own = seed.model_copy(update={"trigger_terms": ["감사 기록", "피크"]})
+    ctx = dataclasses.replace(_seed_ctx(), incident=BACKEND.model_copy(update={"feature": own}))
+    out = _v4full(title="주문 상태 변경 감사 기록 추가")
+    assert not [p for p in check_feature(out, ctx) if p.startswith("운영 조건")]
+
+
+def test_prune_match_terms_only_on_clue_clarifications() -> None:
+    from task_spec.spec.feature import hint_only, prune_match_terms
+
+    clars = _v3draft()["clarifications"]
+    clars[0]["match_terms"] = ["주문 상태", "동시 요청"]  # 단서 — "주문 상태"는 제목·상황에 있음
+    clars[1]["match_terms"] = ["주문 상태", "보관 기간"]  # 단서 아님 — 그대로
+    out = prune_match_terms(_v4full(clarifications=clars))
+    by = {c.clarification_id: c for c in out.clarifications}
+    assert by["c1"].match_terms == ["동시 요청"]
+    assert by["c2"].match_terms == ["주문 상태", "보관 기간"]
+    assert hint_only(out) == []
+    # 띄어쓰기가 달라도 같은 말
+    clars[0]["match_terms"] = ["주문상태"]
+    out = prune_match_terms(_v4full(clarifications=clars))
+    assert hint_only(out) == ["c1"]
+
+
+async def test_all_pruned_is_flagged_without_reask() -> None:
+    from task_spec.spec.feature import FLAG_HINT_ONLY
+
+    d = _v4draft()
+    d["clarifications"][0]["match_terms"] = ["상태 변경", "이력"]  # 둘 다 공개 글에 있는 말
+    fake = FakeBackend().push(Completion(json.dumps(d, ensure_ascii=False)))
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V4())  # type: ignore[arg-type]
+    assert len(fake.calls) == 1 and res.flags == []  # 재요청 없음 (토큰 0)
+    task = apply_feature(_skeleton(), res)
+    c1 = next(c for c in task.clarifications if c.clarification_id == "c1")
+    assert c1.match_terms == [] and c1.answer_hint
+    assert FLAG_HINT_ONLY + "c1" in task.review_flags

@@ -84,6 +84,15 @@
    "ceiling",
    "선점"
   ],
+  "trigger_terms": [
+   "중간 우선순위",
+   "통신 태스크",
+   "감시 타이머",
+   "워치독",
+   "watchdog",
+   "길게 도는",
+   "오래 실행"
+  ],
   "task_shape": "code",
   "reviewed": false
  }

@@ -11,6 +11,9 @@
   (제목·상황·공개 요구·공개 수용 기준·산출물·자료 제목·추가 요구 답·2단계 상황)에 나오지 않는다.
 - 구현 방법 지시 금지 (1차, 금지어): 제목·공개 요구·공개 수용 기준에 구현 수단 이름을 쓰지 않는다.
 - 2단계: 자료 id 가 1단계와 겹치지 않음, 2단계 자료 규칙(핵심 1·방해 1 이상), requests_artifact 는 2단계 자료 안에서만.
+- 운영 조건 노출 금지 (재료 trigger_terms): 1단계 제목·상황·공개 요구·공개 수용 기준에 운영 조건을 쓰지 않는다 — 자료·구체 답에서만.
+- 두 층 답의 매칭 낱말: 단서 추가 요구의 match_terms 중 공개 글에 이미 있는 말은 코드가 지운다 (재요청 없음).
+  다 지워지면 진행자는 늘 모호한 답만 주고, 승인자 화면에 표시한다 (FLAG_HINT_ONLY).
 """
 
 from __future__ import annotations
@@ -93,6 +96,10 @@ def stage2_kinds_in_stage1(
 
 
 FLAG_SEED_UNREVIEWED = "기능형 재료(공개 사례 feature 블록)가 사람 검토 전 (reviewed=false) — 숨은 요구·허용 설계를 승인자가 확인"
+FLAG_HINT_ONLY = (
+    "추가 요구 단서 답에 구체 답 조건(match_terms)이 없음 — 매칭 낱말이 모두 공개 글에 이미 있는 말이라 지움, "
+    "진행자는 늘 모호한 답만 줌 (구체 답이 필요하면 승인자가 매칭 낱말을 적어 수정 요청): "
+)
 FLAG_NO_STARTER = "이 기능형 재료에 연결된 시작 코드 예제가 없음 — 명세만 (시작 코드·숨은 테스트는 빌드 단계에서 만들어야 함)"
 FLAG_NO_SEED = (
     "기능형 v2 프롬프트인데 이 직군 공개 사례에 기능형 재료(feature)가 없음 — 서술 없이 골격만"
@@ -295,12 +302,64 @@ def _dup(label: str, ids: list[str]) -> list[str]:
 _DIGIT = re.compile(r"\d")
 
 
+def _in_text(term: str, text: str) -> bool:
+    """한글 말은 공백을 무시한 부분 문자열, 영문은 단어 경계 — 진행자가 질문에서 찾는 방식보다 넓게 본다."""
+    if _HANGUL.search(term):
+        t = _norm(term)
+        return bool(t) and t in _norm(text)
+    return bool(_phrase(term).search(text))
+
+
+def public_text(out: DraftFeatureOutput) -> str:
+    """지원자가 처음부터 보는 1단계 글 — 제목·상황·공개 요구·공개 수용 기준·제출물."""
+    return "\n".join(
+        [
+            out.title,
+            out.scenario,
+            *(r.text for r in out.requirements),
+            *(a.text for a in out.acceptance_public),
+            *out.deliverables,
+        ]
+    )
+
+
+def prune_match_terms(out: DraftFeatureOutput) -> DraftFeatureOutput:
+    """단서 추가 요구(reveals 있음·두 층 답)의 매칭 낱말 중 공개 글에 이미 있는 말을 지운다 [2026-11-06 사용자].
+
+    공개 글의 말은 일반 질문에도 들어가므로 구체 답이 거의 늘 나간다 — 두 층 답이 갈리지 않는다.
+    지우기만 하고 재요청하지 않는다 (토큰 0). 다 지워지면 진행자는 늘 모호한 답을 주고 apply_feature 가 표시를 남긴다.
+    단서가 아닌 추가 요구는 구체 답이 나가도 해가 없어 그대로 둔다.
+    """
+    text = public_text(out)
+    clars = []
+    changed = False
+    for c in out.clarifications:
+        if c.reveals and c.answer_hint is not None and c.match_terms:
+            kept = [t for t in c.match_terms if not _in_text(t, text)]
+            if kept != c.match_terms:
+                c = c.model_copy(update={"match_terms": kept})
+                changed = True
+        clars.append(c)
+    return out.model_copy(update={"clarifications": clars}) if changed else out
+
+
+def hint_only(out: Any) -> list[str]:
+    """구체 답 조건이 다 지워진 단서 추가 요구 id."""
+    return [
+        c.clarification_id
+        for c in out.clarifications
+        if c.reveals and c.answer_hint is not None and not c.match_terms
+    ]
+
+
 def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     """두 층 답의 모호한 답(answer_hint) — 구체 답보다 엄격하다 [2026-11-06 사용자].
 
     - 숨은 요구를 드러내는 말(재료 leak_terms·원인 개념·먼저 말할 개념·원 사례 원인 용어)을 쓰지 않는다.
     - 단서가 되는 추가 요구(reveals 있음)의 모호한 답에는 수치를 쓰지 않는다 — 운영 조건의 값은 정확히 짚은 질문에만.
-    - 모호한 답과 구체 답이 같으면 두 층이 아니다. 매칭 낱말이 있어야 진행자가 고를 수 있다.
+    - 모호한 답과 구체 답이 같으면 두 층이 아니다.
+    매칭 낱말이 비는 것은 재요청 사유가 아니다 — 공개 글의 말을 지운 결과다 (prune_match_terms, 승인자 표시).
+    운영 조건 표현(재료 trigger_terms)은 모호한 답에서 아직 보지 않는다 [미정: 모호한 답을 "어디를 보면 되는지"로 바꿀지 — v5].
     """
     hints = [c for c in out.clarifications if c.answer_hint is not None]
     if not hints:
@@ -326,10 +385,6 @@ def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
             )
         if _norm(hint) == _norm(c.answer):
             problems.append(f"추가 요구 {c.clarification_id} 의 모호한 답과 구체 답이 같음")
-        if not c.match_terms:
-            problems.append(
-                f"추가 요구 {c.clarification_id} 에 구체 답을 줄 매칭 낱말(match_terms)이 없음"
-            )
     return problems
 
 
@@ -456,6 +511,26 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
             problems.append(
                 "숨은 요구를 드러내는 말이 1단계 지원자 화면(제목·상황·공개 요구·수용 기준·추가 요구 답·자료 제목)에 나옴: "
                 + ", ".join(dict.fromkeys(s1))
+            )
+        # 운영 조건 — 단서는 자료(원시 값)·정확히 짚은 질문의 구체 답에서만. 공개된 업무 요구에 나온 말은 뺀다
+        story = "\n".join(
+            [
+                out.title,
+                out.scenario,
+                *(r.text for r in out.requirements),
+                *(a.text for a in out.acceptance_public),
+            ]
+        )
+        cond = [
+            t
+            for t in seed.trigger_terms
+            if not _in_text(t, seed.business_need) and _in_text(t, story)
+        ]
+        if cond:
+            problems.append(
+                "운영 조건을 드러내는 말이 1단계 제목·상황·공개 요구·공개 수용 기준에 나옴: "
+                + ", ".join(dict.fromkeys(cond))
+                + " — 상황은 만들 기능만, 운영 조건은 자료(원시 값)와 정확히 짚은 질문의 구체 답에서만"
             )
         mixed = stage2_kinds_in_stage1(
             [a.title for a in out.artifacts], seed.stage2_evidence, seed.discoverable_by
@@ -668,6 +743,9 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
             flags.append(FLAG_SEED_UNREVIEWED)
         if res.seed.starter is None:
             flags.append(FLAG_NO_STARTER)
+        only = hint_only(out)
+        if only:
+            flags.append(FLAG_HINT_ONLY + ", ".join(only))
         updated = updated.model_copy(update={"review_flags": flags})
     # model_copy 는 검사를 건너뛴다 — 저장·승인 화면에 올리기 전에 TaskItem 규칙(유형·필드 범위)을 다시 본다
     return TaskItem.model_validate(updated.model_dump())
@@ -716,7 +794,7 @@ async def draft_feature_task(
             full = fill_from_seed(out, seed)
         else:
             full = out
-        return shuffle_feature(full, key)
+        return prune_match_terms(shuffle_feature(full, key))
 
     res = await draft_task(
         ctx,

@@ -35,6 +35,7 @@ feature 블록 (기능형 재료 — "어떤 기능을 만들 때 흔한 구현�
 | `accepted_designs` | 설계 단계 정답. `accepted_fixes` 와 같은 형식, 태그 `[설계]`. 숨은 요구마다 2개 이상 |
 | `stage2_symptom` / `stage2_evidence` / `stage2_cause_terms` | 배포 뒤 겉 증상(원인 없이) / 원인을 가르는 2단계 자료 종류 — **첫 항목이 핵심 증거**(배포 뒤에만 있는 자료, 1단계 자료에 같은 종류가 나오면 재요청) / 2단계에서 먼저 말할 원인 개념 |
 | `leak_terms` | 1단계 지원자 화면·2단계 상황에 나오면 숨은 요구가 새는 말 (바꿔 쓴 표현도 사람이 적어 둔다) |
+| `trigger_terms` | 운영 조건(`trigger`)을 드러내는 말과 흔한 바꿔 쓰기. 1단계 제목·상황·공개 요구·공개 수용 기준에 나오면 재요청 — 자료 본문·구체 답에는 써도 된다 (단서 자리). `leak_terms` 와 겹치지 않게, `business_need` 에 나온 말은 넣지 않는다 (공개된 업무 요구라 검사에서 빠짐). 프롬프트에는 들어가지 않는다 (검사 전용) [2026-11-06 사용자] |
 | `task_shape` | code / analysis |
 | `starter` | 검증된 시작 코드 예제 (`data/feature_starters/<id>`) — 없으면 명세만 |
 | `reviewed` | 사람 검토 여부. false 면 명세 review_flags 에 남긴다 |
