@@ -67,6 +67,7 @@ def build_graph(
     common_store: CommonTaskRepo | None = None,
     incidents: dict[str, PublicIncident] | None = None,
     use_cover_letters: bool = False,
+    feature_task_default: bool = False,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -85,7 +86,16 @@ def build_graph(
     )
     g.add_node("compare", make_compare(relatedness))
     g.add_node(
-        "draft_spec", make_draft_spec(ontology, relatedness, llm, prompts, common_store, incidents)
+        "draft_spec",
+        make_draft_spec(
+            ontology,
+            relatedness,
+            llm,
+            prompts,
+            common_store,
+            incidents,
+            feature_default=feature_task_default,
+        ),
     )
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))
     g.add_node("finalize", make_finalize(common_store))

@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # 자기소개서 사용 여부 [확정: 2026-11-03 사용자 — 검증할 주장은 이력서에서만].
     # false 면 API 가 자기소개서를 저장하지 않고, 그래프도 처리하지 않는다 (개인정보 최소 처리).
     use_cover_letters: bool = False
+    # 공통 과제 기능 개발형 기본값 규칙 (spec/kind.py) [2026-11-06]. false 면 규칙이 feature 여도 이슈형으로 만든다 —
+    # 승인자가 수정 요청에서 기능형을 지정하는 것은 항상 된다. draft_feature_task 평가(설계 §9, PR-4) 통과 뒤 켠다
+    feature_task_default: bool = False
 
     # 업로드 (fastapi-service "업로드"): 파일 1개당 바이트 상한. 허용 형식은 api/uploads.py.
     upload_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)

@@ -42,6 +42,9 @@ from task_spec.schemas.domain import (
     VerifyTarget,
 )
 from task_spec.schemas.draft import (
+    DebugStageDraft,
+    DraftFeatureInput,
+    DraftFeatureOutput,
     DraftSlotInput,
     DraftSlotOutput,
     DraftTaskInput,
@@ -110,6 +113,9 @@ from task_spec.schemas.verify_overlap import (
 )
 
 __all__ = [
+    "DebugStageDraft",
+    "DraftFeatureInput",
+    "DraftFeatureOutput",
     "AcceptedDesign",
     "Clarification",
     "DebugStage",
