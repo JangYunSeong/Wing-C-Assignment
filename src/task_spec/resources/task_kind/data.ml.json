@@ -1,0 +1,28 @@
+{
+  "sub": "data.ml",
+  "note": "공통 과제 유형 기본값 규칙의 역량 목록 [확정: 2026-11-06 사용자 — sw.backend.json 과 같은 기준, 공고 주 역량 빈도(온톨로지 v2026-11-06f) 기반 초안]. 공고 주 역량 중 diagnose 가 build 보다 많으면 incident, 아니면 feature. 목록에 없는 역량(구축·운영처럼 양쪽으로 읽히는 것 포함)은 세지 않는다. 시범 공고 분포를 보고 조정한다.",
+  "build": [
+    "comp:ai.dl",
+    "comp:ai.llm",
+    "comp:ai.agent",
+    "comp:ai.llm_training",
+    "comp:ai.service",
+    "comp:ai.mlops",
+    "comp:ai.serving",
+    "comp:ai.platform",
+    "comp:ai.rl",
+    "comp:ai.model_opt",
+    "comp:ai.eval",
+    "comp:data.pipeline",
+    "comp:data.preprocess",
+    "comp:sw.python",
+    "comp:sw.cpp",
+    "comp:sw.java"
+  ],
+  "diagnose": [
+    "comp:sw.perf",
+    "comp:infra.monitoring",
+    "comp:infra.incident",
+    "comp:infra.os_admin"
+  ]
+}

@@ -5,7 +5,8 @@
 2. 그 공고에서 이미 승인된 공통 과제의 유형 — 같은 공고 지원자는 같은 과제 (비교 가능성)
 3. 기본값 규칙 (이 모듈): 직군별 데이터 파일(resources/task_kind/<sub>.json)이 있으면 공고 **주** 역량 중
    진단 역량이 만드는 역량보다 많을 때만 incident, 아니면 feature [확정: 2026-11-06 사용자 — 동률은 feature].
-   데이터 파일이 없는 직군은 incident (기능형은 백엔드부터 — 설계 §0).
+   데이터 파일이 없는 직군은 incident. 파일은 기능형 재료(incidents feature 블록)가 있는 직군마다 둔다
+   [2026-11-06 사용자 — sales.marketing·sw.qa 는 재료가 없어 파일 없음].
 """
 
 from __future__ import annotations
