@@ -123,7 +123,7 @@
   출력 스키마는 필드당 한 줄(`schema_style: compact`, 기존 프롬프트는 JSON Schema 그대로), 핵심 규칙 3개를 맨 앞과 출력 직전 확인 목록에 → `draft_feature_task` v4.
   2단 생성(겉모습·자료 분리)은 v4 평가 뒤 필요할 때만 [미정].
 - **CURRENT = v4** [확정: 2026-11-06 사용자]: 같은 5개 공고·같은 검사기로 최종 통과 v1 0/5 · v2 1/5 · v4 4/5, 비용 −26% (근거 `prompts/draft_feature_task/PROMOTIONS.md`).
-  검사가 못 잡는 누출 두 가지(상황 글이 운영 조건을 바꿔 말함, `match_terms` 가 공개 글의 넓은 말)는 코드 검사로 막는다 [제안].
+  검사가 못 잡던 누출 두 가지(상황 글이 운영 조건을 바꿔 말함, `match_terms` 가 공개 글의 넓은 말)는 아래 두 검사로 막는다 (결과는 PROMOTIONS.md "v4 주의").
 
 ### (예전 안) 별도 카탈로그 `features/public_v1/` [대체됨]
 
