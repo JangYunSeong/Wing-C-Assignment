@@ -207,7 +207,7 @@ def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
     )
     d = _v2draft()
     d["artifacts"][1]["title"] = (
-        "커넥션 풀 상태 로그"  # 백엔드 핵심 증거와 같은 종류 (1단계 단서엔 '평시 커넥션 풀 대시보드')
+        "DB 연결 상태 로그"  # 백엔드 핵심 증거와 같은 종류 (1단계 단서엔 '평시 DB 연결 사용량 대시보드')
     )
     out = fill_from_seed(DraftFeatureOutputV2.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
     assert [p for p in check_feature(out, _seed_ctx()) if "배포 뒤(2단계) 증거" in p]
@@ -558,3 +558,42 @@ def test_v5_prompt_uses_compact_schema_with_hint_source() -> None:
     sys5 = assemble(v5, build_input(_seed_ctx(), None, v5.input_model, extra), ontology_version="v")
     assert "hint_source?: 문자열" in sys5.messages[0].content
     assert "$defs" not in sys5.messages[0].content
+
+
+# ── 재료 결함·재요청 사유 (2026-11-06 v5 비교 뒤) ──
+
+
+def test_seed_artifact_kinds_have_no_leak_terms() -> None:
+    """재료의 자료 종류 이름은 생성 모델이 자료 제목으로 그대로 쓴다 — 금지어를 품으면 늘 재요청에 걸린다."""
+    from task_spec.spec.feature import _term_rx
+
+    for sub, inc in INCIDENTS.items():
+        f = inc.feature
+        if f is None:
+            continue
+        terms = [*f.leak_terms, *f.stage2_cause_terms]
+        for kind in [*f.discoverable_by, *f.stage2_evidence]:
+            assert not [t for t in terms if _term_rx(t).search(kind)], (sub, kind)
+
+
+def test_non_clue_hint_may_equal_answer() -> None:
+    from task_spec.schemas import DraftFeatureOutputV5
+    from task_spec.spec.feature import fill_from_seed_v5
+
+    d = _v5draft()
+    d["clarifications"][1]["answer_hint"] = d["clarifications"][1]["answer"]  # 단서 아님
+    out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+    assert not [p for p in check_feature(out, _seed_ctx()) if "모호한 답과 구체 답이 같음" in p]
+
+
+def test_reask_reason_quotes_the_sentence() -> None:
+    leak = (
+        "가상의 물류 회사가 주문 상태 변경마다 이력을 남기려 한다. 피크 시간대에는 요청이 몰린다."
+    )
+    hit = [
+        p
+        for p in check_feature(_v4full(scenario=leak), _seed_ctx())
+        if p.startswith("운영 조건을 드러내는 말이 1단계 제목")
+    ]
+    assert hit and '고칠 문장: "피크 시간대에는 요청이 몰린다."' in hit[0]
+
