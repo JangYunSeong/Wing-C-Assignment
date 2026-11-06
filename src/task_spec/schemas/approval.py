@@ -10,6 +10,9 @@ from task_spec.schemas.base import Schema
 
 ApprovalStatus = Literal["approved", "revise", "rejected"]
 CompetencyRef = Annotated[str, Field(min_length=1, max_length=120)]  # 승인자 입력 — 공고 역량 id
+# 공통 과제 유형 [확정: 2026-11-06 사용자] — incident = 이슈 진단·해결형, feature = 기능 개발형(1단계 구현 → 2단계 디버깅).
+# domain.py 가 이 모듈을 import 하므로 순환을 피해 여기에 둔다.
+TaskKind = Literal["incident", "feature"]
 
 
 class ApprovalDecision(Schema):
@@ -33,6 +36,8 @@ class ApprovalDecision(Schema):
     restore_overlap: list[CompetencyRef] = Field(default_factory=list, max_length=60)
     # 겹침으로 올리기 (revise 일 때만): 선택 경로만 고른(select_only) 공고 역량 id [2026-11-06]
     promote_overlap: list[CompetencyRef] = Field(default_factory=list, max_length=60)
+    # 공통 과제 유형 바꾸기 (revise 일 때만, 공통 과제를 다시 만들 때만) — 그 공고의 공통 과제가 새 판이 된다 [2026-11-06]
+    task_kind: TaskKind | None = None
     at: AwareDatetime
 
     @model_validator(mode="after")
@@ -43,6 +48,12 @@ class ApprovalDecision(Schema):
             raise ValueError("reviewer 가 비어 있습니다")
         if self.reassign and self.status != "revise":
             raise ValueError("reassign(슬롯 배정 바꾸기)은 revise 결정에서만 쓸 수 있습니다")
+        if self.task_kind is not None and self.status != "revise":
+            raise ValueError("task_kind(과제 유형 바꾸기)는 revise 결정에서만 쓸 수 있습니다")
+        if self.task_kind is not None and self.revise_target == "verification":
+            raise ValueError(
+                "task_kind(과제 유형 바꾸기)는 공통 과제를 다시 만들어야 합니다 — revise_target 을 common 또는 all 로"
+            )
         for name, ids in (
             ("downgrade_overlap(겹침 낮추기)", self.downgrade_overlap),
             ("restore_overlap(낮춘 겹침 되돌리기)", self.restore_overlap),

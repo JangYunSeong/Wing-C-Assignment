@@ -1,0 +1,41 @@
+{
+  "sub": "sw.backend",
+  "note": "공통 과제 유형 기본값 규칙의 역량 목록 [제안: 2026-11-06 — docs/design/feature-task-backend.md §3]. 공고 주 역량 중 diagnose 가 build 보다 많으면 incident, 아니면 feature. 목록에 없는 역량은 세지 않는다. 시범 공고 분포를 보고 조정한다.",
+  "build": [
+    "comp:sw.rest_api",
+    "comp:sw.server_dev",
+    "comp:sw.spring",
+    "comp:sw.orm",
+    "comp:sw.auth",
+    "comp:sw.messaging",
+    "comp:sw.batch",
+    "comp:sw.cache",
+    "comp:sw.msa",
+    "comp:sw.web_app",
+    "comp:sw.app_impl",
+    "comp:sw.sys_interface",
+    "comp:sw.arch",
+    "comp:sw.multithread",
+    "comp:sw.oop",
+    "comp:sw.java",
+    "comp:sw.python",
+    "comp:sw.go",
+    "comp:sw.js",
+    "comp:sw.dotnet",
+    "comp:sw.cpp",
+    "comp:data.rdbms",
+    "comp:data.sql",
+    "comp:data.nosql"
+  ],
+  "diagnose": [
+    "comp:infra.incident",
+    "comp:sw.perf",
+    "comp:infra.monitoring",
+    "comp:si.system_ops",
+    "comp:data.db_tuning",
+    "comp:sw.web_was",
+    "comp:infra.os_admin",
+    "comp:infra.server_ops",
+    "comp:infra.traffic"
+  ]
+}

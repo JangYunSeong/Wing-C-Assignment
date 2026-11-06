@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
-from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus
+from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus, TaskKind
 from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
 from task_spec.schemas.domain import (
     AI_AXES,
+    AcceptedDesign,
     Anchor,
     Artifact,
     BehavioralAnchors,
     CandidateRef,
     Claim,
     ClaimCandidates,
+    Clarification,
     CommonRef,
     Comparison,
     CompetencyEvidence,
     CompetencyMatch,
     CrossDocLink,
+    DebugStage,
     EscoRef,
+    HiddenAcceptance,
     NcsCriterion,
     NcsKsa,
     NcsUnitRef,
@@ -26,6 +30,8 @@ from task_spec.schemas.domain import (
     PostingCompetency,
     PostingProfile,
     PostingTool,
+    PublicAcceptance,
+    Requirement,
     Role,
     SlotAssignment,
     TargetCompetency,
@@ -104,6 +110,13 @@ from task_spec.schemas.verify_overlap import (
 )
 
 __all__ = [
+    "AcceptedDesign",
+    "Clarification",
+    "DebugStage",
+    "HiddenAcceptance",
+    "PublicAcceptance",
+    "Requirement",
+    "TaskKind",
     "SlotAssignment",
     "OverlapVerdict",
     "SlotQuestionsInput",

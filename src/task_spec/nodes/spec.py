@@ -22,16 +22,19 @@ from task_spec.schemas import (
     ApprovalDecision,
     CommonRef,
     NodeError,
+    PostingProfile,
     PublicIncident,
     RunState,
     SlotAssignment,
     TaskItem,
+    TaskKind,
     TaskSpec,
 )
 from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
 from task_spec.spec.incidents import incident_ref
+from task_spec.spec.kind import choose_task_kind
 from task_spec.spec.questions import TASK as Q_TASK
 from task_spec.spec.questions import build_slot_verifications
 from task_spec.spec.slots import TASK as SLOT_TASK
@@ -45,6 +48,14 @@ ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 FLAG_NO_DRAFTER = "draft_task 미연결 — 결정적 골격만 (제목·상황·행동 기준 없음)"
 SKELETON_REF = "skeleton"
 FLAG_REUSED_DRAFT = "이 공고의 공통 과제가 아직 승인되지 않은 초안을 재사용함 — 이 명세를 승인하면 그 판이 공고 공통 과제로 승인됨"
+FEATURE_TASK = "draft_feature_task"
+FLAG_FEATURE_DEFERRED = (
+    "기능 개발형 기본값 공고지만 기능형 서술(draft_feature_task)이 아직 없어 이슈형으로 생성 — "
+)
+FLAG_FEATURE_SKELETON = (
+    "기능 개발형 — 서술(draft_feature_task) 미연결, 결정적 골격만 "
+    "(공개 요구·숨은 요구·2단계 디버깅 없음)"
+)
 
 
 def _uses_incident(prompts: PromptRegistry) -> bool:
@@ -61,6 +72,39 @@ def _has_prompt(prompts: PromptRegistry | None, task: str) -> bool:
     return True
 
 
+async def choose_kind(
+    profile: PostingProfile,
+    posting_id: str,
+    ontology_version: str,
+    *,
+    store: CommonTaskRepo | None,
+    requested: TaskKind | None,
+    current: TaskKind | None,
+    feature_ready: bool,
+) -> tuple[TaskKind, list[str]]:
+    """공통 과제 유형 (spec/kind.py 우선순위): 승인자 지정 → (revise 중) 지금 명세의 유형 →
+    이 공고에서 승인된 판의 유형 → 기본값 규칙.
+
+    revise 에 유형이 없으면 직전 명세의 유형을 유지한다 — 기능형으로 바꾼 뒤 문구만 고치거나 확장 문항만 다시 만들 때
+    유형이 기본값으로 되돌아가지 않게.
+
+    기본값 규칙이 feature 인데 기능형 서술이 아직 없으면 incident 로 만든다 (지금 동작 유지) — 명세 단위 flag.
+    승인자 지정·승인된 판이 feature 면 서술이 없어도 feature (골격만, 과제 flag).
+    """
+    if requested is not None:
+        return requested, []
+    if current is not None:
+        return current, []
+    if store is not None:
+        approved = await store.approved_kind(posting_id, ontology_version)
+        if approved is not None:
+            return approved, []
+    choice = choose_task_kind(profile)
+    if choice.kind == "feature" and not feature_ready:
+        return "incident", [FLAG_FEATURE_DEFERRED + choice.basis]
+    return choice.kind, []
+
+
 def make_draft_spec(
     ontology: OntologyRepository | None,
     rel: Relatedness | None = None,
@@ -75,6 +119,8 @@ def make_draft_spec(
     revise 로 돌아오면 재사용하지 않고 승인자 수정 요청을 넣어 새 판을 만든다. 경험 검증 과제는 PR-4b.
     """
     drafter_ready = llm is not None and prompts is not None
+    # 기능형 서술(draft_feature_task 프롬프트 + spec/feature.py)은 PR-2 — 그 전에는 기본값 규칙이 feature 여도 이슈형
+    feature_ready = False
 
     async def draft_spec(state: RunState) -> dict[str, Any]:
         state, lowered = _apply_downgrade(state, rel)
@@ -88,6 +134,23 @@ def make_draft_spec(
         update: dict[str, Any] = {}
         p = state.posting_profile
         if p is not None:
+            revise = (
+                state.approval if state.approval and state.approval.status == "revise" else None
+            )
+            redo_common = revise is not None and revise.revise_target != "verification"
+            kind, kind_flags = await choose_kind(
+                p,
+                state.posting_id,
+                state.ontology_version,
+                store=store,
+                requested=revise.task_kind if revise is not None and redo_common else None,
+                current=(
+                    state.spec.common_tasks[0].task_kind
+                    if revise is not None and state.spec is not None and state.spec.common_tasks
+                    else None
+                ),
+                feature_ready=feature_ready,
+            )
             built = await build_common(
                 p,
                 state.evidence,
@@ -96,12 +159,17 @@ def make_draft_spec(
                 ontology=ontology,
                 rel=rel,
                 incidents=incidents,
+                task_kind=kind,
             )
-            flags = built.flags
+            flags = [*built.flags, *kind_flags]
             task = built.task
             if task is not None:
-                use_llm = built.ctx is not None and drafter_ready
+                llm_ready = built.ctx is not None and drafter_ready  # 경험 검증 질문(LLM)용
+                # 공통 과제 서술: 이슈형만 (기능형 서술은 PR-2 — 그 전에는 골격만)
+                use_llm = llm_ready and kind == "incident"
                 prompt_ref = prompts.get(DRAFT_TASK).ref if use_llm and prompts else SKELETON_REF
+                if kind == "feature":
+                    prompt_ref = f"{prompt_ref}+feature"  # 유형이 다르면 다른 판 (같은 공고라도)
                 use_slots = use_llm and ontology is not None and _has_prompt(prompts, SLOT_TASK)
                 if use_slots and prompts is not None:
                     # 슬롯 프롬프트가 바뀌어도 새 판 — 공통 과제와 슬롯은 함께 승인된다
@@ -111,12 +179,8 @@ def make_draft_spec(
                     # 사례 내용이 바뀌어도 새 판 — 고치기 전 사례로 만든 초안을 다시 쓰지 않게
                     prompt_ref = f"{prompt_ref}+{incident_ref(inc)}"
                 key = CommonKey(state.posting_id, state.ontology_version, prompt_ref)
-                revise = (
-                    state.approval if state.approval and state.approval.status == "revise" else None
-                )
                 note, note_flags = safe_reviewer_note(revise.comment if revise else None)
                 flags = [*flags, *note_flags]  # 수정 요청을 보내지 못했으면 명세 단위로 알린다
-                redo_common = revise is not None and revise.revise_target != "verification"
                 redo_verify = revise is None or revise.revise_target != "common"
                 reused = (
                     await store.reusable(key) if store is not None and not redo_common else None
@@ -139,8 +203,9 @@ def make_draft_spec(
                     )
                 else:
                     if not use_llm:
+                        no_draft = FLAG_FEATURE_SKELETON if kind == "feature" else FLAG_NO_DRAFTER
                         task = task.model_copy(
-                            update={"review_flags": [*task.review_flags, FLAG_NO_DRAFTER]}
+                            update={"review_flags": [*task.review_flags, no_draft]}
                         )
                     else:
                         assert built.ctx is not None and llm is not None and prompts is not None
@@ -196,7 +261,7 @@ def make_draft_spec(
                     ]
                     assignments = list(state.spec.slot_assignments)
                 elif (
-                    use_llm
+                    llm_ready
                     and llm is not None
                     and prompts is not None
                     and _has_prompt(prompts, Q_TASK)

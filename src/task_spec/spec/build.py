@@ -14,6 +14,7 @@ from task_spec.schemas import (
     PostingProfile,
     PublicIncident,
     TaskItem,
+    TaskKind,
 )
 from task_spec.spec.common import (
     FLAG_NO_INCIDENT,
@@ -44,7 +45,9 @@ async def build_common(
     ontology: OntologyRepository | None = None,
     rel: Relatedness | None = None,
     incidents: dict[str, PublicIncident] | None = None,
+    task_kind: TaskKind = "incident",
 ) -> CommonDraft:
+    """task_kind 는 부르는 쪽이 정한다 (spec/kind.py 규칙 · 승인된 판 · 승인자 지정 — nodes/spec.py)."""
     plan = plan_common(profile, evidence, rel)
     out = CommonDraft(flags=list(plan.flags))
     if not plan.competencies:
@@ -66,6 +69,7 @@ async def build_common(
     out.task = TaskItem(
         task_id=task_id,
         track="common",
+        task_kind=task_kind,
         target_competencies=tcs,
         tech_env=env,
         difficulty_target=difficulty(plan),  # type: ignore[arg-type]

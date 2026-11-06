@@ -55,3 +55,30 @@ async def test_store_roundtrip_reuse_approve_supersede() -> None:
                 "DELETE FROM public.common_task WHERE posting_id = %s", (key.posting_id,)
             )
         await store.close()
+
+
+async def test_store_approved_kind_follows_latest_approval() -> None:
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await CommonTaskStore.open(u.get_secret_value())
+    posting = f"test-{uuid.uuid4().hex[:8]}"
+    k_inc = CommonKey(posting, "onto-test", "draft_task@3")
+    k_feat = CommonKey(posting, "onto-test", "skeleton+feature")
+    try:
+        assert await store.approved_kind(posting, "onto-test") is None
+        inc = await store.save_draft(k_inc, _task(), [])
+        assert await store.approved_kind(posting, "onto-test") is None  # 초안은 세지 않음
+        await store.approve(inc.id, "reviewer-fake", datetime(2026, 11, 6, tzinfo=UTC))
+        assert await store.approved_kind(posting, "onto-test") == "incident"
+
+        feat = await store.save_draft(
+            k_feat, _task().model_copy(update={"task_kind": "feature"}), []
+        )
+        await store.approve(feat.id, "reviewer-fake", datetime(2026, 11, 7, tzinfo=UTC))
+        assert await store.approved_kind(posting, "onto-test") == "feature"
+        assert await store.approved_kind(posting, "onto-other") is None
+    finally:
+        async with store._pool.connection() as conn:
+            await conn.execute("DELETE FROM public.common_task WHERE posting_id = %s", (posting,))
+        await store.close()
