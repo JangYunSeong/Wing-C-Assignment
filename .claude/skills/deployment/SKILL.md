@@ -20,7 +20,7 @@ description: P1 과제 명세 서비스의 컨테이너 구성·내부망 배포
 
 - 넣는 것: 설치된 패키지(`src/`), `prompts/`, `incidents/`. tesseract(kor+eng).
 - **넣지 않는 것: `data/`, `.env`, `tests/`, `eval/`, 덤프** — `.containerignore`, `build_release.sh` 가 검사한다.
-- 비밀값은 실행 때 `--env-file`(서버 `/etc/task-spec/env`, 권한 600)로만. 이미지·로그·스크립트에 쓰지 않는다.
+- 비밀값은 실행 때 `--env-file`(`docker/api/.env`, gitignore·권한 600 — `run.sh` 기본값) [확정: 2026-11-06]로만. 이미지·로그·스크립트에 쓰지 않는다.
 - 지원자 데이터는 볼륨 `task_data`(`DATA_DIR=/data`)와 DB 체크포인트에만 있다 — 이미지·로그로 새지 않게.
 - **uvicorn 워커 1개** — 실행 상태·SSE 를 프로세스 안에서 관리한다(`api/launcher.py`). 늘리려면 실행 추적을 바깥으로 빼는 설계가 먼저.
 - 운영 `ONTOLOGY_VERSION` 은 `dev` 별칭이 아니라 고정 버전 문자열 (불변식 4). 기동 시 적재되지 않은 버전이면 실패한다.
@@ -47,7 +47,7 @@ podman exec task_db pg_restore -U task -d task_db --no-owner --no-privileges -j 
 # (pg 테스트용) createdb task_db_test 후 같은 덤프 복원 — 온톨로지 스키마·규칙이 같다
 
 # API
-install -m 600 docker/api/env.example /etc/task-spec/env   # 값 채우기
+install -m 600 docker/api/env.example docker/api/.env   # 값 채우기 (DATABASE_URL 호스트 = task_db:5432)
 TASK_API_IMAGE=task-api:<버전> docker/api/run.sh            # 내부망 접속: TASK_API_BIND=<서버IP>:8001
 ```
 
