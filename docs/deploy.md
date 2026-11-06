@@ -49,9 +49,9 @@ podman exec task_db psql -U task -d task_db -tAc "select version from public.ont
 #   → v2026-11-06f@60d5031+dirty  (env 의 ONTOLOGY_VERSION 과 같아야 함)
 
 # 2-4. env 파일 (레포·이미지에 넣지 않음)
-sudo install -d -m 700 /etc/task-spec
-sudo install -m 600 docker/api/env.example /etc/task-spec/env
-sudo vi /etc/task-spec/env                # 키·DB 비밀번호·ONTOLOGY_VERSION
+install -m 600 docker/api/env.example docker/api/.env   # gitignore — run.sh 가 기본으로 읽는다
+vi docker/api/.env                        # 키·DB 비밀번호·ONTOLOGY_VERSION
+#   DATABASE_URL 호스트는 task_db:5432 (컨테이너 기준). 127.0.0.1·localhost 면 run.sh 가 기동을 거부한다
 
 # 2-5. API 기동
 TASK_API_IMAGE=task-api:<버전> docker/api/run.sh

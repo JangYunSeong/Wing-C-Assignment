@@ -30,5 +30,6 @@ podman save -o "$OUT/images.tar" "task-api:${VER}" task-db:1 "$NGINX_IMAGE"
 ( cd "$OUT" && sha256sum images.tar > images.tar.sha256 )
 mkdir -p "$OUT/docker"
 cp -r docker/api docker/db docker/nginx "$OUT/docker/"
+rm -f "$OUT/docker/api/.env"   # 비밀값 — 묶음에 넣지 않는다
 printf 'task-api:%s\ntask-db:1\n%s\ncommit %s\n' "$VER" "$NGINX_IMAGE" "$(git rev-parse HEAD)" > "$OUT/VERSION"
 echo "→ $OUT ($(du -sh "$OUT/images.tar" | cut -f1))"
