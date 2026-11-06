@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.domain import (
@@ -230,6 +230,50 @@ class DraftFeatureOutputV4(Schema):
     @classmethod
     def _drop_nulls(cls, v: object) -> object:
         return [x for x in v if x] if isinstance(v, list) else v
+
+
+class ClarificationDraftV5(Schema):
+    """v5 추가 요구 — 단서(reveals 있음)는 모호한 답 대신 단서 자료(1단계 자료 제목)를 지목하고, 모호한 답 문장은
+    코드가 만든다 ("'<제목>' 자료에서 확인할 수 있습니다.", spec/feature.py fill_from_seed_v5) [2026-11-06 사용자 (B)].
+    단서가 아닌 추가 요구는 모호한 답을 쓴다 (사실이 드러나도 해가 없음)."""
+
+    clarification_id: str = Field(pattern=r"^c\d{1,2}$")
+    topic: str = Field(min_length=1, max_length=120)
+    match_terms: list[str] = Field(
+        min_length=1,
+        max_length=6,
+        description="이 주제를 정확히 짚은 질문에 들어 있을 말 — 공개 글에 없는 말, 두 단어 이상, 동의어·영문 표기도",
+    )
+    answer: str = Field(
+        min_length=1, max_length=600, description="구체 답 — 관찰 사실과 수치, 결론·해법 없이"
+    )
+    reveals: list[str] = Field(
+        default_factory=list, description='숨은 요구 단서면 ["t1"], 아니면 []'
+    )
+    hint_source: str | None = Field(
+        default=None,
+        max_length=120,
+        description="단서면 필수 — 이 사실이 보이는 1단계 자료의 title 을 글자 그대로",
+    )
+    answer_hint: str | None = Field(
+        default=None,
+        max_length=400,
+        description="단서가 아니면 필수 — 모호한 답 (수치·이름 없이)",
+    )
+
+    @model_validator(mode="after")
+    def _tier(self) -> ClarificationDraftV5:
+        if self.reveals and not (self.hint_source or "").strip():
+            raise ValueError("단서 추가 요구(reveals 있음)는 hint_source(1단계 자료 title)가 필요")
+        if not self.reveals and not (self.answer_hint or "").strip():
+            raise ValueError("단서가 아닌 추가 요구는 answer_hint 가 필요")
+        return self
+
+
+class DraftFeatureOutputV5(DraftFeatureOutputV4):
+    """기능형 v5 출력 — v4 + 단서 추가 요구는 단서 자료를 지목 (모호한 답은 코드가 만듦)."""
+
+    clarifications: list[ClarificationDraftV5] = Field(min_length=2, max_length=5)  # type: ignore[assignment]
 
 
 class DraftFeatureOutputV3(DraftFeatureOutputV2):
