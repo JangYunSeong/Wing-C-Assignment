@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from task_spec.nodes.pseudonymize.dictionaries import load_dictionaries
@@ -525,21 +527,36 @@ def test_name_in_org_header_slot_without_kiwi() -> None:
 
 
 @pytest.mark.parametrize(
-    "line",
+    "make",
     [
-        "이름: a" + " " * 20000 + "b",
-        " " * 20000 + "x",
-        "\t" * 20000 + "x",
-        "." * 20000,
-        "-" * 20000,
-        "a@" * 10000,
+        lambda n: "이름: a" + " " * n + "b",
+        lambda n: " " * n + "x",
+        lambda n: "\t" * n + "x",
+        lambda n: "." * n,
+        lambda n: "-" * n,
+        lambda n: "a@" * (n // 2),
     ],
     ids=["label_spaces", "spaces", "tabs", "dots", "dashes", "at"],
 )
-def test_detector_regexes_are_linear_on_long_lines(line: str) -> None:
-    """긴 공백·점·하이픈 줄에서 정규식이 제곱 시간이 걸리지 않는다 (code review M7). Kiwi 를 빼고 정규식만 본다."""
+def test_detector_regexes_are_linear_on_long_lines(make: Callable[[int], str]) -> None:
+    """긴 공백·점·하이픈 줄에서 정규식이 제곱 시간이 걸리지 않는다 (code review M7). Kiwi 를 빼고 정규식만 본다.
+
+    절대 시간(예전 기준 2만 자 1초)은 서버 부하에 따라 흔들린다 — 2026-11-06 main 에서 하이픈 2만 자가 단독으로 약 1초라
+    부하가 있으면 실패했다(시간은 길이에 비례, 폭주 아님). 그래서 길이를 네 배로 늘릴 때의 시간 비율로 본다:
+    선형이면 약 4배, 제곱이면 약 16배 — 기준은 그 사이 8배. 각 길이는 세 번 재서 가장 짧은 값을 쓰고,
+    아주 짧은 시간은 잡음이라 바닥값을 둔다.
+    """
     import time
 
-    t0 = time.perf_counter()
-    run(line)
-    assert time.perf_counter() - t0 < 1.0
+    def best(n: int) -> float:
+        times = []
+        for _ in range(3):
+            text = make(n)
+            t0 = time.perf_counter()
+            run(text)
+            times.append(time.perf_counter() - t0)
+        return min(times)
+
+    small, large = best(4000), best(16000)
+    assert large < 8.0 * max(small, 0.02), (small, large)
+    assert large < 10.0, large
