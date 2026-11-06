@@ -29,3 +29,18 @@ async def test_ui_disabled_returns_404(make_client: AppFactory) -> None:
         assert r.status_code == 404, path
         assert r.json()["error"]["code"] == "not_found"
     assert (await client.get("/healthz")).status_code in (200, 503)  # API 는 그대로
+
+
+def test_ui_shows_task_kind_and_sends_kind_switch() -> None:
+    """승인 화면: 과제 유형 표시·기능형 두 단계 표시·수정 요청의 유형 바꾸기 (정적 파일 내용 확인)."""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
+        "utf-8"
+    )
+    assert 'const KIND_KO = { incident: "이슈 해결형", feature: "기능 개발형" };' in js
+    assert 'if (t.task_kind === "feature") return renderFeatureTask(t);' in js
+    assert "2단계 디버깅 — 1단계 제출 뒤 공개" in js
+    assert "if (kind) body.task_kind = kind;" in js
+    # 서버와 같은 규칙: 유형을 바꾸면 경험 검증만 다시 만들 수는 없다
+    assert 'kind && body.revise_target === "verification"' in js

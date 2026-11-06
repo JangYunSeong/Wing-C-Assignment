@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from task_spec.schemas.approval import TaskKind
 from task_spec.schemas.base import Schema
 from task_spec.schemas.domain import (
     CommonRef,
@@ -24,6 +25,7 @@ from task_spec.schemas.domain import (
 class TaskBrief(Schema):
     task_id: str
     track: Track
+    task_kind: TaskKind = "incident"  # 공통 과제 유형 (이슈 해결형 / 기능 개발형)
     title: str | None = None
     competencies: list[str] = Field(default_factory=list)  # 온톨로지 역량 라벨
     difficulty: Difficulty
