@@ -15,6 +15,7 @@ from task_spec.prompting import PromptRegistry
 from task_spec.schemas import DraftFeatureOutput
 from task_spec.spec.feature import check_feature, draft_feature_task
 from tests.spec.test_draft import _ctx
+from tests.spec.test_feature_seed import _V4, BACKEND
 
 pytestmark = pytest.mark.llm
 
@@ -23,8 +24,11 @@ PROMPTS = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
 
 async def test_live_draft_feature_task() -> None:
     client = build_llm_client(Settings())  # type: ignore[call-arg]
-    ctx = _ctx(languages=["Java"])
-    res = await draft_feature_task(ctx, llm=client, prompts=PROMPTS)
+    # v4 (재료 입력·축약 스키마) — 가상 공고 골격 + 공개 사례 재료 (지원자 데이터 없음)
+    import dataclasses
+
+    ctx = dataclasses.replace(_ctx(languages=["Java"]), incident=BACKEND)
+    res = await draft_feature_task(ctx, llm=client, prompts=_V4())  # type: ignore[arg-type]
     assert res.output is not None, res.fail_reasons
     out = res.output
     assert isinstance(out, DraftFeatureOutput)

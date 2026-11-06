@@ -26,6 +26,7 @@ from task_spec.schemas import (
     DebugStage,
     DraftFeatureOutput,
     DraftFeatureOutputV2,
+    DraftFeatureOutputV4,
     FeatureSeed,
     Observable,
     PublicIncident,
@@ -190,6 +191,88 @@ def fill_from_seed(out: DraftFeatureOutputV2, seed: FeatureSeed) -> DraftFeature
     return DraftFeatureOutput.model_validate(data)
 
 
+STAGE2_ALREADY = (
+    "1단계에서 이미 대응했다면, 이 증상이 내 구현에서 생기지 않는 근거 (테스트·설계 설명)"
+)
+MAX_CLARIFICATIONS = 2  # 질문 한도 (README·진행자 공통 규칙과 같게)
+
+
+def _limit(arts: list[Any], cap: int) -> int:
+    """요청 한도 = 핵심 자료 수 + 1 (자료 수 − 1 이하, cap 이하) — 골라서 요청하게, 핵심은 다 볼 수 있게."""
+    keys = sum(a.role == "key" for a in arts)
+    return max(1, min(keys + 1, len(arts) - 1, cap)) if keys <= cap else cap
+
+
+def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeatureOutput:
+    """v4 출력 → 전체 기능형 출력. 계산할 수 있는 칸은 여기서 정한다 (LLM 에 맡기지 않음):
+    자료 번호(1단계 a1…, 2단계 이어서)·요청 한도·질문 한도·관찰 행동·2단계 연결·공통 문구, 숨은 요구·허용 설계(재료)."""
+    s1 = [a.model_copy(update={"artifact_id": f"a{i}"}) for i, a in enumerate(out.artifacts, 1)]
+    n = len(s1)
+    s2 = [
+        a.model_copy(update={"artifact_id": f"a{n + i}"})
+        for i, a in enumerate(out.debug_stage.artifacts, 1)
+    ]
+    lim1, lim2 = _limit(s1, 4), _limit(s2, 3)
+    clars = [
+        {**c.model_dump(), "reveals": [SEED_TRAP] if c.reveals else []} for c in out.clarifications
+    ]
+    max_q = min(len(clars), MAX_CLARIFICATIONS)
+    obs1 = [
+        *({"kind": "first_mention_of", "value": c} for c in out.concepts),
+        {"kind": "catches_trap", "value": SEED_TRAP},
+        *({"kind": "requests_artifact", "value": a.artifact_id} for a in s1 if a.role == "key"),
+        *(
+            {"kind": "asks_clarification", "value": c["clarification_id"]}
+            for c in clars
+            if c["reveals"]
+        ),
+    ]
+    obs2 = [
+        *({"kind": "first_mention_of", "value": t} for t in seed.stage2_cause_terms[:2]),
+        *({"kind": "requests_artifact", "value": a.artifact_id} for a in s2 if a.role == "key"),
+        {"kind": "catches_trap", "value": SEED_TRAP},
+    ][:6]
+    deliv2 = list(out.debug_stage.deliverables)
+    if not any("이미 대응" in d for d in deliv2):
+        deliv2.append(STAGE2_ALREADY)
+    scenario = (
+        f"{out.scenario.rstrip()}\n\n아래 자료 중 최대 {lim1}개를 요청해 볼 수 있고, "
+        f"질문은 최대 {max_q}개까지 할 수 있습니다."
+    )
+    debug_scenario = f"{out.debug_stage.scenario.rstrip()}\n\n아래 자료 중 최대 {lim2}개를 요청해 볼 수 있습니다."
+    data = {
+        **out.model_dump(exclude={"concepts", "debug_stage", "clarifications", "artifacts"}),
+        "scenario": scenario,
+        "artifacts": [a.model_dump() for a in s1],
+        "max_requests": lim1,
+        "clarifications": clars,
+        "max_clarifications": max_q,
+        "acceptance_hidden": [
+            {**h.model_dump(), "trap_id": SEED_TRAP} for h in out.acceptance_hidden
+        ],
+        "observables": obs1[:10],
+        "traps": [
+            {
+                "trap_id": SEED_TRAP,
+                "description": f"{seed.hidden_requirement} (운영 조건: {seed.trigger})",
+                "why_ai_fails": f"{seed.naive_impl} — {seed.why_naive_breaks}",
+            }
+        ],
+        "accepted_designs": [
+            _design(i, t).model_dump() for i, t in enumerate(seed.accepted_designs, 1)
+        ],
+        "debug_stage": {
+            "scenario": debug_scenario,
+            "trap_ids": [SEED_TRAP],
+            "artifacts": [a.model_dump() for a in s2],
+            "max_requests": lim2,
+            "deliverables": deliv2[:3],
+            "observables": obs2,
+        },
+    }
+    return DraftFeatureOutput.model_validate(data)
+
+
 def extra_input() -> dict[str, Any]:
     return {"build_min": FEATURE_BUILD_MIN, "debug_min": FEATURE_DEBUG_MIN}
 
@@ -207,6 +290,47 @@ def _concepts(out: DraftFeatureOutput) -> list[str]:
 
 def _dup(label: str, ids: list[str]) -> list[str]:
     return [f"{label} id 가 겹침"] if len(set(ids)) != len(ids) else []
+
+
+_DIGIT = re.compile(r"\d")
+
+
+def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
+    """두 층 답의 모호한 답(answer_hint) — 구체 답보다 엄격하다 [2026-11-06 사용자].
+
+    - 숨은 요구를 드러내는 말(재료 leak_terms·원인 개념·먼저 말할 개념·원 사례 원인 용어)을 쓰지 않는다.
+    - 단서가 되는 추가 요구(reveals 있음)의 모호한 답에는 수치를 쓰지 않는다 — 운영 조건의 값은 정확히 짚은 질문에만.
+    - 모호한 답과 구체 답이 같으면 두 층이 아니다. 매칭 낱말이 있어야 진행자가 고를 수 있다.
+    """
+    hints = [c for c in out.clarifications if c.answer_hint is not None]
+    if not hints:
+        return []
+    problems: list[str] = []
+    inc = ctx.incident
+    seed = inc.feature if inc is not None else None
+    terms = [*_concepts(out)]
+    if seed is not None:
+        terms += [*seed.leak_terms, *seed.stage2_cause_terms]
+    if inc is not None:
+        terms += inc.hidden_terms
+    for c in hints:
+        hint = c.answer_hint or ""
+        shown = [t for t in dict.fromkeys(terms) if len(_norm(t)) >= 2 and _term_rx(t).search(hint)]
+        if shown:
+            problems.append(
+                f"추가 요구 {c.clarification_id} 의 모호한 답에 숨은 요구를 드러내는 말: {', '.join(shown)}"
+            )
+        if c.reveals and _DIGIT.search(hint):
+            problems.append(
+                f"추가 요구 {c.clarification_id} 의 모호한 답에 수치가 있음 — 수치는 구체 답(정확히 짚은 질문)에만"
+            )
+        if _norm(hint) == _norm(c.answer):
+            problems.append(f"추가 요구 {c.clarification_id} 의 모호한 답과 구체 답이 같음")
+        if not c.match_terms:
+            problems.append(
+                f"추가 요구 {c.clarification_id} 에 구체 답을 줄 매칭 낱말(match_terms)이 없음"
+            )
+    return problems
 
 
 def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
@@ -255,6 +379,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
             problems.append(f"asks_clarification 값 {o.value} 가 clarifications 의 id 가 아님")
     if out.max_clarifications > len(out.clarifications):
         problems.append("max_clarifications 가 추가 요구 수보다 큼")
+    problems += check_hints(out, ctx)
 
     # 2단계
     bad = [t for t in dbg.trap_ids if t not in traps]
@@ -585,7 +710,12 @@ async def draft_feature_task(
     seed = inc.feature
 
     def fill_then_shuffle(out: Any, key: str) -> DraftFeatureOutput:
-        full = fill_from_seed(out, seed) if isinstance(out, DraftFeatureOutputV2) else out
+        if isinstance(out, DraftFeatureOutputV4):
+            full = fill_from_seed_v4(out, seed)
+        elif isinstance(out, DraftFeatureOutputV2):  # v3 (두 층 답) 은 v2 의 하위 모델
+            full = fill_from_seed(out, seed)
+        else:
+            full = out
         return shuffle_feature(full, key)
 
     res = await draft_task(

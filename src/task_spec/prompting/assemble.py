@@ -19,6 +19,7 @@ from task_spec.prompting.context import (
     FewshotProvider,
 )
 from task_spec.prompting.registry import _VAR, PromptError, PromptTemplate
+from task_spec.prompting.schema_text import compact_schema
 
 
 class Message(BaseModel):
@@ -79,8 +80,10 @@ def assemble(
     values: dict[str, str] = {k: str(v) for k, v in dict(payload).items()}
     values["criteria"] = "\n".join(f"- {c.text}" for c in crit) or "(없음)"
     values["examples"] = "\n\n".join(e.text for e in examples) or "(없음)"
-    values["output_schema"] = json.dumps(
-        template.output_model.model_json_schema(), ensure_ascii=False, indent=1
+    values["output_schema"] = (
+        compact_schema(template.output_model)
+        if template.meta.schema_style == "compact"
+        else json.dumps(template.output_model.model_json_schema(), ensure_ascii=False, indent=1)
     )
 
     return AssembledPrompt(

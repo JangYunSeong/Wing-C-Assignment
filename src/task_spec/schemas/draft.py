@@ -168,6 +168,76 @@ class DraftFeatureOutputV2(Schema):
         return [x for x in v if x] if isinstance(v, list) else v
 
 
+class ClarificationDraft(Schema):
+    """v3·v4 추가 요구 — 두 층 답 필수. 질문 한도는 코드가 정한다 (v4)."""
+
+    clarification_id: str = Field(pattern=r"^c\d{1,2}$")
+    topic: str = Field(min_length=1, max_length=120)
+    match_terms: list[str] = Field(
+        min_length=1,
+        max_length=5,
+        description="이 주제를 정확히 짚은 질문에 들어 있을 낱말·짧은 구",
+    )
+    answer_hint: str = Field(
+        min_length=1,
+        max_length=400,
+        description="모호한 답 — 사실이 있다는 것만, 수치·이름·결론 없이",
+    )
+    answer: str = Field(
+        min_length=1, max_length=600, description="구체 답 — 관찰 사실과 수치, 결론·해법 없이"
+    )
+    reveals: list[str] = Field(
+        default_factory=list, description='숨은 요구 단서면 ["t1"], 아니면 []'
+    )
+
+
+class DebugStageDraftV4(Schema):
+    """v4 2단계 — 숨은 요구 연결·요청 한도·관찰 행동·공통 산출물 문구는 코드가 붙인다."""
+
+    scenario: str = Field(min_length=1, max_length=2000, description="배포 뒤 겉 증상만, 원인 없이")
+    artifacts: list[Artifact] = Field(min_length=3, max_length=6)
+    deliverables: list[str] = Field(min_length=1, max_length=2)
+
+
+class DraftFeatureOutputV4(Schema):
+    """기능형 v4 출력 — 계산할 수 있는 칸(자료 번호·요청 한도·질문 한도·관찰 행동·2단계 연결)은 빼고 코드가 채운다
+    (spec/feature.py fill_from_seed_v4). 숨은 요구·허용 설계도 재료에서 코드가 채운다."""
+
+    title: str = Field(min_length=1, max_length=120, description="기능 이름 — 해법·원인 없이")
+    scenario: str = Field(
+        min_length=1,
+        max_length=3000,
+        description="업무 맥락과 사용자 요구 — 장애·원인 없이, 자료 안내 문장 없이",
+    )
+    requirements: list[Requirement] = Field(min_length=2, max_length=6)
+    acceptance_public: list[PublicAcceptance] = Field(min_length=2, max_length=6)
+    deliverables: list[str] = Field(min_length=2, max_length=4)
+    artifacts: list[Artifact] = Field(min_length=5, max_length=8, description="1단계 자료")
+    clarifications: list[ClarificationDraft] = Field(min_length=2, max_length=5)
+    acceptance_hidden: list[HiddenAcceptance] = Field(min_length=1, max_length=4)
+    debug_stage: DebugStageDraftV4
+    concepts: list[str] = Field(
+        min_length=1,
+        max_length=3,
+        description="지원자가 AI 보다 먼저 말해야 할 설계 결정 개념 (짧은 명사구)",
+    )
+    invariant: str = Field(min_length=1, max_length=600)
+    variable: list[str] = Field(min_length=1, max_length=6)
+    behavioral_anchors: BehavioralAnchors
+    tech_used: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("deliverables", "variable", "tech_used", "concepts", mode="before")
+    @classmethod
+    def _drop_nulls(cls, v: object) -> object:
+        return [x for x in v if x] if isinstance(v, list) else v
+
+
+class DraftFeatureOutputV3(DraftFeatureOutputV2):
+    """기능형 v3 출력 — v2 + 추가 요구의 두 층 답 (prompts/draft_feature_task/v3.md)."""
+
+    clarifications: list[ClarificationDraft] = Field(min_length=2, max_length=5)  # type: ignore[assignment]
+
+
 class DraftSlotInput(DraftTaskInput):
     """확장 슬롯 1개 (prompts/draft_slot). 공통 과제의 지원자에게 보이는 부분과 언급 금지 개념을 더한다."""
 
