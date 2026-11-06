@@ -53,4 +53,6 @@ def test_ui_shows_two_tier_clarification_answers() -> None:
         "utf-8"
     )
     assert "일반 질문 → ${esc(x.answer_hint)}" in js
-    assert '짚은 질문(${esc((x.match_terms || []).join(", "))}) → ${esc(x.answer)}' in js
+    assert '짚은 질문(${esc(x.match_terms.join(", "))}) → ${esc(x.answer)}' in js
+    # 매칭 낱말이 다 지워진 단서 답 (prune_match_terms) — 늘 모호한 답이 나간다는 것을 승인자에게 보인다
+    assert "구체 답 조건 없음 — 늘 모호한 답" in js

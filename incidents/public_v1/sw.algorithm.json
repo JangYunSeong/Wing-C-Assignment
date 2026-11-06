@@ -80,6 +80,15 @@
    "drift",
    "정수 틱"
   ],
+  "trigger_terms": [
+   "며칠",
+   "수일",
+   "재시작 없이",
+   "재부팅 없이",
+   "빠른 속도",
+   "고속",
+   "빠르게 움직"
+  ],
   "task_shape": "code",
   "reviewed": false
  }

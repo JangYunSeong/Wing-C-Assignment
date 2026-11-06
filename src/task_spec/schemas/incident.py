@@ -35,6 +35,10 @@ class FeatureSeed(Schema):
     )  # 2단계에서 먼저 말할 원인 개념 — 지원자 화면 금지
     # 1단계 지원자 화면(제목·상황·공개 요구·수용 기준·추가 요구 답·자료 제목)과 2단계 상황에 나오면 숨은 요구가 새는 말
     leak_terms: list[str] = Field(default_factory=list)
+    # 운영 조건(trigger)을 드러내는 말과 흔한 바꿔 쓰기 [2026-11-06 사용자] — 1단계 제목·상황·공개 요구·공개 수용 기준에
+    # 나오면 재요청. 자료 본문·구체 답(answer)에는 써도 된다 (단서는 거기서 보여야 함). 프롬프트에는 넣지 않는다 (검사 전용).
+    # business_need 에 나온 말은 공개된 업무 요구라 검사에서 뺀다.
+    trigger_terms: list[str] = Field(default_factory=list)
     task_shape: Literal["code", "analysis"] = "code"
     starter: str | None = None  # 검증된 시작 코드 예제 (data/feature_starters/<id>) — 없으면 명세만
     reviewed: bool = False  # 사람이 검토했는지 — false 면 명세 review_flags 에 남긴다

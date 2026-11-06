@@ -80,6 +80,16 @@
    "leap",
    "음수"
   ],
+  "trigger_terms": [
+   "시각 동기화",
+   "시간 동기화",
+   "NTP",
+   "chrony",
+   "시계 보정",
+   "뒤로 가",
+   "뒤로 갈",
+   "거꾸로"
+  ],
   "task_shape": "code",
   "reviewed": false
  }

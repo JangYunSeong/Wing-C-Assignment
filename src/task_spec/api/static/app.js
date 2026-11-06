@@ -755,7 +755,10 @@ function renderFeatureTask(t) {
           (x) =>
             `<b>${esc(x.topic)}</b>${(x.reveals || []).length ? ` <span class="mono">단서: ${esc(x.reveals.join(", "))}</span>` : ""}` +
             (x.answer_hint
-              ? `<span class="why">일반 질문 → ${esc(x.answer_hint)}</span><span class="why">짚은 질문(${esc((x.match_terms || []).join(", "))}) → ${esc(x.answer)}</span>`
+              ? `<span class="why">일반 질문 → ${esc(x.answer_hint)}</span>` +
+                ((x.match_terms || []).length
+                  ? `<span class="why">짚은 질문(${esc(x.match_terms.join(", "))}) → ${esc(x.answer)}</span>`
+                  : `<span class="why">구체 답 조건 없음 — 늘 모호한 답 (구체 답: ${esc(x.answer)})</span>`)
               : ` — ${esc(x.answer)}`),
         )}</div>`
         : ""
