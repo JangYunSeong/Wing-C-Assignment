@@ -146,6 +146,14 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 함정·심층 구조: 부서 결정적 사건(`source_incident`)이 모일 때까지 LLM 제안 + 승인자 검토 (`review_flags` 고정 문구).
 - 명세 LLM 판정 모델(평가용): gpt-4.1 (비교 대상 밖).
 
+## 공통 과제 유형 [확정: 2026-11-06] (`spec/kind.py`, `nodes/spec.py choose_kind`)
+
+- `task_kind`: incident(이슈 진단형) / feature(기능 개발형 — 1단계 구현 40분 → 1단계 제출 뒤 2단계 디버깅 20분, `debug_stage`).
+- 우선순위: 승인자 수정 요청의 `task_kind`(revise, 대상 common·all) → 그 공고에서 가장 최근 승인된 판의 유형(`store.approved_kind`)
+  → 기본값 규칙(직군 데이터 파일 `resources/task_kind/<sub>.json`, 주 역량 중 진단 > 만드는 일 때만 incident, 동률 feature, 파일 없는 직군 incident).
+- 기능형 서술(`draft_feature_task`)이 아직 없으면 기본값 feature 도 incident 로 만들고 명세 flag (승인자 지정·승인된 판이면 기능형 골격 + 과제 flag).
+- 유형이 다르면 저장 키 `prompt_ref` 가 달라 다른 판이다. 예전 판(유형 없음)은 incident. 설계: `docs/design/feature-task-backend.md`.
+
 ## 공통 과제 서술 [확정: 2026-11-03] (`spec/draft.py`, `prompts/draft_task`)
 
 - 골격(`spec/build.py build_common`) 위에 제목·상황·제출물·심층 구조·표면·함정·관찰 행동·행동 기준(1·3·5)만 LLM 이 쓴다.
