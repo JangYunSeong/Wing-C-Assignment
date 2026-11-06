@@ -1,0 +1,33 @@
+{
+  "sub": "sw.frontend",
+  "note": "공통 과제 유형 기본값 규칙의 역량 목록 [확정: 2026-11-06 사용자 — sw.backend.json 과 같은 기준, 공고 주 역량 빈도(온톨로지 v2026-11-06f) 기반 초안]. 공고 주 역량 중 diagnose 가 build 보다 많으면 incident, 아니면 feature. 목록에 없는 역량(구축·운영처럼 양쪽으로 읽히는 것 포함)은 세지 않는다. 시범 공고 분포를 보고 조정한다.",
+  "build": [
+    "comp:fe.ui_ux",
+    "comp:fe.framework",
+    "comp:fe.markup",
+    "comp:fe.state",
+    "comp:fe.component",
+    "comp:fe.mobile",
+    "comp:sw.web_app",
+    "comp:sw.js",
+    "comp:sw.rest_api",
+    "comp:sw.app_impl",
+    "comp:sw.sys_interface",
+    "comp:data.viz_app",
+    "comp:sw.test_code",
+    "comp:sw.auth",
+    "comp:sw.gui",
+    "comp:sw.java",
+    "comp:sw.dotnet",
+    "comp:sw.server_dev",
+    "comp:sw.messaging"
+  ],
+  "diagnose": [
+    "comp:si.system_ops",
+    "comp:infra.monitoring",
+    "comp:fe.web_perf",
+    "comp:sw.perf",
+    "comp:qa.rca",
+    "comp:sw.web_was"
+  ]
+}
