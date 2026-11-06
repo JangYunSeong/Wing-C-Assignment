@@ -151,7 +151,10 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - `task_kind`: incident(이슈 진단형) / feature(기능 개발형 — 1단계 구현 40분 → 1단계 제출 뒤 2단계 디버깅 20분, `debug_stage`).
 - 우선순위: 승인자 수정 요청의 `task_kind`(revise, 대상 common·all) → 그 공고에서 가장 최근 승인된 판의 유형(`store.approved_kind`)
   → 기본값 규칙(직군 데이터 파일 `resources/task_kind/<sub>.json`, 주 역량 중 진단 > 만드는 일 때만 incident, 동률 feature, 파일 없는 직군 incident).
-- 기능형 서술(`draft_feature_task`)이 아직 없으면 기본값 feature 도 incident 로 만들고 명세 flag (승인자 지정·승인된 판이면 기능형 골격 + 과제 flag).
+- 기본값 규칙의 feature 는 설정 `feature_task_default`(기본 false, 평가 뒤 켬)가 켜져 있고 `draft_feature_task` 프롬프트가 있을 때만 —
+  아니면 incident + 명세 flag. 승인자 지정·승인된 판이 feature 면 늘 feature (프롬프트·LLM 이 없으면 골격만 + 과제 flag).
+- 기능형 서술: `spec/feature.py draft_feature_task` (이슈형 `draft_task` 루프 재사용, 검사 `check_feature`·고쳐 쓰기·자료 섞기만 다름).
+  확장 슬롯은 `draft_slot` 그대로 — 지원자에게 보이는 부분에 공개 요구·공개 수용 기준을 넣고, 언급 금지 개념에 2단계 원인 개념까지 넣는다.
 - 유형이 다르면 저장 키 `prompt_ref` 가 달라 다른 판이다. 예전 판(유형 없음)은 incident. 설계: `docs/design/feature-task-backend.md`.
 
 ## 공통 과제 서술 [확정: 2026-11-03] (`spec/draft.py`, `prompts/draft_task`)
