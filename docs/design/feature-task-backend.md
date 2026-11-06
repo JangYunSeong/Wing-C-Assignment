@@ -105,7 +105,7 @@
 ## 5. 소재 카탈로그 — 공개 사례 `feature` 블록 [확정: 2026-11-06 사용자 — 별도 카탈로그 대신 incidents/public_v1 에 붙임]
 
 - 공개 사례(직군마다 1건) 11건에 기능형 재료 `feature` 블록을 붙였다 (`incidents/public_v1/README.md` "feature 블록"). 사람 검토 전(`reviewed: false`).
-- `draft_feature_task` v2 는 이 블록을 입력으로 받고, 숨은 요구(t1)·허용 설계는 코드가 블록에서 채운다 (`spec/feature.py fill_from_seed`). LLM 은 겉모습만.
+- `draft_feature_task` v2 부터 이 블록을 입력으로 받고, 숨은 요구(t1)·허용 설계는 코드가 블록에서 채운다 (`spec/feature.py fill_from_seed`, v4 는 `fill_from_seed_v4`). LLM 은 겉모습만.
 - 블록이 없는 직군(sw.qa·sales.marketing)은 기능형 기본값 대상이 아니다. 시작 코드 예제가 연결된 블록은 지금 sw.backend(`delivery-audit`) 하나.
 - v1 → v2 비교 (2026-11-06, 직군별 1건, premium gpt-4.1): v1 은 5건 모두 상황·제목·2단계에 숨은 요구·원인이 샘. v2 는 제목·상황·공개 요구에서 사라지고
   2단계가 증상만 남음. 남은 것: 자료 역할 비율, 1단계 자료에 배포 뒤 증거 섞임, 추가 요구 답이 해법을 말함, 공고 역량과 재료 불일치(DBA), 공고 언어만 쓰는 기술 환경(프론트 Java).
@@ -116,6 +116,8 @@
 - 프롬프트 최적화 [확정: 2026-11-06 사용자 A·B·C]: 계산할 수 있는 칸(자료 번호·요청 한도·질문 한도·관찰 행동·2단계 연결·안내 문장)은 코드가 채운다,
   출력 스키마는 필드당 한 줄(`schema_style: compact`, 기존 프롬프트는 JSON Schema 그대로), 핵심 규칙 3개를 맨 앞과 출력 직전 확인 목록에 → `draft_feature_task` v4.
   2단 생성(겉모습·자료 분리)은 v4 평가 뒤 필요할 때만 [미정].
+- **CURRENT = v4** [확정: 2026-11-06 사용자]: 같은 5개 공고·같은 검사기로 최종 통과 v1 0/5 · v2 1/5 · v4 4/5, 비용 −26% (근거 `prompts/draft_feature_task/PROMOTIONS.md`).
+  검사가 못 잡는 누출 두 가지(상황 글이 운영 조건을 바꿔 말함, `match_terms` 가 공개 글의 넓은 말)는 코드 검사로 막는다 [제안].
 
 ### (예전 안) 별도 카탈로그 `features/public_v1/` [대체됨]
 
