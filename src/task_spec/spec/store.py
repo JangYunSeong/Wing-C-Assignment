@@ -6,6 +6,8 @@
   다른 지원자에게 재사용되므로 지원자 실행과 연결되는 값(run_id 등)도 저장하지 않는다 (privacy-auditor W3).
 - revise: 같은 키에 새 판(revision+1)을 초안으로 저장.
 - 승인(finalize): 그 판을 approved 로, 같은 키의 이전 approved 는 superseded 로.
+- 유형(task_kind) [2026-11-06]: 그 공고(같은 온톨로지 버전)에서 가장 최근에 승인된 판의 유형을 다음 실행이 따른다
+  (spec/kind.py 우선순위 2). 예전 판(유형 필드 없음)은 incident.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
-from task_spec.schemas import Provenance, TaskItem
+from task_spec.schemas import Provenance, TaskItem, TaskKind
 
 CommonStatus = Literal["draft", "approved", "superseded"]
 
@@ -71,6 +73,8 @@ class CommonTaskRepo(Protocol):
 
     async def approve(self, common_id: str, reviewer: str, at: datetime) -> None: ...
 
+    async def approved_kind(self, posting_id: str, ontology_version: str) -> TaskKind | None: ...
+
 
 def _new_id() -> str:
     return f"ct-{uuid.uuid4().hex[:12]}"
@@ -82,6 +86,10 @@ def _with_id(task: TaskItem, common_id: str) -> TaskItem:
     return task.model_copy(update={"task_id": common_id, "slots": slots})
 
 
+def _stored(row: dict[str, Any]) -> StoredCommon:
+    return StoredCommon(**{k: v for k, v in row.items() if k not in ("key", "approved_at")})
+
+
 class InMemoryCommonStore:
     """단위 테스트·DB 없는 그래프용."""
 
@@ -91,7 +99,7 @@ class InMemoryCommonStore:
     async def reusable(self, key: CommonKey) -> StoredCommon | None:
         rows = [r for r in self.rows if r["key"] == key and r["status"] != "superseded"]
         rows.sort(key=lambda r: (r["status"] == "approved", r["revision"]), reverse=True)
-        return StoredCommon(**{k: v for k, v in rows[0].items() if k != "key"}) if rows else None
+        return _stored(rows[0]) if rows else None
 
     async def save_draft(
         self, key: CommonKey, task: TaskItem, provenance: list[Provenance]
@@ -106,9 +114,10 @@ class InMemoryCommonStore:
             "task": _with_id(task, cid),
             "provenance": list(provenance),
             "approved_by": None,
+            "approved_at": None,
         }
         self.rows.append(row)
-        return StoredCommon(**{k: v for k, v in row.items() if k != "key"})
+        return _stored(row)
 
     async def approve(self, common_id: str, reviewer: str, at: datetime) -> None:
         row = next((r for r in self.rows if r["id"] == common_id), None)
@@ -117,7 +126,20 @@ class InMemoryCommonStore:
         for r in self.rows:
             if r["key"] == row["key"] and r["status"] == "approved" and r is not row:
                 r["status"] = "superseded"
-        row["status"], row["approved_by"] = "approved", reviewer
+        row["status"], row["approved_by"], row["approved_at"] = "approved", reviewer, at
+
+    async def approved_kind(self, posting_id: str, ontology_version: str) -> TaskKind | None:
+        rows = [
+            r
+            for r in self.rows
+            if r["key"].posting_id == posting_id
+            and r["key"].ontology_version == ontology_version
+            and r["status"] == "approved"
+        ]
+        if not rows:
+            return None
+        latest = max(rows, key=lambda r: r["approved_at"])
+        return latest["task"].task_kind
 
 
 class CommonTaskStore:
@@ -214,3 +236,17 @@ class CommonTaskStore:
                 "WHERE id = %s",
                 (reviewer, at, common_id),
             )
+
+    async def approved_kind(self, posting_id: str, ontology_version: str) -> TaskKind | None:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT COALESCE(task->>'task_kind', 'incident') AS kind FROM public.common_task "
+                "WHERE posting_id = %s AND ontology_version = %s AND status = 'approved' "
+                "ORDER BY approved_at DESC NULLS LAST, revision DESC LIMIT 1",
+                (posting_id, ontology_version),
+            )
+            r = await cur.fetchone()
+        if r is None:
+            return None
+        kind = r["kind"]
+        return kind if kind in ("incident", "feature") else "incident"

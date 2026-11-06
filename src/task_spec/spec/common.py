@@ -27,6 +27,8 @@ SECTION_RANK = {"duties": 0, "required": 1, "preferred": 2}
 DIFFICULTY = {3: "high", 2: "medium"}
 MIN_COMPS, MAX_COMPS = 2, 3
 TIME_LIMIT_MIN = 60
+# 기능 개발형(feature): 1단계 구현 → 2단계 디버깅 (합 = TIME_LIMIT_MIN) [확정: 2026-11-06 사용자]
+FEATURE_BUILD_MIN, FEATURE_DEBUG_MIN = 40, 20
 SCOPE_ORDER = {"primary": 0, "secondary": 1, "sub_fallback": 2}
 
 FLAG_NO_INCIDENT = "부서 결정적 사건 없음 — 함정·심층 구조는 LLM 제안, 승인자 검토 필요"

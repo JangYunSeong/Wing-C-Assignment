@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from task_spec.schemas.approval import ApprovalDecision
+from task_spec.schemas.approval import ApprovalDecision, TaskKind
 from task_spec.schemas.base import Schema
 
 Role = Literal["participate", "lead", "design"]
@@ -282,10 +282,85 @@ class Artifact(Schema):
 
 
 class Observable(Schema):
-    """로그에서 관찰할 것 (first_mention_of 개념 / catches_trap 함정 id)."""
+    """로그에서 관찰할 것 (first_mention_of 개념 / catches_trap 함정 id / requests_artifact 자료 id /
+    asks_clarification 추가 요구 id — 기능형에서 숨은 요구에 닿는 질문)."""
 
-    kind: Literal["first_mention_of", "catches_trap", "requests_artifact"]
+    kind: Literal["first_mention_of", "catches_trap", "requests_artifact", "asks_clarification"]
     value: str = Field(min_length=1)
+
+
+# ── 기능 개발형(feature) 공통 과제 [확정: 2026-11-06 사용자 — 1단계 구현 → 2단계 디버깅] ──
+# 설계: docs/design/feature-task-backend.md. id 사이 참조(trap_id 등)는 생성 검증(spec/feature.py)이 본다 —
+# 스키마는 형식만 (재요청 후 고쳐 쓴 초안도 저장·승인 화면에 올라가야 하므로).
+
+
+class Requirement(Schema):
+    """공개 기능 요구 1건 (지원자에게 보임). '무엇을'만 — 구현 방법·숨은 요구를 쓰지 않는다."""
+
+    req_id: str = Field(pattern=r"^r\d{1,2}$")
+    text: str = Field(min_length=1, max_length=300)
+
+
+class PublicAcceptance(Schema):
+    """공개 수용 기준 1건 (지원자에게 보임) — 관찰 가능한 문장."""
+
+    ac_id: str = Field(pattern=r"^p\d{1,2}$")
+    text: str = Field(min_length=1, max_length=300)
+
+
+class HiddenAcceptance(Schema):
+    """숨김 수용 기준 1건 (채점용) — 숨은 요구(trap) 하나에 연결."""
+
+    ac_id: str = Field(pattern=r"^h\d{1,2}$")
+    trap_id: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=400)
+
+
+class Clarification(Schema):
+    """지원자가 물으면 공개할 추가 요구·제약 1건. topic 은 질문 매칭용(승인자·진행자만)."""
+
+    clarification_id: str = Field(pattern=r"^c\d{1,2}$")
+    topic: str = Field(min_length=1, max_length=120)
+    answer: str = Field(min_length=1, max_length=600)
+    reveals: list[str] = Field(default_factory=list)  # 이 답이 단서가 되는 trap_id
+
+
+class AcceptedDesign(Schema):
+    """숨은 요구를 만족하는 설계 1건 — 한 가지 정답으로 감점하지 않게 2개 이상 둔다."""
+
+    design_id: str = Field(pattern=r"^d\d{1,2}$")
+    summary: str = Field(min_length=1, max_length=300)
+    conditions: str = Field(min_length=1, max_length=600)  # 성립 조건·흔한 함정
+    trap_ids: list[str] = Field(min_length=1)
+
+
+class DebugStage(Schema):
+    """기능형 2단계 — 1단계(구현) 제출 뒤 공개하는 '배포 후 운영 증상' + 자료 → 진단·수정.
+
+    증상은 숨은 요구(trap_ids)를 놓친 구현에서 생기는 것. 1단계에서 이미 대응한 지원자는
+    '이 증상이 자기 구현에서 생기지 않는 근거'를 내면 정답으로 본다 [확정: 2026-11-06 사용자].
+    자료 id 는 1단계 자료와 겹치지 않는다 (같은 a 번호 공간).
+    """
+
+    reveal_after: Literal["stage1_submitted"] = "stage1_submitted"
+    time_limit_min: int = Field(ge=5, le=120)
+    scenario: str = Field(min_length=1, max_length=2000)  # 겉 증상만 — 원인 개념을 쓰지 않는다
+    trap_ids: list[str] = Field(min_length=1)
+    artifacts: list[Artifact] = Field(default_factory=list)
+    max_requests: int | None = Field(default=None, ge=1, le=12)
+    deliverables: list[str] = Field(min_length=1, max_length=4)
+    observables: list[Observable] = Field(default_factory=list)
+
+
+FEATURE_FIELDS = (
+    "requirements",
+    "acceptance_public",
+    "acceptance_hidden",
+    "clarifications",
+    "max_clarifications",
+    "accepted_designs",
+    "debug_stage",
+)
 
 
 class TechEnv(Schema):
@@ -299,6 +374,8 @@ class TaskItem(Schema):
 
     task_id: str = Field(min_length=1)
     track: Track
+    # 공통 과제 유형 — 필드가 없는 예전 판은 incident 로 읽는다 (하위 호환). 슬롯·경험 검증 과제는 incident
+    task_kind: TaskKind = "incident"
     target_competencies: list[TargetCompetency] = Field(min_length=1)
     ai_axes: list[AiAxis] = Field(default_factory=lambda: list(AI_AXES))
     claims_to_verify: list[str] = Field(default_factory=list)  # claim_verification 트랙일 때만
@@ -331,8 +408,26 @@ class TaskItem(Schema):
         default_factory=list
     )  # 면접 확인 질문 (확장 문항) [제안]
     source_incident: str | None = None  # 부서 결정적 사건 id — 수집 전에는 None
+    # 기능형(feature) 전용 — LLM(draft_feature_task)이 채운다. incident 에서는 비어 있어야 한다
+    requirements: list[Requirement] = Field(default_factory=list, max_length=6)
+    acceptance_public: list[PublicAcceptance] = Field(default_factory=list, max_length=6)
+    acceptance_hidden: list[HiddenAcceptance] = Field(default_factory=list, max_length=8)
+    clarifications: list[Clarification] = Field(default_factory=list, max_length=6)
+    max_clarifications: int | None = Field(default=None, ge=1, le=6)
+    accepted_designs: list[AcceptedDesign] = Field(default_factory=list, max_length=5)
+    debug_stage: DebugStage | None = None
     review_flags: list[str] = Field(default_factory=list)  # 승인자가 꼭 볼 것
     provenance_id: str | None = None
+
+    @model_validator(mode="after")
+    def _feature_fields_only_for_feature(self) -> TaskItem:
+        if self.task_kind != "feature":
+            used = [f for f in FEATURE_FIELDS if getattr(self, f) not in (None, [])]
+            if used:
+                raise ValueError(f"기능형 전용 필드는 task_kind=feature 일 때만: {', '.join(used)}")
+        if self.task_kind == "feature" and self.track != "common":
+            raise ValueError("task_kind=feature 는 공통 과제(track=common)에만")
+        return self
 
 
 class CommonRef(Schema):
