@@ -211,3 +211,142 @@ def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
     )
     out = fill_from_seed(DraftFeatureOutputV2.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
     assert [p for p in check_feature(out, _seed_ctx()) if "배포 뒤(2단계) 증거" in p]
+
+
+def _v3draft() -> dict[str, Any]:
+    d = _v2draft()
+    d["clarifications"][0] |= {
+        "answer_hint": "마감 시간대에는 요청이 평소보다 몰립니다.",
+        "match_terms": ["동시 요청", "피크"],
+    }
+    d["clarifications"][1] |= {
+        "answer_hint": "기록은 일정 기간 보관합니다.",
+        "match_terms": ["보관 기간"],
+    }
+    return d
+
+
+class _V3:
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return _REG.get(task, version or (3 if task == "draft_feature_task" else None))
+
+
+def test_old_clarification_without_hint_still_loads() -> None:
+    from task_spec.schemas import Clarification
+
+    c = Clarification.model_validate(
+        {"clarification_id": "c1", "topic": "t", "answer": "a", "reveals": []}
+    )
+    assert c.answer_hint is None and c.match_terms == []
+
+
+def test_two_tier_hint_checks() -> None:
+    from task_spec.schemas import DraftFeatureOutputV3
+
+    ok = fill_from_seed(DraftFeatureOutputV3.model_validate(_v3draft()), BACKEND.feature)  # type: ignore[arg-type]
+    assert ok.clarifications[0].answer_hint and ok.clarifications[0].match_terms == [
+        "동시 요청",
+        "피크",
+    ]
+    assert check_feature(ok, _seed_ctx()) == []
+    cases = {
+        "숨은 요구를 드러내는 말": "커넥션 풀이 모자랄 때가 있습니다.",
+        "수치가 있음": "마감 때 40건 정도 몰립니다.",
+        "모호한 답과 구체 답이 같음": "마감 직전 수십 건이 동시에 들어온다",
+    }
+    for expect, hint in cases.items():
+        d = _v3draft()
+        d["clarifications"][0]["answer_hint"] = hint
+        out = fill_from_seed(DraftFeatureOutputV3.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+        assert [p for p in check_feature(out, _seed_ctx()) if expect in p], expect
+    d = _v3draft()
+    d["clarifications"][1]["answer_hint"] = "3년간 보관합니다."  # 단서가 아닌 답의 수치는 괜찮다
+    out = fill_from_seed(DraftFeatureOutputV3.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+    assert not [p for p in check_feature(out, _seed_ctx()) if "수치" in p]
+
+
+async def test_v3_draft_keeps_both_tiers() -> None:
+    fake = FakeBackend().push(Completion(json.dumps(_v3draft(), ensure_ascii=False)))
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V3())  # type: ignore[arg-type]
+    assert res.flags == [] and res.provenance[0].prompt == "draft_feature_task@3"
+    task = apply_feature(_skeleton(), res)
+    c1 = next(c for c in task.clarifications if c.clarification_id == "c1")
+    assert (
+        c1.answer_hint == "마감 시간대에는 요청이 평소보다 몰립니다."
+        and "동시 요청" in c1.match_terms
+    )
+
+
+def _v4draft() -> dict[str, Any]:
+    v2 = _v2draft()
+    return {
+        "title": v2["title"],
+        "scenario": "가상의 물류 회사가 주문 상태 변경마다 이력을 남기려 한다.",
+        "requirements": v2["requirements"],
+        "acceptance_public": v2["acceptance_public"],
+        "deliverables": v2["deliverables"],
+        "artifacts": [
+            {**a, "artifact_id": "a1"} for a in v2["artifacts"]
+        ],  # 번호는 코드가 다시 매김
+        "clarifications": _v3draft()["clarifications"],
+        "acceptance_hidden": [{"ac_id": "h1", "trap_id": "x", "text": "동시 32건 모두 기한 안"}],
+        "debug_stage": {
+            "scenario": v2["debug_stage"]["scenario"],
+            "artifacts": [{**a, "artifact_id": "a1"} for a in v2["debug_stage"]["artifacts"]],
+            "deliverables": ["원인 진단과 수정"],
+        },
+        "concepts": ["점유 범위"],
+        "invariant": v2["invariant"],
+        "variable": v2["variable"],
+        "behavioral_anchors": v2["behavioral_anchors"],
+        "tech_used": ["Python"],
+    }
+
+
+class _V4:
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return _REG.get(task, version or (4 if task == "draft_feature_task" else None))
+
+
+def test_v4_fill_computes_bookkeeping_fields() -> None:
+    from task_spec.schemas import DraftFeatureOutputV4
+    from task_spec.spec.feature import STAGE2_ALREADY, fill_from_seed_v4
+
+    out = fill_from_seed_v4(DraftFeatureOutputV4.model_validate(_v4draft()), BACKEND.feature)  # type: ignore[arg-type]
+    assert [a.artifact_id for a in out.artifacts] == [f"a{i}" for i in range(1, 7)]
+    assert [a.artifact_id for a in out.debug_stage.artifacts] == ["a7", "a8", "a9"]
+    assert out.max_requests == 2 and out.max_clarifications == 2  # 핵심 1개 + 1
+    assert out.debug_stage.max_requests == 2 and out.debug_stage.trap_ids == ["t1"]
+    kinds = [(o.kind, o.value) for o in out.observables]
+    assert ("first_mention_of", "점유 범위") in kinds and ("catches_trap", "t1") in kinds
+    assert ("requests_artifact", "a1") in kinds and ("asks_clarification", "c1") in kinds
+    assert all(h.trap_id == "t1" for h in out.acceptance_hidden)
+    assert out.debug_stage.deliverables[-1] == STAGE2_ALREADY
+    assert out.scenario.endswith("질문은 최대 2개까지 할 수 있습니다.")
+    assert out.debug_stage.scenario.endswith("최대 2개를 요청해 볼 수 있습니다.")
+    assert check_feature(out, _seed_ctx()) == []
+
+
+async def test_v4_draft_with_compact_schema() -> None:
+    fake = FakeBackend().push(Completion(json.dumps(_v4draft(), ensure_ascii=False)))
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V4())  # type: ignore[arg-type]
+    assert res.flags == [] and res.provenance[0].prompt == "draft_feature_task@4"
+    task = apply_feature(_skeleton(), res)
+    assert task.debug_stage is not None and task.traps[0].trap_id == "t1"
+
+
+def test_compact_schema_only_where_asked() -> None:
+    from task_spec.prompting import assemble
+    from task_spec.spec.draft import build_input
+    from task_spec.spec.feature import extra_input, seed_block
+
+    ctx = _seed_ctx()
+    extra = {**extra_input(), "feature_seed": seed_block(BACKEND)}
+    v4 = _REG.get("draft_feature_task", 4)
+    sys4 = assemble(v4, build_input(ctx, None, v4.input_model, extra), ontology_version="v")
+    assert (
+        "$defs" not in sys4.messages[0].content and "concepts: [문자열]" in sys4.messages[0].content
+    )
+    v2 = _REG.get("draft_feature_task", 2)
+    sys2 = assemble(v2, build_input(ctx, None, v2.input_model, extra), ontology_version="v")
+    assert '"properties"' in sys2.messages[0].content  # 예전 프롬프트는 JSON Schema 그대로

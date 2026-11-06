@@ -11,7 +11,7 @@ import hashlib
 import re
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -50,6 +50,8 @@ class FrontMatter(BaseModel):
     fewshot: FewshotSpec | None = None
     eval: dict[str, Any] | str = "pending"
     changed: str = Field(min_length=1)
+    # {{output_schema}} 를 어떻게 넣나 — json: Pydantic JSON Schema 그대로(기존), compact: 필드당 한 줄 (prompting/schema_text.py)
+    schema_style: Literal["json", "compact"] = "json"
 
 
 class PromptTemplate(BaseModel):
