@@ -30,6 +30,7 @@ def approval_summary(state: RunState) -> ApprovalSummary:
         return TaskBrief(
             task_id=t.task_id,
             track=t.track,
+            task_kind=t.task_kind,
             title=t.title,
             competencies=[c.label for c in t.target_competencies],
             difficulty=t.difficulty_target,
