@@ -148,3 +148,15 @@ async def test_kind_survives_later_revise_without_task_kind() -> None:
     assert s4.common_tasks[0].task_kind == "feature"
     assert s4.common_refs[0].reused is True
     assert s4.common_tasks[0].task_id == s3.common_tasks[0].task_id
+
+
+async def test_approval_summary_shows_task_kind() -> None:
+    from task_spec.nodes.spec import approval_summary
+
+    store = InMemoryCommonStore()
+    draft = make_draft_spec(None, store=store)
+    s1 = (await draft(_state("run-a")))["spec"]
+    assert approval_summary(_state("run-a", spec=s1)).tasks[0].task_kind == "incident"
+    revise = _decision("revise", comment="기능 개발형으로", task_kind="feature")
+    s2 = (await draft(_state("run-a", spec=s1, approval=revise)))["spec"]
+    assert approval_summary(_state("run-a", spec=s2)).tasks[0].task_kind == "feature"

@@ -12,6 +12,7 @@ const TERMINAL = new Set(["done", "rejected", "failed"]);
 const STATUS_KO = { running: "진행 중", awaiting_approval: "승인 대기", done: "완료", rejected: "반려", failed: "실패" };
 const SECTION_KO = { duties: "담당업무", required: "자격요건", preferred: "우대사항", other: "기타·제외" };
 const ROLE_KO = { key: "핵심", support: "보조", distractor: "방해" };
+const KIND_KO = { incident: "이슈 해결형", feature: "기능 개발형" };
 const REL_KO = { strong: "관계 강함", medium: "관계 중간", weak: "관계 약함" };
 // 대조 (공고 역량 → 주장 확인 + 주장 → 역량 선택)
 const CHECK_KO = { action: "행동", related: "관련", mention: "기술 언급", none: "없음" };
@@ -685,16 +686,94 @@ function renderCompare(sum, status) {
 function compChips(list) {
   return `<div class="chips">${(list || []).map((c) => `<span class="chip">${esc(c.label)}${c.level ? `<span class="lv">${esc(c.level)}</span>` : ""}</span>`).join("")}</div>`;
 }
-function renderTask(t) {
-  const arts = t.artifacts || [];
-  const a = t.behavioral_anchors;
+function anchorsBlock(a) {
   const anchor = (lv, x) =>
     x
       ? `<div class="anchor l${lv}"><span class="lvl"><i>${lv}</i>수준 ${lv}</span><p>${esc(x.behavior)}</p><div class="crit">${(x.criterion_ids || []).map((c) => `<span>${esc(c)}</span>`).join("")}</div></div>`
       : "";
+  return a
+    ? `<div><div class="block-head" style="margin-bottom:8px"><span class="eyebrow">행동 기준</span><span class="aside">채점자는 결과물이 아니라 과정 기록을 봅니다</span></div><div class="anchors">${anchor(1, a.level_1)}${anchor(3, a.level_3)}${anchor(5, a.level_5)}</div></div>`
+    : "";
+}
+function artsList(arts) {
+  return arts.length
+    ? `<div class="arts">${arts.map((x) => `<details><summary><span class="mono">${esc(x.artifact_id)}</span><span class="role ${esc(x.role)}">${ROLE_KO[x.role] || esc(x.role)}</span><span>${esc(x.title)}</span><span class="caret" aria-hidden="true">▶</span></summary><pre>${esc(x.content)}</pre></details>`).join("")}</div>`
+    : `<span class="placeholder">자료 없음</span>`;
+}
+function kindBadge(t) {
+  const k = t.task_kind || "incident";
+  return `<span class="kind ${esc(k)}">${KIND_KO[k] || esc(k)}</span>`;
+}
+function idList(items, idKey, text) {
+  return `<ul class="traps">${items.map((x) => `<li><span class="tid">${esc(x[idKey])}</span><span>${text(x)}</span></li>`).join("")}</ul>`;
+}
+/* 기능 개발형: 공개 요구 → 공개 수용 기준 → 자료 → 추가 요구 → 숨은 요구·숨김 기준·허용 설계 → 2단계 → 행동 기준 */
+function renderFeatureTask(t) {
+  const arts = t.artifacts || [];
+  const dbg = t.debug_stage;
+  const build = dbg ? t.time_limit_min - dbg.time_limit_min : t.time_limit_min;
+  const reqs = t.requirements || [];
+  const pubs = t.acceptance_public || [];
+  const clar = t.clarifications || [];
+  const hidden = t.acceptance_hidden || [];
+  const designs = t.accepted_designs || [];
+  const concepts = (obs) => (obs || []).filter((o) => o.kind === "first_mention_of").map((o) => `<span class="chip">${esc(o.value)}</span>`).join("");
   return `<div class="task">
     <h3 class="task-title">${esc(t.title || "(서술 없음 — 결정적 골격만)")}</h3>
     <div class="task-meta">
+      ${kindBadge(t)}
+      <span>${dbg ? `1단계 구현 <b>${build}분</b> + 2단계 디버깅 <b>${dbg.time_limit_min}분</b>` : `<b>${t.time_limit_min}분</b>`}</span>
+      <span>난이도 <b>${esc(t.difficulty_target)}</b></span>
+      ${t.tech_env && t.tech_env.languages.length ? `<span>기술 <b>${esc(t.tech_env.languages.join(", "))}</b></span>` : ""}
+      ${arts.length ? `<span>자료 <b>${arts.length}개</b>${t.max_requests ? ` 중 <b>${t.max_requests}개</b>까지 요청` : ""}</span>` : ""}
+      ${t.max_clarifications ? `<span>질문 최대 <b>${t.max_clarifications}개</b></span>` : ""}
+      ${t.source_incident ? `<span class="mono">${esc(t.source_incident)}</span>` : ""}
+    </div>
+    ${compChips(t.target_competencies)}
+    ${t.scenario ? `<p class="scenario">${esc(t.scenario)}</p>` : ""}
+    ${reqs.length ? `<div><span class="eyebrow">공개 요구</span>${idList(reqs, "req_id", (x) => esc(x.text))}</div>` : ""}
+    ${pubs.length ? `<div><span class="eyebrow">공개 수용 기준</span>${idList(pubs, "ac_id", (x) => esc(x.text))}</div>` : ""}
+    ${t.deliverables && t.deliverables.length ? `<div><span class="eyebrow">제출물 (1단계)</span><ol class="deliv">${t.deliverables.map((d) => `<li>${esc(d)}</li>`).join("")}</ol></div>` : ""}
+    ${
+      arts.length || (t.traps || []).length
+        ? `<div class="split">
+        <div><div class="block-head"><span class="eyebrow">자료 (1단계)</span><span class="only-approver">역할·본문은 승인자에게만 보임</span></div>${artsList(arts)}</div>
+        <div><div class="block-head"><span class="eyebrow">숨은 요구</span><span class="only-approver">승인자에게만 보임</span></div>
+          ${idList(t.traps || [], "trap_id", (x) => `${esc(x.description)}<span class="why">${esc(x.why_ai_fails)}</span>`)}
+          ${hidden.length ? `<span class="eyebrow">숨김 수용 기준 (채점)</span>${idList(hidden, "ac_id", (x) => `<span class="mono">${esc(x.trap_id)}</span> ${esc(x.text)}`)}` : ""}
+          ${designs.length ? `<span class="eyebrow">허용 설계</span>${idList(designs, "design_id", (x) => `${esc(x.summary)} <span class="mono">${esc((x.trap_ids || []).join(", "))}</span><span class="why">${esc(x.conditions)}</span>`)}` : ""}
+        </div>
+      </div>`
+        : ""
+    }
+    ${
+      clar.length
+        ? `<div><div class="block-head"><span class="eyebrow">추가 요구 — 지원자가 물으면 공개</span><span class="only-approver">주제·답·단서는 승인자·진행자에게만 보임</span></div>
+        ${idList(clar, "clarification_id", (x) => `<b>${esc(x.topic)}</b> — ${esc(x.answer)}${(x.reveals || []).length ? ` <span class="mono">단서: ${esc(x.reveals.join(", "))}</span>` : ""}`)}</div>`
+        : ""
+    }
+    ${
+      dbg
+        ? `<div class="stage2"><div class="block-head"><span class="eyebrow">2단계 디버깅 — 1단계 제출 뒤 공개</span><span class="aside">${dbg.time_limit_min}분 · 자료 ${(dbg.artifacts || []).length}개 중 ${dbg.max_requests || "?"}개 요청</span></div>
+        <p class="scenario">${esc(dbg.scenario)}</p>
+        <div><span class="eyebrow">제출물 (2단계)</span><ol class="deliv">${(dbg.deliverables || []).map((d) => `<li>${esc(d)}</li>`).join("")}</ol></div>
+        <div class="split">
+          <div><div class="block-head"><span class="eyebrow">자료 (2단계)</span><span class="only-approver">역할·본문은 승인자에게만 보임</span></div>${artsList(dbg.artifacts || [])}</div>
+          <div><div class="block-head"><span class="eyebrow">증상의 원인</span><span class="only-approver">승인자에게만 보임</span></div>
+            <div class="chips">${(dbg.trap_ids || []).map((x) => `<span class="chip mono">${esc(x)}</span>`).join("")}${concepts(dbg.observables)}</div></div>
+        </div></div>`
+        : ""
+    }
+    ${anchorsBlock(t.behavioral_anchors)}
+  </div>`;
+}
+function renderTask(t) {
+  if (t.task_kind === "feature") return renderFeatureTask(t);
+  const arts = t.artifacts || [];
+  return `<div class="task">
+    <h3 class="task-title">${esc(t.title || "(서술 없음 — 결정적 골격만)")}</h3>
+    <div class="task-meta">
+      ${kindBadge(t)}
       <span><b>${t.time_limit_min}분</b></span><span>난이도 <b>${esc(t.difficulty_target)}</b></span>
       ${t.tech_env && t.tech_env.languages.length ? `<span>기술 <b>${esc(t.tech_env.languages.join(", "))}</b></span>` : ""}
       ${arts.length ? `<span>자료 <b>${arts.length}개</b>${t.max_requests ? ` 중 <b>${t.max_requests}개</b>까지 요청` : ""}</span>` : ""}
@@ -707,17 +786,13 @@ function renderTask(t) {
       arts.length || (t.traps || []).length
         ? `<div class="split">
         <div><div class="block-head"><span class="eyebrow">자료</span><span class="only-approver">역할·본문은 승인자에게만 보임</span></div>
-          ${
-            arts.length
-              ? `<div class="arts">${arts.map((x) => `<details><summary><span class="mono">${esc(x.artifact_id)}</span><span class="role ${esc(x.role)}">${ROLE_KO[x.role] || esc(x.role)}</span><span>${esc(x.title)}</span><span class="caret" aria-hidden="true">▶</span></summary><pre>${esc(x.content)}</pre></details>`).join("")}</div>`
-              : `<span class="placeholder">자료 없음 (상황에 다 들어 있음)</span>`
-          }</div>
+          ${arts.length ? artsList(arts) : `<span class="placeholder">자료 없음 (상황에 다 들어 있음)</span>`}</div>
         <div><div class="block-head"><span class="eyebrow">함정</span><span class="only-approver">승인자에게만 보임</span></div>
           <ul class="traps">${(t.traps || []).map((x) => `<li><span class="tid">${esc(x.trap_id)}</span><span>${esc(x.description)}<span class="why">${esc(x.why_ai_fails)}</span></span></li>`).join("")}</ul></div>
       </div>`
         : ""
     }
-    ${a ? `<div><div class="block-head" style="margin-bottom:8px"><span class="eyebrow">행동 기준</span><span class="aside">채점자는 결과물이 아니라 과정 기록을 봅니다</span></div><div class="anchors">${anchor(1, a.level_1)}${anchor(3, a.level_3)}${anchor(5, a.level_5)}</div></div>` : ""}
+    ${anchorsBlock(t.behavioral_anchors)}
   </div>`;
 }
 function renderCommon(s) {
@@ -821,6 +896,7 @@ function renderDecide(view, s) {
   const lowerable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.status === "overlap");
   const restorable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.downgraded);
   const promotable = ((cmpSum && cmpSum.posting_checks) || []).filter((r) => r.select_only && r.status !== "overlap");
+  const curKind = (s.common_tasks[0] && s.common_tasks[0].task_kind) || "incident";
   el.innerHTML = `
     ${view.approval_error ? `<div class="banner risk" style="margin-bottom:12px"><strong>직전 결정이 거부되었습니다</strong><span>${esc(view.approval_error)}</span></div>` : ""}
     <form class="decide" id="decide-form" autocomplete="off">
@@ -835,6 +911,12 @@ function renderDecide(view, s) {
           <option value="verification">경험 검증만 (공통 과제 유지)</option>
           <option value="common">공통 과제·슬롯 (공고 단위 새 판)</option>
           <option value="all">전부</option>
+        </select>
+      </label>
+      <label class="field" for="task-kind" id="kind-wrap" hidden>공통 과제 유형
+        <select id="task-kind">
+          <option value="">유지 (지금: ${esc(KIND_KO[curKind] || curKind)})</option>
+          ${["incident", "feature"].filter((k) => k !== curKind).map((k) => `<option value="${k}">${KIND_KO[k]}으로 바꾸기 (공고 단위 새 판)</option>`).join("")}
         </select>
       </label>
       <label class="field full" for="comment" id="comment-wrap">메모
@@ -889,6 +971,7 @@ function renderDecide(view, s) {
   const sync = () => {
     const v = form.querySelector('input[name="decision"]:checked').value;
     $("#target-wrap").hidden = v !== "revise";
+    $("#kind-wrap").hidden = v !== "revise";
     if ($("#reassign")) $("#reassign").hidden = v !== "revise";
     if ($("#lower")) $("#lower").hidden = v !== "revise";
     if ($("#restore")) $("#restore").hidden = v !== "revise";
@@ -915,6 +998,10 @@ function renderDecide(view, s) {
     const body = { status, reviewer, comment: comment || null, at: new Date().toISOString() };
     if (status === "revise") {
       body.revise_target = $("#revise-target").value;
+      const kind = $("#task-kind").value;
+      if (kind && body.revise_target === "verification")
+        return say(msg, "과제 유형을 바꾸면 공통 과제를 다시 만들어야 합니다 — '공통 과제·슬롯' 또는 '전부'를 고르세요.", "err");
+      if (kind) body.task_kind = kind;
       const reassign = {};
       form.querySelectorAll("select[data-claim]").forEach((sel) => {
         if (sel.value) reassign[sel.dataset.claim] = sel.value === "__none__" ? null : sel.value;
