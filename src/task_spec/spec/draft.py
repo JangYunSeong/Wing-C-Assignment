@@ -37,7 +37,7 @@ from task_spec.schemas import (
     TechEnv,
 )
 from task_spec.schemas.domain import Anchor, BehavioralAnchors
-from task_spec.schemas.incident import PublicIncident
+from task_spec.schemas.incident import FeatureSeed, PublicIncident
 from task_spec.spec.common import FLAG_NO_INCIDENT, FLAG_PUBLIC_INCIDENT
 from task_spec.spec.incidents import incident_block
 
@@ -91,6 +91,7 @@ class DraftResult:
     provenance: list[Provenance] = field(default_factory=list)
     errors: list[NodeError] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    seed: FeatureSeed | None = None  # 기능형 v2 가 쓴 재료 (검토·시작 코드 표시용)
 
 
 def build_input(
@@ -336,8 +337,10 @@ def check_artifact_list(
     return problems
 
 
-def check(out: DraftTaskOutput, ctx: DraftContext) -> list[str]:
-    """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다 — 온톨로지·공고 값만 담는다."""
+def check(out: DraftTaskOutput, ctx: DraftContext, *, min_distractor: int = 3) -> list[str]:
+    """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다 — 온톨로지·공고 값만 담는다.
+
+    min_distractor: 자료 중 방해 자료 최소 수 (이슈형·슬롯 3, 기능형 1단계 2 — 자료가 5~8개라)."""
     problems: list[str] = []
     arts = list(getattr(out, "artifacts", []) or [])
     allowed = ctx.criterion_ids
@@ -358,7 +361,12 @@ def check(out: DraftTaskOutput, ctx: DraftContext) -> list[str]:
     if len(set(trap_ids)) != len(trap_ids):
         problems.append("trap_id 가 겹침")
     if arts:
-        problems += _check_artifacts(out, arts)
+        problems += check_artifact_list(
+            arts,
+            scenario=out.scenario,
+            limit=getattr(out, "max_requests", None),
+            min_distractor=min_distractor,
+        )
     for o in out.observables:
         if o.kind == "catches_trap" and o.value not in trap_ids:
             problems.append(f"catches_trap 값 {o.value} 가 traps 의 trap_id 가 아님")

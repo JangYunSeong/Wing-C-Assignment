@@ -34,8 +34,8 @@ from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
 from task_spec.spec.feature import TASK as FEATURE_TASK
-from task_spec.spec.feature import apply_feature, draft_feature_task
-from task_spec.spec.incidents import incident_ref
+from task_spec.spec.feature import apply_feature, draft_feature_task, uses_seed
+from task_spec.spec.incidents import feature_ref, incident_ref
 from task_spec.spec.kind import choose_task_kind
 from task_spec.spec.questions import TASK as Q_TASK
 from task_spec.spec.questions import build_slot_verifications
@@ -143,6 +143,9 @@ def make_draft_spec(
                 state.approval if state.approval and state.approval.status == "revise" else None
             )
             redo_common = revise is not None and revise.revise_target != "verification"
+            # v2 기능형은 그 직군 공개 사례에 기능형 재료(feature)가 있어야 한다 — 없으면 기본값 규칙에서 뺀다
+            seed_ok = bool(incidents and (inc0 := incidents.get(p.sub or "")) and inc0.feature)
+            seed_needed = feature_ready and prompts is not None and uses_seed(prompts)
             kind, kind_flags = await choose_kind(
                 p,
                 state.posting_id,
@@ -154,7 +157,7 @@ def make_draft_spec(
                     if revise is not None and state.spec is not None and state.spec.common_tasks
                     else None
                 ),
-                rule_feature_on=feature_default and feature_ready,
+                rule_feature_on=feature_default and feature_ready and (seed_ok or not seed_needed),
             )
             built = await build_common(
                 p,
@@ -183,6 +186,16 @@ def make_draft_spec(
                     prompt_ref = f"{prompt_ref}+{prompts.get(SLOT_TASK).ref}"
                 inc = built.ctx.incident if built.ctx is not None else None
                 if (
+                    use_llm
+                    and prompts is not None
+                    and inc is not None
+                    and kind == "feature"
+                    and inc.feature is not None
+                    and uses_seed(prompts)
+                ):
+                    # 기능형 재료 지문 — 재료를 고치면 기능형 새 판 (이슈형 판은 그대로)
+                    prompt_ref = f"{prompt_ref}+{feature_ref(inc)}"
+                elif (
                     use_llm
                     and prompts is not None
                     and inc is not None

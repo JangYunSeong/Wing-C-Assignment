@@ -44,7 +44,9 @@ from task_spec.schemas.domain import (
 from task_spec.schemas.draft import (
     DebugStageDraft,
     DraftFeatureInput,
+    DraftFeatureInputV2,
     DraftFeatureOutput,
+    DraftFeatureOutputV2,
     DraftSlotInput,
     DraftSlotOutput,
     DraftTaskInput,
@@ -57,7 +59,7 @@ from task_spec.schemas.draft import (
     JudgeTrapsInput,
     JudgeTrapsOutput,
 )
-from task_spec.schemas.incident import PublicIncident
+from task_spec.schemas.incident import FeatureSeed, PublicIncident
 from task_spec.schemas.ingest import (
     ExtractedDocument,
     ExtractedField,
@@ -113,6 +115,9 @@ from task_spec.schemas.verify_overlap import (
 )
 
 __all__ = [
+    "DraftFeatureInputV2",
+    "DraftFeatureOutputV2",
+    "FeatureSeed",
     "DebugStageDraft",
     "DraftFeatureInput",
     "DraftFeatureOutput",

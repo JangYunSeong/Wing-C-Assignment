@@ -21,7 +21,17 @@ from typing import Any, cast
 
 from task_spec.llm import LLMClient
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import DebugStage, DraftFeatureOutput, Observable, TaskItem
+from task_spec.schemas import (
+    AcceptedDesign,
+    DebugStage,
+    DraftFeatureOutput,
+    DraftFeatureOutputV2,
+    FeatureSeed,
+    Observable,
+    PublicIncident,
+    TaskItem,
+    Trap,
+)
 from task_spec.spec.common import (
     FEATURE_BUILD_MIN,
     FEATURE_DEBUG_MIN,
@@ -42,6 +52,50 @@ from task_spec.spec.draft import (
 )
 
 TASK = "draft_feature_task"
+SEED_TRAP = "t1"  # v2: 재료의 숨은 요구 하나
+# 기능형 1단계 자료는 5~8개라 이슈형(방해 3개 이상)보다 한 단계 낮춘다 [2026-11-06 — v2 직군별 점검에서 4/5 가 이 규칙에만 걸림]
+FEATURE_MIN_DISTRACTOR = 2
+# 1단계 자료가 2단계(배포 뒤) 자료와 같은 종류인지 볼 때 빼는 흔한 말 — 자료 종류 낱말만 남긴다
+_GENERIC = frozenset(
+    "로그 지표 결과 기록 자료 시계열 표본 발췌 내역 목록 현황 상태 운영 환경 시점 최근 일부 예시 표 코드".split()
+)
+STAGE_OVERLAP = 0.5  # 핵심 낱말 Jaccard 이 이 이상이면 같은 종류로 본다
+
+
+def _kind_words(title: str) -> set[str]:
+    bare = re.sub(r"\([^)]*\)", " ", title)
+    words = {w for w in re.split(r"[\s·,/]+", bare.lower()) if len(w) >= 2}
+    return words - _GENERIC
+
+
+def _same_kind(a: set[str], b: set[str]) -> bool:
+    return bool(a and b) and len(a & b) / len(a | b) >= STAGE_OVERLAP
+
+
+def stage2_kinds_in_stage1(
+    titles: list[str], evidence: list[str], discoverable: list[str] | None = None
+) -> list[str]:
+    """1단계 자료 중 2단계 핵심 증거(재료 stage2_evidence 첫 항목)와 같은 종류 — 기능이 아직 없으니 배포 뒤 증거가 1단계에 있으면 안 된다.
+
+    다른 2단계 자료(서버 응답 로그 같은 방해 자료)는 배포 전에도 있으므로 보지 않는다. 재료가 1단계 단서(discoverable_by)로도
+    적어 둔 종류는 1단계에 있어도 된다."""
+    disc = [_kind_words(d) for d in discoverable or []]
+    kinds = [
+        k for k in (_kind_words(e) for e in evidence[:1]) if not any(_same_kind(k, d) for d in disc)
+    ]
+    out = []
+    for t in titles:
+        w = _kind_words(t)
+        if any(_same_kind(w, k) for k in kinds):
+            out.append(t)
+    return out
+
+
+FLAG_SEED_UNREVIEWED = "기능형 재료(공개 사례 feature 블록)가 사람 검토 전 (reviewed=false) — 숨은 요구·허용 설계를 승인자가 확인"
+FLAG_NO_STARTER = "이 기능형 재료에 연결된 시작 코드 예제가 없음 — 명세만 (시작 코드·숨은 테스트는 빌드 단계에서 만들어야 함)"
+FLAG_NO_SEED = (
+    "기능형 v2 프롬프트인데 이 직군 공개 사례에 기능형 재료(feature)가 없음 — 서술 없이 골격만"
+)
 # 공개 요구·수용 기준에 나오면 "어떻게"를 알려 주는 말 (구현 수단). 1차 금지어 — 2차는 판정 LLM (평가 PR)
 HOWTO_TERMS = (
     "트랜잭션",
@@ -76,6 +130,66 @@ HOWTO_TERMS = (
 _HANGUL = re.compile(r"[가-힣]")
 
 
+def seed_block(inc: PublicIncident) -> str:
+    """v2 프롬프트에 넣는 기능형 재료 — 원리와 사람이 적은 feature 블록만. 조직명·제목·URL·원문 증상·수치는 넣지 않는다."""
+    f = inc.feature
+    assert f is not None
+    lines = [
+        f"원리(유지할 심층 구조): {inc.deep_structure}",
+        f"만들 기능 (1단계 상황의 재료 — 이것만으로 상황을 쓴다): {f.business_need}",
+        f"흔한 구현 (AI 첫 답): {f.naive_impl}",
+        f"숨은 요구 t1: {f.hidden_requirement}",
+        f"숨은 요구를 깨는 운영 조건 (1단계 자료에서 보여야 함): {f.trigger}",
+        f"흔한 구현이 깨지는 이유: {f.why_naive_breaks}",
+        "조건이 보이는 1단계 자료 종류: " + ", ".join(f.discoverable_by),
+        "허용 설계 (정답으로 인정 — 공개 요구에 쓰지 않음): " + " / ".join(f.accepted_designs),
+        f"2단계 겉 증상 (원인 없이): {f.stage2_symptom}",
+        "2단계 자료 종류: " + ", ".join(f.stage2_evidence),
+        "2단계에서 먼저 말할 원인 개념 (지원자 화면 금지): " + ", ".join(f.stage2_cause_terms),
+        "지원자 화면에 쓰면 안 되는 말: " + ", ".join([*f.leak_terms, *f.stage2_cause_terms]),
+        "바꿀 수 있는 표면: " + ", ".join(inc.surface),
+    ]
+    if f.task_shape == "analysis":
+        lines.append("과제 형태: analysis (구현 대신 재실행 가능한 분석 코드와 결과)")
+    return "\n".join(lines)
+
+
+def _design(i: int, text: str) -> AcceptedDesign:
+    """'[설계] 요약 — 조건: … — 함정: …' → 요약 / 나머지(조건·함정)."""
+    body = text.split("] ", 1)[1] if text.startswith("[") and "] " in text else text
+    summary, _, rest = body.partition(" — ")
+    return AcceptedDesign(
+        design_id=f"d{i}",
+        summary=summary.strip()[:300],
+        conditions=(rest.strip() or "조건 없음")[:600],
+        trap_ids=[SEED_TRAP],
+    )
+
+
+def fill_from_seed(out: DraftFeatureOutputV2, seed: FeatureSeed) -> DraftFeatureOutput:
+    """v2 출력 + 재료 → 전체 기능형 출력. 숨은 요구·허용 설계는 재료 그대로, 2단계 원인 개념은 재료 것을 앞에 둔다."""
+    trap = Trap(
+        trap_id=SEED_TRAP,
+        description=f"{seed.hidden_requirement} (운영 조건: {seed.trigger})",
+        why_ai_fails=f"{seed.naive_impl} — {seed.why_naive_breaks}",
+    )
+    dbg = out.debug_stage
+    seeded = [Observable(kind="first_mention_of", value=t) for t in seed.stage2_cause_terms[:2]]
+    have = {o.value for o in dbg.observables if o.kind == "first_mention_of"}
+    obs2 = [*(o for o in seeded if o.value not in have), *dbg.observables]
+    data = out.model_dump()
+    data["traps"] = [trap.model_dump()]
+    data["accepted_designs"] = [
+        _design(i, t).model_dump() for i, t in enumerate(seed.accepted_designs, 1)
+    ]
+    data["debug_stage"] = {
+        **dbg.model_dump(),
+        "trap_ids": [SEED_TRAP],
+        "observables": [o.model_dump() for o in obs2][:6],
+    }
+    return DraftFeatureOutput.model_validate(data)
+
+
 def extra_input() -> dict[str, Any]:
     return {"build_min": FEATURE_BUILD_MIN, "debug_min": FEATURE_DEBUG_MIN}
 
@@ -98,7 +212,7 @@ def _dup(label: str, ids: list[str]) -> list[str]:
 def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다."""
     # 이슈형 공통 규칙 (제목·상황·산출물·1단계 자료 목록의 노출 검사, 1단계 관찰 행동 id 포함)
-    problems = check(cast(Any, out), ctx)
+    problems = check(cast(Any, out), ctx, min_distractor=FEATURE_MIN_DISTRACTOR)
     trap_ids = [t.trap_id for t in out.traps]
     traps = set(trap_ids)
     s1 = [a.artifact_id for a in out.artifacts]
@@ -197,13 +311,42 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     howto_text = "\n".join(
         [out.title, *(r.text for r in out.requirements), *(a.text for a in out.acceptance_public)]
     )
-    howto = [w for w in HOWTO_TERMS if _term_rx(w).search(howto_text)]
+    seed = ctx.incident.feature if ctx.incident is not None else None
+    # 그 기능이 다루는 대상 자체(예: DBA 의 트랜잭션)는 구현 방법 지시가 아니다 — 재료의 업무 요구에 나온 말은 뺀다
+    own = seed.business_need.lower() if seed is not None else ""
+    howto = [w for w in HOWTO_TERMS if _term_rx(w).search(howto_text) and w.lower() not in own]
     if howto:
         problems.append(
             "제목·공개 요구·공개 수용 기준이 구현 방법을 지시함 ("
             + ", ".join(howto)
             + ") — '무엇을'만 쓰고 '어떻게'는 지원자 몫"
         )
+
+    if seed is not None:
+        # 사람이 적어 둔 새는 말 — 바꿔 쓴 표현까지 잡으려고 재료마다 둔다
+        stage1 = "\n".join([base_visible, extra_visible])
+        terms = [*seed.leak_terms, *seed.stage2_cause_terms]
+        s1 = [t for t in terms if _term_rx(t).search(stage1)]
+        if s1:
+            problems.append(
+                "숨은 요구를 드러내는 말이 1단계 지원자 화면(제목·상황·공개 요구·수용 기준·추가 요구 답·자료 제목)에 나옴: "
+                + ", ".join(dict.fromkeys(s1))
+            )
+        mixed = stage2_kinds_in_stage1(
+            [a.title for a in out.artifacts], seed.stage2_evidence, seed.discoverable_by
+        )
+        if mixed:
+            problems.append(
+                "1단계 자료가 배포 뒤(2단계) 증거와 같은 종류: "
+                + ", ".join(mixed)
+                + " — 기능이 아직 없으니 1단계에는 배포 전 자료(설정·지표·기존 코드·통계)만"
+            )
+        s2 = [t for t in terms if _term_rx(t).search(dbg_visible)]
+        if s2:
+            problems.append(
+                "숨은 요구·원인을 드러내는 말이 2단계 상황·산출물·자료 제목에 나옴 (증상만): "
+                + ", ".join(dict.fromkeys(s2))
+            )
 
     inc = ctx.incident
     if inc is not None:
@@ -394,8 +537,20 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
             ],
         }
     )
+    if res.seed is not None:
+        flags = [*updated.review_flags]
+        if not res.seed.reviewed:
+            flags.append(FLAG_SEED_UNREVIEWED)
+        if res.seed.starter is None:
+            flags.append(FLAG_NO_STARTER)
+        updated = updated.model_copy(update={"review_flags": flags})
     # model_copy 는 검사를 건너뛴다 — 저장·승인 화면에 올리기 전에 TaskItem 규칙(유형·필드 범위)을 다시 본다
     return TaskItem.model_validate(updated.model_dump())
+
+
+def uses_seed(prompts: Any) -> bool:
+    """CURRENT(또는 고정한 버전) 템플릿이 기능형 재료(v2)를 입력으로 받는지."""
+    return "feature_seed" in prompts.get(TASK).input_model.model_fields
 
 
 async def draft_feature_task(
@@ -405,15 +560,45 @@ async def draft_feature_task(
     prompts: PromptRegistry,
     reviewer_note: str | None = None,
 ) -> DraftResult:
-    """생성 → 검증 → 1회 재요청 → 고쳐 쓰기 (이슈형과 같은 루프, 기능형 검사)."""
-    return await draft_task(
+    """생성 → 검증 → 1회 재요청 → 고쳐 쓰기 (이슈형과 같은 루프, 기능형 검사).
+
+    v2(입력에 feature_seed): 공개 사례의 기능형 재료가 있어야 한다. LLM 출력(겉모습)에 재료의 숨은 요구·허용 설계를
+    채운 뒤 섞고 검사한다. v1: 공개 사례 원문(incident)을 넣고 LLM 이 숨은 요구까지 쓴다.
+    """
+    if not uses_seed(prompts):
+        return await draft_task(
+            ctx,
+            llm=llm,
+            prompts=prompts,
+            reviewer_note=reviewer_note,
+            task=TASK,
+            extra_input=extra_input(),
+            checker=cast(Any, check_feature),
+            repairer=cast(Any, repair_feature),
+            shuffler=cast(Any, shuffle_feature),
+        )
+    inc = ctx.incident
+    if inc is None or inc.feature is None:
+        res = DraftResult()
+        res.flags.append(FLAG_NO_SEED)
+        return res
+    seed = inc.feature
+
+    def fill_then_shuffle(out: Any, key: str) -> DraftFeatureOutput:
+        full = fill_from_seed(out, seed) if isinstance(out, DraftFeatureOutputV2) else out
+        return shuffle_feature(full, key)
+
+    res = await draft_task(
         ctx,
         llm=llm,
         prompts=prompts,
         reviewer_note=reviewer_note,
         task=TASK,
-        extra_input=extra_input(),
+        extra_input={**extra_input(), "feature_seed": seed_block(inc)},
         checker=cast(Any, check_feature),
         repairer=cast(Any, repair_feature),
-        shuffler=cast(Any, shuffle_feature),
+        shuffler=fill_then_shuffle,
     )
+    res.incident_id = inc.incident_id
+    res.seed = seed
+    return res

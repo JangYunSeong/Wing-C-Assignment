@@ -128,6 +128,46 @@ class DraftFeatureOutput(Schema):
         return [x for x in v if x] if isinstance(v, list) else v
 
 
+class DraftFeatureInputV2(DraftTaskInput):
+    """기능형 v2 입력 — 공개 사례 원문 대신 사람이 적어 둔 기능형 재료(incidents/*.json feature) 블록.
+
+    숨은 요구·허용 설계·2단계 원인은 재료 그대로 쓰고(코드가 채움), LLM 은 공고 업종에 맞춘 겉모습만 쓴다.
+    """
+
+    build_min: int = Field(ge=10, le=180)
+    debug_min: int = Field(ge=5, le=60)
+    feature_seed: str = Field(
+        min_length=1
+    )  # spec/feature.py seed_block — 원 사례 조직명·제목·URL·원문 수치 없음
+
+
+class DraftFeatureOutputV2(Schema):
+    """기능형 v2 출력 — 숨은 요구(traps)·허용 설계는 없다 (재료에서 코드가 채움, spec/feature.py fill_from_seed).
+    숨은 요구 id 는 t1 하나 (재료의 숨은 요구)."""
+
+    title: str = Field(min_length=1, max_length=120)
+    scenario: str = Field(min_length=1, max_length=3000)
+    requirements: list[Requirement] = Field(min_length=2, max_length=6)
+    acceptance_public: list[PublicAcceptance] = Field(min_length=2, max_length=6)
+    deliverables: list[str] = Field(min_length=2, max_length=4)
+    artifacts: list[Artifact] = Field(min_length=5, max_length=8)
+    max_requests: int = Field(ge=1, le=4)
+    clarifications: list[Clarification] = Field(min_length=2, max_length=5)
+    max_clarifications: int = Field(ge=1, le=4)
+    acceptance_hidden: list[HiddenAcceptance] = Field(min_length=1, max_length=4)
+    debug_stage: DebugStageDraft
+    invariant: str = Field(min_length=1, max_length=600)
+    variable: list[str] = Field(min_length=1, max_length=6)
+    observables: list[Observable] = Field(min_length=1, max_length=10)
+    behavioral_anchors: BehavioralAnchors
+    tech_used: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("deliverables", "variable", "tech_used", mode="before")
+    @classmethod
+    def _drop_nulls(cls, v: object) -> object:
+        return [x for x in v if x] if isinstance(v, list) else v
+
+
 class DraftSlotInput(DraftTaskInput):
     """확장 슬롯 1개 (prompts/draft_slot). 공통 과제의 지원자에게 보이는 부분과 언급 금지 개념을 더한다."""
 
