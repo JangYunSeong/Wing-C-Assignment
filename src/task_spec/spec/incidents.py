@@ -50,6 +50,15 @@ def incident_block(inc: PublicIncident | None) -> str:
 
 
 def incident_ref(inc: PublicIncident) -> str:
-    """공통 과제 저장 키에 붙이는 사례 지문 — 사례 내용이 바뀌면 새 판을 만든다 (이전 초안을 다시 쓰지 않게)."""
-    digest = hashlib.sha256(inc.model_dump_json().encode("utf-8")).hexdigest()[:8]
+    """공통 과제 저장 키에 붙이는 사례 지문 — 사례 내용이 바뀌면 새 판을 만든다 (이전 초안을 다시 쓰지 않게).
+
+    기능형 재료(feature)는 빼고 계산한다 — 재료를 붙이거나 고쳐도 이슈형 공통 과제 판이 바뀌지 않게 (예전 지문과 같음)."""
+    body = inc.model_dump_json(exclude={"feature"})
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
     return f"{inc.incident_id}#{digest}"
+
+
+def feature_ref(inc: PublicIncident) -> str:
+    """기능형 공통 과제 저장 키의 재료 지문 — 사례 원리 + 기능형 재료가 바뀌면 새 판."""
+    digest = hashlib.sha256(inc.model_dump_json().encode("utf-8")).hexdigest()[:8]
+    return f"{inc.incident_id}+feature#{digest}"

@@ -29,7 +29,17 @@ from task_spec.spec.store import InMemoryCommonStore
 from tests.spec.test_draft import _ctx
 from tests.spec.test_task_kind_flow import _state
 
-PROMPTS = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
+_REGISTRY = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
+
+
+class _V1:
+    """이 파일은 v1(공개 사례 원문 입력, LLM 이 숨은 요구까지 씀) 경로를 본다 — CURRENT 는 v2 (test_feature_seed)."""
+
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return _REGISTRY.get(task, version or (1 if task == "draft_feature_task" else None))
+
+
+PROMPTS = _V1()
 
 
 def _art(aid: str, role: str, title: str, content: str) -> dict[str, Any]:
