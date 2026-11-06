@@ -214,6 +214,22 @@ def _limit(arts: list[Any], cap: int) -> int:
     return max(1, min(keys + 1, len(arts) - 1, cap)) if keys <= cap else cap
 
 
+SCENARIO_MAX = 3000  # DraftFeatureOutput.scenario
+DEBUG_SCENARIO_MAX = 2000  # DebugStageDraft.scenario
+DRAFT_MATCH_TERMS_MAX = 5  # ClarificationDraft.match_terms (v5 출력은 6개까지)
+
+
+def _with_note(body: str, note: str, cap: int) -> str:
+    """본문 + 코드가 붙이는 안내. 합쳐 cap 을 넘으면 본문을 마지막 문장 끝에서 자른다 (안내는 늘 남긴다)."""
+    body = body.rstrip()
+    room = cap - len(note)
+    if len(body) > room:
+        cut = body[:room]
+        end = cut.rfind(".")
+        body = cut[: end + 1] if end > 0 else cut.rstrip()
+    return body + note
+
+
 def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeatureOutput:
     """v4 출력 → 전체 기능형 출력. 계산할 수 있는 칸은 여기서 정한다 (LLM 에 맡기지 않음):
     자료 번호(1단계 a1…, 2단계 이어서)·요청 한도·질문 한도·관찰 행동·2단계 연결·공통 문구, 숨은 요구·허용 설계(재료)."""
@@ -246,11 +262,16 @@ def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeat
     deliv2 = list(out.debug_stage.deliverables)
     if not any("이미 대응" in d for d in deliv2):
         deliv2.append(STAGE2_ALREADY)
-    scenario = (
-        f"{out.scenario.rstrip()}\n\n아래 자료 중 최대 {lim1}개를 요청해 볼 수 있고, "
-        f"질문은 최대 {max_q}개까지 할 수 있습니다."
+    scenario = _with_note(
+        out.scenario,
+        f"\n\n아래 자료 중 최대 {lim1}개를 요청해 볼 수 있고, 질문은 최대 {max_q}개까지 할 수 있습니다.",
+        SCENARIO_MAX,
     )
-    debug_scenario = f"{out.debug_stage.scenario.rstrip()}\n\n아래 자료 중 최대 {lim2}개를 요청해 볼 수 있습니다."
+    debug_scenario = _with_note(
+        out.debug_stage.scenario,
+        f"\n\n아래 자료 중 최대 {lim2}개를 요청해 볼 수 있습니다.",
+        DEBUG_SCENARIO_MAX,
+    )
     data = {
         **out.model_dump(exclude={"concepts", "debug_stage", "clarifications", "artifacts"}),
         "scenario": scenario,
@@ -315,7 +336,7 @@ def fill_from_seed_v5(out: DraftFeatureOutputV5, seed: FeatureSeed) -> DraftFeat
         ClarificationDraft(
             clarification_id=c.clarification_id,
             topic=c.topic,
-            match_terms=list(c.match_terms),
+            match_terms=list(c.match_terms)[:DRAFT_MATCH_TERMS_MAX],
             answer=c.answer,
             reveals=list(c.reveals),
             answer_hint=pointer_hint(_match_title(c.hint_source or "", titles))

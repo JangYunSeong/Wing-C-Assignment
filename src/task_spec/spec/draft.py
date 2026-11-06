@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
+from pydantic import ValidationError
+
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
 from task_spec.nodes.pseudonymize.dictionaries import load_dictionaries
@@ -539,7 +541,17 @@ async def draft_task(
             res.fail_reasons.append(f"{type(exc).__name__}: {str(exc)[:300]}")
             continue
         res.provenance.append(r.provenance)
-        parsed = shuffler(r.parsed, f"{ctx.sub_label}|{ctx.industry_label}|{attempt}")
+        try:
+            parsed = shuffler(r.parsed, f"{ctx.sub_label}|{ctx.industry_label}|{attempt}")
+        except ValidationError as exc:
+            # 출력 스키마는 통과했지만 코드가 채운 전체 출력이 어긋남 — 실행을 멈추지 않고 이 시도만 실패로 (위치·종류만 남김)
+            where = ", ".join(f"{'.'.join(map(str, e['loc']))}:{e['type']}" for e in exc.errors())
+            logger.warning("%s attempt=%d fill_invalid %s", task, attempt + 1, where)
+            res.errors.append(
+                NodeError(node=task, code="FillValidationError", message="과제 서술 변환 실패")
+            )
+            res.fail_reasons.append(f"FillValidationError: {where[:300]}")
+            continue
         r = r.model_copy(update={"parsed": parsed})
         problems = checker(r.parsed, ctx) + (extra_check(r.parsed) if extra_check else [])
         logger.info(

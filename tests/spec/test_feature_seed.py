@@ -503,6 +503,60 @@ def test_v5_pointer_matches_title_loosely() -> None:
     assert check_feature(out, _seed_ctx()) == []
 
 
+def test_v5_six_match_terms_fit_draft_limit() -> None:
+    # v5 출력은 match_terms 6개까지 — 변환(ClarificationDraft, 5개)에서 실행이 멈추지 않는다 (run e0b1b108)
+    from task_spec.schemas import DraftFeatureOutputV5
+    from task_spec.spec.feature import fill_from_seed_v5
+
+    d = _v5draft()
+    d["clarifications"][0]["match_terms"] = [f"동시 요청 {i}" for i in range(6)]
+    out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+    assert len(out.clarifications[0].match_terms) <= 5
+
+
+def test_long_scenarios_keep_request_note_within_limit() -> None:
+    from task_spec.schemas import DraftFeatureOutputV5
+    from task_spec.spec.feature import fill_from_seed_v5
+
+    d = _v5draft()
+    # 상한 꽉 채움 — 안내 문장을 붙이면 넘는다
+    d["scenario"] = ("주문 화면을 고칩니다. " * 300)[:3000]
+    d["debug_stage"]["scenario"] = ("배포 뒤 문의가 늘었습니다. " * 200)[:2000]
+    out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
+    assert len(out.scenario) <= 3000 and out.scenario.endswith("할 수 있습니다.")
+    assert "\n\n아래 자료 중 최대" in out.scenario
+    assert len(out.debug_stage.scenario) <= 2000
+    assert out.debug_stage.scenario.endswith("요청해 볼 수 있습니다.")
+
+
+async def test_fill_error_fails_attempt_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pydantic import ValidationError
+
+    from task_spec.schemas import ClarificationDraft
+    from task_spec.spec import feature
+
+    real = feature.fill_from_seed_v5
+    calls = {"n": 0}
+
+    def flaky(out, seed):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            ClarificationDraft.model_validate({})  # ValidationError
+        return real(out, seed)
+
+    monkeypatch.setattr(feature, "fill_from_seed_v5", flaky)
+    fake = (
+        FakeBackend()
+        .push(Completion(json.dumps(_v5draft(), ensure_ascii=False)))
+        .push(Completion(json.dumps(_v5draft(), ensure_ascii=False)))
+    )
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V5())  # type: ignore[arg-type]
+    assert len(fake.calls) == 2 and res.output is not None
+    assert [e for e in res.errors if e.code == "FillValidationError"]
+    assert res.fail_reasons[0].startswith("FillValidationError:")
+    assert ValidationError  # 원인 형식 확인용 import
+
+
 async def test_v5_bad_pointer_is_reasked() -> None:
     bad = _v5draft()
     bad["clarifications"][0]["hint_source"] = "운영 회의록"  # 1단계 자료에 없음
