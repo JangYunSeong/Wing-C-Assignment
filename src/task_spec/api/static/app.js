@@ -748,8 +748,16 @@ function renderFeatureTask(t) {
     }
     ${
       clar.length
-        ? `<div><div class="block-head"><span class="eyebrow">추가 요구 — 지원자가 물으면 공개</span><span class="only-approver">주제·답·단서는 승인자·진행자에게만 보임</span></div>
-        ${idList(clar, "clarification_id", (x) => `<b>${esc(x.topic)}</b> — ${esc(x.answer)}${(x.reveals || []).length ? ` <span class="mono">단서: ${esc(x.reveals.join(", "))}</span>` : ""}`)}</div>`
+        ? `<div><div class="block-head"><span class="eyebrow">추가 요구 — 지원자가 물으면 공개 (짚은 질문엔 구체 답, 아니면 모호한 답)</span><span class="only-approver">주제·매칭 낱말·단서는 승인자·진행자에게만 보임</span></div>
+        ${idList(
+          clar,
+          "clarification_id",
+          (x) =>
+            `<b>${esc(x.topic)}</b>${(x.reveals || []).length ? ` <span class="mono">단서: ${esc(x.reveals.join(", "))}</span>` : ""}` +
+            (x.answer_hint
+              ? `<span class="why">일반 질문 → ${esc(x.answer_hint)}</span><span class="why">짚은 질문(${esc((x.match_terms || []).join(", "))}) → ${esc(x.answer)}</span>`
+              : ` — ${esc(x.answer)}`),
+        )}</div>`
         : ""
     }
     ${

@@ -317,12 +317,19 @@ class HiddenAcceptance(Schema):
 
 
 class Clarification(Schema):
-    """지원자가 물으면 공개할 추가 요구·제약 1건. topic 은 질문 매칭용(승인자·진행자만)."""
+    """지원자가 물으면 공개할 추가 요구·제약 1건. topic·match_terms 는 질문 매칭용(승인자·진행자만).
+
+    두 층 답 [확정: 2026-11-06 사용자]: 진행자(응시 플랫폼)는 질문에 match_terms 중 하나라도 있으면 answer(구체),
+    없으면 answer_hint(모호)를 준다 — 둘 다 승인 대상, 보낼 때 문장을 바꾸지 않는다 (고르는 것만, 결정적).
+    answer_hint 가 없는 예전 판은 늘 answer 를 준다.
+    """
 
     clarification_id: str = Field(pattern=r"^c\d{1,2}$")
     topic: str = Field(min_length=1, max_length=120)
-    answer: str = Field(min_length=1, max_length=600)
+    answer: str = Field(min_length=1, max_length=600)  # 구체적인 답 — 정확히 짚은 질문에
     reveals: list[str] = Field(default_factory=list)  # 이 답이 단서가 되는 trap_id
+    answer_hint: str | None = Field(default=None, max_length=400)  # 모호한 답 — 일반 질문에
+    match_terms: list[str] = Field(default_factory=list, max_length=8)  # 구체 답을 줄 질문 낱말
 
 
 class AcceptedDesign(Schema):
