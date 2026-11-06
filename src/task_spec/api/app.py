@@ -75,6 +75,7 @@ def create_app(
                 common_store=common_store,
                 incidents=load_incidents(app.state.settings.incidents_dir),
                 use_cover_letters=app.state.settings.use_cover_letters,
+                feature_task_default=app.state.settings.feature_task_default,
             )
             app.state.launcher = RunLauncher(app.state.graph)
             try:

@@ -80,7 +80,7 @@ class DraftContext:
 
 @dataclass
 class DraftResult:
-    output: DraftTaskOutput | None = None
+    output: Any = None  # DraftTaskOutput (이슈형·슬롯) 또는 DraftFeatureOutput (기능형)
     anchors_ok: bool = True  # False = 재요청 후에도 근거 id 가 비어 행동 기준을 비운다
     provenance_id: str | None = None  # 채택한 답의 provenance
     incident_id: str | None = None  # 프롬프트에 실제로 넣은 공개 사례
@@ -97,7 +97,7 @@ def build_input(
     ctx: DraftContext,
     note: str | None = None,
     model: type[DraftTaskInput] = DraftTaskInput,
-    extra_input: dict[str, str] | None = None,
+    extra_input: dict[str, Any] | None = None,
 ) -> DraftTaskInput:
     """템플릿의 입력 스키마(v1 DraftTaskInput / v2 DraftTaskInputV2 / 슬롯 DraftSlotInput)에 맞춰 만든다."""
     comps = "\n".join(
@@ -275,27 +275,42 @@ def incident_copied(text: str, inc: PublicIncident) -> list[str]:
 
 def _check_artifacts(out: DraftTaskOutput, arts: list[Any]) -> list[str]:
     """자료 점진 공개(v3): id 고유, 핵심 1개 이상·방해 3개 이상, 요청 한도 ≤ max(핵심+1, 자료/3), 상황에 자료 본문을 미리 싣지 않음."""
+    return check_artifact_list(
+        arts, scenario=out.scenario, limit=getattr(out, "max_requests", None)
+    )
+
+
+def check_artifact_list(
+    arts: list[Any],
+    *,
+    scenario: str,
+    limit: int | None,
+    min_distractor: int = 3,
+    label: str = "",
+) -> list[str]:
+    """자료 목록 하나의 규칙 (공통 과제 v3·슬롯·기능형 1·2단계가 같이 쓴다). label 은 사유 앞에 붙는 단계 이름."""
     problems: list[str] = []
     ids = [a.artifact_id for a in arts]
     if len(set(ids)) != len(ids):
-        problems.append("artifact_id 가 겹침")
+        problems.append(f"{label}artifact_id 가 겹침")
     roles = [a.role for a in arts]
-    if roles.count("key") < 1 or roles.count("distractor") < 3:
-        problems.append("자료는 핵심(key) 1개 이상, 방해(distractor) 3개 이상이어야 함")
-    limit = getattr(out, "max_requests", None)
+    if roles.count("key") < 1 or roles.count("distractor") < min_distractor:
+        problems.append(
+            f"{label}자료는 핵심(key) 1개 이상, 방해(distractor) {min_distractor}개 이상이어야 함"
+        )
     if limit is not None and limit > max(roles.count("key") + 1, len(arts) // 3):
         problems.append(
-            "max_requests 는 핵심 자료 수 + 1 또는 자료 수의 3분의 1 이하여야 함 (골라서 요청하게)"
+            f"{label}max_requests 는 핵심 자료 수 + 1 또는 자료 수의 3분의 1 이하여야 함 (골라서 요청하게)"
         )
     if limit is not None and limit < roles.count("key"):
         problems.append(
-            "max_requests 가 핵심 자료 수보다 작음 (정답에 필요한 자료를 다 볼 수 없음)"
+            f"{label}max_requests 가 핵심 자료 수보다 작음 (정답에 필요한 자료를 다 볼 수 없음)"
         )
     for a in arts:
         if (
             a.role == "key"
             and len(_norm(a.content)) >= 40
-            and _norm(a.content)[:40] in _norm(out.scenario)
+            and _norm(a.content)[:40] in _norm(scenario)
         ):
             problems.append(
                 f"핵심 자료 {a.artifact_id} 본문이 상황에 미리 실림 (요청해야만 보이게)"
@@ -490,10 +505,14 @@ async def draft_task(
     prompts: PromptRegistry,
     reviewer_note: str | None = None,
     task: str = TASK,
-    extra_input: dict[str, str] | None = None,
+    extra_input: dict[str, Any] | None = None,
     extra_check: Callable[[DraftTaskOutput], list[str]] | None = None,
+    checker: Callable[[Any, DraftContext], list[str]] = check,
+    repairer: Callable[[Any, DraftContext], tuple[Any, bool]] = repair,
+    shuffler: Callable[[Any, str], Any] = shuffle_artifacts,
 ) -> DraftResult:
-    """생성 → 검증 → 1회 재요청 → 고쳐 쓰기. 공통 과제(draft_task)와 확장 슬롯(draft_slot)이 같이 쓴다."""
+    """생성 → 검증 → 1회 재요청 → 고쳐 쓰기. 공통 과제(draft_task)·확장 슬롯(draft_slot)·기능형(draft_feature_task,
+    checker/repairer/shuffler 를 spec/feature.py 것으로)이 같이 쓴다."""
     template = prompts.get(task)
     res = DraftResult()
     if "incident" in template.input_model.model_fields and ctx.incident is not None:
@@ -512,9 +531,9 @@ async def draft_task(
             res.fail_reasons.append(f"{type(exc).__name__}: {str(exc)[:300]}")
             continue
         res.provenance.append(r.provenance)
-        parsed = shuffle_artifacts(r.parsed, f"{ctx.sub_label}|{ctx.industry_label}|{attempt}")
+        parsed = shuffler(r.parsed, f"{ctx.sub_label}|{ctx.industry_label}|{attempt}")
         r = r.model_copy(update={"parsed": parsed})
-        problems = check(r.parsed, ctx) + (extra_check(r.parsed) if extra_check else [])
+        problems = checker(r.parsed, ctx) + (extra_check(r.parsed) if extra_check else [])
         logger.info(
             "%s attempt=%d problems=%d latency_ms=%d",
             task,
@@ -544,7 +563,7 @@ async def draft_task(
         return res
     out, problems, res.provenance_id = best
     if problems:
-        out, res.anchors_ok = repair(out, ctx)
+        out, res.anchors_ok = repairer(out, ctx)
         res.flags.append(FLAG_DRAFT_INVALID + "; ".join(problems))
     res.output = out
     return res

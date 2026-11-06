@@ -11,7 +11,17 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 
 from task_spec.schemas.base import Schema
-from task_spec.schemas.domain import Artifact, BehavioralAnchors, Observable, Trap
+from task_spec.schemas.domain import (
+    AcceptedDesign,
+    Artifact,
+    BehavioralAnchors,
+    Clarification,
+    HiddenAcceptance,
+    Observable,
+    PublicAcceptance,
+    Requirement,
+    Trap,
+)
 
 
 class DraftTaskInput(Schema):
@@ -62,6 +72,60 @@ class DraftTaskOutputV3(DraftTaskOutput):
 
     artifacts: list[Artifact] = Field(min_length=6, max_length=12)
     max_requests: int = Field(ge=2, le=6)
+
+
+class DraftFeatureInput(DraftTaskInputV2):
+    """기능 개발형 공통 과제 (prompts/draft_feature_task) 입력 — 이슈형 v2 입력 + 단계별 시간.
+
+    공고·온톨로지·공개 사례만 (불변식 3). 참고 사례는 2단계 '배포 후 증상'과 숨은 요구의 원리 근거로 쓴다.
+    """
+
+    build_min: int = Field(ge=10, le=180)  # 1단계 구현
+    debug_min: int = Field(ge=5, le=60)  # 2단계 디버깅 (1단계 제출 뒤 공개)
+
+
+class DebugStageDraft(Schema):
+    """2단계 디버깅 (LLM 이 쓰는 부분). 공개 시점·시간은 결정적으로 붙인다 (spec/feature.py apply)."""
+
+    scenario: str = Field(min_length=1, max_length=2000)  # 배포 후 겉 증상 — 원인 개념 없이
+    trap_ids: list[str] = Field(min_length=1, max_length=3)
+    artifacts: list[Artifact] = Field(min_length=3, max_length=6)
+    max_requests: int = Field(ge=1, le=3)
+    deliverables: list[str] = Field(min_length=1, max_length=3)
+    observables: list[Observable] = Field(min_length=1, max_length=6)
+
+    @field_validator("deliverables", mode="before")
+    @classmethod
+    def _drop_nulls(cls, v: object) -> object:
+        return [x for x in v if x] if isinstance(v, list) else v
+
+
+class DraftFeatureOutput(Schema):
+    """기능 개발형 출력 — 이슈형 v3 와 겹치는 필드는 이름·의미가 같다 (승인 화면·평가 도구·검사 재사용)."""
+
+    title: str = Field(min_length=1, max_length=120)  # 기능 이름 — 구현 방법·숨은 요구 없이
+    scenario: str = Field(min_length=1, max_length=3000)  # 업무 맥락·사용자 요구
+    requirements: list[Requirement] = Field(min_length=2, max_length=6)
+    acceptance_public: list[PublicAcceptance] = Field(min_length=2, max_length=6)
+    deliverables: list[str] = Field(min_length=2, max_length=4)
+    artifacts: list[Artifact] = Field(min_length=5, max_length=8)  # 1단계 자료 (요청 시 공개)
+    max_requests: int = Field(ge=1, le=4)
+    clarifications: list[Clarification] = Field(min_length=2, max_length=5)
+    max_clarifications: int = Field(ge=1, le=4)
+    traps: list[Trap] = Field(min_length=1, max_length=3)  # 숨은 요구
+    acceptance_hidden: list[HiddenAcceptance] = Field(min_length=1, max_length=6)
+    accepted_designs: list[AcceptedDesign] = Field(min_length=2, max_length=4)
+    debug_stage: DebugStageDraft
+    invariant: str = Field(min_length=1, max_length=600)
+    variable: list[str] = Field(min_length=1, max_length=6)
+    observables: list[Observable] = Field(min_length=1, max_length=10)  # 1단계 관찰 행동
+    behavioral_anchors: BehavioralAnchors
+    tech_used: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("deliverables", "variable", "tech_used", mode="before")
+    @classmethod
+    def _drop_nulls(cls, v: object) -> object:
+        return [x for x in v if x] if isinstance(v, list) else v
 
 
 class DraftSlotInput(DraftTaskInput):
