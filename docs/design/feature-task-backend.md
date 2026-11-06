@@ -123,7 +123,13 @@
 ## 6. 생성 흐름
 
 1. `build_common` 은 지금 그대로 골격을 만들고 `task_kind` 를 정한다 (§3). 골격 값은 LLM 이 바꾸지 않는다.
-2. `task_kind=feature` 면 새 프롬프트 **`draft_feature_task` v1** 을 부른다 [제안]. `draft_task` 의 새 버전으로 하지 않는 이유: 출력 스키마가 달라 같은 과제 이름 아래 버전으로 두면 `CURRENT` 승격·평가 기록이 섞인다 (불변식 7 — 기존 vN 수정 금지, 평가 후 CURRENT).
+2. `task_kind=feature` 면 새 프롬프트 **`draft_feature_task` v1** 을 부른다 [확정: 2026-11-06 — PR-2 구현].
+   - 구현: `spec/feature.py` (검사·고쳐 쓰기·자료 섞기) + `spec/draft.py draft_task` 루프 재사용. 출력 `DraftFeatureOutput`, 2단계는 `DebugStageDraft`
+     (공개 시점·시간은 결정적으로 붙임). 자료는 단계 안에서 섞고 1단계 a1…aN, 2단계 aN+1… 로 이어서 번호를 매긴다.
+   - 기능형 카탈로그(§5) 전까지는 이슈형 공개 사례(`incidents/public_v1`)를 그대로 넣는다 — 사례의 "흔한 처방이 틀리는 원리"를 숨은 요구로,
+     "겉 증상"을 2단계 증상으로 옮긴다.
+   - **기본값 활성화 스위치** `FEATURE_TASK_DEFAULT`(기본 false): 꺼져 있으면 기본값 규칙이 feature 여도 이슈형으로 만들고 명세에 표시한다.
+     승인자가 수정 요청에서 기능형을 지정하는 것은 늘 된다. 평가(§9, PR-4) 통과 뒤 켠다. `draft_task` 의 새 버전으로 하지 않는 이유: 출력 스키마가 달라 같은 과제 이름 아래 버전으로 두면 `CURRENT` 승격·평가 기록이 섞인다 (불변식 7 — 기존 vN 수정 금지, 평가 후 CURRENT).
    - 모델은 처음엔 `draft_task` 와 같은 `opencode:qwen3.8-flash` 로 시작하고, 평가에서 모델 비교를 한다. 출력이 길어 `max_tokens` 는 `draft_task` v3 와 같은 16000, `LLM_TIMEOUT_SECONDS`(기본 300) 안에 드는지 확인한다.
 3. 자동 검증 (`spec/feature.py` [제안]) — 어긋나면 사유를 붙여 한 번 다시 요청, 그래도 어긋나면 고쳐 쓰고 `review_flags` (지금 정책과 같음):
    - 지금 규칙 재사용: 행동 기준의 수행준거 id 는 입력 목록 안에서만·측정 역량마다 하나 이상, 언어는 기술 환경 안에서만, 사례 베끼기·`avoid_terms`.
@@ -190,8 +196,8 @@
 ## 12. 구현 순서 (PR 단위) [제안]
 
 1. 스키마(`task_kind`·새 필드·`DebugStage`, 하위 호환) + 유형 선택 규칙(데이터 파일·우선순위) + 골격 + 승인 결정 `task_kind` — LLM 없음, 테스트. [진행 중 2026-11-06]
-2. 카탈로그 백엔드 8건 이상 (출처 확인·`verified`) + 검증 규칙(`spec/feature.py`).
-3. `draft_feature_task` v1 · `judge_feature_task` v1 + 평가 도구 확장 → dev 평가.
+2. `draft_feature_task` v1 + 검증 규칙(`spec/feature.py`) + 기본값 스위치 + 가짜 LLM 테스트·실제 생성 스모크 1건. [진행 중 2026-11-06]
+3. 카탈로그 백엔드 8건 이상 (출처 확인·`verified`) · `judge_feature_task` v1 + 평가 도구 확장 → dev 평가.
 4. 승인 화면 표시·유형 바꾸기 + test 평가 → CURRENT 결정.
 5. (2단계, 필요 시) 기능형 전용 확장 슬롯. 1단계 동안 슬롯은 지금 `draft_slot` 그대로.
 
