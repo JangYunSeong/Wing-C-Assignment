@@ -412,12 +412,45 @@ def hint_only(out: Any) -> list[str]:
     ]
 
 
+def _locate(term: str, text: str) -> re.Match[str] | None:
+    """_in_text·_term_rx 와 같은 기준으로 원문에서 위치를 찾는다 (한글은 띄어쓰기 무시)."""
+    if _HANGUL.search(term):
+        body = r"\s*".join(re.escape(ch) for ch in _norm(term))
+        return re.search(body, text, re.IGNORECASE) if body else None
+    return _phrase(term).search(text)
+
+
+def _quote(terms: list[str], text: str, limit: int = 2) -> str:
+    """걸린 말이 든 문장을 재요청 사유에 붙인다 — 생성 모델이 고칠 곳을 바로 찾게 [2026-11-06 사용자].
+
+    재요청 뒤에도 같은 표현이 남는 일이 잦았다 (gpt-4.1 v5 비교에서 상황 글 2/4). 문장이 길면 걸린 말 앞뒤만.
+    """
+    quotes: list[str] = []
+    for t in dict.fromkeys(terms):
+        m = _locate(t, text)
+        if m is None:
+            continue
+        start = max(text.rfind(ch, 0, m.start()) for ch in ".?!\n") + 1
+        ends = [i for i in (text.find(ch, m.end()) for ch in ".?!\n") if i != -1]
+        end = min(ends) + 1 if ends else len(text)
+        sent = text[start:end].strip()
+        if len(sent) > 90:
+            at = max(0, m.start() - start - 40)
+            sent = ("…" if at else "") + sent[at : at + 90] + "…"
+        q = f'"{sent}"'
+        if q not in quotes:
+            quotes.append(q)
+        if len(quotes) >= limit:
+            break
+    return (" — 고칠 문장: " + " / ".join(quotes)) if quotes else ""
+
+
 def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     """두 층 답의 모호한 답(answer_hint) — 구체 답보다 엄격하다 [2026-11-06 사용자].
 
     - 숨은 요구를 드러내는 말(재료 leak_terms·원인 개념·먼저 말할 개념·원 사례 원인 용어)을 쓰지 않는다.
     - 단서가 되는 추가 요구(reveals 있음)의 모호한 답에는 수치를 쓰지 않는다 — 운영 조건의 값은 정확히 짚은 질문에만.
-    - 모호한 답과 구체 답이 같으면 두 층이 아니다.
+    - 단서 추가 요구의 모호한 답과 구체 답이 같으면 두 층이 아니다 (단서가 아니면 같아도 된다).
     매칭 낱말이 비는 것은 재요청 사유가 아니다 — 공개 글의 말을 지운 결과다 (prune_match_terms, 승인자 표시).
     v5 단서 자료 답("'<제목>' 자료에서 확인할 수 있습니다."): 제목이 1단계 자료에 있고 방해 자료가 아니어야 한다.
     제목 자체의 금지어·운영 조건 표현은 check_feature 가 자료 제목으로 본다.
@@ -460,7 +493,7 @@ def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
             problems.append(
                 f"추가 요구 {c.clarification_id} 의 모호한 답에 수치가 있음 — 수치는 구체 답(정확히 짚은 질문)에만"
             )
-        if _norm(hint) == _norm(c.answer):
+        if c.reveals and _norm(hint) == _norm(c.answer):  # 단서가 아니면 같아도 해가 없다
             problems.append(f"추가 요구 {c.clarification_id} 의 모호한 답과 구체 답이 같음")
     return problems
 
@@ -588,6 +621,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
             problems.append(
                 "숨은 요구를 드러내는 말이 1단계 지원자 화면(제목·상황·공개 요구·수용 기준·추가 요구 답·자료 제목)에 나옴: "
                 + ", ".join(dict.fromkeys(s1))
+                + _quote(s1, stage1)
             )
         # 운영 조건 — 단서는 자료(원시 값)·정확히 짚은 질문의 구체 답에서만. 공개된 업무 요구에 나온 말은 뺀다
         story = "\n".join(
@@ -608,6 +642,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
                 "운영 조건을 드러내는 말이 1단계 제목·상황·공개 요구·공개 수용 기준에 나옴: "
                 + ", ".join(dict.fromkeys(cond))
                 + " — 상황은 만들 기능만, 운영 조건은 자료(원시 값)와 정확히 짚은 질문의 구체 답에서만"
+                + _quote(cond, story)
             )
         # 1단계 자료 제목 (요청 전부터 보이고, v5 단서 자료 답이 제목을 그대로 쓴다) — 재료의 자료 종류 이름(괄호 앞)에
         # 나온 말은 그 자료의 이름이라 괜찮다 (예: DBA "DB 정리 작업 설정"). 괄호 안 설명의 말은 안 된다
@@ -622,6 +657,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
                 "운영 조건을 드러내는 말이 1단계 자료 제목에 나옴: "
                 + ", ".join(dict.fromkeys(tcond))
                 + " — 제목은 '<구성 요소> <자료 종류>'만 (재료의 자료 종류 이름은 괜찮음), 조건은 본문의 원시 값으로"
+                + _quote(tcond, art_titles)
             )
         mixed = stage2_kinds_in_stage1(
             [a.title for a in out.artifacts], seed.stage2_evidence, seed.discoverable_by
@@ -637,6 +673,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
             problems.append(
                 "숨은 요구·원인을 드러내는 말이 2단계 상황·산출물·자료 제목에 나옴 (증상만): "
                 + ", ".join(dict.fromkeys(s2))
+                + _quote(s2, dbg_visible)
             )
 
     inc = ctx.incident
