@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from task_spec.llm import Completion, FakeBackend
+from task_spec.llm.backend import Usage
 from task_spec.nodes.starter.generate import (
     BuildInputs,
     accepted_input,
@@ -94,6 +95,13 @@ def _starter_overlay() -> Overlay:
 
 async def _gen(fn, fake: FakeBackend, *args: Any, **kw: Any):  # type: ignore[no-untyped-def]
     return await fn(*args, llm=_client(fake), prompts=PROMPTS, ontology_version="onto-test", **kw)
+
+
+async def test_failed_calls_are_counted_in_provenance() -> None:
+    fake = FakeBackend().push(*[Completion("{not json", usage=Usage(input=800, output=300))] * 4)
+    res = await _gen(gen_starter, fake, _inputs())
+    assert not res.ok and res.overlay is None and len(fake.calls) == 4
+    assert len(res.provenance) == 2 and sum(p.tokens.out for p in res.provenance) == 4 * 300
 
 
 async def test_gen_starter_ok_and_reask_on_locked_file() -> None:

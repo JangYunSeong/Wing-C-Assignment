@@ -321,6 +321,8 @@ async def _generate(
                 NodeError(node=task_name, code=type(exc).__name__, message="시작 코드 생성 실패")
             )
             res.fail_reasons.append(f"{type(exc).__name__}: {str(exc)[:300]}")
+            if (spent := getattr(exc, "provenance", None)) is not None:
+                res.provenance.append(spent)  # 실패한 호출도 비용·호출 수에
             continue
         res.provenance.append(r.provenance)
         out: GeneratedFiles = r.parsed  # type: ignore[assignment]

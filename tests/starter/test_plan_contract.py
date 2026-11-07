@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from task_spec.llm import Completion, FakeBackend
+from task_spec.llm.backend import Usage
 from task_spec.nodes.starter.plan_contract import (
     FLAG_INVALID,
     FLAG_SPEC_GAP,
@@ -105,6 +106,16 @@ async def test_first_answer_ok() -> None:
         "e2",
     ]
     assert res.hidden_plan is not None and res.hidden_plan.harness["pool_size"] == 8
+
+
+async def test_failed_calls_are_counted_in_provenance() -> None:
+    bad = Completion("{not json", usage=Usage(input=1000, output=500))
+    fake = FakeBackend().push(*[bad] * 4)  # 시도 2번 × (첫 답 + 형식 재요청)
+    res = await _run(fake)
+    assert not res.ok and res.contract is None
+    assert len(fake.calls) == 4
+    assert len(res.provenance) == 2 and all(p.prompt == "plan_contract@7" for p in res.provenance)
+    assert sum(p.tokens.out for p in res.provenance) == 4 * 500
 
 
 async def test_problems_are_reasked_once() -> None:
