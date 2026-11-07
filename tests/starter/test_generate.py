@@ -98,7 +98,7 @@ async def _gen(fn, fake: FakeBackend, *args: Any, **kw: Any):  # type: ignore[no
 async def test_gen_starter_ok_and_reask_on_locked_file() -> None:
     fake = FakeBackend().push(_files(*STARTER))
     res = await _gen(gen_starter, fake, _inputs())
-    assert res.ok and res.provenance[0].prompt == "gen_starter@1" and res.overlay is not None
+    assert res.ok and res.provenance[0].prompt == "gen_starter@2" and res.overlay is not None
     assert [f.path for f in res.overlay.files] == [p for p, _ in STARTER]
 
     fake = FakeBackend().push(_files(("build.gradle", "plugins {}"), *STARTER), _files(*STARTER))
