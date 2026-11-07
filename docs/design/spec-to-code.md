@@ -72,7 +72,7 @@ TaskContract                         ← 지원자에게 보임 (README "계약"
   endpoints[]:  id(e1…) · method(http 만) · path · summary · headers · query · request(필드) · responses(상태 코드·설명·본문 필드 또는 returns: m1 · m1[]) · refs(r*·p*)
   entities[]:   id(m1…) · name · fields · relations      ← #58 [데이터 모델]
     필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
-  seed[]:       entity id · 행 수 범위 · 값 규칙 (가상 데이터만)
+  seed[]:       entity id · rows(정확한 행 수, id 1~rows) · groups(id 범위마다 처음 값, 1~rows 를 빈틈·겹침 없이) · 값 규칙 (가상 데이터만, §10-16)
   public_tests[]: id(pt1…) · ac_id(p*) · 무엇을 확인하나 (공개 수용 기준 1:1 이상)
                   — README 에는 공개 테스트를 지원자에게 줄 때만 싣는다 (§4.3)
   covers:       req_id(r*) → endpoint/entity id 목록
@@ -81,6 +81,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
   harness:      템플릿 manifest 가 선언한 조절값(harness_params)에 넣을 값만 — 풀 크기 · 동시 요청 · 지연/오류 주입 지점과 값
                 ← 승인된 명세 1단계 자료·구체 답의 수치와 같아야 함 (§3.3)
   cases[]:      id(hc1…) · ac_id(h*) · trap_id · 시나리오 한 줄 · 기대(통과 조건) · 의도한 실패 사유(템플릿 failure_reasons 코드)
+                · data[](바꾸는 시드 행: 엔티티 · 수 · 처음 값 · 버스트 여부 — id 범위는 코드가 나눔, `starter/seed_rows.py`)
 ```
 
 - 구현: `src/task_spec/schemas/build.py`(`TaskContract`·`HiddenPlan`·`GeneratedFiles`·`FileRef`·`BuildState`), `src/task_spec/schemas/template.py`(manifest 중 이 파이프라인이 쓰는 부분 — `harness_params`·`failure_reasons`·`naming`·`interfaces`·`stack_conditions`). 필드마다 `refs` 를 두어 양방향 대응(§3.3)을 필드 단위로 본다.
@@ -106,6 +107,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - **명세에 나온 API 는 계약에** (2026-11-07 스모크에서 보탬): 제목·상황·공개 요구·공개 수용 기준에 나온 `METHOD /path`(기존 API 포함)가 계약에 있어야 하고, 공개 테스트·숨은 케이스가 언급하는 API 도 계약에 있어야 한다. 응답 `returns` 는 계약 엔티티를 가리킨다.
 - **자료의 운영 값은 모두 HiddenPlan 에**: 선택 조절값이어도 명세 자료에서 표기 패턴·표 열로 뽑히면 넣는다 — 빼면 하네스 기본값이 대신 들어가 실패 사유가 달라진다. 자료에 없는 선택 값을 넣으면 재요청 (지어낸 값).
 - 표기 패턴만으로 못 읽는 표(요청 지표처럼 열 이름 + 값 줄)는 manifest `spec_columns`(열 이름 정규식)로 그 열의 숫자를 읽는다.
+- **시드와 케이스 행** (§10-16, `starter/seed_rows.py`): 시드 groups 가 id 1~rows 를 빈틈·겹침 없이 덮고, 처음 값·케이스 `initial` 의 필드가 엔티티에 있으며 값 목록(`enum(A|B)` 형식 또는 제약 문장의 따옴표 낱말 2개 이상)이 있으면 그 안. 버스트 케이스 행 수 ≥ manifest `burst_rows` 조절값의 곱(Java: `concurrency × bursts`). 케이스 순서대로 처음 값이 맞는 그룹의 **큰 id 부터** 이어진 범위를 나누되 작은 id 10행(`RESERVED_ROWS`)은 지원자·공개 테스트 몫 — 나눌 수 없으면 재요청. 나눈 범위는 `gen_hidden` 입력의 케이스 아래 `데이터: <엔티티> id a~b (…)` 줄로 간다.
 
 ## 4. 생성기
 
@@ -266,7 +268,8 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 13. **명세 단계에서 운영 수치를 미리 검사**할지 (§3.3) — 하면 명세 승인 전에 `select_template` 을 한 번 돌려야 한다.
 14. **`gen_hidden` 에 `why_naive_breaks` 를 줄지** (§4) — 정확도 / 독립성.
 15. **`kind=public_test` 추가** (§4.3, #52 테이블).
-16. **계약 시드를 숨은 테스트가 쓸 수 있게 정하기** [제안] (5단계 스모크) — 시드 규칙이 모든 행의 처음 값을 정하고(예: "id 1~N 모두 READY"), `rows_min` 이 숨은 테스트가 동시에 바꿀 행 수(`concurrency × bursts` + 여유) 이상이어야 한다. 계약 검사(§3.3)에 규칙 추가 + `plan_contract` v3. `gen_hidden` 에 시작 코드의 `data.sql` 을 보여 주는 길은 §2 의 독립성(숨은 테스트는 시작 코드를 보지 않음)을 깨서 택하지 않음.
+16. **계약 시드를 숨은 테스트가 쓸 수 있게 정하기** [제안] (5단계 스모크) — 시드 규칙이 모든 행의 처음 값을 정하고(예: "id 1~N 모두 READY"), 행 수가 숨은 테스트가 동시에 바꿀 행 수(`concurrency × bursts`) + 지원자 몫 이상이어야 한다. `gen_hidden` 에 시작 코드의 `data.sql` 을 보여 주는 길은 §2 의 독립성(숨은 테스트는 시작 코드를 보지 않음)을 깨서 택하지 않음.
+    — 1단계 구현 (2026-11-07): `SeedRule`(rows · groups) · `HiddenCase.data` · manifest `burst_rows` · 검사·배정 `starter/seed_rows.py` (§3.3), README·생성기 입력의 시드 줄, `gen_hidden` 입력의 케이스별 id 범위, HARNESS.md 데이터 규칙. 기본값: 처음 값은 id 범위별 groups, 지원자 몫 작은 id 10행, README 에 행 수 공개. 2단계 (2026-11-07): `plan_contract` v3 + 입력 `seed_rules`. v3 스모크에서 LLM 이 버스트 곱·시드 합을 재요청에도 틀려 **행 수는 코드가 맞춘다** (`seed_rows.fit_seed` — 버스트 행 = 곱, 빈 엔티티 data 뺌, 모자란 시드 늘림, 바꾼 것은 `adjustments` 로 승인 화면에) → 2/2 첫 답 통과. 검사 오탐(글의 구체 id ↔ 계약 `{id}`)도 고침. 기록 `prompts/plan_contract/PROMOTIONS.md`. 3단계 (2026-11-07): 그 계약으로 생성 스모크 — 행 부족 실패 0, hc1 에서 흔한 구현은 의도한 사유로 실패·허용 구현 d1 은 통과 (숨은 테스트가 둘을 가른 첫 실행). hc2 는 숨은 테스트가 테이블 이름을 짐작해 틀림(`deliveries` ↔ `delivery`) → 테이블 이름을 템플릿 규칙(언어별)으로 계약에 두는 일이 남음, 고친 뒤 d1 참조 구현의 실패 기록 누락은 6단계 수리 대상. 4단계: CURRENT v3 (사용자 확인 2026-11-07).
 
 ## 11. 구현 순서 (PR 단위) [제안]
 
