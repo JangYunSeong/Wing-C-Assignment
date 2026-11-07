@@ -29,7 +29,7 @@ from task_spec.schemas import AcceptedDesign, Provenance, VerifyReport
 from task_spec.schemas.build import RepairRecord
 from task_spec.starter.contract import SpecView
 from task_spec.starter.repair import STARTER, RepairAction, RepairPlan, assign
-from task_spec.starter.static_check import Overlay, static_check
+from task_spec.starter.static_check import HARNESS_OVERRIDE, Overlay, static_check
 
 MAX_ROUNDS = 3  # 빌드 전체 재생성 상한
 PER_ARTIFACT = 1  # 산출물마다 재생성 상한
@@ -73,6 +73,17 @@ class BuildOutcome:
 def _record(a: RepairAction, result: Literal["regenerated", "failed", "skipped"]) -> RepairRecord:
     reason = f"{a.label}: {a.reason}" if a.label else a.reason
     return RepairRecord(gate=a.gate, target=a.generator, reason=reason[:300], result=result)
+
+
+def _voided(r: GenResult) -> bool:
+    """허용 구현 생성이 하네스가 덮어쓰는 설정 문제로만 실패 (생성기 안 정적 검사 — 재요청 뒤에도)."""
+    return (
+        r.task == "gen_accepted"
+        and not r.ok
+        and r.overlay is not None
+        and bool(r.problems)
+        and all(HARNESS_OVERRIDE in p for p in r.problems)
+    )
 
 
 def _static_actions(overlays: dict[str, Overlay], b: BuildInputs) -> RepairPlan:
@@ -127,6 +138,17 @@ async def build_and_repair(
             return None
         return r.overlay
 
+    def drop(r: GenResult, others: int) -> bool:
+        """허용 구현이 재요청에도 하네스가 덮어쓰는 설정에 기대면 그 설계를 뺀다 — 다른 허용 설계가 남을 때만 (사람 확인)."""
+        if not (_voided(r) and others > 0):
+            return False
+        out.provenance += r.provenance
+        label = r.overlay.label if r.overlay is not None else "?"
+        out.review_flags.append(
+            f"허용 설계 {label} 제외 — 구현이 {HARNESS_OVERRIDE}에 기댐 (재료의 허용 설계 확인)"
+        )
+        return True
+
     starter = took(await gen_starter(b, **kw))  # type: ignore[arg-type]
     if starter is None:
         return out
@@ -135,7 +157,10 @@ async def build_and_repair(
         gen_naive(b, starter, **kw),  # type: ignore[arg-type]
         *(gen_accepted(b, starter, d, **kw) for d in designs),  # type: ignore[arg-type]
     )
-    made = [took(r) for r in first]
+    accepted = list(first[2:])
+    usable = sum(1 for r in accepted if not _voided(r))
+    kept = [r for r in accepted if not drop(r, usable)]
+    made = [took(r) for r in (*first[:2], *kept)]
     if any(o is None for o in made):
         return out
     out.overlays = {STARTER: starter, **{(o.label or HIDDEN): o for o in made if o is not None}}
@@ -179,7 +204,7 @@ async def build_and_repair(
                 )
             out.repairs += [_record(a, "skipped") for a in plan.actions]
             return out
-        if not await _regenerate(plan.actions, out, b, by_id, kw, took):
+        if not await _regenerate(plan.actions, out, b, by_id, kw, took, drop):
             return out
     return out
 
@@ -191,6 +216,7 @@ async def _regenerate(
     by_id: dict[str, AcceptedDesign],
     kw: dict[str, object],
     took,  # type: ignore[no-untyped-def]
+    drop,  # type: ignore[no-untyped-def]
 ) -> bool:
     """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
     시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
@@ -240,6 +266,10 @@ async def _regenerate(
     results = await asyncio.gather(*(j for _, j in jobs))  # type: ignore[arg-type]
     ok_all = True
     for (label, _), r in zip(jobs, results, strict=True):
+        others = sum(1 for k, o in out.overlays.items() if o.kind == "ref_accepted" and k != label)
+        if drop(r, others):
+            out.overlays.pop(label, None)
+            continue
         new = took(r)
         if new is None:
             ok_all = False
