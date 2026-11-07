@@ -44,6 +44,7 @@ from task_spec.schemas import (
 from task_spec.schemas.build import FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.starter.contract import SpecView, mentioned_apis
+from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
 from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
@@ -68,6 +69,9 @@ class GenResult:
     provenance: list[Provenance] = field(default_factory=list)
     errors: list[NodeError] = field(default_factory=list)
     fail_reasons: list[str] = field(default_factory=list)
+    adjustments: list[str] = field(
+        default_factory=list
+    )  # 코드가 고친 것 (starter/init_scripts.py) — 승인 화면에
 
     @property
     def ok(self) -> bool:
@@ -145,13 +149,14 @@ def plan_text(plan: HiddenPlan, contract: TaskContract | None = None) -> str:
 
 
 def existing_apis(task: TaskItem, contract: TaskContract) -> list[str]:
-    """명세 공개 글에 나온 API 중 계약에 있는 것 = 이미 있는 기능 (시작 코드가 완전히 동작하게 만든다)."""
+    """이미 있는 기능 (시작 코드가 완전히 동작하게 만든다) = 계약이 `existing` 으로 표시한 API + 명세 공개 글에 `METHOD /path` 로 나온
+    계약 API. 2026-11-07 알파 테스트: 명세가 "거래 상태 변경 API" 라고만 써 목록이 비자 시작 코드가 범위를 짐작했다 → 계약 표시를 먼저."""
     named = set(mentioned_apis(SpecView.from_task(task).public_texts))
     out = []
     for e in contract.endpoints:
         key = mentioned_apis([f"{e.method} {e.path}"]) if e.method else []
-        if key and key[0] in named:
-            out.append(f"{e.method} {e.path} — {e.summary}")
+        if e.existing or (key and key[0] in named):
+            out.append(f"{e.method or ''} {e.path} — {e.summary}".strip())
     return out
 
 
@@ -293,14 +298,15 @@ async def _generate(
     ontology_version: str,
     note: str | None = None,
     previous: Overlay | None = None,
+    fix: Callable[[list[GeneratedFile]], tuple[list[GeneratedFile], list[str]]] | None = None,
 ) -> GenResult:
-    """생성 → 정적 검사 → 1회 재요청. 프롬프트가 previous_files 를 받으면(수리판) 이전 출력을 주고 고칠 파일만 받아 합친다 —
+    """생성 → (fix: 코드가 고칠 수 있는 것은 고침) → 정적 검사 → 1회 재요청. 프롬프트가 previous_files 를 받으면(수리판) 이전 출력을 주고 고칠 파일만 받아 합친다 —
     밖에서 준 이전 출력(수리 루프)이든 이 함수 안의 첫 답(정적 검사 재요청)이든 같다."""
     res = GenResult(task=task_name)
     prompt_t = prompts.get(task_name)
     repairable = "previous_files" in prompt_t.input_model.model_fields
     prev = previous if repairable else None
-    best: tuple[Overlay, list[str]] | None = None
+    best: tuple[Overlay, list[str], list[str]] | None = None
     for attempt in range(2):
         inp = make_input(note)
         if prev is not None:
@@ -319,6 +325,9 @@ async def _generate(
         res.provenance.append(r.provenance)
         out: GeneratedFiles = r.parsed  # type: ignore[assignment]
         files = merge_files(prev.files, out.files) if prev is not None else list(out.files)
+        fixed: list[str] = []
+        if fix is not None:
+            files, fixed = fix(files)
         overlay = make_overlay(files)
         problems = check(overlay)
         logger.info(
@@ -330,7 +339,7 @@ async def _generate(
             r.provenance.latency_ms,
         )
         if best is None or len(problems) < len(best[1]):
-            best = (overlay, problems)
+            best = (overlay, problems, fixed)
         if not problems:
             break
         if attempt == 0:
@@ -351,7 +360,7 @@ async def _generate(
     if best is None:
         res.flags.append(FLAG_FAILED + task_name)
         return res
-    res.overlay, res.problems = best
+    res.overlay, res.problems, res.adjustments = best
     if res.problems:
         res.flags.append(FLAG_INVALID + f"{task_name}: " + "; ".join(res.problems))
     return res
@@ -380,6 +389,10 @@ class BuildInputs:
         )
         return res.for_target(KIND_TARGET[overlay.kind])
 
+    def fix(self, files: list[GeneratedFile]) -> tuple[list[GeneratedFile], list[str]]:
+        """생성기 출력에서 코드가 고칠 수 있는 것 — 빈 시작 스크립트 (starter/init_scripts.py)."""
+        return ensure_statements(files, self.template.manifest)
+
 
 def _overlay(kind: FileKind, label: str = "") -> Callable[[list[GeneratedFile]], Overlay]:
     return lambda files: Overlay(kind=kind, files=tuple(files), label=label)
@@ -404,6 +417,7 @@ async def gen_starter(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
+        fix=b.fix,
     )
 
 
@@ -465,6 +479,7 @@ async def gen_naive(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
+        fix=b.fix,
     )
 
 
@@ -489,4 +504,5 @@ async def gen_accepted(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
+        fix=b.fix,
     )

@@ -71,6 +71,10 @@ class Endpoint(Schema):
     request: list[ContractField] = Field(default_factory=list)  # 요청 본문
     responses: list[ContractResponse] = Field(min_length=1)
     refs: list[str] = Field(min_length=1)
+    # 이 과제 전에 이미 있는 API 인가 — true 면 시작 코드가 지금 동작을 만들어 두고(새 요구가 더하는 동작은 빼고),
+    # false 면 시작 코드는 자리만 둔다. 2026-11-07 알파 테스트: 명세 글에 `METHOD /path` 가 없어 기존 API 목록이 비자
+    # 시작 코드 생성기가 범위를 짐작 — 1회차는 기존 API 를 비우고 새 조회 API 를 구현, 2회차는 새 기능까지 다 구현.
+    existing: bool = False
 
     @field_validator("refs")
     @classmethod

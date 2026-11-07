@@ -187,6 +187,14 @@ class GradleVerifier:
         self.rounds += 1
         self.work.mkdir(parents=True, exist_ok=True)
         runs = [await asyncio.to_thread(self._target, "starter", "starter", (starter,), None)]
+        if (
+            runs[0].setup == "ok"
+        ):  # 시작 코드 그대로 + 숨은 테스트 — 이미 풀려 있으면 안 된다 (repair._starter_solves)
+            runs.append(
+                await asyncio.to_thread(
+                    self._target, "starter+hidden", "starter_hidden", (starter, hidden), hidden
+                )
+            )
         for r in refs:  # 개발 서버 한 대 — 차례로
             runs.append(
                 await asyncio.to_thread(

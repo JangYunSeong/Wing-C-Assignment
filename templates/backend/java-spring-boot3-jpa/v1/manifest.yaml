@@ -58,6 +58,11 @@ fill_slots:
     - src/main/resources/application.yml
     - src/main/resources/schema.sql
     - src/main/resources/data.sql
+# Spring sql.init (mode: always) 은 주석을 걷어낸 스크립트가 비면 부팅에 실패한다 — 오버레이가 이 파일을 실행할 문장 없이 쓰면
+# 코드가 noop 을 붙인다 (starter/init_scripts.py). 2026-11-07 알파 테스트: 시드 0행 → data.sql 주석뿐 → 시작 코드 boot_error 2회.
+init_scripts:
+  paths: [src/main/resources/schema.sql, src/main/resources/data.sql]
+  noop: "SELECT 1;"
 # 어느 오버레이도 덮어쓸 수 없다.
 locked:
   - build.gradle
@@ -105,6 +110,12 @@ hidden_rules:
   http_calls:
     - '(?<![\w.])send\(\s*"(?P<method>[A-Z]+)"\s*,\s*'
     - '(?<![\w.])get\(\s*(?=")'
+  # 응답 JSON Map 값을 단언에 그대로 넣는 곳 (그룹 1 = 필드) — 계약에서 정수 형식인 필드면 다시 쓰게 한다 (static_check._raw_number_asserts).
+  # 2026-11-07 알파 테스트: assertThat(log.get("transactionId")).isEqualTo(txId) → Integer 105 ≠ 105L 로 흔한 구현·허용 구현 모두 실패.
+  # 변수(+ 인자에 괄호 없는 메서드 호출 사슬) 바로 뒤 .get("필드") 만 — 캐스트한 꼴 `assertThat(((Number)log.get("id")).longValue())` 은 맞지 않는다.
+  # (2026-11-07 알파 3회차: 처음 정규식이 공백 없는 캐스트를 잡아 올바른 숨은 테스트를 재요청·실패시킴)
+  raw_number_asserts:
+    - 'assertThat\(\s*\w+(?:\.\w+\([^()"]*\))*\.get\(\s*"(\w+)"\s*\)\s*\)'
 
 # 버스트 케이스가 요청마다 다른 시드 행을 쓰려면 필요한 행 수 = 이 조절값들의 곱 (HiddenCase.data[].burst, spec-to-code §10-16)
 burst_rows: [concurrency, bursts]

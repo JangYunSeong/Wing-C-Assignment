@@ -288,6 +288,11 @@ def _fields(contract: TaskContract) -> list[tuple[str, ContractField]]:
     return out
 
 
+def contract_fields(contract: TaskContract) -> list[tuple[str, ContractField]]:
+    """(위치, 필드) — 정적 검사에서도 쓰는 공개 이름."""
+    return _fields(contract)
+
+
 def contract_text(contract: TaskContract) -> str:
     """계약에서 지원자에게 보이는 글 전부 + 식별자를 낱말로 푼 것 (숨은 요구 핵심어 검사용)."""
     parts: list[str] = []
@@ -374,7 +379,8 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
     if loose:
         problems.append(
             f"어느 공개 요구(covers)에도 연결되지 않은 계약 요소: {', '.join(loose)} — "
-            "요구에 없는 인터페이스·엔티티는 해법을 흘린다"
+            "관련된 공개 요구가 있으면 그 요구의 covers 에 잇는다 (기존 API 가 다루는 대상 엔티티는 그 API 를 쓰는 요구에). "
+            "어느 요구와도 관련 없을 때만 뺀다 — 요구에 없는 인터페이스·엔티티는 해법을 흘린다"
         )
 
     # 명세 → 계약. covers 값에는 입력 환경 id(f*)도 된다 (요구를 입력 환경에 잇는 것은 자연스럽다 — 덮였는지 따지지는 않음).
@@ -592,6 +598,39 @@ def _no_seed_rows(
     return out
 
 
+_CHANGES = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _target_rows(contract: TaskContract, plan: HiddenPlan) -> list[str]:
+    """경로 변수({id})로 기존 대상을 바꾸는 API 가 있으면 그 대상의 시드 행과 숨은 케이스의 data 가 있어야 한다.
+
+    2026-11-07 알파 테스트 (새 공고): covers 재요청에 LLM 이 대상 엔티티(거래)를 잇지 않고 지워, 계약에 감사 기록 엔티티(0행)만
+    남았다. 시작 코드는 기존 API 를 TODO 로 비웠고, 숨은 케이스는 없는 id 로만 요청해 모든 응답이 404 — 흔한 구현도 통과했다.
+    """
+    apis = [
+        f"{e.method} {e.path}"
+        for e in contract.endpoints
+        if (e.method or "").upper() in _CHANGES and "{" in e.path
+    ]
+    if not apis:
+        return []
+    out: list[str] = []
+    shown = ", ".join(apis)
+    if sum(s.rows for s in contract.seed) == 0:
+        out.append(
+            f"시드에 행이 하나도 없는데 경로 변수로 기존 대상을 바꾸는 API 가 있음: {shown} — "
+            "그 API 가 다루는 대상 엔티티(상태를 가진 것)를 entities·seed 에 두고 covers 로 그 API 를 쓰는 요구에 잇는다. "
+            "없는 id 로만 요청하면 모든 응답이 404 라 숨은 케이스가 구현을 가르지 못한다"
+        )
+    empty = [c.case_id for c in plan.cases if not c.data and not c.setup]
+    if empty:
+        out.append(
+            f"숨은 케이스 {', '.join(empty)} 가 바꿀 행(data)을 선언하지 않음 — {shown} 처럼 기존 대상을 바꾸는 API 를 "
+            "시험하면 그 대상 엔티티의 행을 data 로 선언한다 (id 범위는 코드가 나눈다)"
+        )
+    return out
+
+
 def _foreign_keys(contract: TaskContract) -> list[str]:
     """foreign_keys 의 필드·대상 엔티티가 계약에 있다."""
     names = {m.name for m in contract.entities}
@@ -625,6 +664,7 @@ def check_contract(
     if manifest.seed_rows:
         problems += seed_problems(contract)
         problems += case_rows_problems(contract, plan, manifest)
+        problems += _target_rows(contract, plan)
     else:
         problems += _no_seed_rows(contract, plan, manifest)
     problems += _foreign_keys(contract)
