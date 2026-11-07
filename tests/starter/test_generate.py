@@ -14,6 +14,7 @@ from task_spec.nodes.starter.generate import (
     BuildInputs,
     accepted_input,
     existing_apis,
+    fit_input,
     gen_accepted,
     gen_hidden,
     gen_naive,
@@ -226,16 +227,129 @@ def test_generator_prompts_assemble_with_compact_schema() -> None:
         "gen_accepted": accepted_input(b.task, b.contract, b.template, _starter_overlay(), D1),
     }
     for task, inp in inputs.items():
-        prompt = assemble(PROMPTS.get(task), inp, ontology_version="v")
+        t = PROMPTS.get(task)
+        prompt = assemble(t, fit_input(inp, t.input_model), ontology_version="v")
         assert "files: [{" in prompt.messages[0].content, task
 
 
 def test_gen_starter_v2_asks_for_independent_existing_tests() -> None:
     """v2 (2026-11-07): 기존 기능 테스트 두 개가 같은 시드 행을 바꿔 실행 순서에 따라 실패했다."""
     b = _inputs()
+    t = PROMPTS.get("gen_starter", 2)
     prompt = assemble(
-        PROMPTS.get("gen_starter", 2),
-        starter_input(b.task, b.contract, b.template),
+        t,
+        fit_input(starter_input(b.task, b.contract, b.template), t.input_model),
         ontology_version="v",
     )
     assert "테스트 메서드마다 서로 다른 시드 행" in prompt.messages[0].content
+
+
+# ── 수리: 자기 이전 출력 + 고칠 파일만 (gen_starter v3 · gen_hidden/naive/accepted v2) ──
+
+
+class _Pinned:
+    """테스트용 — 지정한 생성기만 새 버전으로 (CURRENT 는 그대로)."""
+
+    def __init__(self, **pins: int) -> None:
+        self.pins = pins
+
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return PROMPTS.get(task, version or self.pins.get(task))
+
+
+class _Capture:
+    """응답을 차례로 돌려주고 보낸 user 메시지를 남긴다."""
+
+    def __init__(self, *answers: Completion) -> None:
+        self.answers, self.users = list(answers), []  # type: ignore[var-annotated]
+
+    async def complete(self, model: str, messages: list[Any], params: dict[str, Any]) -> Completion:
+        self.users.append(messages[-1].content)
+        return self.answers.pop(0)
+
+
+def _llm(backend: _Capture):  # type: ignore[no-untyped-def]
+    from task_spec.llm import LLMClient
+
+    async def _no_sleep(_: float) -> None:
+        return None
+
+    return LLMClient({"opencode": backend, "openai": backend}, sleep=_no_sleep)  # type: ignore[dict-item]
+
+
+def test_merge_files_overwrites_keeps_and_deletes() -> None:
+    from task_spec.nodes.starter.generate import merge_files
+    from task_spec.schemas import GeneratedFile as F
+
+    prev = [
+        F(path="a.java", content="A"),
+        F(path="b.java", content="B"),
+        F(path="c.java", content="C"),
+    ]
+    merged = merge_files(
+        prev,
+        [
+            F(path="b.java", content="B2"),
+            F(path="c.java", content=" "),
+            F(path="d.java", content="D"),
+        ],
+    )
+    assert [(f.path, f.content) for f in merged] == [
+        ("a.java", "A"),
+        ("b.java", "B2"),
+        ("d.java", "D"),
+    ]
+
+
+async def test_repair_gets_previous_output_and_returns_only_changed_files() -> None:
+    """2026-11-07 루프: 숨은 테스트가 import 하나를 빠뜨렸는데 수리가 처음부터 다시 써 다른 문제가 생겼다."""
+    fixed = ORDER.replace("private String status;", "private String status; // 고침")
+    cap = _Capture(_files((f"{PKG}/order/Order.java", fixed)))
+    res = await gen_starter(
+        _inputs(),
+        llm=_llm(cap),
+        prompts=_Pinned(gen_starter=3),  # type: ignore[arg-type]
+        ontology_version="onto-test",
+        note="검증 실패 — Order.java 를 고친다",
+        previous=_starter_overlay(),
+    )
+    assert res.ok and res.provenance[0].prompt == "gen_starter@3" and res.overlay is not None
+    assert {f.path: f.content for f in res.overlay.files} == {
+        f"{PKG}/order/Order.java": fixed,
+        "src/main/resources/schema.sql": STARTER[1][1],  # 손대지 않은 파일은 그대로
+    }
+    assert (
+        "이전 출력 (수리일 때만" in cap.users[0]
+        and "=== src/main/resources/schema.sql ===" in cap.users[0]
+    )
+
+
+async def test_static_reask_fixes_own_first_answer() -> None:
+    """생성기 안 재요청도 첫 답을 이전 출력으로 — 잠긴 파일을 빈 content 로 지우게."""
+    cap = _Capture(
+        _files(("build.gradle", "plugins {}"), *STARTER),
+        _files(("build.gradle", "")),
+    )
+    res = await gen_starter(
+        _inputs(),
+        llm=_llm(cap),
+        prompts=_Pinned(gen_starter=3),
+        ontology_version="onto-test",  # type: ignore[arg-type]
+    )
+    assert res.ok and res.overlay is not None
+    assert sorted(f.path for f in res.overlay.files) == sorted(p for p, _ in STARTER)
+    assert "(없음)" in cap.users[0].split("이전 출력 (수리일 때만")[1][:80]  # 처음엔 이전 출력 없음
+    assert "=== build.gradle ===" in cap.users[1]  # 재요청엔 첫 답을 이전 출력으로
+
+
+async def test_old_versions_ignore_previous_output() -> None:
+    cap = _Capture(_files(*STARTER))
+    res = await gen_starter(
+        _inputs(),
+        llm=_llm(cap),
+        prompts=PROMPTS,
+        ontology_version="onto-test",
+        previous=_starter_overlay(),
+    )
+    assert res.ok and res.provenance[0].prompt == "gen_starter@2"
+    assert "이전 출력" not in cap.users[0]

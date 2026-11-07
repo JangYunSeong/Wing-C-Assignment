@@ -19,6 +19,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel
+
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
 from task_spec.prompting import PromptRegistry, assemble
@@ -28,8 +30,11 @@ from task_spec.schemas import (
     GeneratedFile,
     GeneratedFiles,
     GenHiddenInput,
+    GenHiddenInputV2,
     GenRefInput,
+    GenRefInputV2,
     GenStarterInput,
+    GenStarterInputV2,
     HiddenPlan,
     NodeError,
     Provenance,
@@ -153,7 +158,7 @@ def starter_input(
     task: TaskItem, contract: TaskContract, template: Template, note: str | None = None
 ) -> GenStarterInput:
     m = template.manifest
-    return GenStarterInput(
+    return GenStarterInputV2(
         stack=stack_text(m),
         template_files=template_files_text(template),
         slots=slots_text(m, "starter"),
@@ -176,7 +181,7 @@ def hidden_input(
 ) -> GenHiddenInput:
     m = template.manifest
     harness = template.hidden / "HARNESS.md"
-    return GenHiddenInput(
+    return GenHiddenInputV2(
         stack=stack_text(m),
         harness_api=harness.read_text("utf-8") if harness.is_file() else NONE,
         slots=slots_text(m, "hidden"),
@@ -201,7 +206,7 @@ def _ref_input(
     note: str | None,
 ) -> GenRefInput:
     m = template.manifest
-    return GenRefInput(
+    return GenRefInputV2(
         stack=stack_text(m),
         slots=slots_text(m, "ref"),
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
@@ -254,6 +259,24 @@ def accepted_input(
 # ── 생성 루프 ─────────────────────────────────────────────
 
 
+def fit_input(inp: BaseModel, model: type[BaseModel]) -> BaseModel:
+    """프롬프트 버전이 선언한 입력 모델로 줄인다 — 옛 버전은 previous_files 자리가 없다 (Schema 는 모르는 필드를 거부)."""
+    return model.model_validate({k: v for k, v in dict(inp).items() if k in model.model_fields})
+
+
+def merge_files(
+    previous: Sequence[GeneratedFile], changed: Sequence[GeneratedFile]
+) -> list[GeneratedFile]:
+    """수리 답 합치기 — 이전 파일에 받은 파일만 덮어쓰고, 내용이 빈 파일은 지운다. 손대지 않은 파일은 그대로."""
+    merged = {f.path: f for f in previous}
+    for f in changed:
+        if f.content.strip():
+            merged[f.path] = f
+        else:
+            merged.pop(f.path, None)
+    return list(merged.values())
+
+
 async def _generate(
     task_name: str,
     make_input: Callable[[str | None], Any],
@@ -264,12 +287,22 @@ async def _generate(
     prompts: PromptRegistry,
     ontology_version: str,
     note: str | None = None,
+    previous: Overlay | None = None,
 ) -> GenResult:
+    """생성 → 정적 검사 → 1회 재요청. 프롬프트가 previous_files 를 받으면(수리판) 이전 출력을 주고 고칠 파일만 받아 합친다 —
+    밖에서 준 이전 출력(수리 루프)이든 이 함수 안의 첫 답(정적 검사 재요청)이든 같다."""
     res = GenResult(task=task_name)
     prompt_t = prompts.get(task_name)
+    repairable = "previous_files" in prompt_t.input_model.model_fields
+    prev = previous if repairable else None
     best: tuple[Overlay, list[str]] | None = None
     for attempt in range(2):
-        prompt = assemble(prompt_t, make_input(note), ontology_version=ontology_version)
+        inp = make_input(note)
+        if prev is not None:
+            inp = inp.model_copy(update={"previous_files": files_text(prev.files)})
+        prompt = assemble(
+            prompt_t, fit_input(inp, prompt_t.input_model), ontology_version=ontology_version
+        )
         try:
             r = await llm.call(prompt, prompt_t.output_model)  # type: ignore[arg-type]
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
@@ -280,7 +313,8 @@ async def _generate(
             continue
         res.provenance.append(r.provenance)
         out: GeneratedFiles = r.parsed  # type: ignore[assignment]
-        overlay = make_overlay(list(out.files))
+        files = merge_files(prev.files, out.files) if prev is not None else list(out.files)
+        overlay = make_overlay(files)
         problems = check(overlay)
         logger.info(
             "%s attempt=%d files=%d problems=%d latency_ms=%d",
@@ -307,6 +341,8 @@ async def _generate(
             note = "\n".join(
                 x for x in (note, f"이전 답의 문제 (고쳐서 다시 쓰세요):\n{lines}") if x
             )
+            if repairable:
+                prev = overlay  # 첫 답을 이전 출력으로 — 문제만 고치게
     if best is None:
         res.flags.append(FLAG_FAILED + task_name)
         return res
@@ -351,6 +387,7 @@ async def gen_starter(
     prompts: PromptRegistry,
     ontology_version: str,
     note: str | None = None,
+    previous: Overlay | None = None,
 ) -> GenResult:
     return await _generate(
         "gen_starter",
@@ -361,6 +398,7 @@ async def gen_starter(
         prompts=prompts,
         ontology_version=ontology_version,
         note=note,
+        previous=previous,
     )
 
 
@@ -371,6 +409,7 @@ async def gen_hidden(
     prompts: PromptRegistry,
     ontology_version: str,
     note: str | None = None,
+    previous: Overlay | None = None,
 ) -> GenResult:
     params = render_params(b.plan, b.template.manifest)
 
@@ -387,6 +426,7 @@ async def gen_hidden(
         prompts=prompts,
         ontology_version=ontology_version,
         note=note,
+        previous=previous,
     )
 
 
@@ -399,6 +439,7 @@ async def gen_naive(
     ontology_version: str,
     keep_traps: Sequence[str] = (),
     note: str | None = None,
+    previous: Overlay | None = None,
 ) -> GenResult:
     if b.seed is None:
         raise ValueError("gen_naive 는 재료(feature seed)의 흔한 구현 설명이 필요하다")
@@ -418,6 +459,7 @@ async def gen_naive(
         prompts=prompts,
         ontology_version=ontology_version,
         note=note,
+        previous=previous,
     )
 
 
@@ -430,6 +472,7 @@ async def gen_accepted(
     prompts: PromptRegistry,
     ontology_version: str,
     note: str | None = None,
+    previous: Overlay | None = None,
 ) -> GenResult:
     return await _generate(
         "gen_accepted",
@@ -440,4 +483,5 @@ async def gen_accepted(
         prompts=prompts,
         ontology_version=ontology_version,
         note=note,
+        previous=previous,
     )

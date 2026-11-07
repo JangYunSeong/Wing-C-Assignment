@@ -19,3 +19,9 @@ v1 의 시작 코드 자체 테스트가 **4회 중 3회** 실패 (생성 스모
 - 수리 루프 1회 (`--loop --pin gen_starter=2`, `…-loop-starter-v2`, $0.175): 시작 코드 통과. 숨은 테스트가 **처음으로 의도대로 가름** — 흔한 구현은 hc1·hc2 모두 의도한 사유
   (`pool_acquire_timeout` · `rollback_left_success`)로 실패, 허용 구현 d1 은 둘 다 통과. 남은 실패는 시작 코드와 무관 (두 참조 구현이 '없음 404' 기존 테스트에서 not-null — 계약 모호, spec-to-code §7).
 - 시작 코드 테스트 통과: v1 1/4 → v2 3/3.
+
+## v3 (2026-11-07, 아직 CURRENT 아님)
+
+v2 + 수리면 자기 이전 출력을 받아 고칠 파일만 출력 (gen_hidden·gen_naive·gen_accepted v2 와 같은 변경).
+
+- 수리 루프 1회 (gpt-4.1, 배송 감사 v5 계약 run 1, gen_starter v3·gen_hidden v2·gen_naive v2·gen_accepted v2 고정, `data/eval/build/2026-11-07-loop-repair-prev`, $0.18): 수리 2건 모두 **고칠 파일만** 바뀜 — 숨은 테스트 3파일 중 1개(테스트 자체 예외가 난 hc2), d1 2파일 중 1개(기존 테스트를 깬 서비스). 두 문제 모두 그 한 번에 고쳐짐. 남은 실패는 다시 만든 hc2 의 주입이 너무 넓음(`failCommitAfter = "delivery|delivery_audit_log"` — 실패 기록 INSERT 의 커밋까지 막아 어떤 설계도 통과 못 함) → 루프가 '숨은 테스트·계약 의심'으로 사람 확인. 시작 코드는 수리가 필요 없었다 (첫 생성 통과).
