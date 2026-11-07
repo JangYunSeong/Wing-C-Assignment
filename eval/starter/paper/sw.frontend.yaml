@@ -1,7 +1,7 @@
 # 종이 단계 manifest 초안 — 프론트엔드 (하네스 코드 없음, 계약 생성까지만). spec-to-code §11 다음 단계, 2026-11-07.
 # 재료 sw.frontend: 같은 로컬 저장소에 쓰는 실행 단위는 하나 — 같은 앱을 여러 탭·창에서 동시에 열어도.
 # 하네스가 할 일(예상): 브라우저 탭 N 개를 동시에 열고(Playwright) 오프라인 저장·복원·동기화를 섞어 돌린 뒤 데이터 손실·덮어쓰기를 센다.
-# 계약 스키마 확인 거리: 인터페이스 종류에 화면(UI)이 없다 — http(서버 API)로만 적을 수 있는지.
+# 2026-11-07 첫 종이 단계: 화면을 적을 수 없어 서버 API 만 계약됨 → ui 인터페이스(screens)로 다시.
 template_id: frontend/react-vite-paper
 version: 1
 stack:
@@ -11,13 +11,16 @@ stack:
   framework_version: "18"
   build_tool: npm
   build_tool_version: "10"
-interfaces: [http]
+interfaces: [ui]  # 화면(screens) + 화면이 부르는 서버 API(endpoints) — §11.1 ①
 naming:
-  path: '^/[a-z0-9/{}\-:]*$'
+  path: '^/[a-z0-9/\-]*(?:(?::[A-Za-z][A-Za-z0-9]*|\{[A-Za-z][A-Za-z0-9]*\})[a-z0-9/\-]*)*$'
   entity: '^[A-Z][A-Za-z0-9]*$'
   field: '^[a-z][A-Za-z0-9]*$'
+  test_id: '^[a-z][a-z0-9-]*$'
   table:
     style: none
+# DB 행을 바꾸는 과제가 아님 — 시드·행 배정 대신 입력 환경(fixtures)과 숨은 케이스 setup (spec-to-code §11.1 ③)
+seed_rows: false
 harness_params:
   - name: concurrent_tabs
     kind: int

@@ -85,3 +85,14 @@ v5 + 엔티티 `foreign_keys`(DB 외래 키로 둘 관계만, 없는 대상의 �
 - 수리 루프 1회 (run 2 계약, CURRENT 생성기, `…-loop-final-v6`, $0.147): 시작 코드에 외래 키 없음 · 숨은 테스트는 `Burst.rounds(concurrency, bursts, …)` · 주입은 `^\s*update\s+delivery\b` — 이번 수정들은 생성물에 반영됨.
   그러나 숨은 테스트가 `assertThat(() -> Instant.parse(…)).doesNotThrowAnyException()`(AssertJ 에서 모호해 컴파일 안 됨 — `assertThatCode` 나 하네스 `parseTime` 이 맞음)을 써서 컴파일 실패,
   최소 수리는 오류 난 2파일만 바꿨지만 고친 방법이 틀려 또 컴파일 실패 → 숨은 테스트 예산 소진 `failed`. 외래 키·버스트의 실행 효과는 확인 못 함.
+
+## v7 (2026-11-07, 아직 CURRENT 아님)
+
+직군별 종이 단계(spec-to-code §11.1)에서 계약이 HTTP + DB 행에만 맞음 → v6 + ui 화면(screens) · cli 종료 코드 · 행 시드를 쓰지 않는 템플릿은 입력 환경(fixtures)과 케이스 setup · 공개 조절값 근거 인용(evidence).
+스키마·검사도 함께 바뀜 (Screen·Fixture·HiddenCase.setup·HiddenPlan.evidence·manifest seed_rows, 엔드포인트별 상태 범위, 근거 확인 evidence_ok, LLM 전 사전 검사 폐지).
+
+- 종이 단계 5개 직군 (gpt-4.1, `…-paper-gpt41-v7`, $0.34): 네 가지 모두 작동 — 백엔드가 LLM 전에 막히지 않음(근거 인용, 틀린 인용 39≠40 을 검사가 잡고 재요청으로 고침), 프론트 계약에 화면·test id,
+  데이터 엔지니어 종료 코드 거부 없음, 데이터·DBA·ML 이 시드 대신 입력 환경과 케이스 setup. 최종 통과는 1/5 — 실패는 거의 검사 쪽이 너무 엄격해서:
+  covers 가 입력 환경(f*)을 가리키면 거부 · test id 를 계약 전체에서 유일하게 요구 · Java 경로 규칙이 `{robotId}` 를 거부(배송 감사 `{id}` 에만 맞음) · 프론트 초안이 `:projectId` 를 거부 · covers 키에 p* (재요청에도 되풀이) → 모두 고침 (재실행 전).
+- 배송 감사 회귀 (2회, `…-plan-contract-gpt41-v7`, $0.14): 2/2 통과 (둘 다 첫 답에 bursts 를 빠뜨려 재요청 1). 운영 값 손 예시와 같음(8/5000/32/32), 시드·행 배정·외래 키 없음 그대로, 전이 규칙 1/2.
+  concurrency 근거로 숫자 없는 문장을 인용 — 템플릿 패턴이 값을 확인해 통과 (근거 확인은 패턴이 못 찾을 때의 길).

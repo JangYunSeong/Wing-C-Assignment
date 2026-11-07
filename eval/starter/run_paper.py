@@ -67,6 +67,10 @@ def summarize(sub: str, t: Template, task: TaskItem, res: PlanResult) -> dict[st
     c, plan = res.contract, res.hidden_plan
     if c is None or plan is None:
         return row
+    row["raw"] = {
+        "contract": c.model_dump(),
+        "hidden_plan": plan.model_dump(),
+    }  # 검사를 고친 뒤 LLM 없이 다시 판정하려고
     names = {m.entity_id: m.name for m in c.entities}
     text = json.dumps(c.model_dump(), ensure_ascii=False)
     row |= {
@@ -82,6 +86,16 @@ def summarize(sub: str, t: Template, task: TaskItem, res: PlanResult) -> dict[st
         "seed": [seed_markdown(s, names.get(s.entity_id, s.entity_id)) for s in c.seed],
         "rules_in_contract": sorted(set(_RULE.findall(text)))[:12],
         "public_tests": [p.checks for p in c.public_tests],
+        "screens": [
+            {
+                "route": sc.route,
+                "test_ids": [el.test_id for el in sc.elements],
+                "storage": [k.name for k in sc.storage],
+            }
+            for sc in c.screens
+        ],
+        "fixtures": [f"{fx.fixture_id} ({fx.kind}) {fx.summary}" for fx in c.fixtures],
+        "evidence": plan.evidence,
         "harness": plan.harness,
         "cases": [
             {
@@ -90,6 +104,7 @@ def summarize(sub: str, t: Template, task: TaskItem, res: PlanResult) -> dict[st
                 "scenario": x.scenario,
                 "expect": x.expect,
                 "data": [d.model_dump() for d in x.data],
+                "setup": x.setup,
             }
             for x in plan.cases
         ],
@@ -127,10 +142,14 @@ def summary_md(rows: list[dict[str, Any]]) -> str:
                 ),
                 f"- 테이블: {r['tables']} · 시드: " + " / ".join(r["seed"]),
                 f"- 계약의 규칙(→): {r['rules_in_contract']}",
-                f"- 하네스 값: {r['harness']}",
+                f"- 화면: {r['screens']}",
+                f"- 입력 환경: {r['fixtures']}",
+                f"- 하네스 값: {r['harness']} · 근거: {r['evidence']}",
                 "- 숨은 케이스: "
                 + " / ".join(
-                    f"{x['case_id']} [{x['reason']}] {x['scenario'][:90]}" for x in r["cases"]
+                    f"{x['case_id']} [{x['reason']}] {x['scenario'][:90]}"
+                    + (f" · setup {x['setup']}" if x["setup"] else "")
+                    for x in r["cases"]
                 ),
                 f"- 행 배정: {r['allocation']}",
             ]

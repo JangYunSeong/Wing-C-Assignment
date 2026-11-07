@@ -22,6 +22,8 @@ naming:
     fk_patterns:
       - '\bforeign\s+key\s*\(\s*["]?(\w+)'
     reserved: [order, user, group, table, column, check, default, limit, offset, end]
+# DB 행을 바꾸는 과제가 아님 — 시드·행 배정 대신 입력 환경(fixtures)과 숨은 케이스 setup (spec-to-code §11.1 ③)
+seed_rows: false
 harness_params:
   - name: writes_per_sec
     kind: int

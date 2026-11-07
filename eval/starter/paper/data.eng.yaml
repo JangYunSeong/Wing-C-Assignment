@@ -17,6 +17,8 @@ naming:
   field: '^[a-z][a-z0-9_]*$'
   table:
     style: none
+# DB 행을 바꾸는 과제가 아님 — 시드·행 배정 대신 입력 환경(fixtures)과 숨은 케이스 setup (spec-to-code §11.1 ③)
+seed_rows: false
 harness_params:
   - name: column_limit
     kind: int
