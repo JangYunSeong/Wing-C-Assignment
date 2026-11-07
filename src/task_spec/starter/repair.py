@@ -5,7 +5,8 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
 
 판정 순서 — 앞 단계가 깨지면 뒤 단계 결과는 믿을 수 없어 보지 않는다:
 1. 시작 코드 (①빌드 · ②기존 테스트) — 실패면 `gen_starter` 만. 시작 코드를 다시 만들면 참조 구현도 다시 (루프가 처리).
-   ②' 시작 코드 그대로 + 숨은 테스트(검증기의 `starter_hidden` 실행)가 숨은 케이스를 모두 통과 → 과제가 이미 풀림 → `gen_starter` 만.
+   ②' 시작 코드 그대로 + 숨은 테스트(검증기의 `starter_hidden` 실행)가 숨은 케이스를 하나라도 통과 → 새 기능이 이미 들어 있음 → `gen_starter` 만
+   (이미 다시 만든 뒤에도 통과하면 표시만).
 2. 참조 구현 대상마다 준비 — 컴파일 오류는 오류가 난 파일의 주인에게 (숨은 테스트 파일 → `gen_hidden`, 그 밖 → 그 참조 구현),
    기동 실패 → 그 참조 구현, 시간 초과(⑨) → `gen_hidden`.
 3. 참조 구현이 둘 이상이고 모두 같은 기존 테스트를 같은 오류로 깸 → 계약 모호 의심 (다시 만들지 않고 사람 확인).
@@ -34,6 +35,12 @@ from task_spec.starter.static_check import Overlay
 MAX_MESSAGE = 220
 STARTER = "starter"
 COMPILE_SUFFIX = "#compile"  # regen_counts 에서 컴파일 수리 횟수 키 (일반 수리와 따로)
+# 컴파일 오류 수리 요청 끝에 붙인다. 2026-11-07 알파 4회차: 수리마다 지적된 파일만 고쳐, 다음 빌드에서 다른 케이스 파일의 같은 종류
+# 오류(람다 안 지역 변수·검사 예외 미선언)가 이어서 드러나 컴파일 예산 2회를 다 썼다 — 컴파일러가 한 번에 일부 파일의 오류만 보여 줄 수 있다.
+SAME_KIND_ALL_FILES = (
+    "\n위 파일만이 아니라 **모든 파일**에서 같은 종류의 실수(예: 람다 안에서 바뀌는 지역 변수, 검사 예외 선언 누락, "
+    "없는 이름·형식)를 찾아 함께 고친다 — 컴파일러는 한 번에 일부 파일의 오류만 보여 줄 수 있다."
+)
 
 
 @dataclass(frozen=True)
@@ -138,30 +145,41 @@ def _starter(run: TargetRun) -> list[RepairAction]:
     ]
 
 
-def _starter_solves(run: TargetRun, plan: HiddenPlan) -> list[RepairAction]:
-    """시작 코드 그대로(지원자가 아무것도 안 함)로 숨은 케이스를 **모두** 통과 → 새 기능이 시작 코드에 이미 있다 → `gen_starter`.
+def _starter_solves(
+    run: TargetRun, plan: HiddenPlan, regen_counts: Mapping[str, int]
+) -> tuple[list[RepairAction], list[str]]:
+    """시작 코드 그대로(지원자가 아무것도 안 함)로 숨은 케이스를 **하나라도** 통과 → 새 기능이 시작 코드에 들어 있다 → `gen_starter`.
+    이미 다시 만든 시작 코드가 또 통과하면 막지 않고 표시만 — 그 케이스가 지원자의 작업을 재지 않을 수 있다 (사람 확인).
 
-    2026-11-07 알파 테스트 (새 공고): 시작 코드가 상태 변경·감사 기록(같은 트랜잭션)·조회를 다 구현해 허용 설계 d1 과 같았고,
-    흔한 구현·허용 구현은 시작 코드 위에 따로 쓰이므로 빌드가 review 까지 갔다. 일부만 통과하는 것은 막지 않는다
-    (부정 단언만 있는 케이스는 빈 구현으로도 통과할 수 있음). 준비 실패(숨은 테스트 컴파일 오류 등)는 참조 구현 쪽에서 본다.
+    2026-11-07 알파 테스트: 2회차(새 공고)는 시작 코드가 상태 변경·감사 기록·조회를 다 구현해 hc1 을 통과, 4회차(배송 감사)는
+    감사 기록 저장·조회를 구현해 hc1 만 통과(hc2 실패) — '모두 통과' 기준이 놓쳤다. 준비 실패(숨은 테스트 컴파일 오류 등)는 참조 구현 쪽에서 본다.
     """
-    if run.setup != "ok" or not plan.cases:
-        return []
-    results = [run.case(c.case_id) for c in plan.cases]
-    if any(r is None or r.result != "PASS" for r in results):
-        return []
-    ids = ", ".join(c.case_id for c in plan.cases)
+    if run.setup != "ok":
+        return [], []
+    passed = [
+        c.case_id
+        for c in plan.cases
+        if (r := run.case(c.case_id)) is not None and r.result == "PASS"
+    ]
+    if not passed:
+        return [], []
+    ids = ", ".join(passed)
+    if regen_counts.get("gen_starter", 0) >= 1:
+        return [], [
+            f"시작 코드를 다시 만든 뒤에도 시작 코드 그대로 숨은 케이스 {ids} 를 통과 — 그 케이스가 지원자의 작업을 재지 않을 수 있다 "
+            "(시작 코드 범위·숨은 테스트 사람 확인)"
+        ]
     return [
         RepairAction(
             "gen_starter",
             "",
             "②'",
-            f"시작 코드만으로 숨은 케이스 {ids} 를 모두 통과 — 새 기능이 이미 들어 있음",
-            f"시작 코드 그대로(지원자가 아무것도 하지 않은 상태)로 숨은 케이스 {ids} 를 모두 통과했다 — 지원자가 만들 새 기능이 "
+            f"시작 코드만으로 숨은 케이스 {ids} 통과 — 새 기능이 이미 들어 있음",
+            f"시작 코드 그대로(지원자가 아무것도 하지 않은 상태)로 숨은 케이스 {ids} 를 통과했다 — 지원자가 만들 새 기능이 "
             "시작 코드에 들어 있다. '이미 있는 API' 는 공개 요구 전의 동작만 남기고(공개 요구가 더하는 기록·조회·검사는 빼고), "
             "공개 요구가 새로 요구하는 API·저장·기록은 자리 표시(TODO)로 둔다. 기존 기능 테스트는 그 동작만 확인한다.",
         )
-    ]
+    ], []
 
 
 def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAction]:
@@ -203,7 +221,8 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
                     "setup",
                     "숨은 테스트 컴파일 오류",
                     "숨은 테스트가 컴파일되지 않는다. 하네스 문서에 있는 이름·형식만 쓴다:\n"
-                    + text,
+                    + text
+                    + SAME_KIND_ALL_FILES,
                     compile=True,
                 )
             )
@@ -214,7 +233,7 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
                     run.target,
                     "setup",
                     f"{run.target} 컴파일 오류",
-                    "구현이 컴파일되지 않는다:\n" + text,
+                    "구현이 컴파일되지 않는다:\n" + text + SAME_KIND_ALL_FILES,
                     compile=True,
                 )
             )
@@ -485,11 +504,12 @@ def assign(
         res.actions = acts
         return res
     bare = next((r for r in report.runs if r.kind == "starter_hidden"), None)
-    if bare is not None and (acts := _starter_solves(bare, plan)):
-        res.actions = (
-            acts  # 참조 구현은 새 시작 코드 위에 처음부터 다시 쓰이므로 이번 결과는 보지 않는다
-        )
-        return res
+    if bare is not None:
+        acts, flags = _starter_solves(bare, plan, counts)
+        res.flags += flags
+        if acts:  # 참조 구현은 새 시작 코드 위에 처음부터 다시 쓰이므로 이번 결과는 보지 않는다
+            res.actions = acts
+            return res
 
     actions: list[RepairAction] = []
     ready: list[TargetRun] = []

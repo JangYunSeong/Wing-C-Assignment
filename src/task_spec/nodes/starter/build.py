@@ -180,6 +180,11 @@ async def build_and_repair(
             out.reports.append(report)
             out.snapshots.append(dict(out.overlays))
             plan = assign(report, b.plan, out.overlays, missed, out.regen_counts)
+            for (
+                flag
+            ) in plan.flags:  # 막지 않는 표시 (예: 다시 만든 시작 코드가 또 숨은 케이스 통과)
+                if flag not in out.review_flags:
+                    out.review_flags.append(flag)
         logger.info(
             "build round=%d actions=%d unresolved=%d",
             round_no,

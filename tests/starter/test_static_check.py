@@ -334,3 +334,45 @@ def test_numeric_fields_are_not_asserted_as_raw_json_values() -> None:
         "",
     )
     assert not [m for m in hidden(ok) if "JSON Map 값 그대로" in m]
+
+
+def test_starter_existing_tests_must_not_call_new_apis() -> None:
+    """2026-11-07 알파 4회차: 배송 감사 시작 코드가 감사 기록 조회 API 와 그 '기존 기능 테스트'까지 써서 시작 코드만으로 hc1 통과."""
+    contract = _contract_with_list()
+    flagged = contract.model_copy(
+        update={
+            "endpoints": [
+                e.model_copy(update={"existing": e.method == "PATCH"}) for e in contract.endpoints
+            ]
+        }
+    )
+    test = (
+        "src/test/java/com/example/service/order/OrderControllerTest.java",
+        'class T { void a() throws Exception { mockMvc.perform(patch("/orders/1/status")); }\n'
+        '  void b() throws Exception { mockMvc.perform(get("/orders/" + 2 + "/history")); } }\n',
+    )
+
+    def starter_msgs(c: Any, *files: tuple[str, str]) -> list[str]:
+        starter = _overlays()[0]
+        o = Overlay(kind="starter", files=(*starter.files, *(_f(p, x) for p, x in files)))
+        res = static_check(
+            [o],
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            contract=c,
+            seed=BACKEND_SEED,
+        )
+        return [m for m in res.for_target("gen_starter") if "새로 만드는 API" in m]
+
+    msgs = starter_msgs(flagged, test)
+    assert (
+        len(msgs) == 1
+        and "GET /orders/{}/history" in msgs[0]
+        and "PATCH" not in msgs[0].split(" — ")[0]
+    )
+    assert "이미 있는 API(PATCH /orders/{id}/status)" in msgs[0]
+    # 기존 API 만 부르면 통과, 무엇이 기존인지 모르면(표시·명세 경로 없음) 판단하지 않음
+    only_existing = (test[0], test[1].split("\n  void b")[0] + " }\n")
+    assert not starter_msgs(flagged, only_existing)
+    assert not starter_msgs(contract, test)  # 이 명세 글에는 경로가 없고 계약 표시도 없음

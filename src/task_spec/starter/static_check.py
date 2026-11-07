@@ -29,9 +29,9 @@ from typing import Any
 import yaml
 
 from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
-from task_spec.schemas.build import FileKind
+from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.spec.feature import find_terms
-from task_spec.starter.contract import SpecView, contract_fields, hidden_terms
+from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.render import README, render_params
 from task_spec.starter.tables import contract_tables, declared_tables, referenced_tables, same_table
 from task_spec.starter.templates import Template, glob_match, slot_allows
@@ -382,14 +382,55 @@ def http_calls(content: str, patterns: Sequence[str]) -> list[tuple[str, str]]:
 
 
 def _contract_api(contract: TaskContract) -> list[tuple[str, re.Pattern[str]]]:
+    return _endpoint_rx(contract.endpoints)
+
+
+def _endpoint_rx(endpoints: Iterable[Endpoint]) -> list[tuple[str, re.Pattern[str]]]:
     return [
         (
             e.method.upper(),
             re.compile("^" + re.sub(r"\\\{[^}]*\\\}", "[^/]+", re.escape(e.path)) + "/?$"),
         )
-        for e in contract.endpoints
+        for e in endpoints
         if e.method
     ]
+
+
+def _starter_new_api_tests(
+    o: Overlay, t: Template, contract: TaskContract | None, spec: SpecView
+) -> list[StaticProblem]:
+    """시작 코드의 기존 기능 테스트가 새로 만드는 API 를 부르면 새 기능을 구현한 것 — 새 API 는 지원자 몫이라 시작 코드에서 자리 표시다.
+    이미 있는 API 가 하나도 없으면 판단하지 않는다 (무엇이 기존인지 모름)."""
+    patterns = t.manifest.starter_test_calls
+    if contract is None or not patterns:
+        return []
+    existing = existing_endpoints(contract, spec)
+    new = [e for e in contract.endpoints if e.method and e not in existing]
+    if not existing or not new:
+        return []
+    new_rx = _endpoint_rx(new)
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if "/test/" not in f"/{f.path}":
+            continue
+        calls = sorted(
+            {
+                f"{method} {path}"
+                for method, path in http_calls(f.content, patterns)
+                if any(method == m and rx.match(path) for m, rx in new_rx)
+            }
+        )
+        if calls:
+            out.append(
+                StaticProblem(
+                    "gen_starter",
+                    f"시작 코드의 기존 기능 테스트 {f.path} 가 새로 만드는 API 를 부름: {', '.join(calls)} — 새 API 는 지원자 몫이라 "
+                    "시작 코드에서는 자리 표시(TODO)다. 기존 기능 테스트는 이미 있는 API("
+                    + ", ".join(f"{e.method} {e.path}" for e in existing)
+                    + ")의 공개 요구 전 동작만 확인한다",
+                )
+            )
+    return out
 
 
 def _unknown_calls(
@@ -678,6 +719,7 @@ def static_check(
             res.problems += problems
             res.problems += _starter_tables(o, template, contract)
             res.problems += _starter_foreign_keys(o, template, contract)
+            res.problems += _starter_new_api_tests(o, template, contract, spec)
             res.review_flags += flags
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract)
