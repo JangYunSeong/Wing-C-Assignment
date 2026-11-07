@@ -43,6 +43,8 @@ class SpecView:
     concepts: tuple[
         str, ...
     ] = ()  # 먼저 말할 개념 (1·2단계 first_mention_of) — 계약에 나오면 안 됨
+    # 지원자에게 처음부터 보이는 명세 글 — 제목·상황·공개 요구·공개 수용 기준 (여기 나온 API 는 계약에 있어야 함)
+    public_texts: tuple[str, ...] = ()
 
     @classmethod
     def from_task(cls, task: TaskItem) -> SpecView:
@@ -57,6 +59,12 @@ class SpecView:
                 *(c.answer for c in task.clarifications),
             ),
             concepts=tuple(dict.fromkeys(o.value for o in obs if o.kind == "first_mention_of")),
+            public_texts=(
+                task.title or "",
+                task.scenario or "",
+                *(r.text for r in task.requirements),
+                *(a.text for a in task.acceptance_public),
+            ),
         )
 
 
@@ -81,13 +89,50 @@ def _number(raw: str) -> float | None:
         return None
 
 
+_NUMERIC = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
+
+
+def _cells(line: str) -> list[str]:
+    """표 한 줄 → 칸. `|` 가 있으면 그것으로, 없으면 공백으로 나눈다."""
+    if "|" in line:
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+    return line.split()
+
+
+def _column_values(text: str, columns: list[re.Pattern[str]]) -> list[str]:
+    """머리 줄에 열 이름이 맞는 표에서 그 열의 숫자 값을 뽑는다 (예: 요청 지표 표의 inflight_requests 열)."""
+    found: list[str] = []
+    lines = text.splitlines()
+    for i, head in enumerate(lines):
+        cells = _cells(head)
+        idx = next((j for j, c in enumerate(cells) if any(rx.fullmatch(c) for rx in columns)), None)
+        if idx is None:
+            continue
+        for row in lines[i + 1 :]:
+            if not row.strip():
+                break
+            vals = _cells(row)
+            if all(set(v) <= set("-: ") for v in vals):  # 마크다운 구분 줄
+                continue
+            if len(vals) <= idx:
+                break
+            if _NUMERIC.match(vals[idx]):
+                found.append(vals[idx])
+    return found
+
+
 def extract_values(param: HarnessParam, texts: Iterable[str]) -> list[str]:
-    """표기 패턴(그룹 1)으로 명세 글에서 이 조절값의 값을 뽑는다. 못 뽑으면 빈 목록 = "명세에 없음"."""
+    """표기 패턴(그룹 1)·표 열 이름으로 명세 글에서 이 조절값의 값을 뽑는다. 못 뽑으면 빈 목록 = "명세에 없음"."""
+    texts = list(texts)
     found: list[str] = []
     for pattern in param.spec_patterns:
         rx = re.compile(pattern)
         for text in texts:
             found += [m.group(1).strip() for m in rx.finditer(text) if m.group(1)]
+    if param.spec_columns:
+        cols = [re.compile(c, re.IGNORECASE) for c in param.spec_columns]
+        for text in texts:
+            found += _column_values(text, cols)
     return list(dict.fromkeys(found))
 
 
@@ -149,6 +194,11 @@ def _harness(
         if p.name not in plan.harness:
             if p.required:
                 problems.append(f"HiddenPlan harness 에 필수 조절값 {p.name} 이 없음")
+            elif p.visible and (seen := extract_values(p, spec.visible_texts)):
+                # 지원자가 자료에서 본 운영 값은 채점에도 그대로 — 빼면 하네스 기본값이 대신 들어가 실패 사유가 달라진다
+                problems.append(
+                    f"명세 자료에 운영 값 {p.name}({', '.join(seen)})이 있으니 HiddenPlan harness 에 넣는다"
+                )
             continue
         value = plan.harness[p.name]
         bad = _type_problem(p, value)
@@ -158,10 +208,14 @@ def _harness(
         if not p.visible:
             continue
         seen = extract_values(p, spec.visible_texts)
-        if not seen:
+        if not seen and p.required:
             gaps.append(
                 f"명세 1단계 자료·추가 요구 구체 답에 운영 수치 {p.name} 이 없음 (표기 패턴으로 못 찾음) — "
                 "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"
+            )
+        elif not seen:
+            problems.append(
+                f"HiddenPlan {p.name}={value} 는 명세 자료·답에 없는 값 — 선택 조절값이니 빼거나 자료에 있는 값만 쓴다"
             )
         elif not any(_same(value, raw) for raw in seen):
             problems.append(
@@ -184,6 +238,8 @@ def _fields(contract: TaskContract) -> list[tuple[str, ContractField]]:
     """(위치, 필드) — 요청·응답 본문·엔티티의 모든 필드."""
     out: list[tuple[str, ContractField]] = []
     for e in contract.endpoints:
+        out += [(f"{e.endpoint_id} 헤더", f) for f in e.headers]
+        out += [(f"{e.endpoint_id} 쿼리", f) for f in e.query]
         out += [(f"{e.endpoint_id} 요청", f) for f in e.request]
         for r in e.responses:
             out += [(f"{e.endpoint_id} 응답 {r.status}", f) for f in r.body]
@@ -323,11 +379,26 @@ def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
     for m in contract.entities:
         if not re.fullmatch(rx.entity, m.name):
             problems.append(f"엔티티 이름 {m.name!r} 가 템플릿 이름 규칙과 다름")
+    headers = {id(f) for e in contract.endpoints for f in e.headers}
     bad_fields = sorted(
-        {f.name for _, f in _fields(contract) if not re.fullmatch(rx.field, f.name)}
+        {
+            f.name
+            for _, f in _fields(contract)
+            if id(f) not in headers and not re.fullmatch(rx.field, f.name)
+        }
     )
     if bad_fields:
         problems.append(f"필드 이름이 템플릿 이름 규칙과 다름: {', '.join(bad_fields)}")
+    bad_headers = sorted(
+        {
+            f.name
+            for e in contract.endpoints
+            for f in e.headers
+            if not re.fullmatch(rx.header, f.name)
+        }
+    )
+    if bad_headers:
+        problems.append(f"헤더 이름이 템플릿 규칙과 다름: {', '.join(bad_headers)}")
     return problems
 
 
@@ -363,6 +434,51 @@ def _reasons(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
     ]
 
 
+_API = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+`?(/[A-Za-z0-9_\-/{}.]*)")
+
+
+def _api_key(method: str, path: str) -> str:
+    return f"{method.upper()} {re.sub(r'{[^}]*}', '{}', path.rstrip('/') or '/')}"
+
+
+def mentioned_apis(texts: Iterable[str]) -> list[str]:
+    """글에 나온 'METHOD /path' (경로 변수는 {} 로) — 예: 'PATCH /deliveries/{}/status'."""
+    return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in _API.findall(t)))
+
+
+def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[str]:
+    """명세·공개 테스트·숨은 케이스에 나온 API 는 계약에 있어야 한다 — 시작 코드·숨은 테스트가 그 계약으로 요청한다."""
+    have = {_api_key(e.method, e.path) for e in contract.endpoints if e.method}
+    problems: list[str] = []
+    missing = [a for a in mentioned_apis(spec.public_texts) if a not in have]
+    if missing:
+        problems.append(
+            f"명세(상황·요구·수용 기준)에 나온 API 가 계약에 없음: {', '.join(missing)} — "
+            "기존 API 도 요청 헤더·본문·응답·오류까지 계약에 넣는다"
+        )
+    used = mentioned_apis(
+        [
+            *(t.checks for t in contract.public_tests),
+            *(f"{c.scenario} {c.expect}" for c in plan.cases),
+        ]
+    )
+    stray = [a for a in used if a not in have]
+    if stray:
+        problems.append(f"공개 테스트·숨은 케이스가 계약에 없는 API 를 씀: {', '.join(stray)}")
+    entity_ids = {m.entity_id for m in contract.entities}
+    bad = sorted(
+        {
+            f"{e.endpoint_id} {r.status} → {r.returns}"
+            for e in contract.endpoints
+            for r in e.responses
+            if r.returns and r.returns.removesuffix("[]") not in entity_ids
+        }
+    )
+    if bad:
+        problems.append(f"응답 returns 가 계약에 없는 엔티티를 가리킴: {', '.join(bad)}")
+    return problems
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -374,6 +490,7 @@ def check_contract(
     problems = _ids(contract, plan)
     problems += _coverage(contract, plan, spec)
     problems += _naming(contract, manifest)
+    problems += _api_refs(contract, plan, spec)
     problems += _leaks(contract, spec, seed)
     harness_problems, gaps = _harness(plan, spec, manifest)
     problems += harness_problems

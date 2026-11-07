@@ -44,6 +44,8 @@ class HarnessParam(Schema):
     visible: bool = False
     # 명세 자료에서 값을 뽑는 표기 패턴 — 정규식, 그룹 1 = 값 (예: r"maximumPoolSize\s*[=:]\s*(\d+)", r"풀\s*(\d+)\s*개")
     spec_patterns: list[str] = Field(default_factory=list)
+    # 표(공백·| 구분)의 열 이름 정규식 — 그 열의 숫자를 값으로 뽑는다 (예: 요청 지표 표의 inflight_requests 열)
+    spec_columns: list[str] = Field(default_factory=list)
     # 시작 코드 설정 파일에서 이 값을 담는 키 (§6 정적 검사 — 운영 값이 시작 코드에 박혔는지)
     config_keys: list[str] = Field(default_factory=list)
 
@@ -55,11 +57,16 @@ class HarnessParam(Schema):
                 raise ValueError(f"표기 패턴에 값 그룹이 없음: {p!r}")
         return v
 
+    @field_validator("spec_columns")
+    @classmethod
+    def _columns(cls, v: list[str]) -> list[str]:
+        return _compiles(v)
+
     @model_validator(mode="after")
     def _visible_needs_pattern(self) -> HarnessParam:
-        if self.visible and not self.spec_patterns:
+        if self.visible and not (self.spec_patterns or self.spec_columns):
             raise ValueError(
-                f"{self.name}: visible 조절값은 표기 패턴(spec_patterns)이 1개 이상 필요"
+                f"{self.name}: visible 조절값은 표기 패턴(spec_patterns·spec_columns)이 1개 이상 필요"
             )
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError(f"{self.name}: minimum 이 maximum 보다 큼")
@@ -83,10 +90,11 @@ class NamingRules(Schema):
     """계약 이름 규칙 (템플릿 스택의 관례)."""
 
     path: str = r"^/[a-z0-9/{}\-]*$"  # http 경로
+    header: str = r"^[A-Z][A-Za-z0-9]*(-[A-Z][A-Za-z0-9]*)*$"  # http 헤더 (예: X-Actor)
     entity: str = r"^[A-Z][A-Za-z0-9]*$"
     field: str = r"^[a-z][A-Za-z0-9]*$"
 
-    @field_validator("path", "entity", "field")
+    @field_validator("path", "header", "entity", "field")
     @classmethod
     def _rx(cls, v: str) -> str:
         return _compiles([v])[0]

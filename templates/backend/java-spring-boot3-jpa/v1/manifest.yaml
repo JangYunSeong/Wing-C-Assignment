@@ -89,6 +89,7 @@ harness_params:
       - 'hikari\.maximum-pool-size\s*=\s*(\d+)'
       - '(?:DB|데이터베이스)\s*연결\s*(?:최대\s*(?:값|크기|수)?|수)\s*(?:은|는|:|=)?\s*(\d+)'
       - '최대\s*연결\s*수\s*(?:은|는|:|=)?\s*(\d+)'
+    spec_columns: ['(?:maximum_)?pool_size', 'max_pool(?:_size)?']
     config_keys: [spring.datasource.hikari.maximum-pool-size]
   - name: connection_timeout_ms
     kind: int
@@ -127,6 +128,7 @@ harness_params:
       - 'activeRequests\s*=\s*(\d+)'
       - 'in[-_ ]?flight\s*[=:]?\s*(\d+)'
       - 'concurrent(?:_requests)?\s*[=:]\s*(\d+)'
+    spec_columns: ['in_?flight(?:_requests)?', 'concurrent(?:_requests)?', 'active_?requests', '동시\s*요청(?:\s*수)?']
   - name: bursts
     kind: int
     description: 버스트 반복 수 (기본 3)
