@@ -69,7 +69,7 @@
 ```
 TaskContract                         ← 지원자에게 보임 (README "계약" 절)
   interface_kind: http | cli | file   (템플릿 manifest 가 허용하는 것 중)
-  endpoints[]:  id(e1…) · method(http 만) · path · summary · request(필드) · responses(상태 코드·설명·본문 필드) · refs(r*·p*)
+  endpoints[]:  id(e1…) · method(http 만) · path · summary · headers · query · request(필드) · responses(상태 코드·설명·본문 필드 또는 returns: m1 · m1[]) · refs(r*·p*)
   entities[]:   id(m1…) · name · fields · relations      ← #58 [데이터 모델]
     필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
   seed[]:       entity id · 행 수 범위 · 값 규칙 (가상 데이터만)
@@ -103,6 +103,9 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
   - 이런 실패를 줄이려고 명세 단계에서 먼저 막는다 [제안]: 기능형 서술 검증(`spec/feature.py` 의 운영 조건 검사 옆)에 "템플릿이 정해지는 기능형이면, 1단계 자료·구체 답에 그 템플릿 `harness_params` 의 필수 값이 패턴으로 뽑힌다"를 더해 명세 생성 때 재요청한다. 명세 단계는 템플릿을 모르므로 `select_template` 을 명세 승인 전에도 한 번 돌려 필수 키만 넘긴다.
 - `harness` 의 키는 템플릿 `manifest.harness_params` 안의 것만, `cases[].의도한 실패 사유`는 `manifest.failure_reasons` 안의 코드만.
 - 크기 상한: 엔드포인트 1–6, 엔티티 1–8 (60분 과제 기준 [미정]).
+- **명세에 나온 API 는 계약에** (2026-11-07 스모크에서 보탬): 제목·상황·공개 요구·공개 수용 기준에 나온 `METHOD /path`(기존 API 포함)가 계약에 있어야 하고, 공개 테스트·숨은 케이스가 언급하는 API 도 계약에 있어야 한다. 응답 `returns` 는 계약 엔티티를 가리킨다.
+- **자료의 운영 값은 모두 HiddenPlan 에**: 선택 조절값이어도 명세 자료에서 표기 패턴·표 열로 뽑히면 넣는다 — 빼면 하네스 기본값이 대신 들어가 실패 사유가 달라진다. 자료에 없는 선택 값을 넣으면 재요청 (지어낸 값).
+- 표기 패턴만으로 못 읽는 표(요청 지표처럼 열 이름 + 값 줄)는 manifest `spec_columns`(열 이름 정규식)로 그 열의 숫자를 읽는다.
 
 ## 4. 생성기
 
@@ -272,6 +275,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 2. Java 템플릿 v1 의 `manifest` 에 `harness_params` · `failure_reasons` · `stack_conditions` 와 잠긴 `hidden/harness/` (배송 감사 손 예시에서 옮김).
    — 구현 (2026-11-07): `templates/backend/java-spring-boot3-jpa/v1/`(뼈대 `project/` · `manifest.yaml` · 잠긴 `hidden/harness/` 6파일 · `hidden/selftest/`), 레지스트리 `starter/templates.py`(`check_template` · `slot_allows` · 응시용 이미지 금지 경로 `candidate_layer_rules`), 테스트 `tests/starter/test_templates.py`. 개발 서버 Gradle 빌드로 뼈대 테스트·하네스 자체 점검 통과. 손 예시 판정 표 재현은 7번(golden).
 3. `plan_contract/v1` + 배송 감사 명세로 계약 생성 스모크 → 손 예시의 API 와 비교.
+   — 구현 (2026-11-07): 노드 `nodes/starter/plan_contract.py`(명세에 필수 운영 수치가 없으면 LLM 없이 실패, 계약 검사 problems 는 1회 재요청·spec_gaps 는 재요청 없이 실패), 프롬프트 `plan_contract` v1·v2, 스모크 `eval/starter/run_plan_contract.py`. v1 은 검사를 통과했지만 기존 API 누락·운영 값 생략 — 검사 보강 + v2 로 손 예시와 같은 구조 (경로·필드 이름·상태 코드 일부는 다른 선택). 기록 `prompts/plan_contract/PROMOTIONS.md`.
 4. `render_readme` · `static_check` (§6) — 결정적, 네거티브 테스트.
 5. `gen_starter/v1` · `gen_hidden/v1` · `gen_naive/v1` · `gen_accepted/v1` — 가짜 LLM 테스트 + 실제 생성 스모크 1건.
 6. `build_graph` 연결(병렬·interrupt·State 는 경로·해시만) + `repair` 배정 규칙(§7) — 가짜 verifier 결과로 배정 표 전 행을 테스트.
