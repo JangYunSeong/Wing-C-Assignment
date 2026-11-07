@@ -485,3 +485,28 @@ def test_different_errors_or_one_ref_are_regenerated_as_before() -> None:
         _report(_breaks("naive-all", "ref_naive", NOT_NULL), _run("d1", "ref_accepted", *GOOD_ACC))
     )
     assert _keys(plan) == ["gen_naive:naive-all"] and not plan.unresolved
+
+
+def test_same_failure_as_naive_is_not_evidence_against_the_accepted_design() -> None:
+    """2026-11-07 루프: 계약에 상태 전이 규칙이 없어 숨은 테스트가 무효한 전이를 골랐고, 'FAILURE 있음' 단언에 의도한 사유가
+    잘못 붙어 흔한 구현과 허용 구현이 같은 단언·메시지로 실패했다 — 허용 구현 탓으로 보지 않는다."""
+    same = _t(
+        "hidden",
+        "hc2",
+        "ASSERT",
+        "rollback_left_success",
+        "[성공 기록이 남음 21] Expecting value to be true but was false",
+    )
+    naive = _run("naive-all", "ref_naive", GOOD_NAIVE[0], same)
+    d1 = _run(
+        "d1", "ref_accepted", GOOD_ACC[0], same | {"message": same["message"].replace("21", "22")}
+    )
+    first = _assign(_report(naive, d1))
+    assert _keys(first) == [
+        "gen_accepted:d1"
+    ]  # 처음엔 구현을 한 번 다시 (같은 함정에 빠졌을 수도 있다)
+    again = _assign(_report(naive, d1), gen_accepted__d1=1)
+    assert not again.actions
+    assert any(
+        "숨은 테스트·계약 의심" in u and "같은 단언·같은 메시지" in u for u in again.unresolved
+    )

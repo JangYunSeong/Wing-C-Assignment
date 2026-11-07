@@ -82,6 +82,7 @@ def _static_actions(overlays: dict[str, Overlay], b: BuildInputs) -> RepairPlan:
         avoid_terms=b.avoid_terms,
     )
     plan = RepairPlan()
+    plan.flags = list(res.review_flags)
     for target in res.targets:
         msgs = res.for_target(target)
         note = "정적 검사 문제 — 고쳐서 다시 쓴다:\n" + "\n".join(f"- {m}" for m in msgs)
@@ -136,6 +137,9 @@ async def build_and_repair(
     for round_no in range(max_rounds + 1):
         out.rounds = round_no
         plan = _static_actions(out.overlays, b)
+        for flag in plan.flags:
+            if flag not in out.review_flags:
+                out.review_flags.append(flag)
         if plan.passed:
             report = await verifier.verify(
                 out.overlays[STARTER],

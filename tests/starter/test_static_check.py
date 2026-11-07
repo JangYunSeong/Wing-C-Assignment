@@ -257,3 +257,21 @@ def test_identifier_words() -> None:
         identifier_words("int connectionPoolSize; long max_pool; String id;")
         == "connection pool size\nmax pool"
     )
+
+
+def test_duplicate_reason_labels_in_one_case_file() -> None:
+    """2026-11-07 루프: 'FAILURE 기록 있음' 단언에 'SUCCESS 없음' 단언과 같은 사유·문구가 붙어 흔한 구현의 실패 사유를 잘못 읽었다."""
+    twice = HC1.replace(
+        '                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();',
+        '                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();\n'
+        "        org.assertj.core.api.Assertions.assertThat(Burst.wrong(outcomes))\n"
+        '                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 2)).isZero();',
+    )
+    assert twice != HC1
+    res = _run(_overlays(hidden=[_f(f"{CASES}/OrderStatusBurstTest.java", twice)]))
+    assert _has(
+        res.review_flags, "같은 사유·문구의 단언이 둘 이상", 'pool_acquire_timeout "버스트 %d"'
+    )
+    # 막지 않는다 — 표시만 (2026-11-07: 재요청 문제로 두었더니 숨은 테스트 생성 자체가 실패)
+    assert not _has(res.for_target("gen_hidden"), "같은 사유·문구")
+    assert not _has(_run().review_flags, "같은 사유·문구")
