@@ -50,6 +50,17 @@ def _type(node: dict[str, Any], defs: dict[str, Any], depth: int) -> str:
     if "const" in node:
         return f'"{node["const"]}"'
     t = node.get("type")
+    # dict[str, X] — 키는 문자열, 값은 X
+    if (
+        t == "object"
+        and "properties" not in node
+        and isinstance(node.get("additionalProperties"), dict)
+    ):
+        return f"{{문자열: {_type(node['additionalProperties'], defs, depth)}}}"
+    # 여러 형식 중 하나 (Optional 은 _resolve 가 이미 풀었다)
+    many = [n for n in node.get("anyOf", []) if n.get("type") != "null"]
+    if len(many) > 1:
+        return " | ".join(_type(n, defs, depth) for n in many)
     if t == "array":
         item = _type(node.get("items", {}), defs, depth)
         return f"[{item}]"

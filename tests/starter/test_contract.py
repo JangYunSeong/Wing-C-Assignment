@@ -353,3 +353,99 @@ def test_seedless_check_still_bans_concepts() -> None:
 def test_backend_seed_terms_are_collected(seed: FeatureSeed) -> None:
     terms = hidden_terms(seed, _spec())
     assert "커넥션 풀" in terms and "동시 요청" in terms and "점유 범위" in terms
+
+
+# ── 표 열·헤더·선택 조절값 (3단계 스모크 준비, 2026-11-07) ──
+
+
+def test_table_columns_are_read() -> None:
+    from task_spec.schemas import HarnessParam
+
+    p = HarnessParam.model_validate(
+        {
+            "name": "concurrency",
+            "kind": "int",
+            "description": "d",
+            "visible": True,
+            "spec_columns": [r"in_?flight(?:_requests)?"],
+        }
+    )
+    spaced = "time   rps  inflight_requests  p95_ms\n17:20  14   6   41\n18:00  103  32  95\n"
+    md = "| 시각 | inflight_requests |\n|---|---|\n| 17:20 | 6 |\n| 18:00 | 1,032 |\n"
+    assert extract_values(p, [spaced]) == ["6", "32"]
+    assert extract_values(p, [md]) == ["6", "1,032"]
+    assert extract_values(p, ["inflight_requests 는 32 쯤"]) == []  # 표가 아니면 열로 읽지 않는다
+
+
+def test_headers_have_their_own_naming_rule() -> None:
+    c = _contract()
+    c["endpoints"][0]["headers"] = [{"name": "X-Actor", "type": "string", "refs": ["r1"]}]
+    assert _check(c).ok
+    c["endpoints"][0]["headers"] = [{"name": "actor", "type": "string", "refs": ["r1"]}]
+    res = _check(c)
+    assert _has(res.problems, "헤더 이름", "actor")
+
+
+def test_invented_optional_visible_value_is_a_problem_not_a_gap() -> None:
+    m = _manifest()
+    params = [p.model_dump() for p in m.harness_params] + [
+        {
+            "name": "server_threads",
+            "kind": "int",
+            "description": "요청 스레드",
+            "required": False,
+            "visible": True,
+            "spec_patterns": [r"maxThreads\s*=\s*(\d+)"],
+        }
+    ]
+    p = _plan()
+    p["harness"]["server_threads"] = 64  # 자료 어디에도 없음
+    res = _check(plan=p, manifest=_manifest(harness_params=params))
+    assert not res.spec_gaps and _has(res.problems, "server_threads=64", "선택 조절값")
+
+
+# ── 스모크(v1)에서 드러난 빈틈 — 기존 API 누락·운영 값 누락·목록 응답 (2026-11-07) ──
+
+
+def test_api_named_in_spec_must_be_in_contract() -> None:
+    spec = _spec(public_texts=("기존 API(`PATCH /orders/{id}/status`)의 동작은 그대로 둔다.",))
+    assert _check(spec=spec).ok  # 계약에 e1 PATCH /orders/{id}/status 가 있음
+    c = _contract()
+    c["endpoints"] = [c["endpoints"][1]]  # 조회만 남김
+    c["covers"] = {"r1": ["e2", "m1", "m2"], "r2": ["e2", "m2"]}
+    res = _check(c, spec=spec)
+    assert _has(res.problems, "명세", "PATCH /orders/{}/status", "계약에 없음")
+
+
+def test_tests_and_cases_may_only_use_contract_apis() -> None:
+    c = _contract()
+    c["public_tests"][0]["checks"] = "POST /orders 로 만든 뒤 확인"
+    p = _plan()
+    p["cases"][0]["scenario"] = "DELETE /orders/{id} 를 동시에 32건"
+    res = _check(c, p)
+    assert _has(res.problems, "계약에 없는 API", "POST /orders", "DELETE /orders/{}")
+
+
+def test_visible_operating_value_in_spec_must_be_in_plan() -> None:
+    m = _manifest()
+    params = [p.model_dump() for p in m.harness_params] + [
+        {
+            "name": "server_threads",
+            "kind": "int",
+            "description": "요청 스레드",
+            "required": False,
+            "visible": True,
+            "spec_patterns": [r"maxThreads\s*=\s*(\d+)"],
+        }
+    ]
+    spec = _spec(visible_texts=("pool: 8\nthreads: 32\nmaxThreads=32",))
+    res = _check(spec=spec, manifest=_manifest(harness_params=params))
+    assert _has(res.problems, "운영 값 server_threads(32)", "넣는다")
+
+
+def test_returns_must_point_to_contract_entity() -> None:
+    c = _contract()
+    c["endpoints"][1]["responses"][0] |= {"body": [], "returns": "m2[]"}
+    assert _check(c).ok
+    c["endpoints"][1]["responses"][0]["returns"] = "m9[]"
+    assert _has(_check(c).problems, "returns", "m9[]")

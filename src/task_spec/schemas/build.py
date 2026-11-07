@@ -51,6 +51,11 @@ class ContractResponse(Schema):
     status: int = Field(ge=100, le=599)
     description: str = Field(min_length=1, max_length=200)
     body: list[ContractField] = Field(default_factory=list)
+    returns: str | None = Field(
+        default=None,
+        pattern=r"^m\d{1,2}(\[\])?$",
+        description="본문이 엔티티 하나면 그 id (예: m1), 엔티티 목록이면 m1[] — 필드는 엔티티 정의를 따른다",
+    )
 
 
 class Endpoint(Schema):
@@ -60,7 +65,9 @@ class Endpoint(Schema):
     method: HttpMethod | None = None  # http 에서만 (필수)
     path: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=200)
-    request: list[ContractField] = Field(default_factory=list)
+    headers: list[ContractField] = Field(default_factory=list)  # 요청 헤더 (예: X-Actor)
+    query: list[ContractField] = Field(default_factory=list)  # 쿼리 매개변수
+    request: list[ContractField] = Field(default_factory=list)  # 요청 본문
     responses: list[ContractResponse] = Field(min_length=1)
     refs: list[str] = Field(min_length=1)
 
@@ -100,7 +107,10 @@ class TaskContract(Schema):
     entities: list[Entity] = Field(min_length=1, max_length=8)
     seed: list[SeedRule] = Field(default_factory=list)
     public_tests: list[PublicTest] = Field(min_length=1)
-    covers: dict[str, list[str]] = Field(min_length=1)  # r* → endpoint·entity id
+    covers: dict[str, list[str]] = Field(
+        min_length=1,
+        description='공개 요구 id → 그 요구를 담는 엔드포인트·엔티티 id 목록 (예: {"r1": ["e1", "m1"]})',
+    )
 
 
 HarnessValue = int | float | str | list[int]
@@ -121,9 +131,35 @@ class HiddenPlan(Schema):
     """숨은 테스트 생성기만 보는 계획 — 지원자·시작 코드 생성기에 가지 않는다."""
 
     harness: dict[str, HarnessValue] = Field(
-        default_factory=dict
-    )  # 템플릿 harness_params 이름 → 값
+        default_factory=dict,
+        description='템플릿 조절값 이름 → 값 (예: {"pool_size": 8}) — 지원자에게 보이는 값은 자료에 적힌 값 그대로',
+    )
     cases: list[HiddenCase] = Field(min_length=1)
+
+
+class PlanContractInput(Schema):
+    """plan_contract 프롬프트 변수 — 승인된 기능형 명세·템플릿에서 나온 글. 지원서는 쓰지 않는다 (불변식 3)."""
+
+    template: str = Field(min_length=1)  # 템플릿 ref · 인터페이스 · 이름 규칙
+    harness_params: str = Field(min_length=1)  # 조절값 줄 묶음
+    failure_reasons: str = Field(min_length=1)  # 실패 사유 코드 줄 묶음
+    title: str = Field(min_length=1)
+    scenario: str = Field(min_length=1)
+    requirements: str = Field(min_length=1)  # "r1 …" 줄 묶음
+    acceptance_public: str = Field(min_length=1)  # "p1 …"
+    deliverables: str
+    traps: str = Field(min_length=1)  # "t1 …" — 숨은 요구 (HiddenPlan 만)
+    acceptance_hidden: str = Field(min_length=1)  # "h1 (t1) …"
+    materials: str  # 1단계 자료 — "[a2] 제목" + 본문
+    clarifications: str  # 추가 요구 구체 답 — "[c1] 주제: 답"
+    revision_note: str  # 재요청 사유 (없으면 "(없음)")
+
+
+class PlanContractOutput(Schema):
+    """plan_contract 출력 — 공개 계약과 숨은 테스트 계획을 한 번에."""
+
+    contract: TaskContract
+    hidden_plan: HiddenPlan
 
 
 class GeneratedFile(Schema):
