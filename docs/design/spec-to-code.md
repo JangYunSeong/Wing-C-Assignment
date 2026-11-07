@@ -69,9 +69,10 @@
 ```
 TaskContract                         ← 지원자에게 보임 (README "계약" 절)
   interface_kind: http | cli | file   (템플릿 manifest 가 허용하는 것 중)
-  endpoints[]:  id(e1…) · method · path · request(필드·타입·필수) · responses(상태 코드·본문) · errors
-  entities[]:   name · fields(이름·타입·제약) · relations      ← #58 [데이터 모델]
-  seed:         엔티티별 행 수 범위 · 값 규칙 (가상 데이터만)
+  endpoints[]:  id(e1…) · method(http 만) · path · summary · request(필드) · responses(상태 코드·설명·본문 필드) · refs(r*·p*)
+  entities[]:   id(m1…) · name · fields · relations      ← #58 [데이터 모델]
+    필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
+  seed[]:       entity id · 행 수 범위 · 값 규칙 (가상 데이터만)
   public_tests[]: id(pt1…) · ac_id(p*) · 무엇을 확인하나 (공개 수용 기준 1:1 이상)
                   — README 에는 공개 테스트를 지원자에게 줄 때만 싣는다 (§4.3)
   covers:       req_id(r*) → endpoint/entity id 목록
@@ -79,8 +80,10 @@ TaskContract                         ← 지원자에게 보임 (README "계약"
 HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지원자·시작 코드 생성기에 안 감)
   harness:      템플릿 manifest 가 선언한 조절값(harness_params)에 넣을 값만 — 풀 크기 · 동시 요청 · 지연/오류 주입 지점과 값
                 ← 승인된 명세 1단계 자료·구체 답의 수치와 같아야 함 (§3.3)
-  cases[]:      id · ac_id(h*) · trap_id · 시나리오 한 줄 · 기대(통과 조건) · 의도한 실패 사유(템플릿 failure_reasons 코드)
+  cases[]:      id(hc1…) · ac_id(h*) · trap_id · 시나리오 한 줄 · 기대(통과 조건) · 의도한 실패 사유(템플릿 failure_reasons 코드)
 ```
+
+- 구현: `src/task_spec/schemas/build.py`(`TaskContract`·`HiddenPlan`·`GeneratedFiles`·`FileRef`·`BuildState`), `src/task_spec/schemas/template.py`(manifest 중 이 파이프라인이 쓰는 부분 — `harness_params`·`failure_reasons`·`naming`·`interfaces`·`stack_conditions`). 필드마다 `refs` 를 두어 양방향 대응(§3.3)을 필드 단위로 본다.
 
 - 계약은 **무엇을**만 적고 어떻게(트랜잭션 경계·잠금·캐시)는 적지 않는다. 숨은 요구 핵심어(seed `leak_terms`·`trigger_terms`)는 계약에 나오면 안 된다 (§3.3).
 - `HiddenPlan.cases[].의도한 실패 사유`는 게이트 ③ 의 "실패 사유가 의도한 것" 판정에 그대로 쓴다 (예: `pool_acquire_timeout`). verifier 의 보고서 파서가 이 코드로 대조한다. 코드는 자유 글이 아니라 템플릿 `failure_reasons` 목록에서만 고른다 (§4.1).
@@ -265,6 +268,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 `starter-templates.md` §13 순서의 ④ "빌드 그래프·생성 노드·프롬프트·정적 검사"를 나눈 것이다. ①~③(코어·저장소·verifier 최소판)이 먼저다. ③ verifier 최소판에는 §4.1 의 결과 분류·사유 코드 대조가 들어가야 한다.
 
 1. 스키마: `TaskContract` · `HiddenPlan` · 생성기 출력 · `BuildState` + 계약 결정적 검사 (§3.3, 양방향 대응·명세 수치 대조·manifest 키 포함) — LLM 없음, 테스트.
+   — 구현 (2026-11-07): `schemas/build.py` · `schemas/template.py` · `starter/contract.py`(`check_contract` → `problems`(재요청) / `spec_gaps`(명세 수정), `spec_missing_params`(명세 단계 사전 검사용, 아직 연결 안 함 — §10-13)), 테스트 `tests/starter/test_contract.py` · `tests/schemas/test_build_schemas.py`.
 2. Java 템플릿 v1 의 `manifest` 에 `harness_params` · `failure_reasons` · `stack_conditions` 와 잠긴 `hidden/harness/` (배송 감사 손 예시에서 옮김).
 3. `plan_contract/v1` + 배송 감사 명세로 계약 생성 스모크 → 손 예시의 API 와 비교.
 4. `render_readme` · `static_check` (§6) — 결정적, 네거티브 테스트.

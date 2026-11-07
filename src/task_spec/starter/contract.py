@@ -1,0 +1,381 @@
+"""공개 계약 `TaskContract` · `HiddenPlan` 결정적 검사 (docs/design/spec-to-code.md §3.3) — LLM·네트워크 없음.
+
+결과는 둘로 나눈다.
+- `problems`: 계약·HiddenPlan 을 다시 만들면 고칠 수 있는 것 → `plan_contract` 재요청 사유 (문장 그대로 붙인다).
+- `spec_gaps`: 승인된 명세에 없는 것 → 재요청으로 못 고친다 (명세는 이미 승인됐고 `plan_contract` 는 명세를 바꾸지 않음).
+  빌드를 `failed` 로 두고 승인자가 명세 수정 요청(새 판)을 고른다.
+
+검사
+1. 양방향 대응 — 모든 r* 가 covers 에, 모든 p* 에 공개 테스트, 모든 h* 에 숨은 케이스. 거꾸로 계약의 모든 엔드포인트·엔티티가
+   covers 에 연결되고, 모든 필드가 명세의 r*·p* 를 가리킨다 (요구에 없는 필드는 낱말 목록에 안 걸려도 구조로 해법을 흘린다).
+2. 템플릿 이름 규칙·허용 인터페이스.
+3. 숨은 요구·운영 조건 핵심어(재료 leak_terms·trigger_terms·stage2_cause_terms·먼저 말할 개념)가 계약에 없음 —
+   기능형 서술 검사와 같은 낱말 기준(`spec.feature.find_terms`). 식별자는 낱말로 풀어서 본다 (connectionPoolSize → connection pool size).
+4. HiddenPlan 운영 수치 = 명세에 보이는 수치 — 템플릿 `harness_params` 의 표기 패턴으로 1단계 자료 본문·추가 요구 구체 답에서
+   값을 뽑아 대조한다. 자유 글의 숫자를 그대로 찾지 않는다 ("8" 은 아무 데나 나온다).
+5. HiddenPlan 키는 템플릿 조절값 안, 케이스의 의도한 실패 사유는 템플릿 `failure_reasons` 코드 안.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+
+from task_spec.schemas.build import ContractField, HarnessValue, HiddenPlan, TaskContract
+from task_spec.schemas.domain import TaskItem
+from task_spec.schemas.incident import FeatureSeed
+from task_spec.schemas.template import HarnessParam, TemplateManifest
+from task_spec.spec.feature import find_terms
+
+
+@dataclass(frozen=True)
+class SpecView:
+    """승인된 기능형 명세에서 계약 검사가 보는 부분."""
+
+    req_ids: tuple[str, ...]
+    public_ac_ids: tuple[str, ...]
+    hidden_acs: dict[str, str]  # h* → trap_id
+    trap_ids: tuple[str, ...]
+    # 지원자가 운영 수치를 발견하는 곳 — 1단계 자료 본문 + 추가 요구 구체 답 (상황 글에는 운영 조건을 쓰지 않는다)
+    visible_texts: tuple[str, ...]
+    concepts: tuple[
+        str, ...
+    ] = ()  # 먼저 말할 개념 (1·2단계 first_mention_of) — 계약에 나오면 안 됨
+
+    @classmethod
+    def from_task(cls, task: TaskItem) -> SpecView:
+        obs = [*task.observables, *(task.debug_stage.observables if task.debug_stage else [])]
+        return cls(
+            req_ids=tuple(r.req_id for r in task.requirements),
+            public_ac_ids=tuple(a.ac_id for a in task.acceptance_public),
+            hidden_acs={h.ac_id: h.trap_id for h in task.acceptance_hidden},
+            trap_ids=tuple(t.trap_id for t in task.traps),
+            visible_texts=(
+                *(a.content for a in task.artifacts),
+                *(c.answer for c in task.clarifications),
+            ),
+            concepts=tuple(dict.fromkeys(o.value for o in obs if o.kind == "first_mention_of")),
+        )
+
+
+@dataclass(frozen=True)
+class ContractCheck:
+    problems: list[str] = field(default_factory=list)  # 재요청으로 고칠 수 있음
+    spec_gaps: list[str] = field(default_factory=list)  # 명세 수정이 필요함 — 재요청하지 않음
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems and not self.spec_gaps
+
+
+# ── 운영 수치 ──────────────────────────────────────────────
+
+
+def _number(raw: str) -> float | None:
+    s = re.sub(r"[\s,_]", "", raw)
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def extract_values(param: HarnessParam, texts: Iterable[str]) -> list[str]:
+    """표기 패턴(그룹 1)으로 명세 글에서 이 조절값의 값을 뽑는다. 못 뽑으면 빈 목록 = "명세에 없음"."""
+    found: list[str] = []
+    for pattern in param.spec_patterns:
+        rx = re.compile(pattern)
+        for text in texts:
+            found += [m.group(1).strip() for m in rx.finditer(text) if m.group(1)]
+    return list(dict.fromkeys(found))
+
+
+def _same(value: HarnessValue, raw: str) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int | float):
+        n = _number(raw)
+        return n is not None and n == float(value)
+    if isinstance(value, str):
+        return value.strip().casefold() == raw.strip().casefold()
+    return False  # 목록 값은 명세 대조 대상이 아니다 (주입 대상 id 등)
+
+
+def spec_missing_params(visible_texts: Sequence[str], manifest: TemplateManifest) -> list[str]:
+    """명세 글에서 표기 패턴으로 값이 안 뽑히는 필수·visible 조절값 이름.
+
+    명세 단계 사전 검사용 (§3.3 [제안] — 기능형 서술 검증에서 템플릿이 정해지면 재요청 사유로 쓴다).
+    """
+    return [
+        p.name
+        for p in manifest.harness_params
+        if p.visible and p.required and not extract_values(p, visible_texts)
+    ]
+
+
+def _type_problem(param: HarnessParam, value: HarnessValue) -> str | None:
+    ok = {
+        "int": isinstance(value, int) and not isinstance(value, bool),
+        "float": isinstance(value, int | float) and not isinstance(value, bool),
+        "str": isinstance(value, str),
+        "int_list": isinstance(value, list) and all(isinstance(x, int) for x in value),
+    }[param.kind]
+    if not ok:
+        return f"HiddenPlan {param.name} 의 값 형식이 {param.kind} 가 아님"
+    nums = value if isinstance(value, list) else [value]
+    for n in nums:
+        if isinstance(n, int | float) and not isinstance(n, bool):
+            if param.minimum is not None and n < param.minimum:
+                return f"HiddenPlan {param.name}={n} 이 템플릿 하한 {param.minimum:g} 보다 작음"
+            if param.maximum is not None and n > param.maximum:
+                return f"HiddenPlan {param.name}={n} 이 템플릿 상한 {param.maximum:g} 보다 큼"
+    return None
+
+
+def _harness(
+    plan: HiddenPlan, spec: SpecView, manifest: TemplateManifest
+) -> tuple[list[str], list[str]]:
+    problems: list[str] = []
+    gaps: list[str] = []
+    known = {p.name for p in manifest.harness_params}
+    unknown = [k for k in plan.harness if k not in known]
+    if unknown:
+        problems.append(
+            f"HiddenPlan harness 에 템플릿에 없는 조절값: {', '.join(unknown)} "
+            f"(쓸 수 있는 것: {', '.join(sorted(known)) or '없음'})"
+        )
+    for p in manifest.harness_params:
+        if p.name not in plan.harness:
+            if p.required:
+                problems.append(f"HiddenPlan harness 에 필수 조절값 {p.name} 이 없음")
+            continue
+        value = plan.harness[p.name]
+        bad = _type_problem(p, value)
+        if bad:
+            problems.append(bad)
+            continue
+        if not p.visible:
+            continue
+        seen = extract_values(p, spec.visible_texts)
+        if not seen:
+            gaps.append(
+                f"명세 1단계 자료·추가 요구 구체 답에 운영 수치 {p.name} 이 없음 (표기 패턴으로 못 찾음) — "
+                "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"
+            )
+        elif not any(_same(value, raw) for raw in seen):
+            problems.append(
+                f"HiddenPlan {p.name}={value} 이 명세 자료의 값({', '.join(seen)})과 다름 — 명세 자료의 값을 쓴다"
+            )
+    return problems, gaps
+
+
+# ── 계약 ───────────────────────────────────────────────────
+
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _words(identifier: str) -> str:
+    """connectionPoolSize · max_pool · /orders/{id}/retry-key → 낱말로 풀어 쓴 글."""
+    return re.sub(r"[_\-/{}.]+", " ", _CAMEL.sub(" ", identifier)).strip().lower()
+
+
+def _fields(contract: TaskContract) -> list[tuple[str, ContractField]]:
+    """(위치, 필드) — 요청·응답 본문·엔티티의 모든 필드."""
+    out: list[tuple[str, ContractField]] = []
+    for e in contract.endpoints:
+        out += [(f"{e.endpoint_id} 요청", f) for f in e.request]
+        for r in e.responses:
+            out += [(f"{e.endpoint_id} 응답 {r.status}", f) for f in r.body]
+    for m in contract.entities:
+        out += [(f"{m.entity_id} {m.name}", f) for f in m.fields]
+    return out
+
+
+def contract_text(contract: TaskContract) -> str:
+    """계약에서 지원자에게 보이는 글 전부 + 식별자를 낱말로 푼 것 (숨은 요구 핵심어 검사용)."""
+    parts: list[str] = []
+    for e in contract.endpoints:
+        parts += [e.path, _words(e.path), e.summary]
+        parts += [r.description for r in e.responses]
+    for m in contract.entities:
+        parts += [m.name, _words(m.name), *m.relations]
+    for _, f in _fields(contract):
+        parts += [f.name, _words(f.name), f.type, f.constraints or ""]
+    for s in contract.seed:
+        parts += s.rules
+    parts += [t.checks for t in contract.public_tests]
+    return "\n".join(p for p in parts if p)
+
+
+def _dups(label: str, ids: Sequence[str]) -> list[str]:
+    dup = sorted(i for i, n in Counter(ids).items() if n > 1)
+    return [f"{label} 이 겹침: {', '.join(dup)}"] if dup else []
+
+
+def _ids(contract: TaskContract, plan: HiddenPlan) -> list[str]:
+    problems = _dups("엔드포인트 id", [e.endpoint_id for e in contract.endpoints])
+    problems += _dups("엔티티 id", [m.entity_id for m in contract.entities])
+    problems += _dups("엔티티 이름", [m.name for m in contract.entities])
+    problems += _dups("공개 테스트 id", [t.test_id for t in contract.public_tests])
+    problems += _dups("숨은 케이스 id", [c.case_id for c in plan.cases])
+    problems += _dups(
+        "엔드포인트(메서드·경로)", [f"{e.method or ''} {e.path}" for e in contract.endpoints]
+    )
+    return problems
+
+
+def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[str]:
+    problems: list[str] = []
+    refs_ok = set(spec.req_ids) | set(spec.public_ac_ids)
+    element_ids = {e.endpoint_id for e in contract.endpoints} | {
+        m.entity_id for m in contract.entities
+    }
+
+    # 계약 요소 → 명세 (거꾸로 대응)
+    for e in contract.endpoints:
+        bad = [r for r in e.refs if r not in refs_ok]
+        if bad:
+            problems.append(
+                f"엔드포인트 {e.endpoint_id} 의 refs 에 명세에 없는 id: {', '.join(bad)}"
+            )
+    for where, f in _fields(contract):
+        bad = [r for r in f.refs if r not in refs_ok]
+        if bad:
+            problems.append(f"{where} 필드 {f.name} 의 refs 에 명세에 없는 id: {', '.join(bad)}")
+    covered = {i for ids in contract.covers.values() for i in ids}
+    loose = sorted(element_ids - covered)
+    if loose:
+        problems.append(
+            f"어느 공개 요구(covers)에도 연결되지 않은 계약 요소: {', '.join(loose)} — "
+            "요구에 없는 인터페이스·엔티티는 해법을 흘린다"
+        )
+
+    # 명세 → 계약
+    for key, ids in contract.covers.items():
+        if key not in spec.req_ids:
+            problems.append(f"covers 의 키 {key} 가 명세의 공개 요구 id 가 아님")
+        bad = [i for i in ids if i not in element_ids]
+        if bad:
+            problems.append(f"covers[{key}] 에 계약에 없는 id: {', '.join(bad)}")
+    for r in spec.req_ids:
+        if not contract.covers.get(r):
+            problems.append(f"공개 요구 {r} 가 계약 covers 에 없음")
+
+    tested = {t.ac_id for t in contract.public_tests}
+    for t in contract.public_tests:
+        if t.ac_id not in spec.public_ac_ids:
+            problems.append(
+                f"공개 테스트 {t.test_id} 의 ac_id {t.ac_id} 가 명세의 공개 수용 기준이 아님"
+            )
+    for p in spec.public_ac_ids:
+        if p not in tested:
+            problems.append(f"공개 수용 기준 {p} 에 공개 테스트가 없음")
+
+    planned = {c.ac_id for c in plan.cases}
+    for c in plan.cases:
+        if c.ac_id not in spec.hidden_acs:
+            problems.append(
+                f"숨은 케이스 {c.case_id} 의 ac_id {c.ac_id} 가 명세의 숨김 수용 기준이 아님"
+            )
+        elif spec.hidden_acs[c.ac_id] != c.trap_id:
+            problems.append(
+                f"숨은 케이스 {c.case_id} 의 trap_id {c.trap_id} 가 {c.ac_id} 의 숨은 요구"
+                f"({spec.hidden_acs[c.ac_id]})와 다름"
+            )
+        if c.trap_id not in spec.trap_ids:
+            problems.append(
+                f"숨은 케이스 {c.case_id} 의 trap_id {c.trap_id} 가 명세의 숨은 요구가 아님"
+            )
+    for h in spec.hidden_acs:
+        if h not in planned:
+            problems.append(f"숨김 수용 기준 {h} 에 숨은 케이스가 없음")
+
+    entity_ids = {m.entity_id for m in contract.entities}
+    for s in contract.seed:
+        if s.entity_id not in entity_ids:
+            problems.append(f"시드 규칙의 엔티티 {s.entity_id} 가 계약에 없음")
+        if s.rows_min > s.rows_max:
+            problems.append(f"시드 규칙 {s.entity_id} 의 rows_min 이 rows_max 보다 큼")
+    return problems
+
+
+def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
+    problems: list[str] = []
+    if contract.interface_kind not in manifest.interfaces:
+        problems.append(
+            f"인터페이스 {contract.interface_kind} 를 템플릿 {manifest.ref} 이 지원하지 않음 "
+            f"(지원: {', '.join(manifest.interfaces)})"
+        )
+    rx = manifest.naming
+    for e in contract.endpoints:
+        if contract.interface_kind == "http":
+            if e.method is None:
+                problems.append(f"엔드포인트 {e.endpoint_id} 에 HTTP 메서드가 없음")
+            if not re.fullmatch(rx.path, e.path):
+                problems.append(
+                    f"엔드포인트 {e.endpoint_id} 경로 {e.path!r} 가 템플릿 경로 규칙과 다름"
+                )
+        elif e.method is not None:
+            problems.append(
+                f"엔드포인트 {e.endpoint_id} 는 {contract.interface_kind} 라 HTTP 메서드를 쓰지 않음"
+            )
+    for m in contract.entities:
+        if not re.fullmatch(rx.entity, m.name):
+            problems.append(f"엔티티 이름 {m.name!r} 가 템플릿 이름 규칙과 다름")
+    bad_fields = sorted(
+        {f.name for _, f in _fields(contract) if not re.fullmatch(rx.field, f.name)}
+    )
+    if bad_fields:
+        problems.append(f"필드 이름이 템플릿 이름 규칙과 다름: {', '.join(bad_fields)}")
+    return problems
+
+
+def hidden_terms(seed: FeatureSeed | None, spec: SpecView) -> list[str]:
+    """계약에 나오면 안 되는 말 — 재료의 숨은 요구·원인·운영 조건 낱말 + 먼저 말할 개념. 공개된 업무 요구에 나온 말은 뺀다."""
+    terms = list(spec.concepts)
+    if seed is not None:
+        terms += [*seed.leak_terms, *seed.stage2_cause_terms, *seed.trigger_terms]
+        public = set(find_terms(terms, seed.business_need))
+        terms = [t for t in terms if t not in public]
+    return list(dict.fromkeys(terms))
+
+
+def _leaks(contract: TaskContract, spec: SpecView, seed: FeatureSeed | None) -> list[str]:
+    shown = find_terms(hidden_terms(seed, spec), contract_text(contract))
+    if not shown:
+        return []
+    return [
+        "숨은 요구·운영 조건을 드러내는 말이 공개 계약(경로·필드·설명·시드·공개 테스트)에 나옴: "
+        + ", ".join(shown)
+        + " — 계약은 '무엇을'만, 숨은 요구와 운영 조건은 담지 않는다"
+    ]
+
+
+def _reasons(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
+    codes = manifest.reason_codes
+    bad = sorted({c.intended_reason for c in plan.cases if c.intended_reason not in codes})
+    if not bad:
+        return []
+    return [
+        f"숨은 케이스의 의도한 실패 사유가 템플릿 코드 목록에 없음: {', '.join(bad)} "
+        f"(쓸 수 있는 것: {', '.join(sorted(codes)) or '없음'})"
+    ]
+
+
+def check_contract(
+    contract: TaskContract,
+    plan: HiddenPlan,
+    spec: SpecView,
+    manifest: TemplateManifest,
+    seed: FeatureSeed | None = None,
+) -> ContractCheck:
+    """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유."""
+    problems = _ids(contract, plan)
+    problems += _coverage(contract, plan, spec)
+    problems += _naming(contract, manifest)
+    problems += _leaks(contract, spec, seed)
+    harness_problems, gaps = _harness(plan, spec, manifest)
+    problems += harness_problems
+    problems += _reasons(plan, manifest)
+    return ContractCheck(problems=problems, spec_gaps=gaps)

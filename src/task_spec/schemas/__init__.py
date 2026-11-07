@@ -3,6 +3,24 @@
 from __future__ import annotations
 
 from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus, TaskKind
+from task_spec.schemas.build import (
+    BuildState,
+    BuildStatus,
+    ContractField,
+    ContractResponse,
+    Endpoint,
+    Entity,
+    FileKind,
+    FileRef,
+    GeneratedFile,
+    GeneratedFiles,
+    HiddenCase,
+    HiddenPlan,
+    PublicTest,
+    RepairRecord,
+    SeedRule,
+    TaskContract,
+)
 from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
 from task_spec.schemas.domain import (
@@ -109,6 +127,12 @@ from task_spec.schemas.summary import (
     TaskBrief,
     VerifyBrief,
 )
+from task_spec.schemas.template import (
+    FailureReason,
+    HarnessParam,
+    NamingRules,
+    TemplateManifest,
+)
 from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
 from task_spec.schemas.verify_overlap import (
     OverlapCheck,
@@ -121,6 +145,26 @@ from task_spec.schemas.verify_overlap import (
 )
 
 __all__ = [
+    "BuildState",
+    "BuildStatus",
+    "ContractField",
+    "ContractResponse",
+    "Endpoint",
+    "Entity",
+    "FileKind",
+    "FileRef",
+    "GeneratedFile",
+    "GeneratedFiles",
+    "HiddenCase",
+    "HiddenPlan",
+    "PublicTest",
+    "RepairRecord",
+    "SeedRule",
+    "TaskContract",
+    "FailureReason",
+    "HarnessParam",
+    "NamingRules",
+    "TemplateManifest",
     "DraftFeatureOutputV4",
     "DraftFeatureOutputV5",
     "ClarificationDraftV5",
