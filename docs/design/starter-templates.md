@@ -50,7 +50,8 @@ templates/<직군>/<스택>/vN/
   project/            동작하는 최소 프로젝트 (빌드 설정, 앱 골격, 내장 DB·가짜 서비스, 테스트 설정, 실행 스크립트)
   manifest.yaml       아래 필드
   README.tpl.md       지원자용 README 틀 (공개 요구·공개 수용 기준·산출물·API 계약 자리)
-  hidden/             숨은 테스트 하네스 골격 (동시 요청 실행기, HTTP 계약 클라이언트 등)
+  hidden/harness/     숨은 테스트 하네스 (잠김 — 지연·오류 주입, 커넥션 추적, 서버 기동, HTTP 도우미, 운영 설정 덮어쓰기)
+  hidden/cases/       과제별 숨은 테스트 케이스 자리 (오버레이 `kind=hidden` 이 여기만 씀 — spec-to-code.md §4.1)
 templates/<직군>/<스택>/CURRENT
 ```
 
