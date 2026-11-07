@@ -163,6 +163,8 @@ async def plan_contract(
                 NodeError(node=TASK, code=type(exc).__name__, message="공개 계약 생성 실패")
             )
             res.fail_reasons.append(f"{type(exc).__name__}: {str(exc)[:300]}")
+            if (spent := getattr(exc, "provenance", None)) is not None:
+                res.provenance.append(spent)  # 실패한 호출도 비용·호출 수에
             continue
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
