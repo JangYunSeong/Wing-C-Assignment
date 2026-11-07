@@ -5,13 +5,15 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
 
 판정 순서 — 앞 단계가 깨지면 뒤 단계 결과는 믿을 수 없어 보지 않는다:
 1. 시작 코드 (①빌드 · ②기존 테스트) — 실패면 `gen_starter` 만. 시작 코드를 다시 만들면 참조 구현도 다시 (루프가 처리).
+   ②' 시작 코드 그대로 + 숨은 테스트(검증기의 `starter_hidden` 실행)가 숨은 케이스를 모두 통과 → 과제가 이미 풀림 → `gen_starter` 만.
 2. 참조 구현 대상마다 준비 — 컴파일 오류는 오류가 난 파일의 주인에게 (숨은 테스트 파일 → `gen_hidden`, 그 밖 → 그 참조 구현),
    기동 실패 → 그 참조 구현, 시간 초과(⑨) → `gen_hidden`.
 3. 참조 구현이 둘 이상이고 모두 같은 기존 테스트를 같은 오류로 깸 → 계약 모호 의심 (다시 만들지 않고 사람 확인).
    참조 구현이 시작 코드에서 통과하던 기존 테스트를 깨뜨림 → 그 참조 구현 (§7 표 ⑤ 는 `gen_starter`(누설)이지만 2026-11-07 스모크에서는
    흔한 구현이 필수 필드를 빠뜨린 결함이었다 — 참조 구현을 먼저 다시 만들고, 그래도 깨면 누설 의심으로 남긴다).
 4. 숨은 케이스 `HARNESS_ERR`(테스트 자체 예외)·결과 없음 → `gen_hidden`.
-5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다. 통과 → `gen_hidden`(약함), 다른 사유·사유 없음 → `gen_hidden`
+5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다. 통과 → 흔한 구현을 아직 다시 만들지 않았으면 `gen_naive`
+   (설명을 안 따랐을 수 있음 — 그 회차에는 그 대상의 다른 ③ 배정을 미룸), 이미 다시 만들었으면 `gen_hidden`(약함). 다른 사유·사유 없음 → `gen_hidden`
    (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`). ③' 지킨 요구의 케이스에서 실패 → `gen_hidden`.
 6. ④ 허용 구현: 허용 구현이 둘 이상이고 모두 같은 케이스에서 실패 → `gen_hidden`(너무 엄격). 일부만 실패, 또는 허용 구현이 하나뿐이면
    그 구현을 먼저 (`gen_accepted`) — 이미 다시 만들었는데 또 실패하면: 흔한 구현이 그 케이스에서 의도한 사유로 실패하면(테스트는 제 몫) 설계를 못 따른 것(사람 확인),
@@ -31,6 +33,7 @@ from task_spec.starter.static_check import Overlay
 
 MAX_MESSAGE = 220
 STARTER = "starter"
+COMPILE_SUFFIX = "#compile"  # regen_counts 에서 컴파일 수리 횟수 키 (일반 수리와 따로)
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,12 @@ class RepairAction:
     @property
     def key(self) -> str:
         return f"{self.generator}:{self.label}" if self.label else self.generator
+
+    @property
+    def budget_key(self) -> str:
+        """재생성 예산을 세는 키 — 컴파일 수리는 따로 센다. 2026-11-07 배송 감사 재실행: 숨은 테스트 컴파일 수리가
+        일반 재생성 예산까지 써서, 컴파일이 고쳐진 뒤 드러난 실패를 고칠 기회가 없었다."""
+        return f"{self.key}{COMPILE_SUFFIX}" if self.compile else self.key
 
 
 @dataclass
@@ -125,6 +134,32 @@ def _starter(run: TargetRun) -> list[RepairAction]:
             "시작 코드에서 기존 기능 테스트가 통과해야 한다. 테스트와 구현이 서로 맞게 고친다 — 테스트들은 같은 DB 를 쓰고 "
             "실행 순서가 정해지지 않으므로 테스트 메서드마다 서로 다른 시드 행을 쓰는지도 본다:\n"
             + lines,
+        )
+    ]
+
+
+def _starter_solves(run: TargetRun, plan: HiddenPlan) -> list[RepairAction]:
+    """시작 코드 그대로(지원자가 아무것도 안 함)로 숨은 케이스를 **모두** 통과 → 새 기능이 시작 코드에 이미 있다 → `gen_starter`.
+
+    2026-11-07 알파 테스트 (새 공고): 시작 코드가 상태 변경·감사 기록(같은 트랜잭션)·조회를 다 구현해 허용 설계 d1 과 같았고,
+    흔한 구현·허용 구현은 시작 코드 위에 따로 쓰이므로 빌드가 review 까지 갔다. 일부만 통과하는 것은 막지 않는다
+    (부정 단언만 있는 케이스는 빈 구현으로도 통과할 수 있음). 준비 실패(숨은 테스트 컴파일 오류 등)는 참조 구현 쪽에서 본다.
+    """
+    if run.setup != "ok" or not plan.cases:
+        return []
+    results = [run.case(c.case_id) for c in plan.cases]
+    if any(r is None or r.result != "PASS" for r in results):
+        return []
+    ids = ", ".join(c.case_id for c in plan.cases)
+    return [
+        RepairAction(
+            "gen_starter",
+            "",
+            "②'",
+            f"시작 코드만으로 숨은 케이스 {ids} 를 모두 통과 — 새 기능이 이미 들어 있음",
+            f"시작 코드 그대로(지원자가 아무것도 하지 않은 상태)로 숨은 케이스 {ids} 를 모두 통과했다 — 지원자가 만들 새 기능이 "
+            "시작 코드에 들어 있다. '이미 있는 API' 는 공개 요구 전의 동작만 남기고(공개 요구가 더하는 기록·조회·검사는 빼고), "
+            "공개 요구가 새로 요구하는 API·저장·기록은 자리 표시(TODO)로 둔다. 기존 기능 테스트는 그 동작만 확인한다.",
         )
     ]
 
@@ -276,7 +311,32 @@ def _hidden_broken(run: TargetRun, plan: HiddenPlan) -> list[RepairAction]:
     return out
 
 
-def _gate3(run: TargetRun, plan: HiddenPlan, missed: set[str]) -> list[RepairAction]:
+def _gate3(
+    run: TargetRun, plan: HiddenPlan, missed: set[str], regen_counts: Mapping[str, int]
+) -> list[RepairAction]:
+    passed = [
+        c
+        for c in plan.cases
+        if c.trap_id in missed and (r := run.case(c.case_id)) is not None and r.result == "PASS"
+    ]
+    if passed and regen_counts.get(f"gen_naive:{run.target}", 0) == 0:
+        # 흔한 구현이 숨은 케이스를 통과 — 테스트가 약한지보다 흔한 구현이 설명을 안 따랐는지를 먼저 본다.
+        # 2026-11-07 배송 감사 재실행: 흔한 구현이 REQUIRES_NEW 를 상태 변경 트랜잭션이 끝난 뒤 불러 커넥션을 하나씩만 썼다.
+        # 숨은 테스트는 맞았다 (진짜 흔한 구현으로 바꾸자 hc1·hc2 모두 의도한 사유로 실패). 이 회차에는 이 대상의 다른 ③ 배정을 미룬다 —
+        # 흔한 구현이 틀렸으면 사유 불일치도 그 탓일 수 있다 (같은 재실행의 hc2 record_missing).
+        ids = ", ".join(c.case_id for c in passed)
+        traps = ", ".join(sorted({c.trap_id for c in passed}))
+        return [
+            RepairAction(
+                "gen_naive",
+                run.target,
+                "③",
+                f"흔한 구현이 {ids} 통과 — 흔한 구현을 먼저 다시 ({run.target})",
+                f"이 흔한 구현은 숨은 요구 {traps} 를 어기는 구현이어야 하는데 숨은 케이스 {ids} 를 통과했다 — 입력의 흔한 구현 설명을 "
+                "구조 그대로 따르지 않았다. 설명이 말하는 그 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)를 그대로 쓰고, "
+                "더 안전한 방식으로 바꾸지 않는다.",
+            )
+        ]
     out: list[RepairAction] = []
     for c in plan.cases:
         r = run.case(c.case_id)
@@ -424,11 +484,17 @@ def assign(
     if acts := _starter(starter):
         res.actions = acts
         return res
+    bare = next((r for r in report.runs if r.kind == "starter_hidden"), None)
+    if bare is not None and (acts := _starter_solves(bare, plan)):
+        res.actions = (
+            acts  # 참조 구현은 새 시작 코드 위에 처음부터 다시 쓰이므로 이번 결과는 보지 않는다
+        )
+        return res
 
     actions: list[RepairAction] = []
     ready: list[TargetRun] = []
     for run in report.runs:
-        if run.kind == "starter":
+        if run.kind in ("starter", "starter_hidden"):
             continue
         if run.setup != "ok":
             actions += _ref_setup(run, overlays)
@@ -441,7 +507,7 @@ def assign(
         actions += _hidden_broken(run, plan)
     for run in ready:
         if run.kind == "ref_naive":
-            actions += _gate3(run, plan, missed_traps.get(run.target, set()))
+            actions += _gate3(run, plan, missed_traps.get(run.target, set()), counts)
     accepted = [r for r in ready if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(

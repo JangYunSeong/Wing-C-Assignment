@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 
 
 class Verifier(Protocol):
-    """채점 경로로 대상마다 돌린 결과 — 시작 코드(①②), 참조 구현마다 시작 코드 + 구현 + 숨은 테스트(③~)."""
+    """채점 경로로 대상마다 돌린 결과 — 시작 코드(①②), 시작 코드가 기동하면 시작 코드 그대로 + 숨은 테스트
+    (kind `starter_hidden`, ②' — 이미 풀려 있으면 안 됨), 참조 구현마다 시작 코드 + 구현 + 숨은 테스트(③~)."""
 
     async def verify(
         self, starter: Overlay, hidden: Overlay, refs: Sequence[Overlay]
@@ -54,6 +55,9 @@ class BuildOutcome:
     reports: list[VerifyReport] = field(default_factory=list)  # 검증 회차마다
     repairs: list[RepairRecord] = field(default_factory=list)
     review_flags: list[str] = field(default_factory=list)
+    adjustments: list[str] = field(
+        default_factory=list
+    )  # 생성기 출력에서 코드가 고친 것 — 승인 화면에
     regen_counts: dict[str, int] = field(default_factory=dict)
     provenance: list[Provenance] = field(default_factory=list)
     rounds: int = 0  # 다시 만든 회차 수
@@ -115,6 +119,7 @@ async def build_and_repair(
 
     def took(r: GenResult) -> Overlay | None:
         out.provenance += r.provenance
+        out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
         if r.overlay is None or not r.ok:
             out.review_flags.append(
                 f"{r.task} 생성 실패: " + "; ".join([*r.problems, *r.fail_reasons][:3])
@@ -162,7 +167,8 @@ async def build_and_repair(
         blocked = [
             a
             for a in plan.actions
-            if out.regen_counts.get(a.key, 0) >= (COMPILE_BUDGET if a.compile else PER_ARTIFACT)
+            if out.regen_counts.get(a.budget_key, 0)
+            >= (COMPILE_BUDGET if a.compile else PER_ARTIFACT)
         ]
         if plan.unresolved or blocked or round_no == max_rounds:
             out.review_flags += plan.unresolved
@@ -189,8 +195,8 @@ async def _regenerate(
     """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
     시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
     notes = {a.key: f"검증 실패 (게이트 {a.gate}) — {a.note}" for a in actions}
-    for a in actions:
-        out.regen_counts[a.key] = out.regen_counts.get(a.key, 0) + 1
+    for a in actions:  # 컴파일 수리는 따로 센다 (RepairAction.budget_key)
+        out.regen_counts[a.budget_key] = out.regen_counts.get(a.budget_key, 0) + 1
     starter = out.overlays[STARTER]
     if "gen_starter" in notes:
         new = took(

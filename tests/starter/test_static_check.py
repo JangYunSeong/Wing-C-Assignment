@@ -275,3 +275,39 @@ def test_duplicate_reason_labels_in_one_case_file() -> None:
     # 막지 않는다 — 표시만 (2026-11-07: 재요청 문제로 두었더니 숨은 테스트 생성 자체가 실패)
     assert not _has(res.for_target("gen_hidden"), "같은 사유·문구")
     assert not _has(_run().review_flags, "같은 사유·문구")
+
+
+def test_numeric_fields_are_not_asserted_as_raw_json_values() -> None:
+    """2026-11-07 알파 테스트: assertThat(log.get("transactionId")).isEqualTo(txId) — Integer 105 ≠ 105L 로 모든 구현 실패.
+    HARNESS.md 규칙이 있었는데도 어겨서 정적 검사로."""
+    raw = HC1.replace(
+        "        org.assertj",
+        '        var row = jsonObject(get("/orders/1/history").body());\n'
+        '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isEqualTo(1L);\n'
+        '        org.assertj.core.api.Assertions.assertThat(((Number) row.get("orderId")).longValue()).isEqualTo(1L);\n'
+        '        org.assertj.core.api.Assertions.assertThat(((Number)row.get("orderId")).longValue()).isEqualTo(1L);\n'
+        '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isNotNull();\n'
+        '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isEqualTo(((Number) id).intValue());\n'
+        '        org.assertj.core.api.Assertions.assertThat(row.get("requestedBy")).isEqualTo("g");\n'
+        "        org.assertj",
+    )
+
+    def hidden(text: str) -> list[str]:
+        return static_check(
+            _overlays(hidden=[_f(f"{CASES}/OrderStatusBurstTest.java", text)]),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            contract=_contract_with_list(),
+            seed=BACKEND_SEED,
+        ).for_target("gen_hidden")
+
+    msgs = [m for m in hidden(raw) if "JSON Map 값 그대로" in m]
+    assert len(msgs) == 1 and 'assertThat(row.get("orderId"))' in msgs[0]
+    assert '((Number) x.get("orderId")).longValue()' in msgs[0]
+    # 캐스트한 꼴·null 확인·Integer 로 맞춘 비교·문자열 필드만 있으면 통과
+    ok = raw.replace(
+        '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isEqualTo(1L);\n',
+        "",
+    )
+    assert not [m for m in hidden(ok) if "JSON Map 값 그대로" in m]

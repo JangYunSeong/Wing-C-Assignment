@@ -498,3 +498,26 @@ def test_concrete_ids_in_tests_match_contract_path_variables() -> None:
     assert _has(
         _check(c, p).problems, "계약에 없는 API", "DELETE /orders/150", "GET /orders/150/status"
     )
+
+
+def test_changing_api_needs_target_rows_and_case_data() -> None:
+    """2026-11-07 알파 테스트 (새 공고): covers 재요청에 대상 엔티티를 지워 감사 기록(0행)만 남음 → 없는 id 로만 요청, 모두 404."""
+    assert not _has(_check().problems, "바꿀 행", "행이 하나도 없는데")
+    c = _contract()
+    c["seed"] = [{"entity_id": "m2", "rows": 0}]
+    p = _plan()
+    p["cases"][0]["data"] = []
+    res = _check(c, p)
+    assert _has(res.problems, "시드에 행이 하나도 없는데", "PATCH /orders/{id}/status")
+    assert _has(res.problems, "숨은 케이스 hc1 가 바꿀 행(data)을 선언하지 않음")
+    # 경로 변수로 바꾸는 API 가 없으면 (조회만) 묻지 않는다
+    c["endpoints"] = [e for e in c["endpoints"] if e["method"] == "GET"]
+    c["covers"] = {k: [i for i in v if i != "e1"] for k, v in c["covers"].items()}
+    assert not _has(_check(c, p).problems, "바꿀 행", "행이 하나도 없는데")
+
+
+def test_loose_element_message_says_connect_before_dropping() -> None:
+    c = _contract()
+    c["covers"] = {k: [i for i in v if i != "m1"] for k, v in c["covers"].items()}
+    msg = next(m for m in _check(c).problems if "연결되지 않은 계약 요소: m1" in m)
+    assert "covers 에 잇는다" in msg and "관련 없을 때만 뺀다" in msg

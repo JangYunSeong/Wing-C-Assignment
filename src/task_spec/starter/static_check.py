@@ -31,7 +31,7 @@ import yaml
 from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import FileKind
 from task_spec.spec.feature import find_terms
-from task_spec.starter.contract import SpecView, hidden_terms
+from task_spec.starter.contract import SpecView, contract_fields, hidden_terms
 from task_spec.starter.render import README, render_params
 from task_spec.starter.tables import contract_tables, declared_tables, referenced_tables, same_table
 from task_spec.starter.templates import Template, glob_match, slot_allows
@@ -463,6 +463,39 @@ def _hidden_tables(
     return out
 
 
+_INTEGER_TYPE = re.compile(r"^\s*(?:long|int|integer|bigint|short|number)\b", re.I)
+# 그대로 두는 단언: null·형식 확인, 기대값을 Integer 로 맞춘 비교 (2026-11-07 배송 감사 숨은 테스트 `isEqualTo(((Number) id).intValue())` — 작은 id 라 동작)
+_NULL_CHECK = re.compile(r"\.is(?:Not)?Null\(\)|\.isInstanceOf\(|\.intValue\(\)")
+
+
+def _raw_number_asserts(
+    files: Iterable[GeneratedFile], patterns: Sequence[str], contract: TaskContract
+) -> list[str]:
+    """계약에서 정수 형식인 필드를 JSON Map 값 그대로 단언 — 크기에 따라 Integer·Long 이라 long 과 비교하면 모든 구현이 실패.
+    null 확인(isNull·isNotNull)·형식 확인(isInstanceOf)·기대값을 Integer 로 맞춘 비교(intValue)는 그대로 둔다."""
+    numeric = {f.name for _, f in contract_fields(contract) if _INTEGER_TYPE.match(f.type)}
+    if not numeric:
+        return []
+    out: list[str] = []
+    for f in files:
+        hits: list[str] = []
+        for pat in patterns:
+            for m in re.finditer(pat, f.content):
+                end = f.content.find(";", m.end())
+                tail = f.content[m.end() : end if end >= 0 else None]
+                if m.group(1) in numeric and not _NULL_CHECK.search(tail):
+                    hits.append(m.group(0))
+        if hits:
+            shown = "; ".join(dict.fromkeys(hits))
+            field = re.search(r'"(\w+)"', hits[0])
+            name = field.group(1) if field else "id"
+            out.append(
+                f"숨은 테스트 {f.path} 가 숫자 필드를 JSON Map 값 그대로 단언함: {shown} — JSON 숫자는 크기에 따라 "
+                f'Integer·Long 으로 읽혀 long 과 비교하면 모든 구현이 실패한다. ((Number) x.get("{name}")).longValue() 로 바꿔 비교한다'
+            )
+    return out
+
+
 _SQL_WORDS = re.compile(r"\b(?:update|insert|delete|select|into|from)\b", re.I)
 
 
@@ -518,6 +551,10 @@ def _hidden_cases(
         )
     if contract is not None:
         out += _hidden_tables([f for f in o.files if f.path != params_path], t, contract)
+    if contract is not None and rules.raw_number_asserts:
+        out += _raw_number_asserts(
+            [f for f in o.files if f.path != params_path], rules.raw_number_asserts, contract
+        )
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
         out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")

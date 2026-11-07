@@ -73,3 +73,40 @@ def test_compile_errors_are_relative_to_the_work_dir(tmp_path: Path) -> None:
     )
     errs = compile_errors(log, work)
     assert [(e.path, e.line) for e in errs] == [("src/test/java/com/x/Hc2Test.java", 50)]
+
+
+async def test_verify_runs_bare_starter_with_hidden_tests_only_when_starter_builds(
+    tmp_path: Path,
+) -> None:
+    """2026-11-07 알파 테스트: 시작 코드 그대로 + 숨은 테스트를 돌려야 '이미 풀린 과제'를 잡는다 (repair._starter_solves)."""
+    from eval.starter.gradle_verify import GradleVerifier
+    from task_spec.schemas import TargetRun
+    from task_spec.starter.templates import load_template
+
+    def overlay(kind: str, label: str = "") -> Overlay:
+        return Overlay(kind=kind, files=(GeneratedFile(path="x", content="x"),), label=label)  # type: ignore[arg-type]
+
+    calls: list[tuple[str, str, int]] = []
+
+    def fake(setup: str):  # type: ignore[no-untyped-def]
+        def _target(target, kind, parts, hidden):  # type: ignore[no-untyped-def]
+            calls.append((target, kind, len(parts)))
+            return TargetRun(target=target, kind=kind, setup=setup if kind == "starter" else "ok")
+
+        return _target
+
+    v = GradleVerifier(load_template("backend/java-spring-boot3-jpa"), tmp_path)
+    v._target = fake("ok")  # type: ignore[method-assign]
+    rep = await v.verify(overlay("starter"), overlay("hidden"), [overlay("ref_naive", "naive-all")])
+    assert calls == [
+        ("starter", "starter", 1),
+        ("starter+hidden", "starter_hidden", 2),
+        ("naive-all", "ref_naive", 3),
+    ]
+    assert [r.kind for r in rep.runs] == ["starter", "starter_hidden", "ref_naive"]
+    calls.clear()
+    v._target = fake("compile_error")  # type: ignore[method-assign]
+    await v.verify(overlay("starter"), overlay("hidden"), [])
+    assert [c[1] for c in calls] == [
+        "starter"
+    ]  # 시작 코드가 안 되면 숨은 테스트를 붙여 보지 않는다

@@ -163,6 +163,21 @@ def test_existing_apis_come_from_public_spec() -> None:
     assert existing_apis(b.task, b.contract) == ["PATCH /orders/{id}/status — 주문 상태 변경"]
 
 
+def test_existing_apis_also_come_from_the_contract_flag() -> None:
+    """2026-11-07 알파 테스트: 명세가 "거래 상태 변경 API" 라고만 써(경로 없음) 목록이 비자 시작 코드가 범위를 짐작했다."""
+    b = _inputs()
+    plain = b.task.model_copy(update={"scenario": "기존 상태 변경 API 에 이력을 더한다."})
+    assert existing_apis(plain, b.contract) == []  # 경로가 없으면 글로는 못 찾는다
+    flagged = b.contract.model_copy(
+        update={
+            "endpoints": [
+                e.model_copy(update={"existing": e.method == "PATCH"}) for e in b.contract.endpoints
+            ]
+        }
+    )
+    assert existing_apis(plain, flagged) == ["PATCH /orders/{id}/status — 주문 상태 변경"]
+
+
 def test_starter_input_has_only_public_information() -> None:
     b = _inputs()
     text = json.dumps(
@@ -359,3 +374,18 @@ async def test_old_versions_ignore_previous_output() -> None:
     )
     assert res.ok and res.provenance[0].prompt == "gen_starter@2"
     assert "이전 출력" not in cap.users[0]
+
+
+async def test_comment_only_seed_script_is_fixed_by_code_not_reasked() -> None:
+    """2026-11-07 알파 테스트: 시드 0행이라 data.sql 을 주석만 남겨 Spring 부팅 실패 → 코드가 SELECT 1; 을 붙이고 기록."""
+    data = ("src/main/resources/data.sql", "-- 시드 데이터\n-- OrderHistory: 0행\n")
+    fake = FakeBackend().push(_files(*STARTER, data))
+    res = await _gen(gen_starter, fake, _inputs())
+    assert res.ok and res.overlay is not None and len(fake.calls) == 1  # 재요청 없음
+    fixed = {f.path: f.content for f in res.overlay.files}["src/main/resources/data.sql"]
+    assert fixed.endswith("SELECT 1;\n")
+    assert len(res.adjustments) == 1 and "data.sql" in res.adjustments[0]
+    # 참조 구현도 같은 파일을 쓸 수 있다
+    fake = FakeBackend().push(_files((f"{PKG}/order/OrderService.java", SERVICE), data))
+    ref = await _gen(gen_naive, fake, _inputs(), _starter_overlay())
+    assert ref.ok and ref.adjustments

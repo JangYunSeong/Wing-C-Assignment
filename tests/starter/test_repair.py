@@ -226,7 +226,6 @@ def test_broken_or_missing_hidden_case() -> None:
 @pytest.mark.parametrize(
     ("hc2", "needle"),
     [
-        (_t("hidden", "hc2"), "흔한 구현(naive-all)이 숨은 케이스 hc2 를 통과"),
         (
             _t("hidden", "hc2", "ASSERT", "record_missing", "실패 기록 없음"),
             "의도한 사유(rollback_left_success) 대신 record_missing",  # 2026-11-07 스모크
@@ -239,6 +238,57 @@ def test_gate3_naive_must_fail_for_the_intended_reason(hc2: dict[str, Any], need
     plan = _assign(_report(naive, _run("d1", "ref_accepted", *GOOD_ACC)))
     assert _keys(plan) == ["gen_hidden"] and plan.actions[0].gate == "③"
     assert needle in plan.actions[0].note
+
+
+def test_naive_passing_a_case_is_regenerated_before_the_hidden_test() -> None:
+    """2026-11-07 배송 감사 재실행: 흔한 구현이 REQUIRES_NEW 를 상태 변경 트랜잭션 밖에서 불러 hc1 을 통과 — 숨은 테스트는 맞았다.
+    흔한 구현을 먼저 다시 만들고 (그 회차엔 같은 대상의 사유 불일치 배정은 미룸), 이미 다시 만들었으면 숨은 테스트를 의심한다."""
+    naive = _run(
+        "naive-all",
+        "ref_naive",
+        _t("hidden", "hc1"),
+        _t("hidden", "hc2", "ASSERT", "record_missing", "실패 기록 없음"),
+    )
+    report = _report(naive, _run("d1", "ref_accepted", *GOOD_ACC))
+    first = _assign(report)
+    assert _keys(first) == ["gen_naive:naive-all"] and first.actions[0].gate == "③"
+    assert "hc1" in first.actions[0].note and "구조 그대로" in first.actions[0].note
+    again = _assign(report, **{"gen_naive__naive-all": 1})
+    assert _keys(again) == ["gen_hidden"]
+    note = again.actions[0].note
+    assert (
+        "흔한 구현(naive-all)이 숨은 케이스 hc1 를 통과" in note and "hc2 가 흔한 구현에서" in note
+    )
+    # 컴파일 수리로 다시 만든 것은 세지 않는다 (예산 키가 따로)
+    assert _keys(_assign(report, **{"gen_naive__naive-all#compile": 1})) == ["gen_naive:naive-all"]
+
+
+def test_starter_that_already_passes_every_hidden_case_is_regenerated() -> None:
+    """2026-11-07 알파 테스트 (새 공고): 시작 코드가 새 기능까지 구현해 시작 코드 그대로 숨은 케이스를 통과 — 과제가 이미 풀림."""
+    refs = (_run("naive-all", "ref_naive", *GOOD_NAIVE), _run("d1", "ref_accepted", *GOOD_ACC))
+    solved = _run("starter+hidden", "starter_hidden", *GOOD_ACC)
+    plan = _assign(_report(solved, *refs))
+    assert _keys(plan) == ["gen_starter"] and plan.actions[0].gate == "②'"
+    assert "아무것도 하지 않은" in plan.actions[0].note
+    # 정상: 시작 코드 그대로는 숨은 케이스가 실패 — 나머지 게이트도 통과
+    bare = _run(
+        "starter+hidden",
+        "starter_hidden",
+        _t("hidden", "hc1", "HARNESS_ERR", msg="500"),
+        _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
+    )
+    assert _assign(_report(bare, *refs)).passed
+    # 일부만 통과하면 막지 않는다 (부정 단언만 있는 케이스는 빈 구현으로도 통과할 수 있음)
+    partly = _run(
+        "starter+hidden",
+        "starter_hidden",
+        _t("hidden", "hc1"),
+        _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
+    )
+    assert _assign(_report(partly, *refs)).passed
+    # 숨은 테스트가 컴파일되지 않으면 여기서 보지 않는다 (참조 구현 쪽에서 배정)
+    broken = _run("starter+hidden", "starter_hidden", setup="compile_error")
+    assert _assign(_report(broken, *refs)).passed
 
 
 def test_gate3_prime_kept_requirement_must_pass() -> None:
@@ -291,12 +341,13 @@ def test_same_generator_actions_are_merged() -> None:
     naive = _run(
         "naive-all",
         "ref_naive",
-        _t("hidden", "hc1"),
+        _t("hidden", "hc1", "ASSERT", None, "expected 0 but was 3"),
         _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
     )
     plan = _assign(_report(naive, _run("d1", "ref_accepted", *GOOD_ACC)))
     assert _keys(plan) == ["gen_hidden"]
-    assert "hc1 를 통과" in plan.actions[0].note and "hc2 가 흔한 구현에서" in plan.actions[0].note
+    note = plan.actions[0].note
+    assert "hc1 가 흔한 구현에서" in note and "hc2 가 흔한 구현에서" in note
 
 
 # ── 빌드 루프 ────────────────────────────────────────────────
@@ -578,7 +629,8 @@ async def test_compile_errors_get_two_repairs() -> None:
     llm, backend = _llm()
     verifier = ScriptedVerifier(_compile_broken(), _compile_broken(), _one_case(NAIVE_OK, D1_OK))
     out = await _build(verifier, llm)
-    assert out.status == "review" and out.rounds == 2 and out.regen_counts == {"gen_hidden": 2}
+    assert out.status == "review" and out.rounds == 2
+    assert out.regen_counts == {"gen_hidden#compile": 2}  # 컴파일 수리는 일반 예산과 따로
     assert backend.calls.count("gen_hidden") == 3
     # 세 번째도 컴파일 오류면 예산 소진
     llm, _ = _llm()

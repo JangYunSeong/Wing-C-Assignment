@@ -169,6 +169,17 @@ class HiddenLayout(Schema):
     params: str = Field(min_length=1)  # HiddenPlan.harness → 조절값 파일
 
 
+class InitScripts(Schema):
+    """앱이 시작할 때 실행하는 SQL 스크립트 — 실행할 문장이 없으면(주석뿐) 프레임워크가 부팅에 실패하는 스택.
+
+    2026-11-07 알파 테스트 (새 공고): 시드 0행이라 시작 코드가 data.sql 을 주석만 남겨 Spring 이 빈 스크립트로 부팅 실패,
+    재생성 예산을 다 씀. 오버레이가 이 파일들을 실행할 문장 없이 쓰면 코드가 noop 문장을 붙인다 (starter/init_scripts.py).
+    """
+
+    paths: list[str] = Field(min_length=1)  # 프로젝트 기준 상대 경로
+    noop: str = Field(min_length=1)  # 붙일 문장 (예: "SELECT 1;")
+
+
 class TemplateLimits(Schema):
     max_files: int = Field(ge=1)
     max_file_bytes: int = Field(ge=1)
@@ -203,9 +214,18 @@ class HiddenRules(Schema):
     # 케이스가 HTTP API 를 부르는 곳 (정규식, 매치 끝 = 경로 인자 시작, 그룹 method — 없으면 GET).
     # 경로 인자를 `{}` 자리로 정규화해 공개 계약의 API 와 대조한다 (2026-11-07 스모크: 계약에 없는 GET 을 불러 항상 404)
     http_calls: list[str] = Field(default_factory=list)
+    # 응답 JSON 의 Map 값을 단언에 그대로 넣는 곳 (그룹 1 = 필드 이름) — 계약에서 정수 형식인 필드면 다시 쓰게 한다.
+    # 2026-11-07 알파 테스트: assertThat(log.get("transactionId")).isEqualTo(txId) — Integer 105 ≠ 105L 로 모든 구현이 실패.
+    # HARNESS.md 에 규칙이 있었는데도 어겨서 문서 대신 검사로.
+    raw_number_asserts: list[str] = Field(default_factory=list)
 
     @field_validator(
-        "forbidden_imports", "reason_patterns", "http_calls", "table_refs", "reason_labels"
+        "forbidden_imports",
+        "reason_patterns",
+        "http_calls",
+        "table_refs",
+        "reason_labels",
+        "raw_number_asserts",
     )
     @classmethod
     def _rx(cls, v: list[str]) -> list[str]:
@@ -244,6 +264,7 @@ class TemplateManifest(Schema):
     burst_rows: list[str] = Field(default_factory=list)
     # 숨은 테스트가 계약 시드의 DB 행을 바꾸는 과제인가 — 아니면(cli·file·ui) 시드·행 배정 대신 입력 환경(fixtures)과 케이스 setup
     seed_rows: bool = True
+    init_scripts: InitScripts | None = None
 
     @model_validator(mode="after")
     def _unique(self) -> TemplateManifest:
