@@ -270,6 +270,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 1. 스키마: `TaskContract` · `HiddenPlan` · 생성기 출력 · `BuildState` + 계약 결정적 검사 (§3.3, 양방향 대응·명세 수치 대조·manifest 키 포함) — LLM 없음, 테스트.
    — 구현 (2026-11-07): `schemas/build.py` · `schemas/template.py` · `starter/contract.py`(`check_contract` → `problems`(재요청) / `spec_gaps`(명세 수정), `spec_missing_params`(명세 단계 사전 검사용, 아직 연결 안 함 — §10-13)), 테스트 `tests/starter/test_contract.py` · `tests/schemas/test_build_schemas.py`.
 2. Java 템플릿 v1 의 `manifest` 에 `harness_params` · `failure_reasons` · `stack_conditions` 와 잠긴 `hidden/harness/` (배송 감사 손 예시에서 옮김).
+   — 구현 (2026-11-07): `templates/backend/java-spring-boot3-jpa/v1/`(뼈대 `project/` · `manifest.yaml` · 잠긴 `hidden/harness/` 6파일 · `hidden/selftest/`), 레지스트리 `starter/templates.py`(`check_template` · `slot_allows` · 응시용 이미지 금지 경로 `candidate_layer_rules`), 테스트 `tests/starter/test_templates.py`. 개발 서버 Gradle 빌드로 뼈대 테스트·하네스 자체 점검 통과. 손 예시 판정 표 재현은 7번(golden).
 3. `plan_contract/v1` + 배송 감사 명세로 계약 생성 스모크 → 손 예시의 API 와 비교.
 4. `render_readme` · `static_check` (§6) — 결정적, 네거티브 테스트.
 5. `gen_starter/v1` · `gen_hidden/v1` · `gen_naive/v1` · `gen_accepted/v1` — 가짜 LLM 테스트 + 실제 생성 스모크 1건.
