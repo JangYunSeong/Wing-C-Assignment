@@ -1,0 +1,188 @@
+# 템플릿 backend/java-spring-boot3-jpa v1 (docs/design/starter-templates.md §3, spec-to-code.md §4.1)
+# 근거: 배송 감사 손 예시(Java, git 밖 data/feature_starters/delivery-audit) — 뼈대·하네스를 과제와 무관하게 일반화.
+# 이 파일은 P1 내부용이다 — 응시용 이미지에는 project/ 만 들어간다.
+template_id: backend/java-spring-boot3-jpa
+version: 1
+stack:
+  language: java
+  language_version: "17"
+  framework: spring-boot
+  framework_version: "3.3.5"
+  build_tool: gradle
+  build_tool_version: "8.10.2"
+interfaces: [http]
+workspace: /workspace
+commands:
+  build: ./gradlew --offline -q build -x test
+  test: ./gradlew --offline test
+  hidden_test: ./gradlew --offline test --tests 'com.example.service.grading.*'
+  run: ./gradlew --offline bootRun
+
+naming:
+  path: '^/[a-z0-9/{}\-]*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][A-Za-z0-9]*$'
+
+# 오버레이 kind 별로 쓸 수 있는 경로 (프로젝트 기준 상대 경로, glob). ref = ref_naive·ref_accepted.
+fill_slots:
+  starter:
+    - src/main/java/com/example/service/**/*.java
+    - src/main/resources/application.yml
+    - src/main/resources/schema.sql
+    - src/main/resources/data.sql
+    - src/test/java/com/example/service/**/*.java
+    - docs/**
+  public_test:
+    - src/test/java/com/example/service/publictests/**/*.java
+  hidden:
+    - src/test/java/com/example/service/grading/cases/**/*.java
+    - src/test/resources/grader-params.properties
+  ref:
+    - src/main/java/com/example/service/**/*.java
+    - src/main/resources/application.yml
+    - src/main/resources/schema.sql
+    - src/main/resources/data.sql
+# 어느 오버레이도 덮어쓸 수 없다.
+locked:
+  - build.gradle
+  - settings.gradle
+  - gradlew
+  - gradlew.bat
+  - gradle/wrapper/gradle-wrapper.jar
+  - gradle/wrapper/gradle-wrapper.properties
+  - src/main/java/com/example/service/ServiceApplication.java
+# hidden 외의 오버레이는 쓸 수 없다 (채점 하네스·케이스 자리).
+reserved:
+  - src/test/java/com/example/service/grading/**
+  - src/test/resources/grader-params.properties
+# 채점용 이미지 조립 때 hidden/ 을 둘 곳 — harness·selftest 는 잠긴 템플릿 파일, cases·params 는 과제 오버레이
+hidden_layout:
+  harness: src/test/java/com/example/service/grading
+  selftest: src/test/java/com/example/service/grading/selftest
+  cases: src/test/java/com/example/service/grading/cases
+  params: src/test/resources/grader-params.properties
+limits:
+  max_files: 60
+  max_file_bytes: 100000
+  max_total_bytes: 600000
+  allow_dependency_changes: false
+# 이미지 층 (starter-templates.md §6.1 [확정: 2026-11-07 사용자]) — 템플릿·응시용 이미지에는 project/ 와 의존성 캐시만.
+# hidden/ 과 manifest.yaml 은 채점용 레이어에서만 더한다. 응시용 레이어 검사의 금지 경로는 starter/templates.py 가 계산한다.
+image:
+  template_layer: [project/]
+  grader_only: [hidden/, manifest.yaml, README.tpl.md]
+  grader_only_dependencies: []   # 하네스는 spring-boot-starter-test 안의 것만 쓴다 (응시용 의존성과 같음)
+
+# 하네스 조절값 — HiddenPlan.harness 의 키. visible = 명세 1단계 자료·구체 답에서 같은 값이 보여야 함 (spec-to-code §3.3).
+# spec_patterns 그룹 1 = 값. config_keys 는 GraderSupport.OPERATING 과 같아야 한다 (tests/starter/test_templates.py).
+harness_params:
+  - name: pool_size
+    kind: int
+    description: 운영 DB 연결 풀 최대 크기 — 채점 때 Spring 속성으로 넣는다
+    minimum: 1
+    maximum: 500
+    required: true
+    visible: true
+    spec_patterns:
+      - 'maximum-pool-size\s*:\s*(\d+)'
+      - 'maximumPoolSize\s*[=:]\s*(\d+)'
+      - 'hikari\.maximum-pool-size\s*=\s*(\d+)'
+      - '(?:DB|데이터베이스)\s*연결\s*(?:최대\s*(?:값|크기|수)?|수)\s*(?:은|는|:|=)?\s*(\d+)'
+      - '최대\s*연결\s*수\s*(?:은|는|:|=)?\s*(\d+)'
+    config_keys: [spring.datasource.hikari.maximum-pool-size]
+  - name: connection_timeout_ms
+    kind: int
+    description: DB 연결 획득 대기 한도 (ms)
+    minimum: 100
+    maximum: 60000
+    required: false
+    visible: true
+    spec_patterns:
+      - 'connection-timeout\s*:\s*(\d+)'
+      - 'connectionTimeout\s*[=:]\s*(\d+)'
+      - '연결\s*획득\s*대기\D{0,8}?(\d+)\s*ms'
+    config_keys: [spring.datasource.hikari.connection-timeout]
+  - name: server_threads
+    kind: int
+    description: 요청 처리 스레드 최대 수
+    minimum: 1
+    maximum: 1000
+    required: false
+    visible: true
+    spec_patterns:
+      - 'threads\s*:\s*max\s*:\s*(\d+)'
+      - 'tomcat\.threads\.max\s*[=:]\s*(\d+)'
+      - 'maxThreads\s*[=:]\s*(\d+)'
+      - '요청\s*처리\s*스레드\s*(?:수\s*)?(?:은|는|:|=)?\s*(\d+)'
+    config_keys: [server.tomcat.threads.max]
+  - name: concurrency
+    kind: int
+    description: 버스트 한 번의 동시 요청 수 (운영 피크와 같은 값)
+    minimum: 1
+    maximum: 500
+    required: true
+    visible: true
+    spec_patterns:
+      - '동시\s*(?:요청|처리)\s*(?:수\s*)?(?:은|는|:|=)?\s*(?:최대\s*)?([\d,]+)\s*건'
+      - 'activeRequests\s*=\s*(\d+)'
+      - 'in[-_ ]?flight\s*[=:]?\s*(\d+)'
+      - 'concurrent(?:_requests)?\s*[=:]\s*(\d+)'
+  - name: bursts
+    kind: int
+    description: 버스트 반복 수 (기본 3)
+    minimum: 1
+    maximum: 10
+    required: false
+  - name: query_delay_ms
+    kind: int
+    description: SQL 문마다 더하는 지연 (기본 20, 공개 지표의 요청 시간과 비슷하게)
+    minimum: 0
+    maximum: 200
+    required: false
+  - name: request_timeout_s
+    kind: int
+    description: 채점 클라이언트의 요청 하나 시간 한도 (기본 30)
+    minimum: 1
+    maximum: 120
+    required: false
+  - name: await_timeout_ms
+    kind: int
+    description: 비동기 설계를 위해 결과를 기다리는 최대 시간 (기본 5000)
+    minimum: 0
+    maximum: 30000
+    required: false
+
+# 의도한 실패 사유 — HiddenPlan.cases[].intended_reason 은 이 코드만. 앱 로그 패턴 또는 케이스가 붙인 [reason:<code>] 로 대조.
+failure_reasons:
+  - code: pool_acquire_timeout
+    description: DB 연결 풀에서 연결을 얻지 못해 시간 초과
+    log_patterns:
+      - 'Connection is not available, request timed out after'
+      - 'HikariPool-\d+ - Connection is not available'
+      - 'CannotCreateTransactionException'
+      - '\[reason:pool_acquire_timeout\]'
+  - code: request_timeout
+    description: 채점 클라이언트 요청이 시간 한도 안에 끝나지 않음
+    log_patterns: ['HttpTimeoutException', '\[reason:request_timeout\]']
+  - code: server_error
+    description: 기대한 응답 대신 5xx
+    log_patterns: ['\[reason:server_error\]']
+  - code: rollback_left_success
+    description: 롤백된 변경에 성공 기록이 남음
+    log_patterns: ['\[reason:rollback_left_success\]']
+  - code: record_missing
+    description: 요청에 대한 기록이 없음
+    log_patterns: ['\[reason:record_missing\]']
+  - code: record_mismatch
+    description: 기록 결과가 응답과 맞지 않음
+    log_patterns: ['\[reason:record_mismatch\]']
+  - code: injected_failure_ignored
+    description: 주입한 DB 오류에도 성공 응답
+    log_patterns: ['\[reason:injected_failure_ignored\]']
+
+# 허용 설계가 이 스택에서 성립하는 조건 (spec-to-code §4.2) — 배송 감사 손 예시 실험(REPORT §5·§6)에서.
+stack_conditions:
+  - 바깥 @Transactional 안에서 REQUIRES_NEW 로 다른 트랜잭션을 열면 요청 하나가 연결을 둘 쥔다. 연결 하나로 끝내려면 기록을 바깥 트랜잭션이 끝난 뒤 트랜잭션 밖에서 쓴다.
+  - spring.jpa.open-in-view 가 기본값(켬)이면 트랜잭션이 끝나도 요청 동안 연결을 쥔다. 트랜잭션 뒤 기록을 별도 JdbcTemplate·DataSource 로 쓰면 두 번째 연결이 된다 — 같은 EntityManager(같은 연결 재사용)로 쓰거나 open-in-view 를 끈다.
+  - TransactionSynchronization.afterCompletion·동기 @TransactionalEventListener 는 끝난 트랜잭션의 연결을 아직 쥔 채로 돈다. 여기서 REQUIRES_NEW 로 쓰면 두 번째 연결이다 — 후처리 변형은 다른 스레드(@Async·아웃박스 폴러)여야 한다.
+  - 운영 풀 크기는 채점 때 Spring 속성으로 넣으므로 application.yml 값은 덮인다. 풀을 산정해 늘리는 설계는 코드(데이터소스 설정)에서 정해야 채점에 반영된다.
