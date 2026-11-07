@@ -22,6 +22,17 @@ naming:
   path: '^/[a-z0-9/{}\-]*$'
   entity: '^[A-Z][A-Za-z0-9]*$'
   field: '^[a-z][A-Za-z0-9]*$'
+  # 엔티티 → 테이블: Spring Boot JPA 기본 (CamelCaseToUnderscoresNamingStrategy, 소문자) — DeliveryAuditLog → delivery_audit_log.
+  # 계약(README)에 테이블 이름이 보이고, 시작 코드 선언·숨은 테스트의 SQL 정규식을 이 이름과 대조한다 (starter/tables.py).
+  table:
+    style: snake
+    # 테이블 이름으로 쓰면 따옴표 없이는 실패하는 SQL 예약어 (SQL 표준·PostgreSQL·H2 에서 흔히 걸리는 것) → 복수형 (order → orders)
+    reserved: [order, user, group, select, table, from, where, check, column, default, values, value, key,
+               limit, offset, union, join, references, primary, foreign, constraint, end, case, all, any,
+               year, month, day]
+    declare_patterns:
+      - '\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?[`"]?(\w+)'
+      - '@Table\s*\([^)]*\bname\s*=\s*"(\w+)"'
 
 # 오버레이 kind 별로 쓸 수 있는 경로 (프로젝트 기준 상대 경로, glob). ref = ref_naive·ref_accepted.
 fill_slots:
@@ -78,6 +89,11 @@ hidden_rules:
     - '^\s*import\s+(?:static\s+)?com\.example\.service\.(?!grading\b)'
   reason_patterns:
     - 'Reasons\.(?:as|tag)\(\s*"([a-z0-9_]+)"'
+  # 오류 주입 정규식(failStatements·failCommitAfter 에 넣는 Pattern.compile 문자열)이 가리키는 테이블 — 계약 테이블만.
+  # 다른 문자열(assert 메시지 "update failed" 등)은 보지 않는다.
+  string_literal: 'Pattern\.compile\(\s*"((?:[^"\\\n]|\\.)*)"'
+  table_refs:
+    - '^(?:\^|\(\?[a-z]+\))*(?:\s|\\\\s[*+]?)*(?:update|insert(?:\s|\\\\s[*+]?)+into|delete(?:\s|\\\\s[*+]?)+from)(?:\s|\\\\s[*+]?)+(?:\\"|[`"])?(\w+)'
   http_calls:
     - '(?<![\w.])send\(\s*"(?P<method>[A-Z]+)"\s*,\s*'
     - '(?<![\w.])get\(\s*(?=")'

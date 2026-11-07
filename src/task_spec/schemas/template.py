@@ -86,6 +86,42 @@ class FailureReason(Schema):
         return _compiles(v)
 
 
+TableStyle = Literal["snake", "snake_plural", "app_lower", "as_is", "none"]
+IdentifierCase = Literal["lower", "upper"]
+
+
+class TableNaming(Schema):
+    """엔티티 이름 → DB 테이블 이름 (스택 관례, spec-to-code §3.3). `DeliveryAuditLog` 기준 (2026-11-07 문서·소스 확인):
+
+    - snake — Spring Boot JPA 기본(`CamelCaseToUnderscoresNamingStrategy`, 소문자): `delivery_audit_log`
+    - snake_plural — Rails ActiveRecord: `delivery_audit_logs`
+    - app_lower — Django: `<앱>_deliveryauditlog` (클래스 이름 소문자, 단어 사이 `_` 없음)
+    - as_is — Hibernate 기본(Spring 없이, 이름 그대로·따옴표 없음) · Prisma(`@@map` 없을 때, 따옴표로 감쌈): `DeliveryAuditLog`
+    - none — 테이블 없음 (프론트엔드·파일형)
+    따옴표 없이 쓰는 이름은 DB 가 접는다 (PostgreSQL 소문자, Oracle 등 표준대로 대문자) — `unquoted_case` 로 적는다.
+    """
+
+    style: TableStyle
+    app_label: str | None = None  # app_lower 의 앱 이름 (Django)
+    quoted: bool = False  # ORM 이 이름을 따옴표로 감싸 대소문자를 지킴 (Prisma)
+    unquoted_case: IdentifierCase | None = None  # 따옴표 없는 이름을 DB 가 접는 방향 — 모르면 비움
+    # 시작 코드에서 테이블 선언을 찾는 정규식 (그룹 1 = 이름, 대소문자 무시) — 예: CREATE TABLE, @Table(name=…)
+    declare_patterns: list[str] = Field(default_factory=list)
+    # 규칙으로 나온 이름이 이 SQL 예약어면 복수형으로 (order → orders — Spring 에서 흔한 @Table(name="orders") 관례). 대소문자 무시
+    reserved: list[str] = Field(default_factory=list)
+
+    @field_validator("declare_patterns")
+    @classmethod
+    def _rx(cls, v: list[str]) -> list[str]:
+        return _compiles(v)
+
+    @model_validator(mode="after")
+    def _app(self) -> TableNaming:
+        if self.style == "app_lower" and not self.app_label:
+            raise ValueError("app_lower 는 app_label 이 필요함")
+        return self
+
+
 class NamingRules(Schema):
     """계약 이름 규칙 (템플릿 스택의 관례)."""
 
@@ -93,6 +129,7 @@ class NamingRules(Schema):
     header: str = r"^[A-Z][A-Za-z0-9]*(-[A-Z][A-Za-z0-9]*)*$"  # http 헤더 (예: X-Actor)
     entity: str = r"^[A-Z][A-Za-z0-9]*$"
     field: str = r"^[a-z][A-Za-z0-9]*$"
+    table: TableNaming | None = None  # 엔티티 → 테이블 이름 (없으면 계약에 테이블을 적지 않음)
 
     @field_validator("path", "header", "entity", "field")
     @classmethod
@@ -151,11 +188,15 @@ class HiddenRules(Schema):
     reason_patterns: list[str] = Field(default_factory=list)
     # 케이스 id(HiddenPlan.cases[].case_id)가 케이스 파일에 나오는 모양 — 기본은 낱말 hc1·hc2…
     case_id_pattern: str = r"\bhc\d{1,2}\b"
+    # 케이스의 문자열 상수 중 SQL 을 가리키는 것에서 테이블 이름을 뽑는 정규식 (그룹 1, 대소문자 무시) — 계약 테이블만 써야 함.
+    # 2026-11-07 생성 스모크: 오류 주입 정규식이 테이블을 경로에서 짐작(`deliveries`, 실제 `delivery`)해 주입이 안 걸림
+    table_refs: list[str] = Field(default_factory=list)
+    string_literal: str = r'"((?:[^"\\\n]|\\.)*)"'  # 케이스 파일의 문자열 상수 (그룹 1 = 내용)
     # 케이스가 HTTP API 를 부르는 곳 (정규식, 매치 끝 = 경로 인자 시작, 그룹 method — 없으면 GET).
     # 경로 인자를 `{}` 자리로 정규화해 공개 계약의 API 와 대조한다 (2026-11-07 스모크: 계약에 없는 GET 을 불러 항상 404)
     http_calls: list[str] = Field(default_factory=list)
 
-    @field_validator("forbidden_imports", "reason_patterns", "http_calls")
+    @field_validator("forbidden_imports", "reason_patterns", "http_calls", "table_refs")
     @classmethod
     def _rx(cls, v: list[str]) -> list[str]:
         return _compiles(v)

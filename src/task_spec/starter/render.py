@@ -10,8 +10,9 @@ from __future__ import annotations
 import re
 
 from task_spec.schemas import ContractField, GeneratedFile, HiddenPlan, TaskContract, TaskItem
-from task_spec.schemas.template import TemplateManifest
+from task_spec.schemas.template import TableNaming, TemplateManifest
 from task_spec.starter.seed_rows import seed_markdown
+from task_spec.starter.tables import contract_tables, table_label
 from task_spec.starter.templates import Template
 
 README = "README.md"
@@ -48,9 +49,13 @@ def _field(f: ContractField) -> str:
     return f"`{f.name}` ({f.type}{extra}){note}"
 
 
-def contract_markdown(contract: TaskContract, *, public_tests: bool = False) -> str:
-    """공개 계약 → README "API 계약" 절 본문. public_tests 는 공개 테스트를 지원자에게 줄 때만 (§4.3 [미정])."""
+def contract_markdown(
+    contract: TaskContract, *, public_tests: bool = False, tables: TableNaming | None = None
+) -> str:
+    """공개 계약 → README "API 계약" 절 본문. public_tests 는 공개 테스트를 지원자에게 줄 때만 (§4.3 [미정]).
+    tables 를 주면 엔티티마다 템플릿 규칙으로 정한 테이블 이름을 적는다 (starter/tables.py)."""
     names = {m.entity_id: m.name for m in contract.entities}
+    table_of = contract_tables(contract, tables)
     out: list[str] = []
     for e in contract.endpoints:
         head = f"{e.method} {e.path}" if e.method else e.path
@@ -70,7 +75,10 @@ def contract_markdown(contract: TaskContract, *, public_tests: bool = False) -> 
         out.append("")
     out += ["### 데이터", ""]
     for m in contract.entities:
-        out += [f"#### `{m.name}`", "", "| 필드 | 형식 | 필수 | 제약 |", "|---|---|---|---|"]
+        head = f"#### `{m.name}`"
+        if tables is not None and m.entity_id in table_of:
+            head += " — " + table_label(table_of[m.entity_id], tables)
+        out += [head, "", "| 필드 | 형식 | 필수 | 제약 |", "|---|---|---|---|"]
         out += [
             f"| `{f.name}` | {f.type} | {'예' if f.required else '아니오'} | {f.constraints or ''} |"
             for f in m.fields
@@ -114,7 +122,9 @@ def render_readme(
         "scenario": public_scenario(task),
         "requirements": "\n".join(f"- **{r.req_id}** {r.text}" for r in task.requirements),
         "acceptance_public": "\n".join(f"- {a.text}" for a in task.acceptance_public),
-        "contract": contract_markdown(contract, public_tests=public_tests).strip(),
+        "contract": contract_markdown(
+            contract, public_tests=public_tests, tables=template.manifest.naming.table
+        ).strip(),
         "deliverables": "\n".join(f"{n}. {d}" for n, d in enumerate(task.deliverables, 1)),
         "process": process_markdown(task),
     }

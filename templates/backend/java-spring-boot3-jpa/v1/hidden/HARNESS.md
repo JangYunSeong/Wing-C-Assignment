@@ -34,6 +34,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 - `GraderJdbcHarness.failStatements = Pattern.compile("^\\s*update\\s+orders\\b", Pattern.CASE_INSENSITIVE);` — 맞는 SQL 실행을 실패시킨다
 - `GraderJdbcHarness.failCommitAfter = Pattern.compile(...);` — 맞는 SQL 을 실행한 연결의 다음 commit 을 실패시킨다 (검사는 통과했는데 커밋 단계에서 롤백)
 - `resetStats()` · `MAX_DEMAND_PER_THREAD` · `ACQUISITIONS` · `INJECTED_FAILURES` — 진단용 (판정에 쓰지 않음)
+- **SQL 정규식의 테이블 이름은 계약 그대로** — 계약 데이터 절의 `` #### `Delivery` — 테이블 `delivery` `` 처럼 적힌 이름. API 경로(`/deliveries`)나 엔티티 이름에서 짐작하지 않는다 (복수형·대소문자가 스택마다 다름). 빌드 파이프라인이 계약 밖 테이블을 가리키면 다시 쓰게 한다.
 
 ## Burst — 동시 요청
 
