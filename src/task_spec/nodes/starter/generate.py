@@ -118,7 +118,11 @@ def _range_text(r: RowRange, names: dict[str, str]) -> str:
     extra = [
         f"{r.rows}행",
         *([f"처음 {initial}"] if initial else []),
-        *(["버스트 — 요청마다 다른 id"] if r.burst else []),
+        *(
+            ["버스트 — Burst.rounds(동시 요청 수, 버스트 수, …) 로 차례로, 요청마다 다른 id"]
+            if r.burst
+            else []
+        ),
     ]
     return f"  데이터: {names.get(r.entity_id, r.entity_id)} id {r.first}~{r.last} ({', '.join(extra)}) — 이 범위만 쓴다 (시나리오에 적힌 id 보다 우선)"
 

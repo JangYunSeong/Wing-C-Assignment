@@ -82,6 +82,23 @@ class Entity(Schema):
     name: str = Field(min_length=1, max_length=60)
     fields: list[ContractField] = Field(min_length=1)
     relations: list[str] = Field(default_factory=list)
+    # DB 외래 키로 둘 관계만 — "필드 → 엔티티" (예: "orderId → Order"). 비우면 외래 키 없음 — 시작 코드는 여기 없는 외래 키를 만들지 않는다.
+    # 2026-11-07 루프: 계약에 관계가 없는데 시작 코드가 감사 기록 → 배송 건 외래 키를 걸어, 없는 배송 건 요청의 기록이 거부됐다.
+    foreign_keys: list[str] = Field(
+        default_factory=list,
+        description='DB 외래 키로 둘 관계만 "필드 → 엔티티" (예: "orderId → Order"). 없는 대상의 요청도 기록하는 엔티티의 대상 id 는 넣지 않는다',
+    )
+
+    @field_validator("foreign_keys")
+    @classmethod
+    def _fk(cls, v: list[str]) -> list[str]:
+        bad = [x for x in v if not re.match(r"^\s*\w+\s*(?:→|->)\s*\w+\s*$", x)]
+        if bad:
+            raise ValueError(f"foreign_keys 는 '필드 → 엔티티' 꼴: {bad}")
+        return v
+
+    def fk_pairs(self) -> list[tuple[str, str]]:
+        return [tuple(x.strip() for x in re.split(r"→|->", fk)) for fk in self.foreign_keys]  # type: ignore[misc]
 
 
 SeedScalar = str | int | bool
@@ -143,7 +160,9 @@ class CaseRows(Schema):
     """숨은 케이스 하나가 바꾸는 시드 행 — 수와 처음 값만 선언하고 id 범위는 코드가 나눈다 (starter/seed_rows.py)."""
 
     entity_id: str = Field(pattern=r"^m\d{1,2}$")
-    rows: int = Field(ge=1, le=2000)
+    rows: int = Field(
+        ge=0, le=2000
+    )  # 0 은 코드가 뺀다 (seed_rows.fit_seed) — 2026-11-07: LLM 이 빈 기록 엔티티를 rows 0 으로 적어 응답 전체가 거부됨
     initial: dict[str, SeedScalar] = Field(
         default_factory=dict,
         description="이 행들이 처음에 가져야 하는 값 — 시드 groups 의 values 와 맞아야 함",

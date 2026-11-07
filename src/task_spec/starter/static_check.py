@@ -395,6 +395,45 @@ def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> l
     ]
 
 
+_RELATION_ANNOTATIONS = {"manytoone", "onetoone"}
+
+
+def _starter_foreign_keys(
+    o: Overlay, t: Template, contract: TaskContract | None
+) -> list[StaticProblem]:
+    """시작 코드는 계약에 없는 외래 키를 만들지 않는다 (계약 엔티티 foreign_keys 만).
+    2026-11-07 루프: 계약에 관계가 없는데 시작 코드가 감사 기록 → 배송 건 외래 키를 걸어, 계약이 말하는 '없는 배송 건 요청도 기록'이 DB 에서 거부됐다."""
+    naming = t.manifest.naming.table
+    if contract is None or naming is None or not naming.fk_patterns:
+        return []
+    allowed = {fk_field.lower() for m in contract.entities for fk_field, _ in m.fk_pairs()}
+    bad: list[str] = []
+    for f in o.files:
+        for pat in naming.fk_patterns:
+            for mt in re.finditer(pat, f.content, re.I):
+                name = mt.group(1)
+                ok = (
+                    bool(allowed)
+                    if name.lower() in _RELATION_ANNOTATIONS
+                    else name.replace("_", "").lower() in allowed
+                )
+                if not ok:
+                    bad.append(f"{f.path}: {name}")
+    if not bad:
+        return []
+    declared = (
+        ", ".join(f"{m.name}.{a} → {b}" for m in contract.entities for a, b in m.fk_pairs())
+        or "없음"
+    )
+    return [
+        StaticProblem(
+            "gen_starter",
+            f"시작 코드가 계약에 없는 외래 키를 둠: {'; '.join(sorted(set(bad)))} — 계약의 외래 키({declared})만 둔다 "
+            "(없는 대상의 요청도 기록하는 테이블에 외래 키를 걸면 그 기록이 거부된다)",
+        )
+    ]
+
+
 def _hidden_tables(
     files: Iterable[GeneratedFile], t: Template, contract: TaskContract
 ) -> list[str]:
@@ -558,6 +597,7 @@ def static_check(
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
             res.problems += _starter_tables(o, template, contract)
+            res.problems += _starter_foreign_keys(o, template, contract)
             res.review_flags += flags
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract)

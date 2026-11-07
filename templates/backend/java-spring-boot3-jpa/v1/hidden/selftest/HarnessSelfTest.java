@@ -1,8 +1,12 @@
 package com.example.service.grading.selftest;
 
 import java.sql.SQLException;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
+import com.example.service.grading.Burst;
 import com.example.service.grading.GraderJdbcHarness;
 import com.example.service.grading.GraderParams;
 import com.example.service.grading.GraderSupport;
@@ -37,6 +41,23 @@ class HarnessSelfTest extends GraderSupport {
     @AfterEach
     void off() {
         GraderJdbcHarness.reset();
+    }
+
+    @Test
+    void 버스트는_동시_요청_수씩_차례로() throws Exception {
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger maxInFlight = new AtomicInteger();
+        List<Burst.Outcome> outcomes = Burst.rounds(4, 3, i -> 200, i -> {
+            maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+            Thread.sleep(30);
+            inFlight.decrementAndGet();
+            return 200;
+        }, Duration.ofSeconds(10));
+        assertThat(outcomes).hasSize(12);
+        assertThat(outcomes.stream().map(Burst.Outcome::index).sorted().toList())
+                .containsExactlyElementsOf(java.util.stream.IntStream.range(0, 12).boxed().toList());
+        assertThat(maxInFlight.get()).isLessThanOrEqualTo(4);
+        assertThat(Burst.wrong(outcomes)).isZero();
     }
 
     @Test

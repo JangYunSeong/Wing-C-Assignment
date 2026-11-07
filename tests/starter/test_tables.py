@@ -195,3 +195,52 @@ def test_broad_injection_pattern_is_reasked() -> None:
         for p in _check("CREATE TABLE orders (id BIGINT);\n", narrow).for_target("gen_hidden")
         if "넓음" in p
     ]
+
+
+def test_starter_must_not_invent_foreign_keys() -> None:
+    """2026-11-07 루프: 계약에 관계가 없는데 시작 코드가 감사 기록 → 배송 건 외래 키를 걸어 없는 배송 건 요청의 기록이 거부됐다."""
+    schema = "CREATE TABLE orders (id BIGINT);\nCREATE TABLE order_history (id BIGINT, order_id BIGINT, FOREIGN KEY (order_id) REFERENCES orders(id));\n"
+    msgs = [p for p in _check(schema, HC1).for_target("gen_starter") if "외래 키" in p]
+    assert len(msgs) == 1 and "order_id" in msgs[0] and "외래 키(없음)" in msgs[0]
+    # 계약 foreign_keys 에 적힌 관계는 된다
+    c = _contract()
+    c["entities"][1]["foreign_keys"] = ["orderId → Order"]
+    contract = TaskContract.model_validate(c)
+    assert not [
+        p for p in _check(schema, HC1, contract).for_target("gen_starter") if "외래 키" in p
+    ]
+    # JPA 관계 애너테이션도 외래 키 — 계약에 없으면 막는다
+    jpa = Overlay(
+        kind="starter",
+        files=(
+            GeneratedFile(
+                path="src/main/java/com/example/service/order/OrderHistory.java",
+                content="@ManyToOne\nOrder order;\n",
+            ),
+        ),
+    )
+    from task_spec.starter.static_check import _starter_foreign_keys
+
+    assert _starter_foreign_keys(jpa, JAVA, TaskContract.model_validate(_contract()))
+    assert not _starter_foreign_keys(jpa, JAVA, contract)
+
+
+def test_contract_foreign_keys_are_checked_and_shown() -> None:
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from task_spec.starter.contract import _foreign_keys
+
+    c = _contract()
+    c["entities"][1]["foreign_keys"] = ["orderId → Order", "nope -> Ghost"]
+    contract = TaskContract.model_validate(c)
+    problems = _foreign_keys(contract)
+    assert any("OrderHistory.nope" in p and "없는 필드" in p for p in problems) and any(
+        "Ghost" in p for p in problems
+    )
+    c["entities"][1]["foreign_keys"] = ["orderId references Order"]
+    with _pytest.raises(ValidationError, match="필드 → 엔티티"):
+        TaskContract.model_validate(c)
+    c["entities"][1]["foreign_keys"] = ["orderId → Order"]
+    md = contract_markdown(TaskContract.model_validate(c), tables=JAVA_TABLES)
+    assert "외래 키: `orderId` → `Order`" in md and "외래 키는 위 엔티티에 적힌 것만 둔다" in md

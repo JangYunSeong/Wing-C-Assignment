@@ -64,6 +64,23 @@ public final class Burst {
         }
     }
 
+    /**
+     * 운영 피크를 버스트로 재현 — {@code concurrency} 건씩 한꺼번에, {@code rounds} 번 차례로. 한 번에 {@code concurrency × rounds} 건을
+     * 보내지 않는다 (2026-11-07: 숨은 테스트가 96건을 한꺼번에 보내 허용 설계도 시간 초과). index 는 회차를 이어 0 부터
+     * {@code concurrency × rounds - 1} 까지 — 버스트마다 다른 행을 쓰려면 {@code firstId + index}.
+     */
+    public static List<Outcome> rounds(int concurrency, int rounds, IntUnaryOperator expected, Call call, Duration wait)
+            throws Exception {
+        List<Outcome> all = new ArrayList<>();
+        for (int r = 0; r < rounds; r++) {
+            int base = r * concurrency;
+            for (Outcome o : fire(concurrency, i -> expected.applyAsInt(base + i), i -> call.send(base + i), wait)) {
+                all.add(new Outcome(base + o.index(), o.expected(), o.actual(), o.millis(), o.error()));
+            }
+        }
+        return all;
+    }
+
     /** 진단 한 줄 — {@code [grader] <label> burst <n>: status={200=16, 409=16} wrong=0 max_latency_ms=412}. */
     public static String summary(String label, int n, List<Outcome> outcomes) {
         Map<Integer, Integer> byStatus = new TreeMap<>();

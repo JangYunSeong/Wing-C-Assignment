@@ -39,6 +39,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 
 ## Burst — 동시 요청
 
+- **운영 피크 재현은 `List<Burst.Outcome> Burst.rounds(int concurrency, int rounds, IntUnaryOperator expectedStatus, Burst.Call call, Duration wait)`** — `concurrency` 건씩 한꺼번에, `rounds` 번 차례로. index 는 회차를 이어 0 ~ `concurrency × rounds - 1` (버스트마다 다른 행은 `FIRST_ID + index`). **`concurrency × rounds` 건을 한 번에 보내지 않는다** — 운영 조건보다 큰 부하라 올바른 설계도 시간 초과가 난다.
 - `List<Burst.Outcome> Burst.fire(int n, IntUnaryOperator expectedStatus, Burst.Call call, Duration wait)`
   - n 건을 한꺼번에 보낸다. `call.send(i)` 는 i 번째 요청을 보내고 HTTP 상태 코드를 돌려준다. 시간 초과·연결 오류는 -1.
   - `expectedStatus.applyAsInt(i)` = i 번째 요청의 기대 상태 코드.
@@ -58,7 +59,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 ## 데이터
 
 - **케이스마다 받은 id 범위만** 쓴다 — 숨은 테스트 계획의 케이스 아래 `데이터: <엔티티> id a~b (…)` 줄. 범위는 빌드 파이프라인이 계약 시드에서 나눠 준 것이라 행이 반드시 있고, 케이스끼리·지원자 테스트(작은 id)와 겹치지 않는다. 범위 밖 id 를 쓰지 않고, 행을 새로 만들지 않는다. 케이스 시나리오 글에 다른 id 가 적혀 있어도 이 범위가 우선이다.
-- 행의 처음 값은 그 줄에 적힌 것(`처음 status=READY` 등)만 가정한다. `버스트` 라고 적힌 범위는 동시 요청마다 다른 id 를 하나씩 쓴다 (범위 크기 = 동시 요청 수 × 버스트 수).
+- 행의 처음 값은 그 줄에 적힌 것(`처음 status=READY` 등)만 가정한다. `버스트` 라고 적힌 범위는 `Burst.rounds(concurrency, bursts, …)` 로 — 동시 요청 수만큼씩 버스트 수만큼 차례로 보내고, 요청마다 다른 id 를 하나씩 쓴다 (범위 크기 = 동시 요청 수 × 버스트 수).
 - 상태를 바꾸는 케이스는 그 케이스 안에서 필요한 상태를 만든 뒤 확인한다 (다른 케이스 순서에 기대지 않음).
 
 ## 예시 (모양만 — 과제마다 계약에 맞춘다)
@@ -87,9 +88,10 @@ class PeakBurstTest extends GraderSupport {
     @Test
     void 모든_요청이_정상_응답() throws Exception {
         int n = GraderParams.intValue("concurrency", 32);
+        int bursts = GraderParams.intValue("bursts", 3);
         GraderJdbcHarness.queryDelayMs = GraderParams.longValue("query_delay_ms", 20);
         try {
-            var outcomes = Burst.fire(n, i -> 200,
+            var outcomes = Burst.rounds(n, bursts, i -> 200,
                     i -> send("PATCH", "/items/" + (FIRST_ID + i), Map.of("X-Actor", "grader"), "{\"state\":\"B\"}").statusCode(),
                     Duration.ofSeconds(60));
             diag("%s", Burst.summary("hc1", 1, outcomes));
