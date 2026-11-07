@@ -1,0 +1,47 @@
+# 종이 단계 manifest 초안 — 데이터 엔지니어 (하네스 코드 없음, 계약 생성까지만). 2026-11-07.
+# 재료 data.eng: 조회 범위(데이터베이스·스키마)를 명시하고, 산출물의 항목 수·이름 중복·크기를 소비자 한도 안에서 검증한 뒤에만 배포. 실패하면 이전 산출물 유지.
+# 하네스가 할 일(예상): 같은 이름 테이블이 여러 DB 에 있는 메타데이터 DB 를 띄우고 조회 권한을 넓힌 뒤 작업을 돌려, 배포된 파일의 항목 수·출처를 본다.
+template_id: data/python-batch-paper
+version: 1
+stack:
+  language: Python
+  language_version: "3.11"
+  framework: SQLAlchemy Core + pytest, PostgreSQL information_schema
+  framework_version: "2.0"
+  build_tool: uv
+  build_tool_version: "0.4"
+interfaces: [cli, file]
+naming:
+  path: '^[a-z0-9_./\-]*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][a-z0-9_]*$'
+  table:
+    style: none
+harness_params:
+  - name: column_limit
+    kind: int
+    description: 하류 소비자가 받는 컬럼 수 상한 (하류 서비스 설정과 같은 값)
+    minimum: 1
+    maximum: 10000
+    visible: true
+    spec_patterns:
+      - '컬럼\s*수\s*(?:제한|상한)\s*[:=]?\s*(\d+)'
+  - name: same_name_databases
+    kind: int
+    description: 같은 이름의 테이블이 있는 데이터베이스 수 (기본 3)
+    minimum: 1
+    maximum: 20
+    required: false
+failure_reasons:
+  - code: scope_leak
+    description: 지정하지 않은 데이터베이스의 같은 이름 테이블 컬럼이 섞여 나감
+    log_patterns: ['\[reason:scope_leak\]']
+  - code: limit_exceeded
+    description: 항목 수·크기가 소비자 한도를 넘은 산출물이 배포됨
+    log_patterns: ['\[reason:limit_exceeded\]']
+  - code: invalid_deployed
+    description: 검증에 실패한 산출물이 배포되거나 이전 산출물이 지워짐
+    log_patterns: ['\[reason:invalid_deployed\]']
+stack_conditions:
+  - information_schema.columns 를 테이블 이름만으로 거르면 권한이 닿는 모든 데이터베이스·스키마의 같은 이름 테이블이 섞인다 — table_catalog·table_schema 를 함께 지정한다.
+  - 배포는 검증한 임시 파일을 원자적으로 바꿔 넣는다 (쓰는 도중 실패해도 이전 파일 유지).

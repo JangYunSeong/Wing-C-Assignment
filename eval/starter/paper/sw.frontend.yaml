@@ -1,0 +1,48 @@
+# 종이 단계 manifest 초안 — 프론트엔드 (하네스 코드 없음, 계약 생성까지만). spec-to-code §11 다음 단계, 2026-11-07.
+# 재료 sw.frontend: 같은 로컬 저장소에 쓰는 실행 단위는 하나 — 같은 앱을 여러 탭·창에서 동시에 열어도.
+# 하네스가 할 일(예상): 브라우저 탭 N 개를 동시에 열고(Playwright) 오프라인 저장·복원·동기화를 섞어 돌린 뒤 데이터 손실·덮어쓰기를 센다.
+# 계약 스키마 확인 거리: 인터페이스 종류에 화면(UI)이 없다 — http(서버 API)로만 적을 수 있는지.
+template_id: frontend/react-vite-paper
+version: 1
+stack:
+  language: TypeScript
+  language_version: "5"
+  framework: React 18 + Vite, IndexedDB, Playwright
+  framework_version: "18"
+  build_tool: npm
+  build_tool_version: "10"
+interfaces: [http]
+naming:
+  path: '^/[a-z0-9/{}\-:]*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][A-Za-z0-9]*$'
+  table:
+    style: none
+harness_params:
+  - name: concurrent_tabs
+    kind: int
+    description: 동시에 여는 탭·창 수 (사용 환경 통계의 상위 구간과 같은 값)
+    minimum: 1
+    maximum: 10
+    visible: true
+    spec_patterns:
+      - '(\d+)\s*개\s*이상'
+  - name: edits_per_tab
+    kind: int
+    description: 탭마다 번갈아 저장하는 횟수 (기본 5)
+    minimum: 1
+    maximum: 50
+    required: false
+failure_reasons:
+  - code: lost_update
+    description: 여러 탭에서 저장한 내용 중 일부가 사라지거나 다른 탭 것으로 덮어써짐
+    log_patterns: ['\[reason:lost_update\]']
+  - code: storage_blocked
+    description: 다른 탭이 연결을 쥐고 있어 로컬 DB 열기·버전 변경이 막힘 (blocked)
+    log_patterns: ['\[reason:storage_blocked\]', 'blocked']
+  - code: duplicate_sync
+    description: 온라인 전환 때 같은 초안이 서버에 두 번 이상 동기화됨
+    log_patterns: ['\[reason:duplicate_sync\]']
+stack_conditions:
+  - 탭마다 IndexedDB 연결을 열고 쓰면 탭끼리 쓰기가 섞인다. 쓰는 실행 단위를 하나로 — Web Locks API(navigator.locks) 로 리더 탭을 정하거나 SharedWorker 하나에 쓰기를 모은다.
+  - storage 이벤트·BroadcastChannel 알림만으로는 동시 쓰기를 막지 못한다 (알림은 쓴 뒤에 온다).
