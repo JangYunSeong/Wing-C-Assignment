@@ -379,9 +379,10 @@ class BuildInputs:
     seed: FeatureSeed | None = None
     avoid_terms: tuple[str, ...] = ()
 
-    def check(self, overlay: Overlay) -> list[str]:
+    def check(self, overlay: Overlay, starter: Overlay | None = None) -> list[str]:
+        """그 오버레이만 정적 검사. 참조 구현은 시작 코드를 같이 줘 시작 코드 설정 값과 비교한다 (하네스 설정 검사)."""
         res = static_check(
-            [overlay],
+            [overlay] if starter is None else [starter, overlay],
             template=self.template,
             plan=self.plan,
             spec=SpecView.from_task(self.task),
@@ -500,7 +501,7 @@ async def gen_accepted(
         "gen_accepted",
         lambda n: accepted_input(b.task, b.contract, b.template, starter, design, n),
         _overlay("ref_accepted", design.design_id),
-        b.check,
+        lambda o: b.check(o, starter),
         llm=llm,
         prompts=prompts,
         ontology_version=ontology_version,

@@ -131,7 +131,7 @@ async def test_v2_draft_fills_seed_and_flags_review() -> None:
     assert res.provenance[0].prompt == "draft_feature_task@2"
     assert res.incident_id == BACKEND.incident_id and res.seed is BACKEND.feature
     task = apply_feature(_skeleton(), res)
-    assert task.traps[0].trap_id == "t1" and len(task.accepted_designs) == 3
+    assert task.traps[0].trap_id == "t1" and len(task.accepted_designs) == 2
     assert FLAG_SEED_UNREVIEWED in task.review_flags  # 재료 검토 전
     assert FLAG_NO_STARTER not in task.review_flags  # 백엔드는 배송 감사 시작 코드가 있음
 

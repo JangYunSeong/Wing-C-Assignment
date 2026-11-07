@@ -269,6 +269,49 @@ def _operating_values(
     return problems, flags
 
 
+HARNESS_OVERRIDE = "채점 때 하네스가 덮어쓰는 설정"
+
+
+def _config_map(files: Iterable[tuple[str, str]]) -> dict[str, str]:
+    return {
+        k: v
+        for path, content in files
+        if path.endswith(_CONFIG_SUFFIX)
+        for k, v in config_values(path, content).items()
+    }
+
+
+def _harness_overrides(
+    o: Overlay, starter: Overlay | None, t: Template, plan: HiddenPlan
+) -> list[StaticProblem]:
+    """허용 구현이 하네스 조절값의 설정 키를 바꿈 — 채점 때 운영 값으로 덮어써지므로 그 설정에 기댄 설계는 채점에서 무효
+    (알파 테스트 2026-11-07: 허용 설계 '풀 크기 산정'을 하네스가 pool_size 로 덮어써 어떤 구현도 통과할 수 없었다)."""
+    keys = {k for p in t.manifest.harness_params if p.name in plan.harness for k in p.config_keys}
+    if not keys:
+        return []
+    base = _config_map(
+        (rel, (t.project / rel).read_text("utf-8", errors="ignore"))
+        for rel in t.files("project")
+        if rel.endswith(_CONFIG_SUFFIX)
+    )
+    if starter is not None:
+        base |= _config_map((f.path, f.content) for f in starter.files)
+    out: list[StaticProblem] = []
+    for f in o.files:
+        cfg = _config_map([(f.path, f.content)])
+        for key in sorted(keys & cfg.keys()):
+            if key in base and str(base[key]).strip() == str(cfg[key]).strip():
+                continue  # 시작 코드 값 그대로 — 바꾸지 않음
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{o.name} 설정 {f.path} 의 {key}={cfg[key]} 는 {HARNESS_OVERRIDE}다 — "
+                    "이 값을 바꿔 숨은 요구를 피하는 설계는 채점에서 효과가 없다, 설계를 코드로 구현한다",
+                )
+            )
+    return out
+
+
 def _call_arg(text: str, start: int) -> str:
     """start 부터 괄호 깊이 0 의 `,` 또는 `)` 앞까지 — 호출 인자 식 하나."""
     depth, i, quote = 0, start, False
@@ -639,6 +682,9 @@ def static_check(
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract)
             res.review_flags += _duplicate_labels(o, template)
+        if o.kind == "ref_accepted":
+            starter = next((x for x in overlays if x.kind == "starter"), None)
+            res.problems += _harness_overrides(o, starter, template, plan)
 
     if readme is not None:
         # README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제 (재생성으로 못 고침)

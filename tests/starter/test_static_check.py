@@ -158,6 +158,29 @@ def test_operating_value_baked_into_starter_config() -> None:
     )
 
 
+def test_accepted_impl_relying_on_harness_overridden_config() -> None:
+    """알파 테스트 2026-11-07: '풀 크기 산정' 설계를 하네스가 pool_size 로 덮어써 어떤 구현도 통과할 수 없었다."""
+    yml = "spring:\n  datasource:\n    hikari:\n      maximum-pool-size: {}\n"
+    starter = _f("src/main/resources/application.yml", yml.format(10))
+    base = _overlays(starter=[starter])
+
+    def ref(n: int) -> Overlay:
+        return Overlay(
+            kind="ref_accepted",
+            files=(_f("src/main/resources/application.yml", yml.format(n)),),
+            label="d1",
+        )
+
+    res = _run([*base, ref(200)])
+    assert _has(
+        res.for_target("gen_accepted"),
+        "ref_accepted(d1)",
+        "maximum-pool-size=200",
+        "하네스가 덮어쓰는",
+    )
+    assert not _run([*base, ref(10)]).for_target("gen_accepted")  # 시작 코드 값 그대로는 괜찮다
+
+
 def test_secrets_urls_and_real_names() -> None:
     code = (
         'class P { String url = "https://api.payments.example.io/v1"; String local = "http://localhost:8080";\n'

@@ -506,6 +506,29 @@ async def test_two_designs_and_static_cross_check() -> None:
     assert out.status == "review" and verifier.seen == [["naive-all", "d1", "d2"]]
 
 
+POOL = _files(
+    (f"{PKG}/order/OrderService.java", SERVICE),
+    (
+        "src/main/resources/application.yml",
+        "spring:\n  datasource:\n    hikari:\n      maximum-pool-size: 200\n",
+    ),
+)
+
+
+async def test_design_relying_on_harness_config_is_dropped() -> None:
+    """알파 테스트 2026-11-07: '풀 크기 산정' 설계는 하네스가 pool_size 를 덮어써 채점에서 무효 — 빼고 남은 설계로."""
+    llm, backend = _llm(gen_accepted=[SVC, POOL])  # d1 은 코드, d2 는 재요청에도 풀 설정
+    verifier = ScriptedVerifier(_one_case(NAIVE_OK, D1_OK))
+    out = await _build(verifier, llm, designs=(D1, D2))
+    assert out.status == "review" and verifier.seen == [["naive-all", "d1"]]
+    assert "d2" not in out.overlays and backend.calls.count("gen_accepted") == 3
+    assert any("허용 설계 d2 제외" in f for f in out.review_flags)
+    # 허용 설계가 그것 하나뿐이면 빼지 않고 생성 실패로 멈춘다
+    llm, _ = _llm(gen_accepted=[POOL])
+    out = await _build(ScriptedVerifier(_one_case(NAIVE_OK, D1_OK)), llm)
+    assert out.status == "failed" and any("gen_accepted 생성 실패" in f for f in out.review_flags)
+
+
 NOT_NULL = "DataIntegrityViolationException: not-null property references a null value : AuditLog.beforeStatus (id=999)"
 
 
