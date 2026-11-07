@@ -1,0 +1,60 @@
+# 종이 단계 manifest 초안 — DBA (하네스 코드 없음, 계약 생성까지만). 2026-11-07.
+# 재료 infra.dba: 쓰기량(트랜잭션 ID 소모 속도)에 맞게 정리 작업 설정과 나이 경보를 두고, 오래 열린 트랜잭션·복제 슬롯 같은 정리 방해 요인을 점검.
+# 하네스가 할 일(예상): PostgreSQL 컨테이너에 제출한 테이블·설정·점검 쿼리를 적용하고, 쓰기 부하 + 오래 열린 트랜잭션을 만든 뒤 점검 쿼리가 경보를 내는지·설정이 쓰기량을 감당하는지 본다.
+template_id: infra/postgres-ops-paper
+version: 1
+stack:
+  language: SQL
+  language_version: PostgreSQL 16
+  framework: psql 스크립트 + Python 점검기
+  framework_version: "16"
+  build_tool: make
+  build_tool_version: "4"
+interfaces: [cli, file]
+naming:
+  path: '^[a-z0-9_./\-]*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][a-z0-9_]*$'
+  table:
+    style: snake
+    declare_patterns:
+      - '\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?["]?(\w+)'
+    fk_patterns:
+      - '\bforeign\s+key\s*\(\s*["]?(\w+)'
+    reserved: [order, user, group, table, column, check, default, limit, offset, end]
+harness_params:
+  - name: writes_per_sec
+    kind: int
+    description: 피크 쓰기 속도 (쓰기 지표와 같은 값)
+    minimum: 1
+    maximum: 1000000
+    visible: true
+    spec_patterns:
+      - 'writes_per_sec\s*=\s*(\d+)'
+  - name: autovacuum_max_workers
+    kind: int
+    description: 현재 정리 작업자 수 (DB 정리 작업 설정과 같은 값)
+    minimum: 1
+    maximum: 64
+    visible: true
+    spec_patterns:
+      - 'autovacuum_max_workers\s*=\s*(\d+)'
+  - name: long_tx_seconds
+    kind: int
+    description: 하네스가 열어 두는 오래 열린 트랜잭션의 길이 (기본 600)
+    minimum: 1
+    maximum: 86400
+    required: false
+failure_reasons:
+  - code: wraparound_unalarmed
+    description: 트랜잭션 ID 나이가 경보 기준을 넘었는데 점검이 알리지 않음
+    log_patterns: ['\[reason:wraparound_unalarmed\]']
+  - code: vacuum_lagging
+    description: 설정이 쓰기량을 못 따라가 죽은 행·나이가 계속 늘어남
+    log_patterns: ['\[reason:vacuum_lagging\]']
+  - code: blocker_unchecked
+    description: 오래 열린 트랜잭션·복제 슬롯이 정리를 막는데 점검이 잡지 못함
+    log_patterns: ['\[reason:blocker_unchecked\]']
+stack_conditions:
+  - 테이블별 정리 작업 설정은 ALTER TABLE … SET (autovacuum_…) 로 둘 수 있다 — 전역 설정만 바꾸면 다른 테이블에도 번진다.
+  - 정리 방해 요인은 pg_stat_activity(오래 열린 트랜잭션)·pg_replication_slots(xmin)·pg_prepared_xacts 로 본다.

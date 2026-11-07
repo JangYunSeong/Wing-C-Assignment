@@ -1,0 +1,41 @@
+# 종이 단계 manifest 초안 — ML·AI 엔지니어 (하네스 코드 없음, 계약 생성까지만). 2026-11-07.
+# 재료 data.ml: 학습과 서빙이 같은 정의로 만든 피처를 쓰는지 배포 전에 검증 — 서빙 경로가 실제로 만든 값의 커버리지·분포로.
+# 하네스가 할 일(예상): 서빙 경로에서 일부 피처가 빠진(기본값) 상태로 제출물의 배포 전 검증을 돌려, 배포를 막는지·리포트가 빠진 피처를 짚는지 본다.
+template_id: ml/python-sklearn-paper
+version: 1
+stack:
+  language: Python
+  language_version: "3.11"
+  framework: pandas + scikit-learn + pytest
+  framework_version: "1.5"
+  build_tool: uv
+  build_tool_version: "0.4"
+interfaces: [cli, file]
+naming:
+  path: '^[a-z0-9_./\-]*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][a-z0-9_]*$'
+  table:
+    style: none
+harness_params:
+  - name: missing_serving_feature
+    kind: str
+    description: 서빙 경로에 아직 없는 피처 이름 (피처별 서빙 제공 현황 표와 같은 값)
+    visible: true
+    spec_patterns:
+      - '(\w+)\s*,\s*N\b'
+  - name: min_serving_coverage
+    kind: float
+    description: 배포를 허용하는 서빙 피처 커버리지 하한 (기본 0.95)
+    minimum: 0
+    maximum: 1
+    required: false
+failure_reasons:
+  - code: skew_deployed
+    description: 서빙에서 기본값으로 채워지는 피처가 있는데 배포 전 검증을 통과함
+    log_patterns: ['\[reason:skew_deployed\]']
+  - code: coverage_unchecked
+    description: 배포 전 검증이 서빙 경로의 실제 값 커버리지·분포를 보지 않음
+    log_patterns: ['\[reason:coverage_unchecked\]']
+stack_conditions:
+  - 학습 피처를 피처 저장소 로그로, 서빙 피처를 별도 실시간 경로로 만들면 같은 이름이어도 정의가 다를 수 있다 — 검증은 서빙 경로가 실제로 낸 값으로 한다.
