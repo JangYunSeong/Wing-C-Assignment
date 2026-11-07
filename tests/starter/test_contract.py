@@ -293,11 +293,34 @@ def test_harness_values_must_match_visible_spec_values() -> None:
 
 
 def test_missing_spec_value_is_a_gap_not_a_reask() -> None:
+    """근거 인용 (2026-11-07): 패턴이 못 찾아도 LLM 이 근거를 대게 하고, 근거가 '없음'이면 그때 명세 결함."""
     spec = _spec(visible_texts=("pool: 8",))  # 동시 요청 수가 자료·답 어디에도 없음
-    res = _check(spec=spec)
+    plan = _plan()
+    plan["evidence"] = {"concurrency": "없음"}
+    res = _check(plan=plan, spec=spec)
     assert not res.problems
     assert _has(res.spec_gaps, "concurrency", "명세 수정 필요")
     assert spec_missing_params(spec.visible_texts, _manifest()) == ["concurrency"]
+    # 근거를 아예 안 적으면 명세 결함으로 단정하지 않고 근거를 요구 (재요청)
+    res = _check(spec=spec)
+    assert not res.spec_gaps and _has(res.problems, "concurrency", "근거가 없음")
+
+
+def test_evidence_quote_confirms_values_patterns_miss() -> None:
+    """2026-11-07 종이 단계: 'active_requests=40', '동시 요청 수가 최대 40건에' 를 템플릿 패턴이 못 읽어 LLM 전에 실패했다."""
+    text = "피크 시간대에는 동시 요청 수가 최대 40건에 도달합니다."
+    spec = _spec(visible_texts=("pool: 8", text))
+    plan = _plan(harness={"pool_size": 8, "concurrency": 40, "query_delay_ms": 20})
+    plan["evidence"] = {"concurrency": "동시 요청 수가 최대 40건에 도달합니다"}
+    assert not _check(plan=plan, spec=spec).problems
+    for quote, value in (
+        ("동시 요청 수가 최대 40건에 도달합니다", 32),
+        ("동시 요청은 최대 40건", 40),
+        ("40", 40),
+    ):
+        plan = _plan(harness={"pool_size": 8, "concurrency": value, "query_delay_ms": 20})
+        plan["evidence"] = {"concurrency": quote}
+        assert _has(_check(plan=plan, spec=spec).problems, "concurrency", "근거"), quote
 
 
 def test_extract_values_uses_patterns_not_any_number() -> None:
@@ -411,7 +434,10 @@ def test_invented_optional_visible_value_is_a_problem_not_a_gap() -> None:
     p = _plan()
     p["harness"]["server_threads"] = 64  # 자료 어디에도 없음
     res = _check(plan=p, manifest=_manifest(harness_params=params))
-    assert not res.spec_gaps and _has(res.problems, "server_threads=64", "선택 조절값")
+    assert not res.spec_gaps and _has(res.problems, "server_threads=64", "근거가 없음")
+    p["evidence"] = {"server_threads": "없음"}
+    res = _check(plan=p, manifest=_manifest(harness_params=params))
+    assert not res.spec_gaps and _has(res.problems, "server_threads", "선택 조절값")
 
 
 # ── 스모크(v1)에서 드러난 빈틈 — 기존 API 누락·운영 값 누락·목록 응답 (2026-11-07) ──

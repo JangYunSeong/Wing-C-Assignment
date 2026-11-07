@@ -48,7 +48,8 @@ class ContractField(Schema):
 
 
 class ContractResponse(Schema):
-    status: int = Field(ge=100, le=599)
+    # HTTP 엔드포인트(메서드 있음)는 상태 코드 100~599, cli·file(메서드 없음)은 종료 코드 0~255 — Endpoint 가 확인
+    status: int = Field(ge=0, le=599)
     description: str = Field(min_length=1, max_length=200)
     body: list[ContractField] = Field(default_factory=list)
     returns: str | None = Field(
@@ -69,6 +70,78 @@ class Endpoint(Schema):
     query: list[ContractField] = Field(default_factory=list)  # 쿼리 매개변수
     request: list[ContractField] = Field(default_factory=list)  # 요청 본문
     responses: list[ContractResponse] = Field(min_length=1)
+    refs: list[str] = Field(min_length=1)
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return _check_refs(v)
+
+    @model_validator(mode="after")
+    def _statuses(self) -> Endpoint:
+        """2026-11-07 종이 단계: CLI 결과를 종료 코드(0·1)로 적자 HTTP 전용 상태(≥100)에 걸려 응답 전체가 거부됐다."""
+        lo, hi, what = (100, 599, "HTTP 상태 코드") if self.method else (0, 255, "종료 코드")
+        bad = [r.status for r in self.responses if not lo <= r.status <= hi]
+        if bad:
+            raise ValueError(f"{self.endpoint_id} 응답 {bad}: {what}는 {lo}~{hi}")
+        return self
+
+
+class Fixture(Schema):
+    """입력 환경 (공개) — 시작 코드가 깔아 주는 DB·파일·서비스·브라우저 상태. 지원자도 본다.
+    숨은 테스트가 채점 때 바꾸는 단계는 HiddenCase.setup (숨김) 에 따로 적는다."""
+
+    fixture_id: str = Field(pattern=r"^f\d{1,2}$")
+    kind: Literal["db", "file", "service", "browser", "env"]
+    summary: str = Field(min_length=1, max_length=200)
+    content: str = Field(
+        default="", max_length=2000
+    )  # 모양·값 (예: 데이터베이스·테이블 목록, 파일 형식)
+    refs: list[str] = Field(min_length=1)
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return _check_refs(v)
+
+
+class UiElement(Schema):
+    """화면 요소 — 숨은 테스트·공개 테스트가 test id 로 찾는다."""
+
+    test_id: str = Field(min_length=1, max_length=60)
+    role: Literal["button", "input", "list", "item", "text", "status", "link", "form"]
+    description: str = Field(min_length=1, max_length=200)
+    refs: list[str] = Field(min_length=1)
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return _check_refs(v)
+
+
+class StorageKey(Schema):
+    """화면이 쓰는 브라우저 저장소 (이름·모양) — 숨은 테스트가 읽어 확인한다."""
+
+    name: str = Field(min_length=1, max_length=80)
+    kind: Literal["indexeddb", "localStorage", "sessionStorage", "cookie"]
+    shape: str = Field(min_length=1, max_length=300)
+    refs: list[str] = Field(min_length=1)
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return _check_refs(v)
+
+
+class Screen(Schema):
+    """화면 1개 (interface_kind ui). 2026-11-07 종이 단계: 계약에 화면을 적을 수 없어 서버 API 만 계약됐고,
+    숨은 케이스는 '탭 4개'라 적어도 HTTP 로는 함정(탭마다 로컬 DB 쓰기)에 닿지 않았다."""
+
+    screen_id: str = Field(pattern=r"^s\d{1,2}$")
+    route: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=200)
+    elements: list[UiElement] = Field(min_length=1, max_length=30)
+    storage: list[StorageKey] = Field(default_factory=list, max_length=8)
     refs: list[str] = Field(min_length=1)
 
     @field_validator("refs")
@@ -145,12 +218,22 @@ class TaskContract(Schema):
     interface_kind: InterfaceKind
     endpoints: list[Endpoint] = Field(min_length=1, max_length=6)
     entities: list[Entity] = Field(min_length=1, max_length=8)
-    seed: list[SeedRule] = Field(default_factory=list)
+    seed: list[SeedRule] = Field(default_factory=list)  # DB 행을 바꾸는 과제만 (템플릿 seed_rows)
+    fixtures: list[Fixture] = Field(default_factory=list, max_length=8)  # 그 밖의 입력 환경
+    screens: list[Screen] = Field(default_factory=list, max_length=8)  # interface_kind ui 일 때만
     public_tests: list[PublicTest] = Field(min_length=1)
     covers: dict[str, list[str]] = Field(
         min_length=1,
-        description='공개 요구 id → 그 요구를 담는 엔드포인트·엔티티 id 목록 (예: {"r1": ["e1", "m1"]})',
+        description='공개 요구 id → 그 요구를 담는 엔드포인트·엔티티·화면 id 목록 (예: {"r1": ["e1", "m1"]})',
     )
+
+    @model_validator(mode="after")
+    def _screens(self) -> TaskContract:
+        if self.interface_kind == "ui" and not self.screens:
+            raise ValueError("interface_kind ui 는 screens 가 하나 이상")
+        if self.interface_kind != "ui" and self.screens:
+            raise ValueError(f"interface_kind {self.interface_kind} 는 screens 를 쓰지 않음")
+        return self
 
 
 HarnessValue = int | float | str | list[int]
@@ -183,6 +266,10 @@ class HiddenCase(Schema):
         min_length=1
     )  # 흔한 구현이 실패할 때의 사유 코드 — 템플릿 failure_reasons 안
     data: list[CaseRows] = Field(default_factory=list)  # 바꾸는 시드 행 (읽기만 하면 비움)
+    # 이 케이스에서 하네스가 입력 환경을 바꾸는 단계 (숨김 — 계약·README 에 안 감). 예: "sales DB 에 같은 이름 테이블 추가"
+    setup: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(
+        default_factory=list, max_length=6
+    )
 
 
 class HiddenPlan(Schema):
@@ -193,6 +280,12 @@ class HiddenPlan(Schema):
         description='템플릿 조절값 이름 → 값 (예: {"pool_size": 8}) — 지원자에게 보이는 값은 자료에 적힌 값 그대로',
     )
     cases: list[HiddenCase] = Field(min_length=1)
+    # 공개 조절값마다 그 값이 적힌 자료 문장을 그대로 — 코드가 자료에 있는지·값이 그 안에 있는지 확인 (starter/contract.py evidence_ok).
+    # 자료에 없으면 "없음" — 그 조절값이 필수면 명세 결함. 2026-11-07 종이 단계: 템플릿 표기 패턴이 한 예시 표현에만 맞아 값이 있는데도 못 찾았다.
+    evidence: dict[str, str] = Field(
+        default_factory=dict,
+        description='공개 조절값 이름 → 그 값이 적힌 자료·답 문장을 그대로 (예: {"pool_size": "db.maxConnections=20"}). 자료에 없으면 "없음"',
+    )
 
 
 class PlanContractInput(Schema):

@@ -140,6 +140,7 @@ def plan_text(plan: HiddenPlan, contract: TaskContract | None = None) -> str:
         )
         if alloc is not None:
             lines += [_range_text(r, names) for r in alloc.for_case(c.case_id)]
+        lines += [f"  준비 (하네스가 입력 환경을 바꿈): {step}" for step in c.setup]
     return "\n".join(lines)
 
 

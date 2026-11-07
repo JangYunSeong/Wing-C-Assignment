@@ -123,7 +123,8 @@ async def test_persistent_problem_is_flagged_and_best_kept() -> None:
     assert any(f.startswith(FLAG_INVALID) for f in res.flags)
 
 
-async def test_spec_without_operating_values_fails_without_llm() -> None:
+async def test_spec_without_operating_values_is_a_gap_after_evidence() -> None:
+    """2026-11-07: 패턴으로 못 찾아도 LLM 을 부른다 — LLM 이 근거를 '없음'이라 하면 재요청 없이 명세 결함."""
     task = _task(
         artifacts=[
             {"artifact_id": "a1", "title": "운영 설정", "content": "로그 수준 INFO", "role": "key"}
@@ -137,11 +138,15 @@ async def test_spec_without_operating_values_fails_without_llm() -> None:
             }
         ],
     )
-    fake = FakeBackend()  # 응답 없음 — 부르면 실패한다
+    plan = _plan()
+    plan["evidence"] = {"pool_size": "없음", "concurrency": "없음"}
+    fake = FakeBackend().push(_out(plan=plan))
     res = await _run(fake, task)
-    assert fake.calls == [] and res.contract is None
+    assert len(fake.calls) == 1  # 명세 결함은 재요청으로 못 고친다
     assert res.flags and res.flags[0].startswith(FLAG_SPEC_GAP)
-    assert {"필수 운영 수치 pool_size", "필수 운영 수치 concurrency"} <= set(res.spec_gaps)
+    assert any("pool_size" in g for g in res.spec_gaps) and any(
+        "concurrency" in g for g in res.spec_gaps
+    )
 
 
 async def test_hidden_plan_value_mismatch_is_reasked() -> None:
@@ -212,3 +217,24 @@ async def test_row_counts_are_fitted_by_code_without_reask() -> None:
     assert res.ok and len(fake.calls) == 1, res.problems
     assert res.contract is not None and res.contract.seed[0].rows == 106  # 96 + 지원자 몫 10
     assert any("Order 시드 50 → 106행" in a for a in res.adjustments)
+
+
+def test_v7_prompt_covers_ui_cli_fixtures_and_evidence() -> None:
+    """v7 (2026-11-07 직군별 종이 단계): 화면·종료 코드·입력 환경·근거 인용."""
+    ui = Template(
+        root=Path("/nonexistent/v1"), manifest=_manifest(interfaces=["ui"], seed_rows=False)
+    )
+    inp = plan_input(_task(), ui)
+    assert "화면 test id" in inp.template and "seed 와 숨은 케이스 data 는 비운다" in inp.seed_rules
+    t = PROMPTS.get("plan_contract", 7)
+    prompt = assemble(t, for_prompt(inp, t.input_model), ontology_version="v")
+    system = prompt.messages[0].content
+    for needle in (
+        "screens?: [{",
+        "fixtures?: [{",
+        "setup?: [",
+        "evidence?: {",
+        "종료 코드 0~255",
+        "그 값이 적힌 자료·답 문장을 그대로",
+    ):
+        assert needle in system, needle

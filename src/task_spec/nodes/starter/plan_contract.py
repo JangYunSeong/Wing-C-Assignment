@@ -1,7 +1,7 @@
 """공개 계약 생성 `plan_contract` (docs/design/spec-to-code.md §2 ②·§3) — LLM 1회 → 결정적 검사 → 1회 재요청.
 
 입력은 승인된 기능형 공통 과제(TaskItem)와 템플릿뿐이다 — 공고·온톨로지·재료에서 나온 글, 지원서 없음 (불변식 3).
-- 명세에 필수 운영 수치가 없으면(`spec_missing_params`) LLM 을 부르지 않고 바로 실패한다 — 재요청으로 못 고치는 명세 결함이다.
+- 공개 운영 값은 LLM 이 값 + 근거 인용(hidden_plan.evidence)을 내고 코드가 자료와 대조한다. 근거가 "없음"인 필수 값은 명세 결함 — 재요청 없이 실패.
 - 계약 검사(`starter.contract.check_contract`)의 `problems` 는 재요청 사유로 붙이고, `spec_gaps` 는 재요청 없이 실패로 둔다.
 - 재요청 뒤에도 문제가 남으면 가장 문제가 적은 답을 돌려주고 표시를 남긴다 — 빌드 그래프가 `failed` 로 승인 화면에 올린다.
 """
@@ -27,7 +27,7 @@ from task_spec.schemas import (
     TaskItem,
 )
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.contract import SpecView, check_contract, spec_missing_params
+from task_spec.starter.contract import SpecView, check_contract
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.templates import Template
 
@@ -67,7 +67,13 @@ def _range(lo: float | None, hi: float | None) -> str:
 
 
 def seed_rules_text(m: TemplateManifest) -> str:
-    """시드 행 수 규칙 — 검사(seed_rows)와 같은 값을 프롬프트에 그대로."""
+    """시드 행 수 규칙 — 검사(seed_rows)와 같은 값을 프롬프트에 그대로. DB 행을 바꾸지 않는 템플릿이면 입력 환경 안내."""
+    if not m.seed_rows:
+        return (
+            "- 이 템플릿은 DB 행 시드를 쓰지 않는다: seed 와 숨은 케이스 data 는 비운다.\n"
+            "- 시작 코드가 깔아 줄 입력 환경(DB 배치·입력 파일·외부 서비스 응답·브라우저 상태)은 contract.fixtures 에, "
+            "숨은 케이스에서 하네스가 그 환경을 바꾸는 단계는 hidden_plan.cases.setup 에 적는다."
+        )
     lines = [
         f"- 숨은 케이스는 작은 id {RESERVED_ROWS}행(id 1~{RESERVED_ROWS})을 쓰지 않는다 (지원자·공개 테스트 몫). "
         f"그래서 엔티티마다 rows ≥ 그 엔티티를 바꾸는 숨은 케이스 data 행 수의 합 + {RESERVED_ROWS}, "
@@ -99,6 +105,7 @@ def plan_input(task: TaskItem, template: Template, note: str | None = None) -> P
         template=(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"
             f"이름 규칙: 경로 {rx.path} · 헤더 {rx.header} · 엔티티 {rx.entity} · 필드 {rx.field}"
+            + (f" · 화면 test id {rx.test_id}" if "ui" in m.interfaces else "")
         ),
         harness_params=params or NONE,
         failure_reasons=reasons or NONE,
@@ -137,11 +144,8 @@ async def plan_contract(
     res = PlanResult()
     spec = SpecView.from_task(task)
     manifest = template.manifest
-    missing = spec_missing_params(spec.visible_texts, manifest)
-    if missing:
-        res.spec_gaps = [f"필수 운영 수치 {name}" for name in missing]
-        res.flags.append(FLAG_SPEC_GAP + ", ".join(missing))
-        return res
+    # 2026-11-07: 템플릿 표기 패턴으로 못 찾으면 LLM 전에 실패시켰는데, 패턴이 한 예시 표현에만 맞아 값이 있는 명세도 막혔다
+    # → LLM 이 값 + 근거 인용을 내고 코드가 확인한다 (check_contract). 근거가 "없음"이면 그때 명세 결함.
 
     prompt_t = prompts.get(TASK)
     note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
@@ -162,8 +166,10 @@ async def plan_contract(
             continue
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
-        fitted, fitted_plan, notes = fit_seed(out.contract, out.hidden_plan, manifest)
-        out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
+        notes: list[str] = []
+        if manifest.seed_rows:  # 행 수 맞추기는 DB 행 과제에서만
+            fitted, fitted_plan, notes = fit_seed(out.contract, out.hidden_plan, manifest)
+            out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
         check = check_contract(out.contract, out.hidden_plan, spec, manifest, seed)
         logger.info(
             "%s attempt=%d problems=%d gaps=%d latency_ms=%d",
