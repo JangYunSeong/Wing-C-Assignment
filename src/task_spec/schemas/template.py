@@ -1,11 +1,10 @@
 """시작 코드 템플릿 manifest 중 생성 파이프라인이 쓰는 부분 (docs/design/spec-to-code.md §4.1) [제안].
 
-이 모듈은 공개 계약·HiddenPlan 결정적 검사(§3.3)에 필요한 필드만 정의한다:
-- 하네스 조절값 `harness_params` (명세 자료에서 값을 뽑는 표기 패턴·시작 코드 설정 키 포함)
-- 의도한 실패 사유 코드 `failure_reasons`
-- 계약 이름 규칙 `naming`, 허용 인터페이스 `interfaces`, 허용 설계의 스택 조건 `stack_conditions`
-
-빌드 명령·`fill_slots`·잠금 파일·상한·이미지 같은 나머지 필드는 템플릿 레지스트리(starter/templates.py, #55)에서 더한다.
+- 계약 검사(§3.3)용: 하네스 조절값 `harness_params`(명세 자료에서 값을 뽑는 표기 패턴·시작 코드 설정 키),
+  실패 사유 코드 `failure_reasons`, 이름 규칙 `naming`, 허용 인터페이스 `interfaces`, 허용 설계의 스택 조건 `stack_conditions`.
+- 템플릿 레지스트리(starter/templates.py)용: 스택·명령·kind 별 쓸 수 있는 경로 `fill_slots`·잠금 `locked`·채점 전용 `reserved`·
+  채점 조립 위치 `hidden_layout`·상한 `limits`·이미지 층 `image` (starter-templates.md §3·§6.1).
+- manifest.yaml 은 P1 내부용 — 템플릿·응시용 이미지에 넣지 않는다 (§6.1 [확정: 2026-11-07 사용자]).
 """
 
 from __future__ import annotations
@@ -93,12 +92,69 @@ class NamingRules(Schema):
         return _compiles([v])[0]
 
 
+class StackInfo(Schema):
+    language: str = Field(min_length=1)
+    language_version: str = Field(min_length=1)
+    framework: str = Field(min_length=1)
+    framework_version: str = Field(min_length=1)
+    build_tool: str = Field(min_length=1)
+    build_tool_version: str = Field(min_length=1)
+
+
+class TemplateCommands(Schema):
+    """작업 경로 안에서 돌리는 명령 (검증·채점 컨테이너는 네트워크 없음 — 오프라인 명령)."""
+
+    build: str = Field(min_length=1)
+    test: str = Field(min_length=1)
+    hidden_test: str = Field(min_length=1)
+    run: str | None = None
+
+
+class HiddenLayout(Schema):
+    """채점용 이미지 조립 때 템플릿 hidden/ 과 과제 hidden 오버레이를 둘 곳 (프로젝트 기준 상대 경로)."""
+
+    harness: str = Field(min_length=1)  # hidden/harness/* 가 들어갈 폴더 (잠김)
+    selftest: str = Field(min_length=1)  # hidden/selftest/* (잠김)
+    cases: str = Field(min_length=1)  # 과제 케이스 (kind=hidden)
+    params: str = Field(min_length=1)  # HiddenPlan.harness → 조절값 파일
+
+
+class TemplateLimits(Schema):
+    max_files: int = Field(ge=1)
+    max_file_bytes: int = Field(ge=1)
+    max_total_bytes: int = Field(ge=1)
+    allow_dependency_changes: bool = False
+
+
+class ImageLayers(Schema):
+    """이미지 층 — 템플릿·응시용 이미지에는 template_layer 만, grader_only 는 채점용 레이어에서만 (§6.1)."""
+
+    template_layer: list[str] = Field(default_factory=lambda: ["project/"])
+    grader_only: list[str] = Field(default_factory=lambda: ["hidden/", "manifest.yaml"])
+    grader_only_dependencies: list[str] = Field(default_factory=list)  # 하네스 전용 라이브러리
+
+
+SlotKind = Literal["starter", "public_test", "hidden", "ref"]
+
+
 class TemplateManifest(Schema):
-    """템플릿 `templates/<직군>/<스택>/vN/manifest.yaml` 의 생성 파이프라인용 부분."""
+    """템플릿 `templates/<직군>/<스택>/vN/manifest.yaml`."""
 
     template_id: str = Field(min_length=1)  # 예: backend/java-spring-boot3-jpa
     version: int = Field(ge=1)
+    stack: StackInfo | None = None
     interfaces: list[InterfaceKind] = Field(min_length=1)
+    workspace: str = "/workspace"
+    commands: TemplateCommands | None = None
+    # 오버레이 kind 별로 쓸 수 있는 경로 (glob, 프로젝트 기준). ref = ref_naive·ref_accepted
+    fill_slots: dict[SlotKind, list[str]] = Field(default_factory=dict)
+    locked: list[str] = Field(default_factory=list)  # 어느 오버레이도 덮어쓸 수 없음
+    reserved: list[str] = Field(
+        default_factory=list
+    )  # hidden 외의 오버레이는 쓸 수 없음 (채점 자리)
+    hidden_layout: HiddenLayout | None = None
+    limits: TemplateLimits | None = None
+    image: ImageLayers = Field(default_factory=ImageLayers)
     naming: NamingRules = Field(default_factory=NamingRules)
     harness_params: list[HarnessParam] = Field(default_factory=list)
     failure_reasons: list[FailureReason] = Field(default_factory=list)
