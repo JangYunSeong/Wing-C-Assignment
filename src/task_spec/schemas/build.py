@@ -162,6 +162,49 @@ class PlanContractOutput(Schema):
     hidden_plan: HiddenPlan
 
 
+class GenStarterInput(Schema):
+    """gen_starter 프롬프트 변수 — 공개 정보만 (숨은 요구·HiddenPlan·허용 설계 없음, spec-to-code §4)."""
+
+    stack: str = Field(min_length=1)
+    template_files: str = Field(min_length=1)  # 템플릿 뼈대 파일 경로·내용
+    slots: str = Field(min_length=1)  # 쓸 수 있는 경로·잠긴 파일
+    existing_apis: str  # 상황·요구에 나온 기존 API (완전히 동작해야 함)
+    title: str = Field(min_length=1)
+    scenario: str = Field(min_length=1)
+    requirements: str = Field(min_length=1)
+    acceptance_public: str = Field(min_length=1)
+    contract: str = Field(min_length=1)  # 공개 계약 (README 와 같은 글)
+    revision_note: str
+
+
+class GenHiddenInput(Schema):
+    """gen_hidden 프롬프트 변수 — 계약·HiddenPlan·숨은 요구, 하네스 API (시작 코드·참조 구현 본문 없음)."""
+
+    stack: str = Field(min_length=1)
+    harness_api: str = Field(min_length=1)  # 템플릿 hidden/HARNESS.md
+    slots: str = Field(min_length=1)
+    contract: str = Field(min_length=1)
+    hidden_plan: str = Field(min_length=1)  # 조절값 + 케이스 목록
+    traps: str = Field(min_length=1)
+    acceptance_hidden: str = Field(min_length=1)
+    failure_reasons: str = Field(min_length=1)
+    revision_note: str
+
+
+class GenRefInput(Schema):
+    """gen_naive · gen_accepted 프롬프트 변수 — 계약·시작 코드 + 구현 목표 (숨은 테스트 본문 없음)."""
+
+    stack: str = Field(min_length=1)
+    slots: str = Field(min_length=1)
+    contract: str = Field(min_length=1)
+    starter_files: str = Field(min_length=1)  # 시작 코드 오버레이 경로·내용
+    requirements: str = Field(min_length=1)
+    acceptance_public: str = Field(min_length=1)
+    goal: str = Field(min_length=1)  # 흔한 구현 설명 또는 허용 설계 1건
+    conditions: str  # 지킬 것 — 하나만 놓친 판의 지킬 숨은 요구 / 허용 설계의 스택 조건
+    revision_note: str
+
+
 class GeneratedFile(Schema):
     path: str = Field(min_length=1, max_length=300)
     content: str = Field(max_length=200_000)

@@ -193,6 +193,40 @@ def test_hidden_case_rules() -> None:
     assert _has(msgs, "조절값 파일", "손으로 씀")
 
 
+def test_hidden_case_calls_only_contract_apis() -> None:
+    """2026-11-07 생성 스모크: 숨은 테스트가 계약에 없는 GET /deliveries/{id} 로 상태를 읽어 늘 404."""
+    calls = HC1.replace(
+        "i -> 200, REQUEST_TIMEOUT",
+        'i -> send("PATCH", "/orders/" + (400 + i) + "/status", Map.of("X-Actor", "g"), body).statusCode(), REQUEST_TIMEOUT',
+    ).replace(
+        "        org.assertj",
+        '        var h = get("/orders/" + ids.get(0) + "/history?page=" + (p + 1));\n'
+        '        var s = get("/orders/" + id);\n'
+        '        var d = send("DELETE", "/orders/" + id, Map.of(), null);\n'
+        '        var actor = row.get("/orders/actor");\n'  # 앞에 . 이 붙은 get 은 HTTP 호출이 아님
+        '        var x = get(base + "/x");\n'  # 첫 조각이 문자열이 아니면 판단 안 함
+        "        org.assertj",
+    )
+    res = static_check(
+        _overlays(hidden=[_f(f"{CASES}/OrderStatusBurstTest.java", calls)]),
+        template=JAVA,
+        plan=PLAN,
+        spec=SpecView.from_task(_task()),
+        contract=_contract_with_list(),
+        seed=BACKEND_SEED,
+    )
+    msgs = [m for m in res.for_target("gen_hidden") if "공개 계약에 없는 API" in m]
+    assert len(msgs) == 1 and "DELETE /orders/{}, GET /orders/{}" in msgs[0], msgs
+    assert "/status" not in msgs[0].split(" — ")[0] and "history" not in msgs[0].split(" — ")[0]
+    # 계약을 주지 않으면 이 검사는 하지 않는다
+    assert not _has(
+        _run(_overlays(hidden=[_f(f"{CASES}/OrderStatusBurstTest.java", calls)])).for_target(
+            "gen_hidden"
+        ),
+        "공개 계약에 없는 API",
+    )
+
+
 def test_case_id_in_two_files() -> None:
     hidden = [
         _f(f"{CASES}/OrderStatusBurstTest.java", HC1),

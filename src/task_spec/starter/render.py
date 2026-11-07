@@ -36,6 +36,11 @@ class RenderError(ValueError):
     pass
 
 
+def public_scenario(task: TaskItem) -> str:
+    """상황 글 — 기능형 서술 채우기가 끝에 붙인 자료·질문 안내는 뺀다 (진행 방식은 따로 쓴다)."""
+    return _GUIDE.sub("", task.scenario or "").strip()
+
+
 def _field(f: ContractField) -> str:
     extra = ", 선택" if not f.required else ""
     note = f" — {f.constraints}" if f.constraints else ""
@@ -109,7 +114,7 @@ def render_readme(
     tpl = tpl_path.read_text("utf-8")
     values = {
         "title": task.title or "",
-        "scenario": _GUIDE.sub("", task.scenario or "").strip(),
+        "scenario": public_scenario(task),
         "requirements": "\n".join(f"- **{r.req_id}** {r.text}" for r in task.requirements),
         "acceptance_public": "\n".join(f"- {a.text}" for a in task.acceptance_public),
         "contract": contract_markdown(contract, public_tests=public_tests).strip(),
