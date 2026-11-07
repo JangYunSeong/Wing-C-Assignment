@@ -1,0 +1,75 @@
+"""개발 서버 Gradle verifier 의 보고서 읽기 (eval/starter/gradle_verify.py) — 가상 보고서만, Gradle 은 돌리지 않는다."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from eval.starter.gradle_verify import case_ids, compile_errors, junit_results
+from task_spec.schemas import GeneratedFile
+from task_spec.starter.static_check import Overlay
+
+SUITE = """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="{cls}" tests="1" failures="{n}" errors="0">
+  <testcase name="t" classname="{cls}" time="1.0">{body}</testcase>
+</testsuite>
+"""
+CASES = "com.example.service.grading.cases"
+
+
+def _xml(d: Path, cls: str, failure: tuple[str, str] | None = None) -> None:
+    body = ""
+    if failure is not None:
+        body = f'<failure message="{failure[1]}" type="{failure[0]}">stack</failure>'
+    (d / f"TEST-{cls}.xml").write_text(
+        SUITE.format(cls=cls, n=int(failure is not None), body=body), "utf-8"
+    )
+
+
+def test_junit_results_classify_groups_and_failures(tmp_path: Path) -> None:
+    _xml(tmp_path, "com.example.service.order.OrderControllerTest")
+    _xml(tmp_path, "com.example.service.grading.HarnessSelfTest")
+    _xml(
+        tmp_path,
+        f"{CASES}.PeakBurstTest",
+        (
+            "org.opentest4j.AssertionFailedError",
+            "[[reason:pool_acquire_timeout] 기대와 다른 응답 수] expected: 0L but was: 32L",
+        ),
+    )
+    _xml(
+        tmp_path,
+        f"{CASES}.FailRollbackTest",
+        ("java.lang.IllegalStateException", "충분한 id 가 없음"),
+    )
+    hidden = Overlay(
+        kind="hidden",
+        files=(
+            GeneratedFile(
+                path="src/test/java/x/PeakBurstTest.java", content='@DisplayName("hc1 피크")'
+            ),
+            GeneratedFile(
+                path="src/test/java/x/FailRollbackTest.java", content='@DisplayName("hc2")'
+            ),
+        ),
+    )
+    res = {
+        (t.group, t.name): t for t in junit_results(tmp_path, case_ids(hidden, r"\bhc\d{1,2}\b"))
+    }
+    assert res[("existing", "OrderControllerTest")].result == "PASS"
+    assert res[("selftest", "HarnessSelfTest")].result == "PASS"
+    hc1 = res[("hidden", "hc1")]
+    assert hc1.result == "ASSERT" and hc1.reason == "pool_acquire_timeout" and "32L" in hc1.message
+    hc2 = res[("hidden", "hc2")]
+    assert hc2.result == "HARNESS_ERR" and hc2.reason is None  # 단언이 아닌 예외 = 테스트 자체 문제
+
+
+def test_compile_errors_are_relative_to_the_work_dir(tmp_path: Path) -> None:
+    work = tmp_path / "r1-naive-all"
+    log = (
+        "> Task :compileTestJava FAILED\n"
+        f"{work.resolve()}/src/test/java/com/x/Hc2Test.java:50: error: unreported exception IOException\n"
+        "        send(...);\n"
+        f"{work.resolve()}/src/test/java/com/x/Hc2Test.java:50: error: unreported exception IOException\n"
+    )
+    errs = compile_errors(log, work)
+    assert [(e.path, e.line) for e in errs] == [("src/test/java/com/x/Hc2Test.java", 50)]
