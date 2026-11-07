@@ -176,3 +176,22 @@ def test_contract_markdown_shows_tables() -> None:
     assert "#### `Order` — 테이블 `orders`" in md
     assert "#### `OrderHistory` — 테이블 `order_history`" in md
     assert "테이블" not in contract_markdown(TaskContract.model_validate(_contract()))
+
+
+def test_broad_injection_pattern_is_reasked() -> None:
+    """2026-11-07 루프: `failCommitAfter = "delivery|delivery_audit_log"` 가 실패 기록 INSERT 의 커밋까지 막아 어떤 설계도 통과 못 했다."""
+    broad = HC1.replace(
+        "        int n =",
+        '        GraderJdbcHarness.failCommitAfter = Pattern.compile("orders|order_history", Pattern.CASE_INSENSITIVE);\n'
+        '        var iso = Pattern.compile("\\\\d{4}-\\\\d{2}-\\\\d{2}T");\n'  # SQL 이 아닌 정규식은 보지 않는다
+        "        int n =",
+    )
+    res = _check("CREATE TABLE orders (id BIGINT);\n", broad)
+    msgs = [p for p in res.for_target("gen_hidden") if "SQL 종류 없이 넓음" in p]
+    assert len(msgs) == 1 and '"orders|order_history"' in msgs[0] and "\\d{4}" not in msgs[0]
+    narrow = broad.replace('"orders|order_history"', '"^\\\\s*update\\\\s+orders\\\\b"')
+    assert not [
+        p
+        for p in _check("CREATE TABLE orders (id BIGINT);\n", narrow).for_target("gen_hidden")
+        if "넓음" in p
+    ]

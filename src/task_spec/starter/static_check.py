@@ -14,7 +14,7 @@
    조절값 파일을 손으로 씀(코드가 HiddenPlan 에서 쓴다 — `render.render_params`).
    공개 계약에 없는 API 를 부름 (manifest `hidden_rules.http_calls` 로 찾은 호출의 경로를 `{}` 자리로 정규화해 대조),
    한 파일에 같은 사유·문구의 단언이 둘 이상은 막지 않고 review_flags (`hidden_rules.reason_labels` — 사유가 잘못 붙었을 수 있음).
-6. 테이블 이름 (manifest `naming.table`, starter/tables.py): 시작 코드가 선언한 테이블이 계약 테이블 밖이면 gen_starter, 숨은 테스트의 오류 주입 정규식이 계약 테이블 밖을 가리키면 gen_hidden.
+6. 테이블 이름 (manifest `naming.table`, starter/tables.py): 시작 코드가 선언한 테이블이 계약 테이블 밖이면 gen_starter, 숨은 테스트의 오류 주입 정규식이 계약 테이블 밖을 가리키거나 SQL 종류 없이 넓으면 gen_hidden.
 """
 
 from __future__ import annotations
@@ -414,6 +414,34 @@ def _hidden_tables(
                 f"숨은 테스트 {f.path} 의 오류 주입 정규식이 계약에 없는 테이블을 가리킴: {', '.join(bad)} "
                 f"— 계약의 테이블 이름({', '.join(expected) or '없음'})을 그대로 쓴다 (경로에서 짐작하지 않는다)"
             )
+        broad = _broad_injections(f.content, rules.table_refs, rules.string_literal, expected)
+        if broad:
+            out.append(
+                f"숨은 테스트 {f.path} 의 오류 주입 정규식이 SQL 종류 없이 넓음: {'; '.join(broad)} — "
+                "`^\\s*update\\s+<테이블>\\b` 처럼 SQL 종류 + 계약 테이블로 시작하고, 숨은 요구가 말하는 그 단계만 주입한다 "
+                "(테이블 이름만 쓰면 실패 기록 쓰기까지 막혀 어떤 설계도 통과 못 한다)"
+            )
+    return out
+
+
+_SQL_WORDS = re.compile(r"\b(?:update|insert|delete|select|into|from)\b", re.I)
+
+
+def _broad_injections(
+    content: str, table_refs: Sequence[str], literal: str, tables: Sequence[str]
+) -> list[str]:
+    """SQL 을 가리키는 정규식(계약 테이블 이름이나 SQL 단어가 든 것)인데 'SQL 종류 + 테이블' 꼴로 시작하지 않는 것.
+    2026-11-07 루프: 다시 만든 숨은 테스트가 `failCommitAfter = "delivery|delivery_audit_log"` 로 실패 기록 INSERT 의 커밋까지 막았다."""
+    out: list[str] = []
+    for lit in re.finditer(literal, content):
+        text = lit.group(1)
+        sqlish = _SQL_WORDS.search(text) or any(t.lower() in text.lower() for t in tables)
+        if (
+            sqlish
+            and not any(re.search(pat, text, re.I) for pat in table_refs)
+            and f'"{text}"' not in out
+        ):
+            out.append(f'"{text}"')
     return out
 
 
