@@ -99,10 +99,13 @@ async def _gen(fn, fake: FakeBackend, *args: Any, **kw: Any):  # type: ignore[no
 async def test_gen_starter_ok_and_reask_on_locked_file() -> None:
     fake = FakeBackend().push(_files(*STARTER))
     res = await _gen(gen_starter, fake, _inputs())
-    assert res.ok and res.provenance[0].prompt == "gen_starter@2" and res.overlay is not None
+    assert res.ok and res.provenance[0].prompt == "gen_starter@3" and res.overlay is not None
     assert [f.path for f in res.overlay.files] == [p for p, _ in STARTER]
 
-    fake = FakeBackend().push(_files(("build.gradle", "plugins {}"), *STARTER), _files(*STARTER))
+    # 수리판(v3~): 재요청엔 첫 답이 이전 출력으로 가고, 고칠 파일만 — 잠긴 파일은 빈 content 로 지운다
+    fake = FakeBackend().push(
+        _files(("build.gradle", "plugins {}"), *STARTER), _files(("build.gradle", ""))
+    )
     res = await _gen(gen_starter, fake, _inputs())
     assert len(fake.calls) == 2 and res.ok
     assert any("build.gradle" in p for p in res.first_problems)
@@ -139,14 +142,17 @@ async def test_gen_refs() -> None:
     fake = FakeBackend().push(_files((f"{PKG}/order/OrderService.java", SERVICE)))
     naive = await _gen(gen_naive, fake, _inputs(), _starter_overlay())
     assert naive.ok and naive.overlay is not None and naive.overlay.label == "naive-all"
-    assert naive.provenance[0].prompt == "gen_naive@1"
+    assert naive.provenance[0].prompt == "gen_naive@2"
     fake = FakeBackend().push(_files((f"{PKG}/order/OrderService.java", SERVICE)))
     acc = await _gen(gen_accepted, fake, _inputs(), _starter_overlay(), D1)
     assert acc.ok and acc.overlay is not None and acc.overlay.label == "d1"
     # 참조 구현이 테스트를 쓰면 재요청
     fake = FakeBackend().push(
         _files(("src/test/java/com/example/service/order/OrderServiceTest.java", "class T {}")),
-        _files((f"{PKG}/order/OrderService.java", SERVICE)),
+        _files(
+            ("src/test/java/com/example/service/order/OrderServiceTest.java", ""),  # 지움
+            (f"{PKG}/order/OrderService.java", SERVICE),
+        ),
     )
     acc = await _gen(gen_accepted, fake, _inputs(), _starter_overlay(), D1)
     assert acc.ok and any("OrderServiceTest.java" in p for p in acc.first_problems)
@@ -347,7 +353,7 @@ async def test_old_versions_ignore_previous_output() -> None:
     res = await gen_starter(
         _inputs(),
         llm=_llm(cap),
-        prompts=PROMPTS,
+        prompts=_Pinned(gen_starter=2),  # type: ignore[arg-type]
         ontology_version="onto-test",
         previous=_starter_overlay(),
     )
