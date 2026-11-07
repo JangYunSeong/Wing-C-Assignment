@@ -151,8 +151,11 @@ class HiddenRules(Schema):
     reason_patterns: list[str] = Field(default_factory=list)
     # 케이스 id(HiddenPlan.cases[].case_id)가 케이스 파일에 나오는 모양 — 기본은 낱말 hc1·hc2…
     case_id_pattern: str = r"\bhc\d{1,2}\b"
+    # 케이스가 HTTP API 를 부르는 곳 (정규식, 매치 끝 = 경로 인자 시작, 그룹 method — 없으면 GET).
+    # 경로 인자를 `{}` 자리로 정규화해 공개 계약의 API 와 대조한다 (2026-11-07 스모크: 계약에 없는 GET 을 불러 항상 404)
+    http_calls: list[str] = Field(default_factory=list)
 
-    @field_validator("forbidden_imports", "reason_patterns")
+    @field_validator("forbidden_imports", "reason_patterns", "http_calls")
     @classmethod
     def _rx(cls, v: list[str]) -> list[str]:
         return _compiles(v)

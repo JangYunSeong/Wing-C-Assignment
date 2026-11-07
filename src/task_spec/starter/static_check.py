@@ -12,6 +12,7 @@
 4. 비밀 값 · 외부 네트워크 주소 · 실존 회사·제품 이름(원 사례 고유어).
 5. 숨은 테스트: 지원자 구현 내부를 import (게이트 ⑥ 사전 확인), 실패 사유 코드가 템플릿 목록 밖, 케이스 id 가 HiddenPlan 과 1:1 이 아님,
    조절값 파일을 손으로 씀(코드가 HiddenPlan 에서 쓴다 — `render.render_params`).
+   공개 계약에 없는 API 를 부름 (manifest `hidden_rules.http_calls` 로 찾은 호출의 경로를 `{}` 자리로 정규화해 대조).
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from typing import Any
 
 import yaml
 
-from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan
+from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import FileKind
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, hidden_terms
@@ -265,7 +266,110 @@ def _operating_values(
     return problems, flags
 
 
-def _hidden_cases(o: Overlay, t: Template, plan: HiddenPlan) -> list[StaticProblem]:
+def _call_arg(text: str, start: int) -> str:
+    """start 부터 괄호 깊이 0 의 `,` 또는 `)` 앞까지 — 호출 인자 식 하나."""
+    depth, i, quote = 0, start, False
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == '"':
+                quote = False
+        elif ch == '"':
+            quote = True
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            break
+        i += 1
+    return text[start:i]
+
+
+def _split_plus(expr: str) -> list[str]:
+    parts, depth, quote, cur = [], 0, False, ""
+    for i, ch in enumerate(expr):
+        if quote:
+            quote = not (ch == '"' and expr[i - 1] != "\\")
+        elif ch == '"':
+            quote = True
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "+" and depth == 0:
+            parts.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    return [*parts, cur.strip()]
+
+
+_LITERAL = re.compile(r'^"((?:[^"\\]|\\.)*)"$')
+
+
+def path_template(expr: str) -> str | None:
+    """`"/orders/" + id + "/status"` → `/orders/{}/status`. 첫 조각이 "/…" 문자열이 아니면 None (판단 안 함). 쿼리는 뺀다."""
+    out: list[str] = []
+    for n, part in enumerate(_split_plus(expr)):
+        lit = _LITERAL.match(part)
+        if n == 0 and not (lit and lit.group(1).startswith("/")):
+            return None
+        out.append(lit.group(1) if lit else "{}")
+    return "".join(out).split("?", 1)[0]
+
+
+def http_calls(content: str, patterns: Sequence[str]) -> list[tuple[str, str]]:
+    """(메서드, 경로 틀) — 경로를 판단할 수 없는 호출은 뺀다."""
+    found: list[tuple[str, str]] = []
+    for pat in patterns:
+        for m in re.finditer(pat, content):
+            path = path_template(_call_arg(content, m.end()))
+            if path is not None:
+                method = (m.groupdict().get("method") or "GET").upper()
+                found.append((method, path))
+    return found
+
+
+def _contract_api(contract: TaskContract) -> list[tuple[str, re.Pattern[str]]]:
+    return [
+        (
+            e.method.upper(),
+            re.compile("^" + re.sub(r"\\\{[^}]*\\\}", "[^/]+", re.escape(e.path)) + "/?$"),
+        )
+        for e in contract.endpoints
+        if e.method
+    ]
+
+
+def _unknown_calls(
+    files: Iterable[GeneratedFile], contract: TaskContract, patterns: Sequence[str]
+) -> list[str]:
+    api = _contract_api(contract)
+    out: list[str] = []
+    for f in files:
+        bad = sorted(
+            {
+                f"{method} {path}"
+                for method, path in http_calls(f.content, patterns)
+                if not any(method == m and rx.match(path) for m, rx in api)
+            }
+        )
+        if bad:
+            out.append(
+                f"숨은 테스트 {f.path} 가 공개 계약에 없는 API 를 부름: {', '.join(bad)} "
+                f"— 계약 API({', '.join(e.method + ' ' + e.path for e in contract.endpoints if e.method)})만 쓴다"
+            )
+    return out
+
+
+def _hidden_cases(
+    o: Overlay, t: Template, plan: HiddenPlan, contract: TaskContract | None = None
+) -> list[StaticProblem]:
     m = t.manifest
     rules = m.hidden_rules
     out: list[str] = []
@@ -291,6 +395,10 @@ def _hidden_cases(o: Overlay, t: Template, plan: HiddenPlan) -> list[StaticProbl
         for rx in reason_rx:
             used_codes |= {mt.group(1) for mt in rx.finditer(f.content)}
         seen_ids.update(set(case_rx.findall(f.content)))
+    if contract is not None and rules.http_calls:
+        out += _unknown_calls(
+            [f for f in o.files if f.path != params_path], contract, rules.http_calls
+        )
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
         out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
@@ -315,6 +423,7 @@ def static_check(
     template: Template,
     plan: HiddenPlan,
     spec: SpecView,
+    contract: TaskContract | None = None,
     seed: FeatureSeed | None = None,
     readme: GeneratedFile | None = None,
     avoid_terms: Sequence[str] = (),
@@ -352,7 +461,7 @@ def static_check(
             res.problems += problems
             res.review_flags += flags
         if o.kind == "hidden":
-            res.problems += _hidden_cases(o, template, plan)
+            res.problems += _hidden_cases(o, template, plan, contract)
 
     if readme is not None:
         # README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제 (재생성으로 못 고침)

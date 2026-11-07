@@ -77,6 +77,26 @@ def test_params_read_by_harness_are_declared(java) -> None:  # type: ignore[no-u
     assert used and used <= names
 
 
+_HARNESS_INTERNAL = {"getConnection", "postProcessAfterInitialization", "raw", "tag", "uri"}
+
+
+def test_harness_doc_covers_harness_api(java) -> None:  # type: ignore[no-untyped-def]
+    """hidden/HARNESS.md (gen_hidden 입력) 가 하네스의 공개·protected 메서드를 모두 적는다.
+    2026-11-07 스모크: 문서에 record·검사 예외가 빠져 생성된 숨은 테스트가 두 번 컴파일되지 않았다."""
+    doc = (java.root / "hidden/HARNESS.md").read_text("utf-8")
+    names: set[str] = set()
+    records: set[str] = set()
+    for f in java.files("hidden/harness"):
+        code = (java.root / "hidden/harness" / f).read_text("utf-8")
+        names |= set(re.findall(r"(?:public|protected) (?:static )?[\w<>, ?\[\]]+ (\w+)\(", code))
+        records |= set(re.findall(r"public record (\w+)\(", code))
+    missing = sorted(n for n in names - _HARNESS_INTERNAL - records if n not in doc)
+    assert not missing, f"HARNESS.md 에 없는 하네스 메서드: {missing}"
+    for r in records:
+        assert re.search(rf"`[\w.]*{r}` 는 \*\*record\*\*", doc), r
+    assert "throws Exception" in doc  # send·get·json 의 검사 예외
+
+
 def test_java_spec_patterns_read_materials_like_the_hand_example(java) -> None:  # type: ignore[no-untyped-def]
     """손 예시 r2b 요청 자료 a2(운영 설정 발췌)·a3(요청 지표)·진행자 답과 같은 꼴의 가상 글에서 값을 뽑는다."""
     a2 = (

@@ -78,6 +78,9 @@ hidden_rules:
     - '^\s*import\s+(?:static\s+)?com\.example\.service\.(?!grading\b)'
   reason_patterns:
     - 'Reasons\.(?:as|tag)\(\s*"([a-z0-9_]+)"'
+  http_calls:
+    - '(?<![\w.])send\(\s*"(?P<method>[A-Z]+)"\s*,\s*'
+    - '(?<![\w.])get\(\s*(?=")'
 
 # 하네스 조절값 — HiddenPlan.harness 의 키. visible = 명세 1단계 자료·구체 답에서 같은 값이 보여야 함 (spec-to-code §3.3).
 # spec_patterns 그룹 1 = 값. config_keys 는 GraderSupport.OPERATING 과 같아야 한다 (tests/starter/test_templates.py).
