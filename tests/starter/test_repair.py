@@ -541,3 +541,48 @@ async def test_repair_passes_the_generators_own_previous_output() -> None:
     assert (
         f"=== {PKG}/order/OrderService.java ===" in accepted[1].split("이전 출력 (수리일 때만")[1]
     )
+
+
+def _compile_broken(file: str = "OrderStatusBurstTest.java") -> VerifyReport:
+    hidden_err = {
+        "path": f"{CASES}/{file}",
+        "line": 52,
+        "message": "reference to assertThat is ambiguous",
+    }
+    return VerifyReport(
+        runs=[
+            _run("starter", "starter"),
+            _run("naive-all", "ref_naive", setup="compile_error", compile_errors=[hidden_err]),
+            _run("d1", "ref_accepted", setup="compile_error", compile_errors=[hidden_err]),
+        ]
+    )
+
+
+def test_compile_actions_are_marked() -> None:
+    plan = _assign(_compile_broken("Hc1Test.java"))  # OVERLAYS 의 숨은 테스트 파일
+    assert [(a.key, a.compile) for a in plan.actions] == [("gen_hidden", True)]
+    # 컴파일이 아닌 사유와 합쳐지면 표시를 잃는다 (예산 1)
+    naive = _run(
+        "naive-all",
+        "ref_naive",
+        _t("hidden", "hc1"),
+        _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
+    )
+    assert [
+        a.compile for a in _assign(_report(naive, _run("d1", "ref_accepted", *GOOD_ACC))).actions
+    ] == [False]
+
+
+async def test_compile_errors_get_two_repairs() -> None:
+    """2026-11-07 루프: 숨은 테스트 컴파일 오류를 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다 → 컴파일 오류만이면 2회."""
+    llm, backend = _llm()
+    verifier = ScriptedVerifier(_compile_broken(), _compile_broken(), _one_case(NAIVE_OK, D1_OK))
+    out = await _build(verifier, llm)
+    assert out.status == "review" and out.rounds == 2 and out.regen_counts == {"gen_hidden": 2}
+    assert backend.calls.count("gen_hidden") == 3
+    # 세 번째도 컴파일 오류면 예산 소진
+    llm, _ = _llm()
+    out = await _build(ScriptedVerifier(_compile_broken()), llm)
+    assert out.status == "failed" and any(
+        "재생성 예산을 다 씀 — gen_hidden" in f for f in out.review_flags
+    )

@@ -40,6 +40,9 @@ class RepairAction:
     gate: str  # ① ② ③ ③' ④ ⑤ ⑨ setup
     reason: str  # 짧은 사유 (RepairRecord.reason, 승인 화면)
     note: str  # 생성기에 붙일 수정 요청
+    compile: bool = (
+        False  # 컴파일 오류 — 고치기 싸서 예산을 더 준다 (nodes/starter/build.py COMPILE_BUDGET)
+    )
 
     @property
     def key(self) -> str:
@@ -90,6 +93,7 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
                 prev.gate if prev.gate == a.gate else f"{prev.gate}{a.gate}",
                 _short(f"{prev.reason}; {a.reason}"),
                 f"{prev.note}\n{a.note}",
+                compile=prev.compile and a.compile,
             )
     return list(out.values())
 
@@ -105,6 +109,7 @@ def _starter(run: TargetRun) -> list[RepairAction]:
                 f"시작 코드 빌드 실패 ({run.setup})",
                 "시작 코드만으로 빌드·기동이 되지 않는다. 이 오류를 고친다:\n"
                 + (errs or run.setup),
+                compile=run.setup == "compile_error",
             )
         ]
     bad = [t for t in run.results("existing") if t.result != "PASS"]
@@ -164,6 +169,7 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
                     "숨은 테스트 컴파일 오류",
                     "숨은 테스트가 컴파일되지 않는다. 하네스 문서에 있는 이름·형식만 쓴다:\n"
                     + text,
+                    compile=True,
                 )
             )
         else:
@@ -174,6 +180,7 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
                     "setup",
                     f"{run.target} 컴파일 오류",
                     "구현이 컴파일되지 않는다:\n" + text,
+                    compile=True,
                 )
             )
     if not run.compile_errors:  # 위치를 못 뽑은 컴파일 실패 — 참조 구현 쪽으로
@@ -184,6 +191,7 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
                 "setup",
                 f"{run.target} 컴파일 실패",
                 "구현이 컴파일되지 않는다.",
+                compile=True,
             )
         )
     return out
