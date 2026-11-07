@@ -1,0 +1,201 @@
+"""공통 과제 빌드 — 명세 → 시작 코드 생성 파이프라인의 경계 모델 (docs/design/spec-to-code.md §2·§3·§4) [제안].
+
+- `TaskContract`: 공개 계약. 지원자에게 보인다 (README "계약" 절). 시작 코드·숨은 테스트·참조 구현 생성기가 함께 기대는 유일한 기준점.
+  "무엇을"만 — 트랜잭션 경계·잠금·캐시 같은 "어떻게"와 숨은 요구 핵심어는 담지 않는다 (starter/contract.py 가 검사).
+- `HiddenPlan`: 숨은 테스트 생성기만 보는 운영 조건과 케이스. 지원자·시작 코드 생성기에 가지 않는다.
+- `GeneratedFiles`: 모든 생성기의 출력 모양. 경로 규칙(fill_slots·잠금·상한)은 starter/overlay.py(#55)가 본다.
+- `BuildState`: 빌드 그래프 State. 오버레이 **본문을 담지 않는다** — 파일은 starter_file 테이블(#52)에, State 에는 (kind, path, sha256) 만.
+"""
+
+from __future__ import annotations
+
+import re
+from operator import add
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from task_spec.schemas.base import Schema
+from task_spec.schemas.provenance import NodeError, Provenance
+from task_spec.schemas.template import InterfaceKind
+
+HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+# 오버레이 파일 종류 — public_test 는 공개 테스트를 지원자에게 주지 않을 때 (spec-to-code §4.3 [제안])
+FileKind = Literal["starter", "hidden", "public_test", "ref_naive", "ref_accepted"]
+BuildStatus = Literal[
+    "pending", "generating", "verifying", "review", "failed", "approved", "published"
+]
+GeneratorName = Literal["plan_contract", "gen_starter", "gen_hidden", "gen_naive", "gen_accepted"]
+
+_REF = r"^[rp]\d{1,2}$"  # 공개 요구(r*)·공개 수용 기준(p*) — 계약 요소가 나온 곳
+
+
+class ContractField(Schema):
+    """요청·응답 본문·엔티티의 필드 1개. refs = 이 필드가 나온 공개 요구·공개 수용 기준 (양방향 대응, §3.3)."""
+
+    name: str = Field(min_length=1, max_length=60)
+    type: str = Field(
+        min_length=1, max_length=60
+    )  # 예: string · integer · datetime · enum(READY|SHIPPED)
+    required: bool = True
+    constraints: str | None = Field(default=None, max_length=200)
+    refs: list[str] = Field(min_length=1)
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return _check_refs(v)
+
+
+class ContractResponse(Schema):
+    status: int = Field(ge=100, le=599)
+    description: str = Field(min_length=1, max_length=200)
+    body: list[ContractField] = Field(default_factory=list)
+
+
+class Endpoint(Schema):
+    """공개 인터페이스 1개 — http 면 메서드·경로, cli 면 명령, file 이면 입출력 파일."""
+
+    endpoint_id: str = Field(pattern=r"^e\d{1,2}$")
+    method: HttpMethod | None = None  # http 에서만 (필수)
+    path: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=200)
+    request: list[ContractField] = Field(default_factory=list)
+    responses: list[ContractResponse] = Field(min_length=1)
+    refs: list[str] = Field(min_length=1)
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return _check_refs(v)
+
+
+class Entity(Schema):
+    entity_id: str = Field(pattern=r"^m\d{1,2}$")
+    name: str = Field(min_length=1, max_length=60)
+    fields: list[ContractField] = Field(min_length=1)
+    relations: list[str] = Field(default_factory=list)
+
+
+class SeedRule(Schema):
+    """시드 데이터 규칙 (가상 데이터만)."""
+
+    entity_id: str = Field(pattern=r"^m\d{1,2}$")
+    rows_min: int = Field(ge=0)
+    rows_max: int = Field(ge=0)
+    rules: list[str] = Field(default_factory=list)
+
+
+class PublicTest(Schema):
+    test_id: str = Field(pattern=r"^pt\d{1,2}$")
+    ac_id: str = Field(pattern=r"^p\d{1,2}$")
+    checks: str = Field(min_length=1, max_length=300)  # 무엇을 확인하나
+
+
+class TaskContract(Schema):
+    """공개 계약 — 지원자에게 보인다. 크기 상한 엔드포인트 1–6 · 엔티티 1–8 (60분 과제 기준 [미정])."""
+
+    interface_kind: InterfaceKind
+    endpoints: list[Endpoint] = Field(min_length=1, max_length=6)
+    entities: list[Entity] = Field(min_length=1, max_length=8)
+    seed: list[SeedRule] = Field(default_factory=list)
+    public_tests: list[PublicTest] = Field(min_length=1)
+    covers: dict[str, list[str]] = Field(min_length=1)  # r* → endpoint·entity id
+
+
+HarnessValue = int | float | str | list[int]
+
+
+class HiddenCase(Schema):
+    case_id: str = Field(pattern=r"^hc\d{1,2}$")
+    ac_id: str = Field(pattern=r"^h\d{1,2}$")
+    trap_id: str = Field(min_length=1)
+    scenario: str = Field(min_length=1, max_length=300)
+    expect: str = Field(min_length=1, max_length=300)  # 통과 조건
+    intended_reason: str = Field(
+        min_length=1
+    )  # 흔한 구현이 실패할 때의 사유 코드 — 템플릿 failure_reasons 안
+
+
+class HiddenPlan(Schema):
+    """숨은 테스트 생성기만 보는 계획 — 지원자·시작 코드 생성기에 가지 않는다."""
+
+    harness: dict[str, HarnessValue] = Field(
+        default_factory=dict
+    )  # 템플릿 harness_params 이름 → 값
+    cases: list[HiddenCase] = Field(min_length=1)
+
+
+class GeneratedFile(Schema):
+    path: str = Field(min_length=1, max_length=300)
+    content: str = Field(max_length=200_000)
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, v: str) -> str:
+        # 기본 모양만 — fill_slots·잠금·상한은 starter/overlay.py (#55)
+        if v.startswith("/") or "\\" in v or any(ch in v for ch in "\t\n\r"):
+            raise ValueError("상대 경로만, 역슬래시·탭·줄바꿈 금지")
+        if ".." in v.split("/"):
+            raise ValueError("경로에 .. 금지")
+        return v
+
+
+class GeneratedFiles(Schema):
+    """모든 생성기의 출력 — {files: [{path, content}]}."""
+
+    files: list[GeneratedFile] = Field(min_length=1, max_length=80)
+
+    @field_validator("files")
+    @classmethod
+    def _unique(cls, v: list[GeneratedFile]) -> list[GeneratedFile]:
+        paths = [f.path for f in v]
+        if len(set(paths)) != len(paths):
+            raise ValueError("같은 경로가 두 번 나옴")
+        return v
+
+
+class FileRef(Schema):
+    """State 에 남기는 오버레이 파일 참조 — 본문 없음."""
+
+    kind: FileKind
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+
+
+class RepairRecord(Schema):
+    """수리 이력 1건 — 어떤 게이트 실패를 어느 생성기에 배정했고 결과가 어땠나 (코드 본문 없음)."""
+
+    gate: str = Field(min_length=1)  # 예: "③" · "contract" · "static"
+    target: GeneratorName
+    reason: str = Field(min_length=1, max_length=300)  # 사유 코드·케이스 id
+    result: Literal["regenerated", "failed", "skipped"]
+
+
+class BuildState(BaseModel):
+    """공통 과제 빌드 1건의 State. thread_id = build_id. 공통 과제 판(common_id, revision)마다 한 번."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    build_id: str = Field(min_length=1)
+    common_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    ontology_version: str = Field(min_length=1)
+    status: BuildStatus = "pending"
+    template_ref: str | None = None  # id@vN
+    contract: TaskContract | None = None
+    hidden_plan: HiddenPlan | None = None
+    files: list[FileRef] = Field(default_factory=list)  # 교체 — 생성·수리 때마다 최신 목록
+    regen_counts: dict[str, int] = Field(default_factory=dict)  # 생성기별 재생성 횟수 (예산, §7)
+    repairs: list[RepairRecord] = Field(default_factory=list)
+    review_flags: list[str] = Field(default_factory=list)
+    provenance: Annotated[list[Provenance], add] = Field(default_factory=list)
+    errors: Annotated[list[NodeError], add] = Field(default_factory=list)
+
+
+def _check_refs(v: list[str]) -> list[str]:
+    bad = [r for r in v if not re.match(_REF, r)]
+    if bad:
+        raise ValueError(f"refs 는 공개 요구(r*)·공개 수용 기준(p*) id 만: {bad}")
+    return v

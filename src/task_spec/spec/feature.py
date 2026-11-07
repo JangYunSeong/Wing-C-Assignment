@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import random
 import re
+from collections.abc import Iterable
 from typing import Any, cast
 
 from task_spec.llm import LLMClient
@@ -382,6 +383,14 @@ def _in_text(term: str, text: str) -> bool:
         t = _norm(term)
         return bool(t) and t in _norm(text)
     return bool(_phrase(term).search(text))
+
+
+def find_terms(terms: Iterable[str], text: str) -> list[str]:
+    """text 에 나온 말 (한글은 띄어쓰기 무시, 영문은 단어 경계) — 기능형 서술 검사와 같은 기준.
+
+    다른 단계(공개 계약 검사 starter/contract.py 등)가 같은 낱말 목록·같은 기준을 쓰도록 공개한다.
+    """
+    return [t for t in dict.fromkeys(terms) if len(_norm(t)) >= 2 and _in_text(t, text)]
 
 
 def public_text(out: DraftFeatureOutput) -> str:
