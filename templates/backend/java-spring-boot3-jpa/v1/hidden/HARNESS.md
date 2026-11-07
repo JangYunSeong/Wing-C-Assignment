@@ -50,6 +50,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 
 - **기대 상태 코드는 계약 `responses` 에 있는 것만.** 계약이 정하지 않은 상황(주입한 DB 오류 등)의 응답 코드는 정확한 값을 요구하지 않는다 — `isNotEqualTo(200)` 처럼 계약이 말하는 만큼만.
 - JSON 숫자는 크기에 따라 `Integer`·`Long` 으로 읽힌다 — `((Number) row.get("id")).longValue()` 로 바꿔 비교한다 (`isEqualTo(105L)` 를 `Integer` 와 비교하면 실패).
+- **예외가 나지 않음을 확인할 때는 `assertThatCode(() -> …).doesNotThrowAnyException()`** — `assertThat(() -> …)` 처럼 람다를 `assertThat` 에 넣으면 AssertJ 에서 어느 오버로드인지 모호해 컴파일되지 않는다. 시각 형식 확인은 하네스 `parseTime(값)` (형식이 틀리면 예외) 으로 충분하다.
 - 기대 결과는 HiddenPlan 케이스의 `expect` 에서만 나온다. `expect` 에 없는 조건(응답 시간·로그 순서 등)을 더 요구하지 않는다.
 
 ## Reasons — 의도한 실패 사유

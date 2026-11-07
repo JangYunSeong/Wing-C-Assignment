@@ -3,7 +3,7 @@
 6단계 앞부분: 그래프 연결(State 는 경로·해시만, interrupt, 저장 #52)은 verifier(#55)·저장소가 생긴 뒤 이 순서를 노드로 옮긴다.
 여기서는 같은 순서를 함수 하나로 돌린다 — 테스트는 가짜 verifier, 스모크는 개발 서버 Gradle verifier(eval/starter/gradle_verify.py).
 
-예산 (§7): 산출물(생성기·라벨)마다 재생성 1회, 빌드 전체 재생성 최대 3회. 예산을 넘거나 배정이 모호하면 다시 만들지 않고 `failed`.
+예산 (§7): 산출물(생성기·라벨)마다 재생성 1회(컴파일 오류만이면 2회), 빌드 전체 재생성 최대 3회. 예산을 넘거나 배정이 모호하면 다시 만들지 않고 `failed`.
 시작 코드를 다시 만들면 그 위에 쓴 참조 구현도 다시 만든다 (참조 구현 예산은 쓰지 않음). 숨은 테스트는 계약만 보므로 그대로.
 """
 
@@ -33,6 +33,7 @@ from task_spec.starter.static_check import Overlay, static_check
 
 MAX_ROUNDS = 3  # 빌드 전체 재생성 상한
 PER_ARTIFACT = 1  # 산출물마다 재생성 상한
+COMPILE_BUDGET = 2  # 컴파일 오류만 고칠 때는 2회까지 — 고치기 싸고, 2026-11-07 루프에서 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다
 HIDDEN = "hidden"
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,11 @@ async def build_and_repair(
         if plan.passed:
             out.status = "review"
             return out
-        blocked = [a for a in plan.actions if out.regen_counts.get(a.key, 0) >= PER_ARTIFACT]
+        blocked = [
+            a
+            for a in plan.actions
+            if out.regen_counts.get(a.key, 0) >= (COMPILE_BUDGET if a.compile else PER_ARTIFACT)
+        ]
         if plan.unresolved or blocked or round_no == max_rounds:
             out.review_flags += plan.unresolved
             out.review_flags += [f"재생성 예산을 다 씀 — {a.key}: {a.reason}" for a in blocked]
