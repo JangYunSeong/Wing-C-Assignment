@@ -1,0 +1,375 @@
+"""시작 코드 오버레이 정적 검사 `static_check` (docs/design/spec-to-code.md §6) — 결정적, LLM·빌드 없음.
+
+생성기가 쓴 오버레이 파일(시작 코드·숨은 테스트·참조 구현)과 렌더한 README 를 빌드 전에 본다.
+실패는 원인 생성기에 배정한다 (§7 수리): 재생성할 생성기(`gen_starter` 등)에 붙는 `problems` 와,
+재생성으로 고칠 수 없어 승인자가 봐야 하는 `review_flags`(README = 승인된 명세 문장에서 나온 것·템플릿 기본값)를 나눈다.
+
+검사
+1. 경로 — kind 별 `fill_slots` 안, `locked` 밖, hidden 이 아니면 `reserved` 밖. 잠긴 하네스 자리를 고치면 따로 알린다. 파일 수·크기 상한.
+2. 숨은 요구·운영 조건 낱말(재료 leak·trigger·원인 개념·먼저 말할 개념)·숨은 테스트 이름이 공개 파일(시작 코드·README·주는 공개 테스트)에
+   — 코드 식별자는 낱말로 풀어서 본다 (connectionPool → connection pool). 미끼 코드(해법·문제 지점을 가리키는 주석·설정)도 이 낱말로 잡는다.
+3. 운영 값이 시작 코드 설정에 박힘 — 템플릿 `harness_params[].config_keys` 의 값만 대조 (아무 숫자나 비교하면 8·32 같은 값이 오탐).
+4. 비밀 값 · 외부 네트워크 주소 · 실존 회사·제품 이름(원 사례 고유어).
+5. 숨은 테스트: 지원자 구현 내부를 import (게이트 ⑥ 사전 확인), 실패 사유 코드가 템플릿 목록 밖, 케이스 id 가 HiddenPlan 과 1:1 이 아님,
+   조절값 파일을 손으로 씀(코드가 HiddenPlan 에서 쓴다 — `render.render_params`).
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+import yaml
+
+from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan
+from task_spec.schemas.build import FileKind
+from task_spec.spec.feature import find_terms
+from task_spec.starter.contract import SpecView, hidden_terms
+from task_spec.starter.render import README, render_params
+from task_spec.starter.templates import Template, glob_match, slot_allows
+
+KIND_SLOT = {
+    "starter": "starter",
+    "public_test": "public_test",
+    "hidden": "hidden",
+    "ref_naive": "ref",
+    "ref_accepted": "ref",
+}
+KIND_TARGET = {
+    "starter": "gen_starter",
+    "public_test": "gen_starter",
+    "hidden": "gen_hidden",
+    "ref_naive": "gen_naive",
+    "ref_accepted": "gen_accepted",
+}
+
+_SECRETS = [
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\b(?:sk|ghp|gho|xox[abp])[-_][A-Za-z0-9]{20,}"),
+    re.compile(
+        r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token)\b\s*[:=]\s*['\"]?(?=[^\s'\"]*\d)(?=[^\s'\"]*[A-Za-z])[^\s'\"]{12,}"
+    ),
+]
+_URL = re.compile(r"https?://([A-Za-z0-9.\-]+)")
+_LOCAL_HOSTS = re.compile(
+    r"^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|(?:[\w-]+\.)*example\.(?:com|org|net)|[\w-]+\.test|[\w-]+\.invalid)$"
+)
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_CONFIG_SUFFIX = (".yml", ".yaml", ".properties")
+
+
+@dataclass(frozen=True)
+class Overlay:
+    """생성기 산출물 한 벌 — 참조 구현은 변형마다 한 벌 (label 로 구분, 예: "naive-t1")."""
+
+    kind: FileKind
+    files: tuple[GeneratedFile, ...]
+    label: str = ""
+
+    @property
+    def target(self) -> str:
+        return KIND_TARGET[self.kind]
+
+    @property
+    def name(self) -> str:
+        return f"{self.kind}{f'({self.label})' if self.label else ''}"
+
+
+@dataclass(frozen=True)
+class StaticProblem:
+    target: str  # 재생성할 생성기 — gen_starter · gen_hidden · gen_naive · gen_accepted
+    message: str
+
+
+@dataclass
+class StaticResult:
+    problems: list[StaticProblem] = field(default_factory=list)
+    review_flags: list[str] = field(default_factory=list)  # 재생성으로 못 고침 — 승인 화면에
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+    def for_target(self, target: str) -> list[str]:
+        return [p.message for p in self.problems if p.target == target]
+
+    @property
+    def targets(self) -> list[str]:
+        return list(dict.fromkeys(p.target for p in self.problems))
+
+
+def identifier_words(text: str) -> str:
+    """코드 식별자를 낱말로 푼 글 — connectionPoolSize · max_pool → "connection pool size" · "max pool"."""
+    words = []
+    for ident in set(_IDENT.findall(text)):
+        spaced = _CAMEL.sub(" ", ident).replace("_", " ").strip().lower()
+        if " " in spaced:
+            words.append(spaced)
+    return "\n".join(sorted(words))
+
+
+def _flatten(node: Any, prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if isinstance(node, dict):
+        for k, v in node.items():
+            out |= _flatten(v, f"{prefix}.{k}" if prefix else str(k))
+    else:
+        out[prefix] = node
+    return out
+
+
+def config_values(path: str, content: str) -> dict[str, str]:
+    """설정 파일(yml·yaml·properties)의 점 표기 키 → 값 문자열. 읽지 못하면 빈 dict."""
+    if path.endswith(".properties"):
+        out: dict[str, str] = {}
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", "!")):
+                continue
+            kv = re.match(r"^([^=:\s]+)\s*[=:]\s*(.*)$", line)
+            if kv:
+                out[kv.group(1)] = kv.group(2).strip()
+        return out
+    try:
+        docs = list(yaml.safe_load_all(content))
+    except yaml.YAMLError:
+        return {}
+    flat: dict[str, str] = {}
+    for doc in docs:
+        flat |= {k: str(v) for k, v in _flatten(doc).items()}
+    return flat
+
+
+def _same_value(a: str, b: Any) -> bool:
+    try:
+        return float(str(a).replace(",", "").replace("_", "")) == float(b)
+    except (TypeError, ValueError):
+        return str(a).strip() == str(b).strip()
+
+
+def _paths(o: Overlay, t: Template) -> list[StaticProblem]:
+    m = t.manifest
+    out: list[StaticProblem] = []
+    locked_harness = (
+        [
+            f"{m.hidden_layout.harness}/*",
+            f"{m.hidden_layout.selftest}/**",
+        ]
+        if m.hidden_layout
+        else []
+    )
+    for f in o.files:
+        if slot_allows(m, KIND_SLOT[o.kind], f.path):  # type: ignore[arg-type]
+            continue
+        if locked_harness and glob_match(f.path, locked_harness):
+            msg = f"{o.name} 파일 {f.path} 는 잠긴 채점 하네스 자리 — 하네스는 고치지 않고 케이스 자리({m.hidden_layout.cases if m.hidden_layout else ''})에만 쓴다"
+        else:
+            msg = f"{o.name} 파일 {f.path} 는 쓸 수 없는 경로 (fill_slots 밖·잠긴 파일·채점 자리)"
+        out.append(StaticProblem(o.target, msg))
+    lim = m.limits
+    if lim is not None:
+        if len(o.files) > lim.max_files:
+            out.append(
+                StaticProblem(
+                    o.target, f"{o.name} 파일 수 {len(o.files)} 가 상한 {lim.max_files} 를 넘음"
+                )
+            )
+        big = [f.path for f in o.files if len(f.content.encode()) > lim.max_file_bytes]
+        if big:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{o.name} 파일이 크기 상한 {lim.max_file_bytes}B 를 넘음: {', '.join(big)}",
+                )
+            )
+        total = sum(len(f.content.encode()) for f in o.files)
+        if total > lim.max_total_bytes:
+            out.append(
+                StaticProblem(
+                    o.target, f"{o.name} 전체 크기 {total}B 가 상한 {lim.max_total_bytes}B 를 넘음"
+                )
+            )
+    return out
+
+
+def _hygiene(
+    o: Overlay | None, files: Iterable[GeneratedFile], avoid_terms: Sequence[str]
+) -> list[str]:
+    """비밀 값·외부 주소·원 사례 고유어 — 메시지 목록 (배정은 호출하는 쪽)."""
+    out: list[str] = []
+    for f in files:
+        where = f"{o.name} 파일 {f.path}" if o else f.path
+        if any(rx.search(f.content) for rx in _SECRETS):
+            out.append(f"{where} 에 비밀 값처럼 보이는 문자열이 있음")
+        hosts = sorted({h for h in _URL.findall(f.content) if not _LOCAL_HOSTS.match(h)})
+        if hosts:
+            out.append(
+                f"{where} 에 외부 네트워크 주소: {', '.join(hosts)} — 검증·채점은 네트워크 없이 돈다"
+            )
+        named = find_terms(avoid_terms, f.content)
+        if named:
+            out.append(f"{where} 에 원 사례의 실존 이름·고유어: {', '.join(named)}")
+    return out
+
+
+def _leaks(files: Iterable[GeneratedFile], terms: Sequence[str]) -> list[tuple[str, list[str]]]:
+    hits = []
+    for f in files:
+        text = f"{f.path}\n{f.content}\n{identifier_words(f.content)}\n{identifier_words(f.path)}"
+        shown = find_terms(terms, text)
+        if shown:
+            hits.append((f.path, shown))
+    return hits
+
+
+def _operating_values(
+    o: Overlay, t: Template, plan: HiddenPlan
+) -> tuple[list[StaticProblem], list[str]]:
+    problems: list[StaticProblem] = []
+    flags: list[str] = []
+    keyed = [
+        (p, k) for p in t.manifest.harness_params if p.name in plan.harness for k in p.config_keys
+    ]
+    if not keyed:
+        return problems, flags
+    base = {
+        k: v
+        for rel in t.files("project")
+        if rel.endswith(_CONFIG_SUFFIX)
+        for k, v in config_values(
+            rel, (t.project / rel).read_text("utf-8", errors="ignore")
+        ).items()
+    }
+    for f in o.files:
+        if not f.path.endswith(_CONFIG_SUFFIX):
+            continue
+        cfg = config_values(f.path, f.content)
+        for p, key in keyed:
+            if key in cfg and _same_value(cfg[key], plan.harness[p.name]):
+                msg = (
+                    f"{o.name} 설정 {f.path} 의 {key}={cfg[key]} 가 채점 운영 값({p.name})과 같음 — "
+                    "운영 값은 채점 때 하네스가 넣는다, 시작 코드에는 개발용 값만"
+                )
+                if key in base and _same_value(base[key], plan.harness[p.name]):
+                    flags.append(
+                        f"템플릿 기본 설정 {key} 가 운영 값과 같음 — 템플릿 기본값을 바꿀 신호"
+                    )
+                else:
+                    problems.append(StaticProblem(o.target, msg))
+    return problems, flags
+
+
+def _hidden_cases(o: Overlay, t: Template, plan: HiddenPlan) -> list[StaticProblem]:
+    m = t.manifest
+    rules = m.hidden_rules
+    out: list[str] = []
+    imports = [re.compile(p, re.M) for p in rules.forbidden_imports]
+    reason_rx = [re.compile(p) for p in rules.reason_patterns]
+    case_rx = re.compile(rules.case_id_pattern)
+    params_path = m.hidden_layout.params if m.hidden_layout else None
+    seen_ids: Counter[str] = Counter()
+    used_codes: set[str] = set()
+    for f in o.files:
+        if f.path == params_path:
+            if f.content != render_params(plan, m).content:
+                out.append(
+                    f"조절값 파일 {f.path} 를 손으로 씀 — 이 파일은 숨은 테스트에 넣지 않는다 (HiddenPlan 에서 코드가 쓴다)"
+                )
+            continue
+        lines = f.content.splitlines()
+        bad = [line.strip() for line in lines if any(rx.search(line) for rx in imports)]
+        if bad:
+            out.append(
+                f"숨은 테스트 {f.path} 가 지원자 구현 내부를 직접 씀: {'; '.join(bad[:3])} — 공개 계약(HTTP)으로만 판정한다"
+            )
+        for rx in reason_rx:
+            used_codes |= {mt.group(1) for mt in rx.finditer(f.content)}
+        seen_ids.update(set(case_rx.findall(f.content)))
+    bad_codes = sorted(used_codes - m.reason_codes)
+    if bad_codes:
+        out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
+    planned = {c.case_id for c in plan.cases}
+    missing = sorted(planned - set(seen_ids))
+    extra = sorted(set(seen_ids) - planned)
+    twice = sorted(i for i, n in seen_ids.items() if n > 1 and i in planned)
+    if missing:
+        out.append(f"HiddenPlan 케이스가 숨은 테스트에 없음: {', '.join(missing)}")
+    if extra:
+        out.append(f"HiddenPlan 에 없는 케이스 id 가 숨은 테스트에 있음: {', '.join(extra)}")
+    if twice:
+        out.append(
+            f"케이스 id 가 여러 파일에 나옴 (케이스 하나 = 테스트 파일 하나): {', '.join(twice)}"
+        )
+    return [StaticProblem("gen_hidden", msg) for msg in out]
+
+
+def static_check(
+    overlays: Sequence[Overlay],
+    *,
+    template: Template,
+    plan: HiddenPlan,
+    spec: SpecView,
+    seed: FeatureSeed | None = None,
+    readme: GeneratedFile | None = None,
+    avoid_terms: Sequence[str] = (),
+    public_tests_visible: bool = False,
+) -> StaticResult:
+    """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게."""
+    res = StaticResult()
+    hidden_files = [f for o in overlays if o.kind == "hidden" for f in o.files]
+    hidden_names = [
+        PurePosixPath(f.path).stem
+        for f in hidden_files
+        if not (
+            template.manifest.hidden_layout and f.path == template.manifest.hidden_layout.params
+        )
+    ]
+    terms = list(
+        dict.fromkeys([*hidden_terms(seed, spec), *(n for n in hidden_names if len(n) >= 4)])
+    )
+
+    for o in overlays:
+        res.problems += _paths(o, template)
+        res.problems += [StaticProblem(o.target, msg) for msg in _hygiene(o, o.files, avoid_terms)]
+        public = o.kind == "starter" or (o.kind == "public_test" and public_tests_visible)
+        if public:
+            for path, shown in _leaks(o.files, terms):
+                res.problems.append(
+                    StaticProblem(
+                        o.target,
+                        f"공개 파일 {path} 에 숨은 요구·운영 조건·숨은 테스트를 드러내는 말: {', '.join(shown)} "
+                        "— 코드·주석·이름에 쓰지 않는다 (미끼 코드 포함)",
+                    )
+                )
+        if o.kind == "starter":
+            problems, flags = _operating_values(o, template, plan)
+            res.problems += problems
+            res.review_flags += flags
+        if o.kind == "hidden":
+            res.problems += _hidden_cases(o, template, plan)
+
+    if readme is not None:
+        # README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제 (재생성으로 못 고침)
+        for _, shown in _leaks([readme], hidden_terms(seed, spec)):
+            res.review_flags.append(
+                f"{README} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(shown)} — 승인된 명세 문장에서 나옴, 명세 수정 필요"
+            )
+        res.review_flags += _hygiene(None, [readme], avoid_terms)
+    res.review_flags = list(dict.fromkeys(res.review_flags))
+    return res
+
+
+def overlay_from_dir(kind: FileKind, root: Path, label: str = "") -> Overlay:
+    """폴더 안 파일 → Overlay (평가·테스트용). 경로는 root 기준."""
+    files = tuple(
+        GeneratedFile(path=p.relative_to(root).as_posix(), content=p.read_text("utf-8"))
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    )
+    return Overlay(kind=kind, files=files, label=label)

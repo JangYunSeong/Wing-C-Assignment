@@ -72,6 +72,12 @@ image:
   template_layer: [project/]
   grader_only: [hidden/, manifest.yaml, README.tpl.md]
   grader_only_dependencies: []   # 하네스는 spring-boot-starter-test 안의 것만 쓴다 (응시용 의존성과 같음)
+# 숨은 테스트 케이스 정적 검사 (spec-to-code §6) — 케이스는 공개 계약(HTTP)으로만 판정한다
+hidden_rules:
+  forbidden_imports:
+    - '^\s*import\s+(?:static\s+)?com\.example\.service\.(?!grading\b)'
+  reason_patterns:
+    - 'Reasons\.(?:as|tag)\(\s*"([a-z0-9_]+)"'
 
 # 하네스 조절값 — HiddenPlan.harness 의 키. visible = 명세 1단계 자료·구체 답에서 같은 값이 보여야 함 (spec-to-code §3.3).
 # spec_patterns 그룹 1 = 값. config_keys 는 GraderSupport.OPERATING 과 같아야 한다 (tests/starter/test_templates.py).

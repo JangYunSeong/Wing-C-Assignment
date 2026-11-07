@@ -142,6 +142,22 @@ class ImageLayers(Schema):
     grader_only_dependencies: list[str] = Field(default_factory=list)  # 하네스 전용 라이브러리
 
 
+class HiddenRules(Schema):
+    """숨은 테스트 케이스(kind=hidden) 정적 검사 규칙 — 스택마다 다른 부분 (spec-to-code §6)."""
+
+    # 케이스 파일에 있으면 안 되는 줄 (정규식, 줄 단위) — 지원자 구현 내부(클래스·메서드)를 직접 쓰는 것 (게이트 ⑥ 사전 확인)
+    forbidden_imports: list[str] = Field(default_factory=list)
+    # 케이스가 붙인 실패 사유 표시에서 코드를 뽑는 정규식 (그룹 1 = 코드) — manifest failure_reasons 안이어야 함
+    reason_patterns: list[str] = Field(default_factory=list)
+    # 케이스 id(HiddenPlan.cases[].case_id)가 케이스 파일에 나오는 모양 — 기본은 낱말 hc1·hc2…
+    case_id_pattern: str = r"\bhc\d{1,2}\b"
+
+    @field_validator("forbidden_imports", "reason_patterns")
+    @classmethod
+    def _rx(cls, v: list[str]) -> list[str]:
+        return _compiles(v)
+
+
 SlotKind = Literal["starter", "public_test", "hidden", "ref"]
 
 
@@ -163,6 +179,7 @@ class TemplateManifest(Schema):
     hidden_layout: HiddenLayout | None = None
     limits: TemplateLimits | None = None
     image: ImageLayers = Field(default_factory=ImageLayers)
+    hidden_rules: HiddenRules = Field(default_factory=HiddenRules)
     naming: NamingRules = Field(default_factory=NamingRules)
     harness_params: list[HarnessParam] = Field(default_factory=list)
     failure_reasons: list[FailureReason] = Field(default_factory=list)
