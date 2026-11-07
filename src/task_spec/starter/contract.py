@@ -22,6 +22,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 from task_spec.schemas.build import ContractField, HarnessValue, HiddenPlan, TaskContract
 from task_spec.schemas.domain import TaskItem
@@ -73,6 +74,9 @@ class SpecView:
 class ContractCheck:
     problems: list[str] = field(default_factory=list)  # 재요청으로 고칠 수 있음
     spec_gaps: list[str] = field(default_factory=list)  # 명세 수정이 필요함 — 재요청하지 않음
+    review_flags: list[str] = field(
+        default_factory=list
+    )  # 통과지만 승인자 확인 (운영 값 후보 여럿 등)
 
     @property
     def ok(self) -> bool:
@@ -148,9 +152,24 @@ def _same(value: HarnessValue, raw: str) -> bool:
     return False  # 목록 값은 명세 대조 대상이 아니다 (주입 대상 id 등)
 
 
+def picked_values(param: HarnessParam, seen: Sequence[str]) -> list[str]:
+    """표기 패턴으로 뽑은 값 중 정답 후보 (`pick`). unique 인데 서로 다른 값이 여럿이면 모두 돌려준다 (모호 — 승인자 확인)."""
+    nums = [(raw, _number(raw)) for raw in seen]
+    if param.pick != "unique" and nums and all(n is not None for _, n in nums):
+        target = (max if param.pick == "max" else min)(n for _, n in nums)  # type: ignore[type-var]
+        return [next(raw for raw, n in nums if n == target)]
+    distinct: dict[object, str] = {}
+    for raw, n in nums:
+        distinct.setdefault(n if n is not None else raw.strip().casefold(), raw)
+    return list(distinct.values())
+
+
 _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# 근거 인용 안에서 값 후보가 아닌 숫자 — 백분율(38%)·시각(19:00)
+_NOT_VALUE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*%|\d{1,2}:\d{2}")
 NO_EVIDENCE = "없음"
 MIN_QUOTE = 6
+MAX_QUOTE = 160  # 분포·표 전체를 통째로 인용하면 그 안의 아무 숫자나 근거가 된다
 
 
 def _norm(text: str) -> str:
@@ -160,15 +179,25 @@ def _norm(text: str) -> str:
 def evidence_ok(value: HarnessValue, quote: str, texts: Iterable[str]) -> bool:
     """근거 인용 확인 — 인용이 자료(1단계 자료·구체 답)에 그대로 있고(공백 무시) 값이 인용 안에 있다.
     정규식 표기 패턴 대신 쓰는 길 (템플릿마다 표현을 맞추지 않아도 됨)."""
+    return evidence_check(value, quote, texts) != "bad"
+
+
+def evidence_check(
+    value: HarnessValue, quote: str, texts: Iterable[str]
+) -> Literal["ok", "ambiguous", "bad"]:
+    """`evidence_ok` 의 자세한 판정. 백분율·시각은 값 후보에서 빼고, 남은 후보가 여럿이면 ambiguous
+    ("1개: 38% 2개: 41% … 4개 이상: 7%" 를 인용하면 1·2·3·4 아무것이나 근거가 된다 — 알파 테스트 2026-11-07)."""
     q = _norm(quote).strip(" \"'“”‘’…")
-    if len(q) < MIN_QUOTE or not any(q in _norm(t) for t in texts):
-        return False
-    numbers = [_number(n) for n in _NUM.findall(q)]
+    if not MIN_QUOTE <= len(q) <= MAX_QUOTE or not any(q in _norm(t) for t in texts):
+        return "bad"
+    numbers = {_number(n) for n in _NUM.findall(_NOT_VALUE.sub(" ", q))}
     if isinstance(value, list):
-        return all(float(v) in numbers for v in value)
+        return "ok" if all(float(v) in numbers for v in value) else "bad"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value) in numbers
-    return str(value).lower() in q.lower()
+        if float(value) not in numbers:
+            return "bad"
+        return "ok" if len(numbers) == 1 else "ambiguous"
+    return "ok" if str(value).lower() in q.lower() else "bad"
 
 
 def spec_missing_params(visible_texts: Sequence[str], manifest: TemplateManifest) -> list[str]:
@@ -204,9 +233,10 @@ def _type_problem(param: HarnessParam, value: HarnessValue) -> str | None:
 
 def _harness(
     plan: HiddenPlan, spec: SpecView, manifest: TemplateManifest
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str]]:
     problems: list[str] = []
     gaps: list[str] = []
+    flags: list[str] = []  # 통과는 시키되 승인자가 볼 것
     known = {p.name for p in manifest.harness_params}
     unknown = [k for k in plan.harness if k not in known]
     if unknown:
@@ -233,10 +263,36 @@ def _harness(
             continue
         seen = extract_values(p, spec.visible_texts)
         quote = plan.evidence.get(p.name)
-        if seen and any(_same(value, raw) for raw in seen):
-            continue  # 템플릿 표기 패턴으로 확인 (빠른 길)
-        if quote and quote.strip() != NO_EVIDENCE and evidence_ok(value, quote, spec.visible_texts):
+        cited = (
+            evidence_check(value, quote, spec.visible_texts)
+            if quote and quote.strip() != NO_EVIDENCE
+            else "bad"
+        )
+        if seen:
+            # 템플릿 표기 패턴이 값을 뽑았으면 그 값(pick)이 정답 — 패턴과 다른 값은 근거가 하나로 분명할 때만 받는다
+            allowed = picked_values(p, seen)
+            if any(_same(value, raw) for raw in allowed):
+                if len(allowed) > 1:
+                    flags.append(
+                        f"운영 값 {p.name} 후보가 자료에 여럿({', '.join(allowed)}) — {value} 을 썼음, 승인자 확인"
+                    )
+                continue
+            if cited == "ok":
+                flags.append(
+                    f"운영 값 {p.name}={value} 이 템플릿 표기 패턴의 값({', '.join(allowed)})과 다름 — 근거 인용 {quote!r} 로 받음, 승인자 확인"
+                )
+                continue
+            problems.append(
+                f"HiddenPlan {p.name}={value} 이 명세 자료의 값({', '.join(allowed)})과 다름 — 명세 자료의 값을 쓰고 evidence 에 그 값이 적힌 부분만 인용"
+            )
+            continue
+        if cited == "ok":
             continue  # 근거 인용으로 확인
+        if cited == "ambiguous":
+            flags.append(
+                f"운영 값 {p.name}={value} 의 근거 인용에 숫자가 여럿 — {quote!r}, 승인자 확인"
+            )
+            continue
         if quote and quote.strip() == NO_EVIDENCE:
             if p.required:
                 gaps.append(
@@ -250,18 +306,14 @@ def _harness(
         elif quote:
             problems.append(
                 f"HiddenPlan {p.name}={value} 의 근거 {quote[:120]!r} 가 자료에 그대로 없거나 값이 그 안에 없음 — "
-                "자료·답의 문장을 그대로 인용하고 그 안의 값을 쓴다"
-            )
-        elif seen:
-            problems.append(
-                f"HiddenPlan {p.name}={value} 이 명세 자료의 값({', '.join(seen)})과 다름 — 명세 자료의 값을 쓰고 evidence 에 근거 문장을"
+                f"자료·답의 문장을 그대로 인용하고 그 안의 값을 쓴다 ({MAX_QUOTE}자 이내, 값이 적힌 부분만)"
             )
         else:
             problems.append(
                 f"공개 조절값 {p.name}={value} 의 근거가 없음 — evidence 에 그 값이 적힌 자료·답 문장을 그대로 적는다 "
                 f'(자료에 없으면 "{NO_EVIDENCE}")'
             )
-    return problems, gaps
+    return problems, gaps, flags
 
 
 # ── 계약 ───────────────────────────────────────────────────
@@ -658,7 +710,7 @@ def check_contract(
     problems += _naming(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _leaks(contract, spec, seed)
-    harness_problems, gaps = _harness(plan, spec, manifest)
+    harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest)
     if manifest.seed_rows:
@@ -668,4 +720,4 @@ def check_contract(
     else:
         problems += _no_seed_rows(contract, plan, manifest)
     problems += _foreign_keys(contract)
-    return ContractCheck(problems=problems, spec_gaps=gaps)
+    return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)

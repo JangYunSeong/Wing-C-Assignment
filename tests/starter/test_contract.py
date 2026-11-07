@@ -13,6 +13,7 @@ from task_spec.starter.contract import (
     SpecView,
     check_contract,
     contract_text,
+    evidence_check,
     extract_values,
     hidden_terms,
     spec_missing_params,
@@ -321,6 +322,52 @@ def test_evidence_quote_confirms_values_patterns_miss() -> None:
         plan = _plan(harness={"pool_size": 8, "concurrency": value, "query_delay_ms": 20})
         plan["evidence"] = {"concurrency": quote}
         assert _has(_check(plan=plan, spec=spec).problems, "concurrency", "근거"), quote
+
+
+DIST = "동시 실행 창 수 분포: 1개: 38% 2개: 41% 3개: 14% 4개 이상: 7%"  # 가상 사용 통계 (알파 테스트 형식)
+
+
+def _tabs_manifest(pick: str) -> TemplateManifest:
+    m = _manifest().model_dump()
+    m["harness_params"][1] |= {"spec_patterns": [r"(\d+)\s*개\s*이상"], "pick": pick}
+    return TemplateManifest.model_validate(m)
+
+
+@pytest.mark.parametrize(("value", "ok"), [(4, True), (3, False), (2, False), (1, False)])
+def test_pattern_value_wins_over_any_number_in_quote(value: int, ok: bool) -> None:
+    """알파 테스트 2026-11-07: 분포 전체를 인용하면 1~4 아무것이나 통과했다 — 패턴 값(pick=max)만 정답."""
+    spec = _spec(visible_texts=("pool: 8", DIST, "3개 이상은 21%, 2개 이상 비율은 71%"))
+    plan = _plan(harness={"pool_size": 8, "concurrency": value})
+    plan["evidence"] = {"concurrency": DIST}
+    res = _check(plan=plan, spec=spec, manifest=_tabs_manifest("max"))
+    assert res.ok is ok, res.problems
+    if not ok:
+        assert _has(res.problems, f"concurrency={value}", "명세 자료의 값(4)")
+
+
+def test_unique_pick_with_several_values_is_flagged() -> None:
+    spec = _spec(visible_texts=("pool: 8", "3개 이상 21%", "4개 이상 7%"))
+    plan = _plan(harness={"pool_size": 8, "concurrency": 4})
+    res = _check(plan=plan, spec=spec, manifest=_tabs_manifest("unique"))
+    assert res.ok and _has(res.review_flags, "concurrency", "후보가 자료에 여럿(3, 4)")
+    plan = _plan(harness={"pool_size": 8, "concurrency": 2})
+    assert _has(
+        _check(plan=plan, spec=spec, manifest=_tabs_manifest("unique")).problems, "concurrency=2"
+    )
+
+
+def test_evidence_check_ignores_percent_and_time_and_flags_ambiguity() -> None:
+    texts = [DIST, "피크(19:00~22:00) 동시 요청 40건", "17–18시 피크, 풀 8, 스레드 32"]
+    assert evidence_check(1, DIST, texts) == "ambiguous"  # 1·2·3·4 가 남음
+    assert evidence_check(38, DIST, texts) == "bad"  # 38% 는 값 후보가 아니다
+    assert evidence_check(40, "피크(19:00~22:00) 동시 요청 40건", texts) == "ok"
+    assert evidence_check(8, "17–18시 피크, 풀 8, 스레드 32", texts) == "ambiguous"
+    assert evidence_check(4, DIST * 5, [DIST * 5]) == "bad"  # MAX_QUOTE 넘는 통째 인용
+    spec = _spec(visible_texts=("pool: 8", "17–18시 피크, 풀 8, 스레드 32"))
+    plan = _plan(harness={"pool_size": 8, "concurrency": 32})  # 패턴 없음 → 근거 인용 경로
+    plan["evidence"] = {"concurrency": "17–18시 피크, 풀 8, 스레드 32"}
+    res = _check(plan=plan, spec=spec)
+    assert res.ok and _has(res.review_flags, "concurrency=32", "숫자가 여럿")
 
 
 def test_extract_values_uses_patterns_not_any_number() -> None:
