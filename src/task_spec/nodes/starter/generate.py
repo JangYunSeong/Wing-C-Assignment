@@ -43,7 +43,7 @@ from task_spec.schemas import (
 )
 from task_spec.schemas.build import FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
-from task_spec.starter.contract import SpecView, mentioned_apis
+from task_spec.starter.contract import SpecView, existing_endpoints
 from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
 from task_spec.starter.seed_rows import RowRange, allocate_rows
@@ -149,15 +149,12 @@ def plan_text(plan: HiddenPlan, contract: TaskContract | None = None) -> str:
 
 
 def existing_apis(task: TaskItem, contract: TaskContract) -> list[str]:
-    """이미 있는 기능 (시작 코드가 완전히 동작하게 만든다) = 계약이 `existing` 으로 표시한 API + 명세 공개 글에 `METHOD /path` 로 나온
-    계약 API. 2026-11-07 알파 테스트: 명세가 "거래 상태 변경 API" 라고만 써 목록이 비자 시작 코드가 범위를 짐작했다 → 계약 표시를 먼저."""
-    named = set(mentioned_apis(SpecView.from_task(task).public_texts))
-    out = []
-    for e in contract.endpoints:
-        key = mentioned_apis([f"{e.method} {e.path}"]) if e.method else []
-        if e.existing or (key and key[0] in named):
-            out.append(f"{e.method or ''} {e.path} — {e.summary}".strip())
-    return out
+    """이미 있는 기능 (시작 코드가 완전히 동작하게 만든다) — 판정은 contract.existing_endpoints (계약 표시 + 명세에 나온 경로).
+    2026-11-07 알파 테스트: 명세가 "거래 상태 변경 API" 라고만 써 목록이 비자 시작 코드가 범위를 짐작했다 → 계약 표시를 먼저."""
+    return [
+        f"{e.method or ''} {e.path} — {e.summary}".strip()
+        for e in existing_endpoints(contract, SpecView.from_task(task))
+    ]
 
 
 def _lines(items: Sequence[str]) -> str:

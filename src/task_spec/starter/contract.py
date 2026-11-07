@@ -24,7 +24,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from task_spec.schemas.build import ContractField, HarnessValue, HiddenPlan, TaskContract
+from task_spec.schemas.build import (
+    ContractField,
+    Endpoint,
+    HarnessValue,
+    HiddenPlan,
+    TaskContract,
+)
 from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
@@ -575,6 +581,18 @@ def _api_key(method: str, path: str) -> str:
 def mentioned_apis(texts: Iterable[str]) -> list[str]:
     """글에 나온 'METHOD /path' (경로 변수는 {} 로) — 예: 'PATCH /deliveries/{}/status'."""
     return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in _API.findall(t)))
+
+
+def existing_endpoints(contract: TaskContract, spec: SpecView) -> list[Endpoint]:
+    """이미 있는 API (시작 코드가 동작하게 만든다) = 계약이 `existing` 으로 표시한 것 + 명세 공개 글에 `METHOD /path` 로 나온 계약 API.
+    시작 코드 생성 입력(generate.existing_apis)과 시작 코드 정적 검사(static_check._starter_new_api_tests)가 같은 판정을 쓴다."""
+    named = set(mentioned_apis(spec.public_texts))
+    out: list[Endpoint] = []
+    for e in contract.endpoints:
+        key = mentioned_apis([f"{e.method} {e.path}"]) if e.method else []
+        if e.existing or (key and key[0] in named):
+            out.append(e)
+    return out
 
 
 def _contract_api_rx(contract: TaskContract) -> list[tuple[str, re.Pattern[str]]]:

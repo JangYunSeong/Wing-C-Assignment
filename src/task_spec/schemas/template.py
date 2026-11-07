@@ -267,6 +267,14 @@ class TemplateManifest(Schema):
     # 숨은 테스트가 계약 시드의 DB 행을 바꾸는 과제인가 — 아니면(cli·file·ui) 시드·행 배정 대신 입력 환경(fixtures)과 케이스 setup
     seed_rows: bool = True
     init_scripts: InitScripts | None = None
+    # 시작 코드의 기존 기능 테스트가 HTTP API 를 부르는 곳 (정규식, 그룹 method, 매치 끝 = 경로 인자 시작) — 새 API 를 부르면
+    # 새 기능을 구현한 것 (static_check._starter_new_api_tests). 2026-11-07 알파 4회차: 배송 감사 시작 코드가 감사 기록 조회 API 와 그 테스트까지 구현.
+    starter_test_calls: list[str] = Field(default_factory=list)
+
+    @field_validator("starter_test_calls")
+    @classmethod
+    def _starter_rx(cls, v: list[str]) -> list[str]:
+        return _compiles(v)
 
     @model_validator(mode="after")
     def _unique(self) -> TemplateManifest:

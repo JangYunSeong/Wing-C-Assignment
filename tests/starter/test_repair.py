@@ -263,8 +263,8 @@ def test_naive_passing_a_case_is_regenerated_before_the_hidden_test() -> None:
     assert _keys(_assign(report, **{"gen_naive__naive-all#compile": 1})) == ["gen_naive:naive-all"]
 
 
-def test_starter_that_already_passes_every_hidden_case_is_regenerated() -> None:
-    """2026-11-07 알파 테스트 (새 공고): 시작 코드가 새 기능까지 구현해 시작 코드 그대로 숨은 케이스를 통과 — 과제가 이미 풀림."""
+def test_starter_that_already_passes_a_hidden_case_is_regenerated() -> None:
+    """2026-11-07 알파 테스트: 시작 코드가 새 기능까지 구현해 시작 코드 그대로 숨은 케이스를 통과 — 2회차는 모두, 4회차(배송 감사)는 hc1 만."""
     refs = (_run("naive-all", "ref_naive", *GOOD_NAIVE), _run("d1", "ref_accepted", *GOOD_ACC))
     solved = _run("starter+hidden", "starter_hidden", *GOOD_ACC)
     plan = _assign(_report(solved, *refs))
@@ -278,17 +278,34 @@ def test_starter_that_already_passes_every_hidden_case_is_regenerated() -> None:
         _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
     )
     assert _assign(_report(bare, *refs)).passed
-    # 일부만 통과하면 막지 않는다 (부정 단언만 있는 케이스는 빈 구현으로도 통과할 수 있음)
+    # 하나만 통과해도 시작 코드를 다시 만든다 (2026-11-07 배송 감사 4회차 — '모두 통과' 기준이 놓침)
     partly = _run(
         "starter+hidden",
         "starter_hidden",
         _t("hidden", "hc1"),
         _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
     )
-    assert _assign(_report(partly, *refs)).passed
+    plan = _assign(_report(partly, *refs))
+    assert _keys(plan) == ["gen_starter"] and "숨은 케이스 hc1 통과" in plan.actions[0].reason
+    # 이미 다시 만든 시작 코드가 또 통과하면 막지 않고 표시만 — 나머지 게이트는 그대로 본다
+    again = _assign(_report(partly, *refs), gen_starter=1)
+    assert again.passed and any("다시 만든 뒤에도" in f and "hc1" in f for f in again.flags)
     # 숨은 테스트가 컴파일되지 않으면 여기서 보지 않는다 (참조 구현 쪽에서 배정)
     broken = _run("starter+hidden", "starter_hidden", setup="compile_error")
     assert _assign(_report(broken, *refs)).passed
+
+
+def test_compile_repair_asks_to_fix_the_same_kind_in_every_file() -> None:
+    """2026-11-07 알파 4회차: 수리마다 지적된 파일만 고쳐 다음 빌드에서 다른 파일의 같은 종류 오류가 이어서 드러남."""
+    err = {
+        "path": f"{CASES}/Hc1Test.java",
+        "line": 41,
+        "message": "unreported exception IOException",
+    }
+    naive = _run("naive-all", "ref_naive", setup="compile_error", compile_errors=[err])
+    plan = _assign(_report(naive, _run("d1", "ref_accepted", *GOOD_ACC)))
+    hidden = next(a for a in plan.actions if a.generator == "gen_hidden")
+    assert hidden.compile and "모든 파일" in hidden.note and "IOException" in hidden.note
 
 
 def test_gate3_prime_kept_requirement_must_pass() -> None:
