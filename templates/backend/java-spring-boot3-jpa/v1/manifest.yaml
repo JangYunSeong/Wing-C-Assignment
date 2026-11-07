@@ -190,7 +190,7 @@ harness_params:
     required: false
   - name: request_timeout_s
     kind: int
-    description: 채점 클라이언트의 요청 하나 시간 한도 (기본 30)
+    description: 채점 클라이언트의 요청 하나 시간 한도 (기본 = max(30, connection_timeout_ms × 2 / 1000 + 5))
     minimum: 1
     maximum: 120
     required: false
