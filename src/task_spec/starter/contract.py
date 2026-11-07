@@ -495,6 +495,20 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
     return problems
 
 
+def _foreign_keys(contract: TaskContract) -> list[str]:
+    """foreign_keys 의 필드·대상 엔티티가 계약에 있다."""
+    names = {m.name for m in contract.entities}
+    out: list[str] = []
+    for m in contract.entities:
+        fields = {f.name for f in m.fields}
+        for fk_field, target in m.fk_pairs():
+            if fk_field not in fields:
+                out.append(f"외래 키 {m.name}.{fk_field} → {target}: {m.name} 에 없는 필드")
+            if target not in names:
+                out.append(f"외래 키 {m.name}.{fk_field} → {target}: 계약에 없는 엔티티")
+    return out
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -513,4 +527,5 @@ def check_contract(
     problems += _reasons(plan, manifest)
     problems += seed_problems(contract)
     problems += case_rows_problems(contract, plan, manifest)
+    problems += _foreign_keys(contract)
     return ContractCheck(problems=problems, spec_gaps=gaps)

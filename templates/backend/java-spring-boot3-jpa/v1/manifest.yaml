@@ -33,6 +33,10 @@ naming:
     declare_patterns:
       - '\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?[`"]?(\w+)'
       - '@Table\s*\([^)]*\bname\s*=\s*"(\w+)"'
+    # 외래 키 선언 — 계약 엔티티의 foreign_keys 에 없으면 시작 코드 재요청 (없는 대상의 요청도 기록하는 테이블에 걸면 기록이 거부됨)
+    fk_patterns:
+      - '\bforeign\s+key\s*\(\s*[`"]?(\w+)'
+      - '@(ManyToOne|OneToOne)\b'
 
 # 오버레이 kind 별로 쓸 수 있는 경로 (프로젝트 기준 상대 경로, glob). ref = ref_naive·ref_accepted.
 fill_slots:

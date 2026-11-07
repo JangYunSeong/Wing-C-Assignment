@@ -194,7 +194,7 @@ def test_hidden_input_has_plan_and_harness_but_no_code() -> None:
     assert "Burst.fire" in text  # 하네스 API 문서
     # 시드 id 범위는 코드가 나눠 준다 (seed_rows) — 시작 코드를 보지 않고도 쓸 행을 안다
     assert (
-        "데이터: Order id 105~200 (96행, 처음 status=READY, 버스트 — 요청마다 다른 id) — 이 범위만 쓴다 (시나리오에 적힌 id 보다 우선)"
+        "데이터: Order id 105~200 (96행, 처음 status=READY, 버스트 — Burst.rounds(동시 요청 수, 버스트 수, …) 로 차례로, 요청마다 다른 id) — 이 범위만 쓴다 (시나리오에 적힌 id 보다 우선)"
         in text
     )
     assert "조절값 파일(src/test/resources/grader-params.properties)은 쓰지 않는다" in text

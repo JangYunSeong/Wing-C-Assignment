@@ -85,7 +85,11 @@ def contract_markdown(
         ]
         if m.relations:
             out += ["", "관계: " + " · ".join(m.relations)]
+        if m.foreign_keys:
+            out += ["", "외래 키: " + " · ".join(f"`{a}` → `{b}`" for a, b in m.fk_pairs())]
         out.append("")
+    if tables is not None:
+        out += ["외래 키는 위 엔티티에 적힌 것만 둔다 (적힌 것이 없으면 두지 않는다).", ""]
     if contract.seed:
         out += ["### 시드 데이터", ""]
         out += [seed_markdown(s, names.get(s.entity_id, s.entity_id)) for s in contract.seed]

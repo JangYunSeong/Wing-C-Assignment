@@ -107,10 +107,12 @@ class TableNaming(Schema):
     unquoted_case: IdentifierCase | None = None  # 따옴표 없는 이름을 DB 가 접는 방향 — 모르면 비움
     # 시작 코드에서 테이블 선언을 찾는 정규식 (그룹 1 = 이름, 대소문자 무시) — 예: CREATE TABLE, @Table(name=…)
     declare_patterns: list[str] = Field(default_factory=list)
+    # 시작 코드에서 외래 키 선언을 찾는 정규식 (그룹 1 = 컬럼 이름, 또는 관계 애너테이션 이름) — 계약 foreign_keys 밖이면 재요청
+    fk_patterns: list[str] = Field(default_factory=list)
     # 규칙으로 나온 이름이 이 SQL 예약어면 복수형으로 (order → orders — Spring 에서 흔한 @Table(name="orders") 관례). 대소문자 무시
     reserved: list[str] = Field(default_factory=list)
 
-    @field_validator("declare_patterns")
+    @field_validator("declare_patterns", "fk_patterns")
     @classmethod
     def _rx(cls, v: list[str]) -> list[str]:
         return _compiles(v)

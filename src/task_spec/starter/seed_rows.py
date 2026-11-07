@@ -150,6 +150,8 @@ def allocate_rows(
     short: set[str] = set()
     for c in plan.cases:
         for d in c.data:
+            if d.rows == 0:  # 바꿀 행이 없음 — fit_seed 가 빼지만 직접 부를 때도 배정하지 않는다
+                continue
             name = names.get(d.entity_id, d.entity_id)
             seed = seeds.get(d.entity_id)
             if seed is None or seed.rows == 0:
@@ -235,6 +237,11 @@ def fit_seed(
         for d in c.data:
             name = names.get(d.entity_id, d.entity_id)
             seed = seeds.get(d.entity_id)
+            if d.rows == 0:
+                notes.append(
+                    f"숨은 케이스 {c.case_id}: {name} data 의 rows 0 을 뺌 (바꿀 시드 행이 없음)"
+                )
+                continue
             if seed is not None and seed.rows == 0:
                 notes.append(
                     f"숨은 케이스 {c.case_id}: 처음에 비어 있는 {name} 의 data 를 뺌 (요청으로 생기는 기록은 바꿀 시드 행이 아님)"

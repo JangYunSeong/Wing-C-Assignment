@@ -242,3 +242,15 @@ def test_fit_seed_leaves_good_answers_and_unseeded_entities_alone() -> None:
     assert not notes and _has(
         allocate_rows(fitted, fplan).problems, "OrderHistory 의 시드 행이 없음"
     )
+
+
+def test_zero_row_data_is_dropped_not_rejected() -> None:
+    """2026-11-07 v6 스모크: LLM 이 빈 기록 엔티티를 data rows 0 으로 적어 응답 전체가 스키마에서 거부됐다 → 받고 코드가 뺀다."""
+    java = load_template(JAVA).manifest
+    contract = _with_seed(TWO_GROUPS, {"entity_id": "m2", "rows": 0})
+    plan = _cases(("hc1", [_rows(96, burst=True, status="READY"), _rows(0, entity="m2")]))
+    assert not allocate_rows(contract, plan).problems
+    fitted, fplan, notes = fit_seed(contract, plan, java)
+    assert _has(notes, "hc1", "rows 0 을 뺌") and [d.entity_id for d in fplan.cases[0].data] == [
+        "m1"
+    ]
