@@ -188,6 +188,9 @@ class HiddenRules(Schema):
     reason_patterns: list[str] = Field(default_factory=list)
     # 케이스 id(HiddenPlan.cases[].case_id)가 케이스 파일에 나오는 모양 — 기본은 낱말 hc1·hc2…
     case_id_pattern: str = r"\bhc\d{1,2}\b"
+    # 단언의 사유 표시에서 (사유 코드, 문구)를 뽑는 정규식 (그룹 1·2). 한 케이스 파일에 같은 쌍이 둘 이상이면 사유가 잘못 붙었을 수 있다
+    # (2026-11-07 루프: 'FAILURE 기록 있음' 단언에 그 아래 'SUCCESS 없음' 단언과 같은 사유·문구가 붙어 흔한 구현이 의도한 사유로 실패한 것처럼 보였다)
+    reason_labels: list[str] = Field(default_factory=list)
     # 케이스의 문자열 상수 중 SQL 을 가리키는 것에서 테이블 이름을 뽑는 정규식 (그룹 1, 대소문자 무시) — 계약 테이블만 써야 함.
     # 2026-11-07 생성 스모크: 오류 주입 정규식이 테이블을 경로에서 짐작(`deliveries`, 실제 `delivery`)해 주입이 안 걸림
     table_refs: list[str] = Field(default_factory=list)
@@ -196,7 +199,9 @@ class HiddenRules(Schema):
     # 경로 인자를 `{}` 자리로 정규화해 공개 계약의 API 와 대조한다 (2026-11-07 스모크: 계약에 없는 GET 을 불러 항상 404)
     http_calls: list[str] = Field(default_factory=list)
 
-    @field_validator("forbidden_imports", "reason_patterns", "http_calls", "table_refs")
+    @field_validator(
+        "forbidden_imports", "reason_patterns", "http_calls", "table_refs", "reason_labels"
+    )
     @classmethod
     def _rx(cls, v: list[str]) -> list[str]:
         return _compiles(v)

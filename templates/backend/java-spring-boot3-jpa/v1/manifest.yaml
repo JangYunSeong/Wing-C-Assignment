@@ -89,6 +89,9 @@ hidden_rules:
     - '^\s*import\s+(?:static\s+)?com\.example\.service\.(?!grading\b)'
   reason_patterns:
     - 'Reasons\.(?:as|tag)\(\s*"([a-z0-9_]+)"'
+  # 단언 사유 표시 (코드, 문구) — 한 케이스 파일에 같은 쌍이 둘이면 사유가 잘못 붙었을 수 있어 다시 쓰게 한다
+  reason_labels:
+    - 'Reasons\.as\(\s*"([a-z0-9_]+)"\s*,\s*"((?:[^"\\]|\\.)*)"'
   # 오류 주입 정규식(failStatements·failCommitAfter 에 넣는 Pattern.compile 문자열)이 가리키는 테이블 — 계약 테이블만.
   # 다른 문자열(assert 메시지 "update failed" 등)은 보지 않는다.
   string_literal: 'Pattern\.compile\(\s*"((?:[^"\\\n]|\\.)*)"'

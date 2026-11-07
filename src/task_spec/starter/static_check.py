@@ -12,7 +12,8 @@
 4. 비밀 값 · 외부 네트워크 주소 · 실존 회사·제품 이름(원 사례 고유어).
 5. 숨은 테스트: 지원자 구현 내부를 import (게이트 ⑥ 사전 확인), 실패 사유 코드가 템플릿 목록 밖, 케이스 id 가 HiddenPlan 과 1:1 이 아님,
    조절값 파일을 손으로 씀(코드가 HiddenPlan 에서 쓴다 — `render.render_params`).
-   공개 계약에 없는 API 를 부름 (manifest `hidden_rules.http_calls` 로 찾은 호출의 경로를 `{}` 자리로 정규화해 대조).
+   공개 계약에 없는 API 를 부름 (manifest `hidden_rules.http_calls` 로 찾은 호출의 경로를 `{}` 자리로 정규화해 대조),
+   한 파일에 같은 사유·문구의 단언이 둘 이상은 막지 않고 review_flags (`hidden_rules.reason_labels` — 사유가 잘못 붙었을 수 있음).
 6. 테이블 이름 (manifest `naming.table`, starter/tables.py): 시작 코드가 선언한 테이블이 계약 테이블 밖이면 gen_starter, 숨은 테스트의 오류 주입 정규식이 계약 테이블 밖을 가리키면 gen_hidden.
 """
 
@@ -468,6 +469,24 @@ def _hidden_cases(
     return [StaticProblem("gen_hidden", msg) for msg in out]
 
 
+def _duplicate_labels(o: Overlay, t: Template) -> list[str]:
+    """같은 사유·문구의 단언이 한 케이스 파일에 둘 이상 — 사유가 잘못 붙었을 수 있어 승인자에게 표시 (막지 않음).
+    서로 다른 요청을 같은 문구로 확인하는 것은 정상일 수 있다 (2026-11-07: 재요청 문제로 두었더니 생성 자체가 실패)."""
+    rules = t.manifest.hidden_rules
+    flags: list[str] = []
+    for f in o.files:
+        labels: Counter[tuple[str, str]] = Counter()
+        for pat in rules.reason_labels:
+            labels.update((m.group(1), m.group(2)) for m in re.finditer(pat, f.content))
+        dup = sorted(f'{code} "{msg}"' for (code, msg), n in labels.items() if n > 1)
+        if dup:
+            flags.append(
+                f"숨은 테스트 {f.path} 에 같은 사유·문구의 단언이 둘 이상: {'; '.join(dup)} — 사유가 단언과 맞는지 확인 "
+                "(흔한 구현이 '의도한 사유'로 실패한 것처럼 보일 수 있음)"
+            )
+    return flags
+
+
 def static_check(
     overlays: Sequence[Overlay],
     *,
@@ -514,6 +533,7 @@ def static_check(
             res.review_flags += flags
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract)
+            res.review_flags += _duplicate_labels(o, template)
 
     if readme is not None:
         # README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제 (재생성으로 못 고침)

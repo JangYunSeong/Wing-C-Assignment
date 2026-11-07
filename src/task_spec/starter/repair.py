@@ -50,6 +50,9 @@ class RepairAction:
 class RepairPlan:
     actions: list[RepairAction] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)  # 배정 못 한 실패 → failed + review_flags
+    flags: list[str] = field(
+        default_factory=list
+    )  # 막지 않는 표시 (승인자에게) — 예: 같은 사유·문구의 단언
 
     @property
     def passed(self) -> bool:
@@ -350,6 +353,19 @@ def _gate4(
                         f"이 허용 설계 구현이 숨은 요구 {c.trap_id} 의 확인({c.case_id}, 통과 조건: {c.expect})에서 실패했다: "
                         f"{_short(res.message)} — 설계 조건과 스택 조건을 지켜 다시 쓴다.",
                     )
+                )
+            elif any(
+                (n_res := n.case(c.case_id)) is not None
+                and n_res.result == "ASSERT"
+                and _signature(n_res.message) == _signature(res.message)
+                for n in naive
+            ):
+                # 흔한 구현과 같은 단언·같은 메시지로 실패 — "허용 구현도 같은 함정에 빠짐"과 "테스트·계약이 둘 다를 막음"을 가를 수 없다.
+                # 2026-11-07 루프: 계약에 상태 전이 규칙이 없어 숨은 테스트가 무효한 전이를 골랐고, 사유 표시까지 잘못 붙어 흔한 구현이
+                # '의도한 사유'로 실패한 것처럼 보였다 → 허용 구현 탓의 근거로 쓰지 않는다.
+                unresolved.append(
+                    f"허용 설계 {r.target} 가 다시 만든 뒤에도 {c.case_id} 에서 흔한 구현과 같은 단언·같은 메시지로 실패: {_short(res.message)} "
+                    "— 숨은 테스트·계약 의심 (사유 표시가 단언과 맞는지, 계약에 결과를 정하는 규칙이 있는지 사람 확인)"
                 )
             elif any(
                 (n_res := n.case(c.case_id)) is not None
