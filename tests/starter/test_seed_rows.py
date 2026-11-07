@@ -173,6 +173,7 @@ def test_seed_markdown() -> None:
     assert (
         line
         == "- `Order` 200행 (id 1~200) — id 1~150: `status`=READY · id 151~200: `status`=SHIPPING"
+        " — 테스트에서 바꿔도 되는 행은 id 1~10"  # 채점 테스트가 큰 id 를 쓴다 (2026-11-07 v2 스모크: 시작 코드 테스트가 id 22)
     )
     blank = _with_seed(
         _seed(5, (1, 5, {})), {"entity_id": "m2", "rows": 0, "rules": ["요청마다 쌓임"]}
