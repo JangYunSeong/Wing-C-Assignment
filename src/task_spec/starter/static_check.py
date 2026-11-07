@@ -13,6 +13,7 @@
 5. 숨은 테스트: 지원자 구현 내부를 import (게이트 ⑥ 사전 확인), 실패 사유 코드가 템플릿 목록 밖, 케이스 id 가 HiddenPlan 과 1:1 이 아님,
    조절값 파일을 손으로 씀(코드가 HiddenPlan 에서 쓴다 — `render.render_params`).
    공개 계약에 없는 API 를 부름 (manifest `hidden_rules.http_calls` 로 찾은 호출의 경로를 `{}` 자리로 정규화해 대조).
+6. 테이블 이름 (manifest `naming.table`, starter/tables.py): 시작 코드가 선언한 테이블이 계약 테이블 밖이면 gen_starter, 숨은 테스트의 오류 주입 정규식이 계약 테이블 밖을 가리키면 gen_hidden.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from task_spec.schemas.build import FileKind
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, hidden_terms
 from task_spec.starter.render import README, render_params
+from task_spec.starter.tables import contract_tables, declared_tables, referenced_tables, same_table
 from task_spec.starter.templates import Template, glob_match, slot_allows
 
 KIND_SLOT = {
@@ -367,6 +369,53 @@ def _unknown_calls(
     return out
 
 
+def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
+    """시작 코드가 선언한 테이블(CREATE TABLE·@Table 등)은 계약이 정한 이름이어야 한다 — 숨은 테스트가 그 이름으로 오류를 주입한다."""
+    naming = t.manifest.naming.table
+    if contract is None or naming is None or not naming.declare_patterns:
+        return []
+    expected = contract_tables(contract, naming)
+    if not expected:
+        return []
+    names = {m.entity_id: m.name for m in contract.entities}
+    stray = [
+        d
+        for d in declared_tables(o.files, naming.declare_patterns)
+        if not any(same_table(d, e, naming) for e in expected.values())
+    ]
+    if not stray:
+        return []
+    want = ", ".join(f"{names[i]} → {n}" for i, n in expected.items())
+    return [
+        StaticProblem(
+            "gen_starter",
+            f"시작 코드의 테이블 {', '.join(stray)} 이 계약 테이블 밖 — 계약이 정한 이름만 쓴다 ({want})",
+        )
+    ]
+
+
+def _hidden_tables(
+    files: Iterable[GeneratedFile], t: Template, contract: TaskContract
+) -> list[str]:
+    naming, rules = t.manifest.naming.table, t.manifest.hidden_rules
+    if naming is None or not rules.table_refs:
+        return []
+    expected = list(contract_tables(contract, naming).values())
+    out: list[str] = []
+    for f in files:
+        bad = [
+            r
+            for r in referenced_tables(f.content, rules.table_refs, rules.string_literal)
+            if not any(same_table(r, e, naming) for e in expected)
+        ]
+        if bad:
+            out.append(
+                f"숨은 테스트 {f.path} 의 오류 주입 정규식이 계약에 없는 테이블을 가리킴: {', '.join(bad)} "
+                f"— 계약의 테이블 이름({', '.join(expected) or '없음'})을 그대로 쓴다 (경로에서 짐작하지 않는다)"
+            )
+    return out
+
+
 def _hidden_cases(
     o: Overlay, t: Template, plan: HiddenPlan, contract: TaskContract | None = None
 ) -> list[StaticProblem]:
@@ -399,6 +448,8 @@ def _hidden_cases(
         out += _unknown_calls(
             [f for f in o.files if f.path != params_path], contract, rules.http_calls
         )
+    if contract is not None:
+        out += _hidden_tables([f for f in o.files if f.path != params_path], t, contract)
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
         out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
@@ -459,6 +510,7 @@ def static_check(
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
+            res.problems += _starter_tables(o, template, contract)
             res.review_flags += flags
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract)

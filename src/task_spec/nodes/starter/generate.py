@@ -162,7 +162,7 @@ def starter_input(
         scenario=public_scenario(task) or NONE,
         requirements=_lines([f"{r.req_id} {r.text}" for r in task.requirements]),
         acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
-        contract=contract_markdown(contract),
+        contract=contract_markdown(contract, tables=template.manifest.naming.table),
         revision_note=note or NONE,
     )
 
@@ -180,7 +180,7 @@ def hidden_input(
         stack=stack_text(m),
         harness_api=harness.read_text("utf-8") if harness.is_file() else NONE,
         slots=slots_text(m, "hidden"),
-        contract=contract_markdown(contract),
+        contract=contract_markdown(contract, tables=template.manifest.naming.table),
         hidden_plan=plan_text(plan, contract),
         traps=_lines([f"{t.trap_id} {t.description}" for t in task.traps]),
         acceptance_hidden=_lines(
@@ -204,7 +204,7 @@ def _ref_input(
     return GenRefInput(
         stack=stack_text(m),
         slots=slots_text(m, "ref"),
-        contract=contract_markdown(contract),
+        contract=contract_markdown(contract, tables=template.manifest.naming.table),
         starter_files=files_text(starter.files),
         requirements=_lines([f"{r.req_id} {r.text}" for r in task.requirements]),
         acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
