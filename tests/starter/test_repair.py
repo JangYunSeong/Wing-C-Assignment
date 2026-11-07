@@ -275,8 +275,12 @@ def test_gate4_accepted_designs() -> None:
     assert _keys(plan) == ["gen_accepted:d1"] and "설계 조건과 스택 조건" in plan.actions[0].note
     # 허용 구현이 하나뿐: 먼저 구현 → 다시 만든 뒤에도 실패면 숨은 테스트 → 둘 다 다시 만들었으면 사람 확인
     assert _keys(_assign(_report(naive, d1))) == ["gen_accepted:d1"]
-    assert _keys(_assign(_report(naive, d1), gen_accepted__d1=1)) == ["gen_hidden"]
-    plan = _assign(_report(naive, d1), gen_accepted__d1=1, gen_hidden=1)
+    # 다시 만든 뒤에도 실패: 흔한 구현이 그 케이스를 의도한 사유로 잡으면 테스트는 제 몫 → 설계를 못 따름 (사람 확인, 2026-11-07 루프)
+    plan = _assign(_report(naive, d1), gen_accepted__d1=1)
+    assert not plan.actions and any("설계를 못 따름" in u for u in plan.unresolved)
+    # 그런 근거가 없으면(흔한 구현 결과 없음) 허용 구현이 하나뿐일 때만 숨은 테스트를 의심
+    assert _keys(_assign(_report(d1), gen_accepted__d1=1)) == ["gen_hidden"]
+    plan = _assign(_report(d1), gen_accepted__d1=1, gen_hidden=1)
     assert not plan.actions and any("사람 확인" in u for u in plan.unresolved)
     # 허용 구현이 여럿인데 다시 만든 하나가 또 혼자 실패 → 설계 조건 부족
     plan = _assign(_report(naive, d1, _run("d2", "ref_accepted", *GOOD_ACC)), gen_accepted__d1=1)
@@ -408,16 +412,15 @@ async def test_starter_repair_regenerates_refs_too() -> None:
     ]
 
 
-async def test_single_accepted_design_then_hidden_then_human() -> None:
+async def test_single_accepted_design_regenerated_then_human() -> None:
+    """허용 구현을 다시 만들어도 실패하고, 흔한 구현은 그 케이스를 의도한 사유로 실패 → 숨은 테스트를 건드리지 않고 사람 확인."""
     llm, backend = _llm()
     out = await _build(ScriptedVerifier(_one_case(NAIVE_OK, D1_FAIL)), llm)
-    assert out.status == "failed" and out.rounds == 2
-    assert [(r.target, r.result) for r in out.repairs] == [
-        ("gen_accepted", "regenerated"),
-        ("gen_hidden", "regenerated"),
-    ]
-    assert any("사람 확인" in f for f in out.review_flags)
-    assert backend.calls.count("gen_accepted") == 2 and backend.calls.count("gen_hidden") == 2
+    assert out.status == "failed" and out.rounds == 1
+    assert [(r.target, r.result) for r in out.repairs] == [("gen_accepted", "regenerated")]
+    assert any("설계를 못 따름" in f for f in out.review_flags)
+    assert backend.calls.count("gen_accepted") == 2 and backend.calls.count("gen_hidden") == 1
+    assert len(out.snapshots) == 2 and out.snapshots[0]["d1"] is not out.snapshots[1]["d1"]
 
 
 async def test_budget_exhausted_fails_with_flag() -> None:
@@ -448,3 +451,37 @@ async def test_two_designs_and_static_cross_check() -> None:
     )
     out = await _build(verifier, llm, designs=(D1, D2))
     assert out.status == "review" and verifier.seen == [["naive-all", "d1", "d2"]]
+
+
+NOT_NULL = "DataIntegrityViolationException: not-null property references a null value : AuditLog.beforeStatus (id=999)"
+
+
+def _breaks(target: str, kind: str, msg: str) -> TargetRun:
+    tests = [_t("existing", "OrderControllerTest", "HARNESS_ERR", msg=msg)]
+    tests += list(GOOD_NAIVE if kind == "ref_naive" else GOOD_ACC)
+    return TargetRun.model_validate({"target": target, "kind": kind, "tests": tests})
+
+
+def test_all_refs_breaking_the_same_test_the_same_way_is_contract_ambiguity() -> None:
+    """2026-11-07 수리 루프: 계약이 이전 상태를 필수로 둬, 두 구현 모두 없는 배송 건 요청을 기록하다 같은 not-null 오류."""
+    plan = _assign(
+        _report(
+            _breaks("naive-all", "ref_naive", NOT_NULL),
+            _breaks("d1", "ref_accepted", NOT_NULL.replace("999", "1000")),
+        )
+    )
+    assert not plan.actions  # 숫자만 다르면 같은 오류 — 다시 만들지 않는다
+    assert len(plan.unresolved) == 1 and "계약 모호 의심" in plan.unresolved[0]
+    assert "OrderControllerTest" in plan.unresolved[0] and "beforeStatus" in plan.unresolved[0]
+
+
+def test_different_errors_or_one_ref_are_regenerated_as_before() -> None:
+    other = "AssertionError: Status expected:<404> but was:<500>"
+    plan = _assign(
+        _report(_breaks("naive-all", "ref_naive", NOT_NULL), _breaks("d1", "ref_accepted", other))
+    )
+    assert _keys(plan) == ["gen_accepted:d1", "gen_naive:naive-all"] and not plan.unresolved
+    plan = _assign(
+        _report(_breaks("naive-all", "ref_naive", NOT_NULL), _run("d1", "ref_accepted", *GOOD_ACC))
+    )
+    assert _keys(plan) == ["gen_naive:naive-all"] and not plan.unresolved

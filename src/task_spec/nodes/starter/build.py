@@ -56,6 +56,9 @@ class BuildOutcome:
     regen_counts: dict[str, int] = field(default_factory=dict)
     provenance: list[Provenance] = field(default_factory=list)
     rounds: int = 0  # 다시 만든 회차 수
+    snapshots: list[dict[str, Overlay]] = field(
+        default_factory=list
+    )  # 검증한 회차마다 그때의 오버레이 (평가·디버깅용)
 
     @property
     def cost_usd(self) -> float:
@@ -140,6 +143,7 @@ async def build_and_repair(
                 [o for k, o in out.overlays.items() if k not in (STARTER, HIDDEN)],
             )
             out.reports.append(report)
+            out.snapshots.append(dict(out.overlays))
             plan = assign(report, b.plan, out.overlays, missed, out.regen_counts)
         logger.info(
             "build round=%d actions=%d unresolved=%d",
