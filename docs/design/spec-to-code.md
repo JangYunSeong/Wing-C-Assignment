@@ -108,6 +108,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - **자료의 운영 값은 모두 HiddenPlan 에**: 선택 조절값이어도 명세 자료에서 표기 패턴·표 열로 뽑히면 넣는다 — 빼면 하네스 기본값이 대신 들어가 실패 사유가 달라진다. 자료에 없는 선택 값을 넣으면 재요청 (지어낸 값).
 - 표기 패턴만으로 못 읽는 표(요청 지표처럼 열 이름 + 값 줄)는 manifest `spec_columns`(열 이름 정규식)로 그 열의 숫자를 읽는다.
 - **시드와 케이스 행** (§10-16, `starter/seed_rows.py`): 시드 groups 가 id 1~rows 를 빈틈·겹침 없이 덮고, 처음 값·케이스 `initial` 의 필드가 엔티티에 있으며 값 목록(`enum(A|B)` 형식 또는 제약 문장의 따옴표 낱말 2개 이상)이 있으면 그 안. 버스트 케이스 행 수 ≥ manifest `burst_rows` 조절값의 곱(Java: `concurrency × bursts`). 케이스 순서대로 처음 값이 맞는 그룹의 **큰 id 부터** 이어진 범위를 나누되 작은 id 10행(`RESERVED_ROWS`)은 지원자·공개 테스트 몫 — 나눌 수 없으면 재요청. 나눈 범위는 `gen_hidden` 입력의 케이스 아래 `데이터: <엔티티> id a~b (…)` 줄로 간다.
+- **테이블 이름은 템플릿 규칙으로** (2026-11-07, `starter/tables.py`, manifest `naming.table`): 숨은 테스트는 시작 코드를 보지 않으므로 오류 주입 정규식의 테이블을 계약에서 안다 — 생성 스모크에서 경로로 짐작(`deliveries`, 실제 `delivery`)해 주입이 안 걸렸다. 규칙은 스택마다 다르다 (`DeliveryAuditLog` 기준, 공식 문서·소스로 확인): Spring Boot JPA `delivery_audit_log` · Rails `delivery_audit_logs` · Django `<앱>_deliveryauditlog` · Hibernate 기본(Spring 없이, 이름 그대로·따옴표 없음 → PostgreSQL `deliveryauditlog`, 표준대로 대문자로 접는 Oracle 등 `DELIVERYAUDITLOG`) · Prisma(`@@map` 없음, PostgreSQL 기준 따옴표로 대소문자 유지) `"DeliveryAuditLog"` · 프론트엔드·파일형은 없음. 템플릿이 정한 SQL 예약어로 나오면 복수형 (`order` → `orders`). 계약(README)에 "`Delivery` — 테이블 `delivery`" 로 보인다.
 
 ## 4. 생성기
 
@@ -191,6 +192,8 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | 템플릿 기술 밖 언어·새 의존성 | 모든 산출물 | 그 생성기 |
 | 숨은 테스트가 내부 클래스·메서드를 import (게이트 ⑥ 사전 확인) | `hidden` | `gen_hidden` |
 | 숨은 테스트가 공개 계약에 없는 API 를 부름 — manifest `hidden_rules.http_calls` 로 찾은 호출의 경로 식을 `/orders/{}/status` 꼴로 정규화해 계약 method·path 와 대조 (첫 조각이 문자열이 아니면 판단 안 함). 5단계 스모크에서 계약에 없는 `GET /deliveries/{id}` 로 상태를 읽어 늘 404 | `hidden` | `gen_hidden` |
+| 시작 코드가 선언한 테이블(`CREATE TABLE`·`@Table`, manifest `naming.table.declare_patterns`)이 계약 테이블 밖 | `starter` | `gen_starter` |
+| 숨은 테스트의 오류 주입 정규식(Java: `Pattern.compile` 문자열, `hidden_rules.table_refs`)이 계약 테이블 밖을 가리킴 (대소문자는 따옴표 없는 스택이면 무시) | `hidden` | `gen_hidden` |
 | 케이스 목록이 `HiddenPlan.cases` 와 1:1, selector 가 실제 테스트에 있음 | `hidden` | `gen_hidden` |
 
 ## 7. 실패 배정 · 수리 (`repair`) [제안]
@@ -269,7 +272,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 14. **`gen_hidden` 에 `why_naive_breaks` 를 줄지** (§4) — 정확도 / 독립성.
 15. **`kind=public_test` 추가** (§4.3, #52 테이블).
 16. **계약 시드를 숨은 테스트가 쓸 수 있게 정하기** [제안] (5단계 스모크) — 시드 규칙이 모든 행의 처음 값을 정하고(예: "id 1~N 모두 READY"), 행 수가 숨은 테스트가 동시에 바꿀 행 수(`concurrency × bursts`) + 지원자 몫 이상이어야 한다. `gen_hidden` 에 시작 코드의 `data.sql` 을 보여 주는 길은 §2 의 독립성(숨은 테스트는 시작 코드를 보지 않음)을 깨서 택하지 않음.
-    — 1단계 구현 (2026-11-07): `SeedRule`(rows · groups) · `HiddenCase.data` · manifest `burst_rows` · 검사·배정 `starter/seed_rows.py` (§3.3), README·생성기 입력의 시드 줄, `gen_hidden` 입력의 케이스별 id 범위, HARNESS.md 데이터 규칙. 기본값: 처음 값은 id 범위별 groups, 지원자 몫 작은 id 10행, README 에 행 수 공개. 2단계 (2026-11-07): `plan_contract` v3 + 입력 `seed_rules`. v3 스모크에서 LLM 이 버스트 곱·시드 합을 재요청에도 틀려 **행 수는 코드가 맞춘다** (`seed_rows.fit_seed` — 버스트 행 = 곱, 빈 엔티티 data 뺌, 모자란 시드 늘림, 바꾼 것은 `adjustments` 로 승인 화면에) → 2/2 첫 답 통과. 검사 오탐(글의 구체 id ↔ 계약 `{id}`)도 고침. 기록 `prompts/plan_contract/PROMOTIONS.md`. 3단계 (2026-11-07): 그 계약으로 생성 스모크 — 행 부족 실패 0, hc1 에서 흔한 구현은 의도한 사유로 실패·허용 구현 d1 은 통과 (숨은 테스트가 둘을 가른 첫 실행). hc2 는 숨은 테스트가 테이블 이름을 짐작해 틀림(`deliveries` ↔ `delivery`) → 테이블 이름을 템플릿 규칙(언어별)으로 계약에 두는 일이 남음, 고친 뒤 d1 참조 구현의 실패 기록 누락은 6단계 수리 대상. 4단계: CURRENT v3 (사용자 확인 2026-11-07).
+    — 1단계 구현 (2026-11-07): `SeedRule`(rows · groups) · `HiddenCase.data` · manifest `burst_rows` · 검사·배정 `starter/seed_rows.py` (§3.3), README·생성기 입력의 시드 줄, `gen_hidden` 입력의 케이스별 id 범위, HARNESS.md 데이터 규칙. 기본값: 처음 값은 id 범위별 groups, 지원자 몫 작은 id 10행, README 에 행 수 공개. 2단계 (2026-11-07): `plan_contract` v3 + 입력 `seed_rules`. v3 스모크에서 LLM 이 버스트 곱·시드 합을 재요청에도 틀려 **행 수는 코드가 맞춘다** (`seed_rows.fit_seed` — 버스트 행 = 곱, 빈 엔티티 data 뺌, 모자란 시드 늘림, 바꾼 것은 `adjustments` 로 승인 화면에) → 2/2 첫 답 통과. 검사 오탐(글의 구체 id ↔ 계약 `{id}`)도 고침. 기록 `prompts/plan_contract/PROMOTIONS.md`. 3단계 (2026-11-07): 그 계약으로 생성 스모크 — 행 부족 실패 0, hc1 에서 흔한 구현은 의도한 사유로 실패·허용 구현 d1 은 통과 (숨은 테스트가 둘을 가른 첫 실행). hc2 는 숨은 테스트가 테이블 이름을 짐작해 틀림(`deliveries` ↔ `delivery`) → 테이블 이름을 템플릿 규칙(언어별)으로 계약에 두는 일이 남음, 고친 뒤 d1 참조 구현의 실패 기록 누락은 6단계 수리 대상. 4단계: CURRENT v3 (사용자 확인 2026-11-07). 테이블 이름 규칙 반영 뒤 생성 스모크 ($0.11): 숨은 테스트가 계약의 `delivery` 로 오류를 주입해 hc2 가 걸림, hc1 은 다시 흔한 구현 실패(의도한 사유)·d1 통과. 남은 실패는 모두 6단계 수리 대상 — 시작 코드 자체 테스트 불일치(`gen_starter`, 회차마다 다름), d1 참조 구현이 커밋 실패 때 실패 기록 누락(`gen_accepted`), hc2 가 '실패 기록 있음'을 '성공 기록 없음'보다 먼저 확인해 흔한 구현이 의도한 사유(`rollback_left_success`) 대신 `record_missing` 으로 실패(`gen_hidden` — 의도한 실패를 먼저 확인).
 
 ## 11. 구현 순서 (PR 단위) [제안]
 
