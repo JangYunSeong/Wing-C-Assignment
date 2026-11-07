@@ -107,6 +107,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - **명세에 나온 API 는 계약에** (2026-11-07 스모크에서 보탬): 제목·상황·공개 요구·공개 수용 기준에 나온 `METHOD /path`(기존 API 포함)가 계약에 있어야 하고, 공개 테스트·숨은 케이스가 언급하는 API 도 계약에 있어야 한다. 응답 `returns` 는 계약 엔티티를 가리킨다.
 - **자료의 운영 값은 모두 HiddenPlan 에**: 선택 조절값이어도 명세 자료에서 표기 패턴·표 열로 뽑히면 넣는다 — 빼면 하네스 기본값이 대신 들어가 실패 사유가 달라진다. 자료에 없는 선택 값을 넣으면 재요청 (지어낸 값).
 - 표기 패턴만으로 못 읽는 표(요청 지표처럼 열 이름 + 값 줄)는 manifest `spec_columns`(열 이름 정규식)로 그 열의 숫자를 읽는다.
+- **패턴 값이 정답, 근거 인용은 엄격하게** (2026-11-07 알파 테스트): 표기 패턴이 값을 뽑으면 그 값만 정답이다. 서로 다른 값이 여럿이면 manifest `pick`(unique·max·min)으로 고르고, unique 인데 여럿이면 통과시키되 승인자 확인. 패턴과 다른 값은 숫자가 하나뿐인 근거 인용일 때만 받고 표시한다. 근거 인용 경로에서는 백분율·시각을 값 후보에서 빼고 160자 상한, 남은 숫자가 여럿이면 승인자 확인. (분포 "1개: 38% … 4개 이상: 7%" 를 통째로 인용하면 동시 탭 수 1~4 아무것이나 통과했다 — 1 이면 함정이 아예 일어나지 않는다.)
 - **시드와 케이스 행** (§10-16, `starter/seed_rows.py`): 시드 groups 가 id 1~rows 를 빈틈·겹침 없이 덮고, 처음 값·케이스 `initial` 의 필드가 엔티티에 있으며 값 목록(`enum(A|B)` 형식 또는 제약 문장의 따옴표 낱말 2개 이상)이 있으면 그 안. 버스트 케이스 행 수 ≥ manifest `burst_rows` 조절값의 곱(Java: `concurrency × bursts`). 케이스 순서대로 처음 값이 맞는 그룹의 **큰 id 부터** 이어진 범위를 나누되 작은 id 10행(`RESERVED_ROWS`)은 지원자·공개 테스트 몫 — 나눌 수 없으면 재요청. 나눈 범위는 `gen_hidden` 입력의 케이스 아래 `데이터: <엔티티> id a~b (…)` 줄로 간다.
 - **테이블 이름은 템플릿 규칙으로** (2026-11-07, `starter/tables.py`, manifest `naming.table`): 숨은 테스트는 시작 코드를 보지 않으므로 오류 주입 정규식의 테이블을 계약에서 안다 — 생성 스모크에서 경로로 짐작(`deliveries`, 실제 `delivery`)해 주입이 안 걸렸다. 규칙은 스택마다 다르다 (`DeliveryAuditLog` 기준, 공식 문서·소스로 확인): Spring Boot JPA `delivery_audit_log` · Rails `delivery_audit_logs` · Django `<앱>_deliveryauditlog` · Hibernate 기본(Spring 없이, 이름 그대로·따옴표 없음 → PostgreSQL `deliveryauditlog`, 표준대로 대문자로 접는 Oracle 등 `DELIVERYAUDITLOG`) · Prisma(`@@map` 없음, PostgreSQL 기준 따옴표로 대소문자 유지) `"DeliveryAuditLog"` · 프론트엔드·파일형은 없음. 템플릿이 정한 SQL 예약어로 나오면 복수형 (`order` → `orders`). 계약(README)에 "`Delivery` — 테이블 `delivery`" 로 보인다.
 
@@ -195,6 +196,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | 시작 코드가 선언한 테이블(`CREATE TABLE`·`@Table`, manifest `naming.table.declare_patterns`)이 계약 테이블 밖 | `starter` | `gen_starter` |
 | 숨은 테스트의 오류 주입 정규식(Java: `Pattern.compile` 문자열, `hidden_rules.table_refs`)이 계약 테이블 밖을 가리킴 (대소문자는 따옴표 없는 스택이면 무시) | `hidden` | `gen_hidden` |
 | 케이스 목록이 `HiddenPlan.cases` 와 1:1, selector 가 실제 테스트에 있음 | `hidden` | `gen_hidden` |
+| 허용 구현이 하네스 조절값의 설정 키(`harness_params.config_keys`)를 시작 코드와 다른 값으로 바꿈 — 채점 때 운영 값으로 덮어써져 그 설계는 무효 (2026-11-07 알파 테스트: 재료의 허용 설계 '풀 크기 산정'을 뺌). 재요청에도 같으면 다른 허용 설계가 남을 때 그 설계를 빼고 계속 (review_flags) | `ref_accepted` | `gen_accepted` |
 
 ## 7. 실패 배정 · 수리 (`repair`) [제안]
 
@@ -336,7 +338,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - 정리: 계약 스키마가 **HTTP + DB 행** 과제에 맞춰져 있다. [제안] ① 인터페이스 `ui`(페이지·테스트 id·로컬 저장 키), ② cli 응답은 종료 코드 허용, ③ 시드·행 배정은 DB 행을 바꾸는 과제에서만, cli·file·ui 과제는 숨은 테스트가 깔 **입력 환경(fixtures)** 을 계약에 (예: 메타데이터 DB 배치, 서빙 경로 출력), ④ 운영 값 추출은 정규식 패턴 대신 LLM 이 값 + 근거 인용을 내고 코드가 인용이 자료에 있고 값이 그 안에 있는지 확인 (템플릿마다 표현을 맞추는 일을 없앰).
 - 직군별 하네스가 할 일 (manifest 초안 머리말): 프론트엔드 — 같은 출처 브라우저 탭 N 개·오프라인 전환·로컬 DB 검사, 데이터 엔지니어 — 메타데이터 DB 고정물·권한 확대·배포 파일 원자성, DBA — PostgreSQL 쓰기 부하·오래 열린 트랜잭션·복제 슬롯을 만들고 점검 결과 읽기, ML — 서빙 경로 출력을 바꿔 넣고 배포 전 검증이 막는지.
 
-- **반영 (2026-11-07, `plan_contract` v7 — CURRENT 아님)**: ① 인터페이스 `ui` — 계약 `screens`(경로·요소 test id·역할·브라우저 저장소), 화면이 부르는 서버 API 는 `endpoints`, README 에 화면 절.
+- **반영 (2026-11-07, `plan_contract` v7 — 이후 CURRENT 로 승격)**: ① 인터페이스 `ui` — 계약 `screens`(경로·요소 test id·역할·브라우저 저장소), 화면이 부르는 서버 API 는 `endpoints`, README 에 화면 절.
   ② 응답 상태는 엔드포인트마다 — HTTP 100~599, cli·file 종료 코드 0~255. ③ manifest `seed_rows` — 끄면 시드·행 배정 대신 계약 `fixtures`(공개 입력 환경)와 숨은 케이스 `setup`(숨김, 하네스가 환경을 바꾸는 단계).
   ④ 공개 조절값은 `hidden_plan.evidence` 에 자료 문장 그대로 — 코드가 자료에 있고 값이 그 안에 있는지 확인(`evidence_ok`), 템플릿 패턴은 빠른 길로만, LLM 전 사전 검사 폐지(근거가 "없음"인 필수 값이 명세 결함).
 - v7 종이 단계 (`data/eval/build/2026-11-07-paper-gpt41-v7`, $0.34): 네 가지 모두 작동했으나 최종 통과 1/5 — 검사가 너무 엄격했던 탓(covers 가 입력 환경을 가리키면 거부, test id 전체 유일, Java 경로 규칙이 `{robotId}` 거부, covers 키 p*) → 고침, 재실행 전.
