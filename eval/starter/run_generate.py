@@ -235,6 +235,11 @@ async def run_loop(
     res = await build_and_repair(b, designs, verifier=verifier, **kw)
     for key, o in res.overlays.items():
         _write(o, out / "overlays" / key)
+    for n, snap in enumerate(res.snapshots):  # 검증한 회차마다 (다시 만든 산출물만 새로 씀)
+        prev = res.snapshots[n - 1] if n else {}
+        for key, o in snap.items():
+            if prev.get(key) is not o:
+                _write(o, out / f"round-{n}" / key)
     report = {
         "contract": str(src.relative_to(ROOT)),
         "model": a.model,

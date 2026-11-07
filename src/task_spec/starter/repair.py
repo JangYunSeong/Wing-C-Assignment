@@ -7,22 +7,25 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
 1. 시작 코드 (①빌드 · ②기존 테스트) — 실패면 `gen_starter` 만. 시작 코드를 다시 만들면 참조 구현도 다시 (루프가 처리).
 2. 참조 구현 대상마다 준비 — 컴파일 오류는 오류가 난 파일의 주인에게 (숨은 테스트 파일 → `gen_hidden`, 그 밖 → 그 참조 구현),
    기동 실패 → 그 참조 구현, 시간 초과(⑨) → `gen_hidden`.
-3. 참조 구현이 시작 코드에서 통과하던 기존 테스트를 깨뜨림 → 그 참조 구현 (§7 표 ⑤ 는 `gen_starter`(누설)이지만 2026-11-07 스모크에서는
+3. 참조 구현이 둘 이상이고 모두 같은 기존 테스트를 같은 오류로 깸 → 계약 모호 의심 (다시 만들지 않고 사람 확인).
+   참조 구현이 시작 코드에서 통과하던 기존 테스트를 깨뜨림 → 그 참조 구현 (§7 표 ⑤ 는 `gen_starter`(누설)이지만 2026-11-07 스모크에서는
    흔한 구현이 필수 필드를 빠뜨린 결함이었다 — 참조 구현을 먼저 다시 만들고, 그래도 깨면 누설 의심으로 남긴다).
 4. 숨은 케이스 `HARNESS_ERR`(테스트 자체 예외)·결과 없음 → `gen_hidden`.
 5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다. 통과 → `gen_hidden`(약함), 다른 사유·사유 없음 → `gen_hidden`
    (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`). ③' 지킨 요구의 케이스에서 실패 → `gen_hidden`.
 6. ④ 허용 구현: 허용 구현이 둘 이상이고 모두 같은 케이스에서 실패 → `gen_hidden`(너무 엄격). 일부만 실패, 또는 허용 구현이 하나뿐이면
-   그 구현을 먼저 (`gen_accepted`) — 이미 다시 만들었는데 또 실패하면 허용 구현이 하나뿐일 때만 `gen_hidden` 으로 넘기고, 아니면 설계 조건 부족(배정 못 함).
+   그 구현을 먼저 (`gen_accepted`) — 이미 다시 만들었는데 또 실패하면: 흔한 구현이 그 케이스에서 의도한 사유로 실패하면(테스트는 제 몫) 설계를 못 따른 것(사람 확인),
+   아니고 허용 구현이 하나뿐이면 `gen_hidden`, 그 밖은 설계 조건 부족(배정 못 함).
 ⑤ 공개 테스트 누설·⑧ 반복은 이 단계 밖 (공개 테스트 [미정] §4.3, 반복은 §7.1 2단계).
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from task_spec.schemas import HiddenPlan, TargetRun, VerifyReport
+from task_spec.schemas import HiddenPlan, TargetRun, TestResult, VerifyReport
 from task_spec.schemas.build import GeneratorName
 from task_spec.starter.static_check import Overlay
 
@@ -183,9 +186,43 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
     return out
 
 
-def _ref_existing(run: TargetRun, starter: TargetRun) -> list[RepairAction]:
+def _signature(message: str) -> str:
+    """같은 오류인지 — 숫자(id·시각)를 지우고 공백을 줄인 앞부분."""
+    return " ".join(re.sub(r"\d+", "#", message).split())[:200]
+
+
+def _broke_existing(run: TargetRun, starter: TargetRun) -> list[TestResult]:
     passed = {t.name for t in starter.results("existing") if t.result == "PASS"}
-    broke = [t for t in run.results("existing") if t.result != "PASS" and t.name in passed]
+    return [t for t in run.results("existing") if t.result != "PASS" and t.name in passed]
+
+
+def _contract_ambiguity(
+    runs: Sequence[TargetRun], starter: TargetRun
+) -> tuple[list[str], set[str]]:
+    """참조 구현이 둘 이상이고 **모두** 시작 코드에서 통과하던 같은 기존 테스트를 같은 오류로 깨면 계약 모호 의심 (§7).
+
+    2026-11-07 수리 루프: 명세는 "요청마다 기록(… 이전 상태 …)"인데 계약이 이전 상태를 필수로 둬, 흔한 구현·허용 구현 모두
+    없는 배송 건(404) 요청을 기록하다 같은 not-null 오류로 '없음' 테스트를 깼다 — 구현을 다시 만들어도 확실히 고칠 수 없다.
+    다시 만들지 않으므로 구현이 스스로 고칠 기회(그 루프의 d1)는 잃는다 — 비용·시간을 아끼는 쪽을 택함.
+    """
+    if len(runs) < 2:
+        return [], set()
+    per_run = [{t.name: _signature(t.message) for t in _broke_existing(r, starter)} for r in runs]
+    common = set(per_run[0])
+    for broke in per_run[1:]:
+        common &= {name for name, sig in broke.items() if sig == per_run[0].get(name)}
+    flags = [
+        f"계약 모호 의심 — 참조 구현 {len(runs)}개가 모두 기존 테스트 {name} 를 같은 오류로 깸: {_short(next(t.message for t in runs[0].tests if t.name == name and t.group == 'existing').rsplit('Exception: ', 1)[-1])} "
+        "— 계약에서 그 경우(필드 값·기록 여부)를 정해야 한다 (구현을 다시 만들지 않음)"
+        for name in sorted(common)
+    ]
+    return flags, common
+
+
+def _ref_existing(
+    run: TargetRun, starter: TargetRun, skip: set[str] = frozenset()
+) -> list[RepairAction]:  # type: ignore[assignment]
+    broke = [t for t in _broke_existing(run, starter) if t.name not in skip]
     if not broke:
         return []
     lines = "\n".join(f"- {t.name}: {_short(t.message)}" for t in broke)
@@ -273,7 +310,10 @@ def _gate3(run: TargetRun, plan: HiddenPlan, missed: set[str]) -> list[RepairAct
 
 
 def _gate4(
-    runs: Sequence[TargetRun], plan: HiddenPlan, regen_counts: Mapping[str, int]
+    runs: Sequence[TargetRun],
+    plan: HiddenPlan,
+    regen_counts: Mapping[str, int],
+    naive: Sequence[TargetRun] = (),
 ) -> tuple[list[RepairAction], list[str]]:
     actions: list[RepairAction] = []
     unresolved: list[str] = []
@@ -310,6 +350,18 @@ def _gate4(
                         f"이 허용 설계 구현이 숨은 요구 {c.trap_id} 의 확인({c.case_id}, 통과 조건: {c.expect})에서 실패했다: "
                         f"{_short(res.message)} — 설계 조건과 스택 조건을 지켜 다시 쓴다.",
                     )
+                )
+            elif any(
+                (n_res := n.case(c.case_id)) is not None
+                and n_res.result == "ASSERT"
+                and n_res.reason == c.intended_reason
+                for n in naive
+            ):
+                # 숨은 테스트는 흔한 구현을 의도한 사유로 잡는다 = 테스트는 제 몫을 한다 → 허용 구현이 설계를 못 따른 것.
+                # 2026-11-07 수리 루프: 여기서 숨은 테스트를 의심해 다시 만들었더니 맞던 테스트가 컴파일조차 안 됐다.
+                unresolved.append(
+                    f"허용 설계 {r.target} 가 다시 만든 뒤에도 {c.case_id} 실패 [{res.reason or '-'}] — 숨은 테스트는 흔한 구현을 "
+                    f"의도한 사유({c.intended_reason})로 잡으므로 허용 구현이 설계를 못 따름: 설계·스택 조건 보강 (사람 확인)"
                 )
             elif len(runs) == 1 and regen_counts.get("gen_hidden", 0) == 0:
                 # 허용 구현이 하나뿐이라 "모두 실패"로 가를 수 없다 — 구현을 한 번 고쳐도 실패하면 테스트를 의심
@@ -357,15 +409,20 @@ def assign(
         if run.setup != "ok":
             actions += _ref_setup(run, overlays)
             continue
-        actions += _ref_existing(run, starter)
-        actions += _hidden_broken(run, plan)
         ready.append(run)
+    ambiguous, skip = _contract_ambiguity(ready, starter)
+    res.unresolved += ambiguous
+    for run in ready:
+        actions += _ref_existing(run, starter, skip)
+        actions += _hidden_broken(run, plan)
     for run in ready:
         if run.kind == "ref_naive":
             actions += _gate3(run, plan, missed_traps.get(run.target, set()))
     accepted = [r for r in ready if r.kind == "ref_accepted"]
     if accepted:
-        acts, unresolved = _gate4(accepted, plan, counts)
+        acts, unresolved = _gate4(
+            accepted, plan, counts, [r for r in ready if r.kind == "ref_naive"]
+        )
         actions += acts
         res.unresolved += unresolved
     res.actions = _merge(actions)
