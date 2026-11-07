@@ -13,6 +13,7 @@ from task_spec.schemas.build import (
     Entity,
     FileKind,
     FileRef,
+    Fixture,
     GeneratedFile,
     GeneratedFiles,
     GenHiddenInput,
@@ -28,10 +29,13 @@ from task_spec.schemas.build import (
     PlanContractOutput,
     PublicTest,
     RepairRecord,
+    Screen,
     SeedGroup,
     SeedRule,
     SeedScalar,
+    StorageKey,
     TaskContract,
+    UiElement,
 )
 from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
@@ -175,6 +179,10 @@ __all__ = [
     "ContractResponse",
     "Endpoint",
     "Entity",
+    "Fixture",
+    "Screen",
+    "StorageKey",
+    "UiElement",
     "FileKind",
     "FileRef",
     "GeneratedFile",

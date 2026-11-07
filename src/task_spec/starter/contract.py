@@ -148,6 +148,29 @@ def _same(value: HarnessValue, raw: str) -> bool:
     return False  # 목록 값은 명세 대조 대상이 아니다 (주입 대상 id 등)
 
 
+_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+NO_EVIDENCE = "없음"
+MIN_QUOTE = 6
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split())
+
+
+def evidence_ok(value: HarnessValue, quote: str, texts: Iterable[str]) -> bool:
+    """근거 인용 확인 — 인용이 자료(1단계 자료·구체 답)에 그대로 있고(공백 무시) 값이 인용 안에 있다.
+    정규식 표기 패턴 대신 쓰는 길 (템플릿마다 표현을 맞추지 않아도 됨)."""
+    q = _norm(quote).strip(" \"'“”‘’…")
+    if len(q) < MIN_QUOTE or not any(q in _norm(t) for t in texts):
+        return False
+    numbers = [_number(n) for n in _NUM.findall(q)]
+    if isinstance(value, list):
+        return all(float(v) in numbers for v in value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) in numbers
+    return str(value).lower() in q.lower()
+
+
 def spec_missing_params(visible_texts: Sequence[str], manifest: TemplateManifest) -> list[str]:
     """명세 글에서 표기 패턴으로 값이 안 뽑히는 필수·visible 조절값 이름.
 
@@ -209,18 +232,34 @@ def _harness(
         if not p.visible:
             continue
         seen = extract_values(p, spec.visible_texts)
-        if not seen and p.required:
-            gaps.append(
-                f"명세 1단계 자료·추가 요구 구체 답에 운영 수치 {p.name} 이 없음 (표기 패턴으로 못 찾음) — "
-                "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"
-            )
-        elif not seen:
+        quote = plan.evidence.get(p.name)
+        if seen and any(_same(value, raw) for raw in seen):
+            continue  # 템플릿 표기 패턴으로 확인 (빠른 길)
+        if quote and quote.strip() != NO_EVIDENCE and evidence_ok(value, quote, spec.visible_texts):
+            continue  # 근거 인용으로 확인
+        if quote and quote.strip() == NO_EVIDENCE:
+            if p.required:
+                gaps.append(
+                    f"명세 1단계 자료·추가 요구 구체 답에 운영 수치 {p.name} 이 없음 — "
+                    "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"
+                )
+            else:
+                problems.append(
+                    f"HiddenPlan {p.name} 은 자료에 없다고 했으니 harness 에서 뺀다 (선택 조절값)"
+                )
+        elif quote:
             problems.append(
-                f"HiddenPlan {p.name}={value} 는 명세 자료·답에 없는 값 — 선택 조절값이니 빼거나 자료에 있는 값만 쓴다"
+                f"HiddenPlan {p.name}={value} 의 근거 {quote[:120]!r} 가 자료에 그대로 없거나 값이 그 안에 없음 — "
+                "자료·답의 문장을 그대로 인용하고 그 안의 값을 쓴다"
             )
-        elif not any(_same(value, raw) for raw in seen):
+        elif seen:
             problems.append(
-                f"HiddenPlan {p.name}={value} 이 명세 자료의 값({', '.join(seen)})과 다름 — 명세 자료의 값을 쓴다"
+                f"HiddenPlan {p.name}={value} 이 명세 자료의 값({', '.join(seen)})과 다름 — 명세 자료의 값을 쓰고 evidence 에 근거 문장을"
+            )
+        else:
+            problems.append(
+                f"공개 조절값 {p.name}={value} 의 근거가 없음 — evidence 에 그 값이 적힌 자료·답 문장을 그대로 적는다 "
+                f'(자료에 없으면 "{NO_EVIDENCE}")'
             )
     return problems, gaps
 
@@ -259,6 +298,12 @@ def contract_text(contract: TaskContract) -> str:
         parts += [m.name, _words(m.name), *m.relations]
     for _, f in _fields(contract):
         parts += [f.name, _words(f.name), f.type, f.constraints or ""]
+    for fx in contract.fixtures:
+        parts += [fx.summary, fx.content]
+    for sc in contract.screens:
+        parts += [sc.route, sc.summary]
+        parts += [f"{el.test_id} {_words(el.test_id)} {el.description}" for el in sc.elements]
+        parts += [f"{k.name} {k.shape}" for k in sc.storage]
     for s in contract.seed:
         parts += s.rules
         parts += [f"{k} {v}" for g in s.groups for k, v in g.values.items()]
@@ -276,6 +321,12 @@ def _ids(contract: TaskContract, plan: HiddenPlan) -> list[str]:
     problems += _dups("엔티티 id", [m.entity_id for m in contract.entities])
     problems += _dups("엔티티 이름", [m.name for m in contract.entities])
     problems += _dups("공개 테스트 id", [t.test_id for t in contract.public_tests])
+    problems += _dups("입력 환경 id", [f.fixture_id for f in contract.fixtures])
+    problems += _dups("화면 id", [sc.screen_id for sc in contract.screens])
+    for sc in (
+        contract.screens
+    ):  # 같은 부품이 여러 화면에 있는 것은 정상 — 화면 안에서만 유일 (2026-11-07 종이 단계)
+        problems += _dups(f"화면 {sc.screen_id} 의 test id", [el.test_id for el in sc.elements])
     problems += _dups("숨은 케이스 id", [c.case_id for c in plan.cases])
     problems += _dups(
         "엔드포인트(메서드·경로)", [f"{e.method or ''} {e.path}" for e in contract.endpoints]
@@ -286,9 +337,11 @@ def _ids(contract: TaskContract, plan: HiddenPlan) -> list[str]:
 def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[str]:
     problems: list[str] = []
     refs_ok = set(spec.req_ids) | set(spec.public_ac_ids)
-    element_ids = {e.endpoint_id for e in contract.endpoints} | {
-        m.entity_id for m in contract.entities
-    }
+    element_ids = (
+        {e.endpoint_id for e in contract.endpoints}
+        | {m.entity_id for m in contract.entities}
+        | {sc.screen_id for sc in contract.screens}
+    )
 
     # 계약 요소 → 명세 (거꾸로 대응)
     for e in contract.endpoints:
@@ -296,6 +349,21 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
         if bad:
             problems.append(
                 f"엔드포인트 {e.endpoint_id} 의 refs 에 명세에 없는 id: {', '.join(bad)}"
+            )
+    for sc in contract.screens:
+        for where, refs in (
+            [(f"화면 {sc.screen_id}", sc.refs)]
+            + [(f"화면 {sc.screen_id} 요소 {el.test_id}", el.refs) for el in sc.elements]
+            + [(f"화면 {sc.screen_id} 저장소 {k.name}", k.refs) for k in sc.storage]
+        ):
+            bad = [r for r in refs if r not in refs_ok]
+            if bad:
+                problems.append(f"{where} 의 refs 에 명세에 없는 id: {', '.join(bad)}")
+    for fx in contract.fixtures:
+        bad = [r for r in fx.refs if r not in refs_ok]
+        if bad:
+            problems.append(
+                f"입력 환경 {fx.fixture_id} 의 refs 에 명세에 없는 id: {', '.join(bad)}"
             )
     for where, f in _fields(contract):
         bad = [r for r in f.refs if r not in refs_ok]
@@ -309,11 +377,13 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
             "요구에 없는 인터페이스·엔티티는 해법을 흘린다"
         )
 
-    # 명세 → 계약
+    # 명세 → 계약. covers 값에는 입력 환경 id(f*)도 된다 (요구를 입력 환경에 잇는 것은 자연스럽다 — 덮였는지 따지지는 않음).
+    # 공개 수용 기준 id(p*)를 키로 쓴 것은 무시한다 (2026-11-07 종이 단계: 재요청해도 되풀이, 해는 없음 — p* 는 공개 테스트로 대응)
+    targets = element_ids | {fx.fixture_id for fx in contract.fixtures}
     for key, ids in contract.covers.items():
-        if key not in spec.req_ids:
+        if key not in spec.req_ids and key not in spec.public_ac_ids:
             problems.append(f"covers 의 키 {key} 가 명세의 공개 요구 id 가 아님")
-        bad = [i for i in ids if i not in element_ids]
+        bad = [i for i in ids if i not in targets]
         if bad:
             problems.append(f"covers[{key}] 에 계약에 없는 id: {', '.join(bad)}")
     for r in spec.req_ids:
@@ -360,7 +430,7 @@ def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
         )
     rx = manifest.naming
     for e in contract.endpoints:
-        if contract.interface_kind == "http":
+        if contract.interface_kind in ("http", "ui"):  # ui 의 엔드포인트는 화면이 부르는 서버 API
             if e.method is None:
                 problems.append(f"엔드포인트 {e.endpoint_id} 에 HTTP 메서드가 없음")
             if not re.fullmatch(rx.path, e.path):
@@ -370,6 +440,14 @@ def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
         elif e.method is not None:
             problems.append(
                 f"엔드포인트 {e.endpoint_id} 는 {contract.interface_kind} 라 HTTP 메서드를 쓰지 않음"
+            )
+    for sc in contract.screens:
+        if not re.fullmatch(rx.path, sc.route):
+            problems.append(f"화면 {sc.screen_id} 경로 {sc.route!r} 가 템플릿 경로 규칙과 다름")
+        bad_ids = [el.test_id for el in sc.elements if not re.fullmatch(rx.test_id, el.test_id)]
+        if bad_ids:
+            problems.append(
+                f"화면 {sc.screen_id} 의 test id 가 템플릿 규칙과 다름: {', '.join(bad_ids)}"
             )
     for m in contract.entities:
         if not re.fullmatch(rx.entity, m.name):
@@ -495,6 +573,25 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
     return problems
 
 
+def _no_seed_rows(
+    contract: TaskContract, plan: HiddenPlan, manifest: TemplateManifest
+) -> list[str]:
+    """DB 행을 바꾸지 않는 템플릿(cli·file·ui) — 시드·행 배정 대신 입력 환경(fixtures)과 숨은 케이스 setup.
+    2026-11-07 종이 단계: 데이터·ML 과제가 결과 파일·평가 기록을 시드 행으로 억지로 적고 코드가 행 수를 부풀렸다."""
+    out: list[str] = []
+    if contract.seed:
+        out.append(
+            f"템플릿 {manifest.ref} 은 DB 행 시드를 쓰지 않는다 — seed 를 비우고, 시작 코드가 깔아 줄 입력 환경은 fixtures 에 적는다"
+        )
+    with_data = [c.case_id for c in plan.cases if c.data]
+    if with_data:
+        out.append(
+            f"숨은 케이스 {', '.join(with_data)} 의 data 를 비운다 — 이 템플릿은 행 배정이 없다. "
+            "케이스에서 하네스가 입력 환경을 바꾸는 단계는 setup 에 적는다"
+        )
+    return out
+
+
 def _foreign_keys(contract: TaskContract) -> list[str]:
     """foreign_keys 의 필드·대상 엔티티가 계약에 있다."""
     names = {m.name for m in contract.entities}
@@ -525,7 +622,10 @@ def check_contract(
     harness_problems, gaps = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest)
-    problems += seed_problems(contract)
-    problems += case_rows_problems(contract, plan, manifest)
+    if manifest.seed_rows:
+        problems += seed_problems(contract)
+        problems += case_rows_problems(contract, plan, manifest)
+    else:
+        problems += _no_seed_rows(contract, plan, manifest)
     problems += _foreign_keys(contract)
     return ContractCheck(problems=problems, spec_gaps=gaps)

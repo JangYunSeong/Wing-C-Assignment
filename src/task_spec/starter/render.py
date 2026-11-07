@@ -73,6 +73,23 @@ def contract_markdown(
                 shape = ""
             out.append(f"- `{r.status}` {r.description}{shape}")
         out.append("")
+    for sc in contract.screens:
+        out += [
+            f"### 화면 `{sc.route}`",
+            "",
+            sc.summary,
+            "",
+            "| test id | 역할 | 설명 |",
+            "|---|---|---|",
+        ]
+        out += [f"| `{el.test_id}` | {el.role} | {el.description} |" for el in sc.elements]
+        if sc.storage:
+            out += [
+                "",
+                "브라우저 저장소: "
+                + " · ".join(f"`{k.name}` ({k.kind}) — {k.shape}" for k in sc.storage),
+            ]
+        out.append("")
     out += ["### 데이터", ""]
     for m in contract.entities:
         head = f"#### `{m.name}`"
@@ -90,6 +107,12 @@ def contract_markdown(
         out.append("")
     if tables is not None:
         out += ["외래 키는 위 엔티티에 적힌 것만 둔다 (적힌 것이 없으면 두지 않는다).", ""]
+    if contract.fixtures:
+        out += ["### 입력 환경", ""]
+        for fx in contract.fixtures:
+            out.append(f"- `{fx.fixture_id}` ({fx.kind}) {fx.summary}")
+            out += [f"  {line}" for line in fx.content.splitlines() if line.strip()]
+        out.append("")
     if contract.seed:
         out += ["### 시드 데이터", ""]
         out += [seed_markdown(s, names.get(s.entity_id, s.entity_id)) for s in contract.seed]

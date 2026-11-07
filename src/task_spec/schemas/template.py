@@ -16,7 +16,9 @@ from pydantic import Field, field_validator, model_validator
 
 from task_spec.schemas.base import Schema
 
-InterfaceKind = Literal["http", "cli", "file"]
+InterfaceKind = Literal[
+    "http", "cli", "file", "ui"
+]  # ui = 화면 (계약 screens), 서버 API 는 endpoints
 HarnessValueKind = Literal["int", "float", "str", "int_list"]
 
 _NAME = r"^[a-z][a-z0-9_]*$"
@@ -131,9 +133,10 @@ class NamingRules(Schema):
     header: str = r"^[A-Z][A-Za-z0-9]*(-[A-Z][A-Za-z0-9]*)*$"  # http 헤더 (예: X-Actor)
     entity: str = r"^[A-Z][A-Za-z0-9]*$"
     field: str = r"^[a-z][A-Za-z0-9]*$"
+    test_id: str = r"^[a-z][a-z0-9-]*$"  # 화면 요소의 test id (ui)
     table: TableNaming | None = None  # 엔티티 → 테이블 이름 (없으면 계약에 테이블을 적지 않음)
 
-    @field_validator("path", "header", "entity", "field")
+    @field_validator("path", "header", "entity", "field", "test_id")
     @classmethod
     def _rx(cls, v: str) -> str:
         return _compiles([v])[0]
@@ -239,6 +242,8 @@ class TemplateManifest(Schema):
     )  # 허용 설계가 이 스택에서 성립하는 조건 (§4.2)
     # 버스트 케이스(HiddenCase.data[].burst)가 요청마다 다른 행을 쓰려면 필요한 행 수 = 이 조절값들의 곱 (예: concurrency × bursts)
     burst_rows: list[str] = Field(default_factory=list)
+    # 숨은 테스트가 계약 시드의 DB 행을 바꾸는 과제인가 — 아니면(cli·file·ui) 시드·행 배정 대신 입력 환경(fixtures)과 케이스 setup
+    seed_rows: bool = True
 
     @model_validator(mode="after")
     def _unique(self) -> TemplateManifest:
