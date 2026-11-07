@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from task_spec.schemas import (
     BuildState,
     ContractField,
+    ContractResponse,
     FileRef,
     GeneratedFiles,
     HarnessParam,
@@ -57,6 +58,14 @@ def test_field_refs_only_public_ids() -> None:
         ContractField.model_validate({"name": "a", "type": "string", "refs": ["h1"]})
     with pytest.raises(ValidationError):
         ContractField.model_validate({"name": "a", "type": "string", "refs": []})
+
+
+def test_response_refs_are_dropped_other_extras_rejected() -> None:
+    # plan_contract v7 "모든 요소에 refs" 를 응답 묶음에까지 붙인 답 (알파 테스트 2026-11-07)
+    r = ContractResponse.model_validate({"status": 200, "description": "성공", "refs": ["r1"]})
+    assert "refs" not in r.model_dump()
+    with pytest.raises(ValidationError):
+        ContractResponse.model_validate({"status": 200, "description": "성공", "note": "x"})
 
 
 def test_contract_size_limits() -> None:

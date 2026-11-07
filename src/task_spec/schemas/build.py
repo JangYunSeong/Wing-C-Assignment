@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from operator import add
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -57,6 +57,14 @@ class ContractResponse(Schema):
         pattern=r"^m\d{1,2}(\[\])?$",
         description="본문이 엔티티 하나면 그 id (예: m1), 엔티티 목록이면 m1[] — 필드는 엔티티 정의를 따른다",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_refs(cls, data: Any) -> Any:
+        # plan_contract v7 은 "모든 요소에 refs" 라 응답 묶음에도 붙이는 답이 있다 — 출처는 엔드포인트·필드 refs 가 맡으므로 버린다
+        if isinstance(data, dict) and "refs" in data:
+            return {k: v for k, v in data.items() if k != "refs"}
+        return data
 
 
 class Endpoint(Schema):
