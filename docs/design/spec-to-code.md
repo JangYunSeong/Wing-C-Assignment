@@ -277,6 +277,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 3. `plan_contract/v1` + 배송 감사 명세로 계약 생성 스모크 → 손 예시의 API 와 비교.
    — 구현 (2026-11-07): 노드 `nodes/starter/plan_contract.py`(명세에 필수 운영 수치가 없으면 LLM 없이 실패, 계약 검사 problems 는 1회 재요청·spec_gaps 는 재요청 없이 실패), 프롬프트 `plan_contract` v1·v2, 스모크 `eval/starter/run_plan_contract.py`. v1 은 검사를 통과했지만 기존 API 누락·운영 값 생략 — 검사 보강 + v2 로 손 예시와 같은 구조 (경로·필드 이름·상태 코드 일부는 다른 선택). 기록 `prompts/plan_contract/PROMOTIONS.md`.
 4. `render_readme` · `static_check` (§6) — 결정적, 네거티브 테스트.
+   — 구현 (2026-11-07): `starter/render.py`(`render_readme` — README.tpl.md 의 자리 7개를 승인된 명세·공개 계약·진행 방식으로, 숨은 내용·자료 본문은 자리 없음, 모르는 자리·빈 값은 오류 / `render_params` — HiddenPlan → 조절값 파일), `starter/static_check.py`(§6 표 + 숨은 테스트 케이스 id 1:1·실패 사유 코드·조절값 파일 손으로 씀, 문제는 생성기별 `problems` · README·템플릿 기본값은 `review_flags`), manifest `hidden_rules`. 손 예시 시작 코드로 확인: r1 문제 4(미끼 `REQUIRES_NEW` + 설정에 박힌 운영 값 3) · r2b 1(미끼) · r2c 0, README 는 손 예시 자료 이름 "커넥션 풀 대시보드"의 금지어로 검토 표시.
 5. `gen_starter/v1` · `gen_hidden/v1` · `gen_naive/v1` · `gen_accepted/v1` — 가짜 LLM 테스트 + 실제 생성 스모크 1건.
 6. `build_graph` 연결(병렬·interrupt·State 는 경로·해시만) + `repair` 배정 규칙(§7) — 가짜 verifier 결과로 배정 표 전 행을 테스트.
 7. verifier 연결 후 golden 재현 (§9, 단계적 반복 §7.1) → seed 6건 평가 → `CURRENT`.
