@@ -188,6 +188,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | 비밀 값·네트워크 호출·실존 회사·제품 이름 | 모든 산출물 | 그 생성기 |
 | 템플릿 기술 밖 언어·새 의존성 | 모든 산출물 | 그 생성기 |
 | 숨은 테스트가 내부 클래스·메서드를 import (게이트 ⑥ 사전 확인) | `hidden` | `gen_hidden` |
+| 숨은 테스트가 공개 계약에 없는 API 를 부름 — manifest `hidden_rules.http_calls` 로 찾은 호출의 경로 식을 `/orders/{}/status` 꼴로 정규화해 계약 method·path 와 대조 (첫 조각이 문자열이 아니면 판단 안 함). 5단계 스모크에서 계약에 없는 `GET /deliveries/{id}` 로 상태를 읽어 늘 404 | `hidden` | `gen_hidden` |
 | 케이스 목록이 `HiddenPlan.cases` 와 1:1, selector 가 실제 테스트에 있음 | `hidden` | `gen_hidden` |
 
 ## 7. 실패 배정 · 수리 (`repair`) [제안]
@@ -265,6 +266,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 13. **명세 단계에서 운영 수치를 미리 검사**할지 (§3.3) — 하면 명세 승인 전에 `select_template` 을 한 번 돌려야 한다.
 14. **`gen_hidden` 에 `why_naive_breaks` 를 줄지** (§4) — 정확도 / 독립성.
 15. **`kind=public_test` 추가** (§4.3, #52 테이블).
+16. **계약 시드를 숨은 테스트가 쓸 수 있게 정하기** [제안] (5단계 스모크) — 시드 규칙이 모든 행의 처음 값을 정하고(예: "id 1~N 모두 READY"), `rows_min` 이 숨은 테스트가 동시에 바꿀 행 수(`concurrency × bursts` + 여유) 이상이어야 한다. 계약 검사(§3.3)에 규칙 추가 + `plan_contract` v3. `gen_hidden` 에 시작 코드의 `data.sql` 을 보여 주는 길은 §2 의 독립성(숨은 테스트는 시작 코드를 보지 않음)을 깨서 택하지 않음.
 
 ## 11. 구현 순서 (PR 단위) [제안]
 
@@ -279,6 +281,11 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 4. `render_readme` · `static_check` (§6) — 결정적, 네거티브 테스트.
    — 구현 (2026-11-07): `starter/render.py`(`render_readme` — README.tpl.md 의 자리 7개를 승인된 명세·공개 계약·진행 방식으로, 숨은 내용·자료 본문은 자리 없음, 모르는 자리·빈 값은 오류 / `render_params` — HiddenPlan → 조절값 파일), `starter/static_check.py`(§6 표 + 숨은 테스트 케이스 id 1:1·실패 사유 코드·조절값 파일 손으로 씀, 문제는 생성기별 `problems` · README·템플릿 기본값은 `review_flags`), manifest `hidden_rules`. 손 예시 시작 코드로 확인: r1 문제 4(미끼 `REQUIRES_NEW` + 설정에 박힌 운영 값 3) · r2b 1(미끼) · r2c 0, README 는 손 예시 자료 이름 "커넥션 풀 대시보드"의 금지어로 검토 표시.
 5. `gen_starter/v1` · `gen_hidden/v1` · `gen_naive/v1` · `gen_accepted/v1` — 가짜 LLM 테스트 + 실제 생성 스모크 1건.
+   — 구현 (2026-11-07): 노드 `nodes/starter/generate.py`(`gen_starter` · `gen_hidden` · `gen_naive` · `gen_accepted` — 생성 → 그 오버레이만 정적 검사 → problems 면 1회 재요청, 입력 경계는 §4 그대로: 시작 코드 생성기는 공개 정보만, 숨은 테스트 생성기는 시작 코드를 보지 않음, 참조 구현은 자기 목표(naive_impl 또는 허용 설계 1건 + 스택 조건)만), 입력 스키마 `GenStarterInput` · `GenHiddenInput` · `GenRefInput`, 프롬프트 4종 v1, 하네스 API 문서 `templates/…/v1/hidden/HARNESS.md`(채점용 층에만, `gen_hidden` 입력), 조절값 파일은 생성물에서 버리고 `render_params` 로. 테스트 `tests/starter/test_generate.py`(가짜 LLM — 재요청·입력 경계·조절값), `test_templates.py`(HARNESS.md 가 하네스 메서드·record·검사 예외를 다 적는지). 스모크 `eval/starter/run_generate.py`(`--build` 개발 서버 Gradle 조립·실행, `--repair` 숨은 테스트 컴파일 오류 1회 되돌림).
+   — 스모크 (gpt-4.1, 배송 감사 손 예시 명세 + plan_contract v2 계약, 4회 합계 $0.40): 생성기 4종 모두 **1회 호출로 정적 검사 통과**(1회 $0.09–0.11), README 는 손 예시 자료 이름 때문에 검토 표시(4단계와 같음). **빌드는 4회 모두 어딘가 실패** — 실패 종류가 매번 달라 프롬프트·문서로 다 막을 수 없다:
+     하네스 API 오용(record 를 필드로, 없는 상수, 검사 예외) → 문서 보강 뒤 컴파일 통과 · 계약에 없는 API 호출 → 정적 검사 추가(위 §6 표) · 계약 밖 응답 코드 기대 · JSON `Integer`/`Long` 비교 → 문서 "판정 규칙" · 시작 코드 자체 테스트와 구현 불일치(2회) · 허용 설계 d1 참조 구현이 설계를 따르지 않음(주석만 "d1", 실제로는 커밋 뒤 따로 저장 — 정적 검사로 못 잡음).
+     **계약 시드가 숨은 테스트를 받치지 못함**: v2 계약 시드는 "10~100행, 상태는 넷 중 하나"라 32×3 동시 요청에 쓸 행·처음 상태가 정해지지 않는다(손 예시는 "1~500 모두 READY"). 계약 사본의 시드만 고쳐 다시 돌리니 행 부족은 사라짐 → plan_contract 쪽 수정 필요 (§10-16).
+     흔한 구현·허용 구현이 같은 지점에서 실패해 **숨은 테스트가 둘을 가르는지는 아직 확인 못 함** — 빌드·테스트 실패 메시지를 원인 생성기로 되돌리는 6단계 `repair` 가 이 단계의 다음 일이다 (지금 노드는 정적 검사 problems 만 되돌린다).
 6. `build_graph` 연결(병렬·interrupt·State 는 경로·해시만) + `repair` 배정 규칙(§7) — 가짜 verifier 결과로 배정 표 전 행을 테스트.
 7. verifier 연결 후 golden 재현 (§9, 단계적 반복 §7.1) → seed 6건 평가 → `CURRENT`.
 8. AI 기본 풀이 지표 (§8) — 실행 구조 결정(§10-10) 뒤. (a) 면 에이전트 실행기(sandbox 밖 루프 · `exec` 도구 · 호출 상한 · 기록)부터, 별도 PR 여러 개.
