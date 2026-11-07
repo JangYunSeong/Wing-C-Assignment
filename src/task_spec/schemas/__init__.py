@@ -152,8 +152,20 @@ from task_spec.schemas.verify_overlap import (
     VerifyParsedVerdict,
     VerifyVerdict,
 )
+from task_spec.schemas.verify_report import (
+    CompileError,
+    ResultClass,
+    TargetRun,
+    TestResult,
+    VerifyReport,
+)
 
 __all__ = [
+    "CompileError",
+    "ResultClass",
+    "TargetRun",
+    "TestResult",
+    "VerifyReport",
     "BuildState",
     "BuildStatus",
     "ContractField",

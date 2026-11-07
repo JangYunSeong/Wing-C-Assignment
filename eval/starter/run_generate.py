@@ -18,7 +18,6 @@ import argparse
 import asyncio
 import html
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -28,7 +27,10 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client
+from eval.starter.gradle_verify import GRADLE, GradleVerifier, assemble, gradle_env
+from eval.starter.gradle_verify import write_overlay as _write
 from eval.starter.run_plan_contract import EXAMPLE, JAVA, build_task
+from task_spec.nodes.starter.build import build_and_repair
 from task_spec.nodes.starter.generate import (
     BuildInputs,
     GenResult,
@@ -48,7 +50,6 @@ from task_spec.starter.templates import Template, load_template
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "eval" / "build"
-GRADLE = ROOT / "data" / "feature_starters" / ".tools" / "dist" / "gradle-8.10.2" / "bin" / "gradle"
 VERSION = "smoke"
 
 
@@ -79,35 +80,8 @@ def _row(r: GenResult) -> dict[str, Any]:
     }
 
 
-def _write(overlay: Overlay, root: Path) -> None:
-    for f in overlay.files:
-        p = root / f.path
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f.content, "utf-8")
-
-
-def assemble(t: Template, work: Path, *overlays: Overlay) -> None:
-    """템플릿 project/ + 오버레이 (+ hidden 이면 잠긴 하네스·자체 점검) — 채점용 이미지 조립과 같은 순서."""
-    if work.exists():
-        shutil.rmtree(work)
-    shutil.copytree(t.project, work)
-    for o in overlays:
-        if o.kind == "hidden" and t.manifest.hidden_layout is not None:
-            hl = t.manifest.hidden_layout
-            for sub, dest in (("hidden/harness", hl.harness), ("hidden/selftest", hl.selftest)):
-                for rel in t.files(sub):
-                    target = work / dest / rel
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(t.root / sub / rel, target)
-        _write(o, work)
-
-
 def gradle_test(work: Path, log: Path, timeout: int = 1200) -> dict[str, Any]:
-    env = os.environ | {"GRADLE_USER_HOME": str(ROOT.parent / ".gradle-make-task-eval")}
-    if Path("/root/.claude/jobs/2da1d8ae/tmp/gradle-home").is_dir():
-        env["GRADLE_USER_HOME"] = (
-            "/root/.claude/jobs/2da1d8ae/tmp/gradle-home"  # 2단계 확인 때 받은 의존성 재사용
-        )
+    env = gradle_env()
     t0 = time.monotonic()
     with log.open("w") as fh:
         proc = subprocess.run(
@@ -197,6 +171,56 @@ def build_all(
     return builds
 
 
+def _run_row(r: Any) -> dict[str, Any]:
+    tests = {
+        f"{t.group}:{t.name}": t.result + (f"[{t.reason}]" if t.reason else "")
+        for t in r.tests
+        if t.group != "selftest"
+    }
+    return {"target": r.target, "setup": r.setup, "seconds": r.seconds, "tests": tests}
+
+
+async def run_loop(
+    a: Any, b: BuildInputs, designs: list[Any], kw: dict[str, Any], src: Path, template: Template
+) -> None:
+    out = OUT / f"{date.today()}-loop{('-' + a.tag) if a.tag else ''}"
+    if out.exists():
+        shutil.rmtree(out)
+    verifier = GradleVerifier(template, out / "builds")
+    res = await build_and_repair(b, designs, verifier=verifier, **kw)
+    for key, o in res.overlays.items():
+        _write(o, out / "overlays" / key)
+    report = {
+        "contract": str(src.relative_to(ROOT)),
+        "model": a.model,
+        "status": res.status,
+        "rounds": res.rounds,
+        "cost_usd": res.cost_usd,
+        "calls": len(res.provenance),
+        "regen_counts": res.regen_counts,
+        "repairs": [r.model_dump() for r in res.repairs],
+        "review_flags": res.review_flags,
+        "verify": [[_run_row(r) for r in rep.runs] for rep in res.reports],
+        "verify_failures": [
+            [{r.target: [t.model_dump() for t in r.tests if t.result != "PASS"]} for r in rep.runs]
+            for rep in res.reports
+        ],
+    }
+    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
+    for n, rep in enumerate(res.reports):
+        print(
+            f"  검증 {n}: "
+            + " | ".join(f"{r.target} {r.setup} {_run_row(r)['tests']}" for r in rep.runs)
+        )
+    for r in res.repairs:
+        print(f"  수리 {r.gate} {r.target} {r.result}: {r.reason}")
+    print(
+        f"→ {res.status} · 회차 {res.rounds} · 호출 {len(res.provenance)} · ${res.cost_usd} · {out}"
+    )
+    for f in res.review_flags:
+        print(f"  검토: {f}")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -209,6 +233,12 @@ async def main() -> None:
     ap.add_argument(
         "--repair", action="store_true", help="숨은 테스트 컴파일 오류를 gen_hidden 에 1회 돌려준다"
     )
+    ap.add_argument(
+        "--loop",
+        action="store_true",
+        help="수리 루프 (nodes/starter/build.py) — 생성 → 정적 검사 → Gradle 검증 → 배정 → 그 생성기만 다시",
+    )
+    ap.add_argument("--designs", type=int, default=1, help="--loop 에서 만들 허용 설계 수")
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
 
@@ -240,6 +270,9 @@ async def main() -> None:
         f"계약 {src.relative_to(ROOT)} · 허용 설계 {[d.design_id + ' ' + d.summary[:30] for d in designs]}"
     )
 
+    if a.loop:
+        await run_loop(a, b, designs[: a.designs], kw, src, template)
+        return
     starter = await gen_starter(b, **kw)  # type: ignore[arg-type]
     rows = [_row(starter)]
     spent = rows[0]["cost_usd"]
