@@ -181,13 +181,16 @@ async def _regenerate(
     kw: dict[str, object],
     took,  # type: ignore[no-untyped-def]
 ) -> bool:
-    """배정된 생성기만 다시. 시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 다시 쓴다."""
+    """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
+    시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
     notes = {a.key: f"검증 실패 (게이트 {a.gate}) — {a.note}" for a in actions}
     for a in actions:
         out.regen_counts[a.key] = out.regen_counts.get(a.key, 0) + 1
     starter = out.overlays[STARTER]
     if "gen_starter" in notes:
-        new = took(await gen_starter(b, note=notes["gen_starter"], **kw))  # type: ignore[arg-type]
+        new = took(
+            await gen_starter(b, note=notes["gen_starter"], previous=starter, **kw)  # type: ignore[arg-type]
+        )
         ok = new is not None
         out.repairs += [
             _record(a, "regenerated" if ok else "failed")
@@ -200,17 +203,29 @@ async def _regenerate(
     refs = [(k, o) for k, o in out.overlays.items() if k not in (STARTER, HIDDEN)]
     jobs: list[tuple[str, object]] = []
     if "gen_hidden" in notes:
-        jobs.append((HIDDEN, gen_hidden(b, note=notes["gen_hidden"], **kw)))  # type: ignore[arg-type]
+        hidden_prev = out.overlays[HIDDEN]
+        jobs.append((HIDDEN, gen_hidden(b, note=notes["gen_hidden"], previous=hidden_prev, **kw)))  # type: ignore[arg-type]
     for label, o in refs:
         if o.kind == "ref_naive":
             key = f"gen_naive:{label}"
             if key in notes or "gen_starter" in notes:
-                jobs.append((label, gen_naive(b, starter, note=notes.get(key), **kw)))  # type: ignore[arg-type]
+                prev = (
+                    o if "gen_starter" not in notes else None
+                )  # 시작 코드가 바뀌면 새 시작 코드 위에 처음부터
+                jobs.append(
+                    (label, gen_naive(b, starter, note=notes.get(key), previous=prev, **kw))
+                )  # type: ignore[arg-type]
         else:
             key = f"gen_accepted:{label}"
             if key in notes or "gen_starter" in notes:
                 design = by_id[label]
-                jobs.append((label, gen_accepted(b, starter, design, note=notes.get(key), **kw)))  # type: ignore[arg-type]
+                prev = o if "gen_starter" not in notes else None
+                jobs.append(
+                    (
+                        label,
+                        gen_accepted(b, starter, design, note=notes.get(key), previous=prev, **kw),
+                    )  # type: ignore[arg-type]
+                )
     results = await asyncio.gather(*(j for _, j in jobs))  # type: ignore[arg-type]
     ok_all = True
     for (label, _), r in zip(jobs, results, strict=True):

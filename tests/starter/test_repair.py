@@ -315,11 +315,13 @@ class RoutedBackend:
     def __init__(self, **routes: list[Completion]) -> None:
         self.routes = {k: list(v) for k, v in routes.items()}
         self.calls: list[str] = []
+        self.users: list[tuple[str, str]] = []
 
     async def complete(self, model: str, messages: list[Any], params: dict[str, Any]) -> Completion:
         system = messages[0].content
         name = next(k for k, m in self.MARKERS.items() if m in system)
         self.calls.append(name)
+        self.users.append((name, messages[-1].content))
         queue = self.routes.get(name) or []
         if not queue:
             raise AssertionError(f"{name}: 준비된 응답 없음")
@@ -509,4 +511,33 @@ def test_same_failure_as_naive_is_not_evidence_against_the_accepted_design() -> 
     assert not again.actions
     assert any(
         "숨은 테스트·계약 의심" in u and "같은 단언·같은 메시지" in u for u in again.unresolved
+    )
+
+
+class _Pinned:
+    def __init__(self, **pins: int) -> None:
+        self.pins = pins
+
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return PROMPTS.get(task, version or self.pins.get(task))
+
+
+async def test_repair_passes_the_generators_own_previous_output() -> None:
+    """수리 때 다시 만드는 생성기는 자기 이전 출력을 받는다 (수리판 프롬프트) — 처음부터 다시 쓰지 않게."""
+    llm, backend = _llm()
+    verifier = ScriptedVerifier(_one_case(NAIVE_OK, D1_FAIL), _one_case(NAIVE_OK, D1_OK))
+    out = await build_and_repair(
+        _inputs(),
+        (D1,),
+        llm=llm,
+        prompts=_Pinned(gen_starter=3, gen_hidden=2, gen_naive=2, gen_accepted=2),  # type: ignore[arg-type]
+        ontology_version="onto-test",
+        verifier=verifier,
+    )
+    assert out.status == "review" and out.rounds == 1
+    accepted = [u for name, u in backend.users if name == "gen_accepted"]
+    assert len(accepted) == 2
+    assert "(없음)" in accepted[0].split("이전 출력 (수리일 때만")[1][:80]
+    assert (
+        f"=== {PKG}/order/OrderService.java ===" in accepted[1].split("이전 출력 (수리일 때만")[1]
     )

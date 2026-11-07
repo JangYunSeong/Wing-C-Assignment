@@ -250,6 +250,24 @@ class GenRefInput(Schema):
     revision_note: str
 
 
+class GenStarterInputV2(GenStarterInput):
+    """gen_starter v3~ — 수리면 자기 이전 출력 (2026-11-07: 처음부터 다시 써 한 줄 오류가 다른 문제로 바뀜)."""
+
+    previous_files: str = "(없음)"
+
+
+class GenHiddenInputV2(GenHiddenInput):
+    """gen_hidden v2~ — 수리면 자기 이전 출력."""
+
+    previous_files: str = "(없음)"
+
+
+class GenRefInputV2(GenRefInput):
+    """gen_naive·gen_accepted v2~ — 수리면 자기 이전 출력."""
+
+    previous_files: str = "(없음)"
+
+
 class GeneratedFile(Schema):
     path: str = Field(min_length=1, max_length=300)
     content: str = Field(max_length=200_000)
