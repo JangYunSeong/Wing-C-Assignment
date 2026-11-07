@@ -11,6 +11,7 @@ from task_spec.llm import Completion, FakeBackend
 from task_spec.nodes.starter.plan_contract import (
     FLAG_INVALID,
     FLAG_SPEC_GAP,
+    for_prompt,
     plan_contract,
     plan_input,
 )
@@ -98,7 +99,7 @@ async def test_first_answer_ok() -> None:
     fake = FakeBackend().push(_out())
     res = await _run(fake)
     assert res.ok and len(fake.calls) == 1 and res.flags == []
-    assert res.provenance[0].prompt == "plan_contract@2"
+    assert res.provenance[0].prompt == "plan_contract@3"
     assert res.contract is not None and [e.endpoint_id for e in res.contract.endpoints] == [
         "e1",
         "e2",
@@ -165,10 +166,49 @@ def test_plan_input_renders_template_spec_and_materials() -> None:
 
 def test_prompt_renders_dict_and_union_fields_compactly() -> None:
     t = PROMPTS.get("plan_contract")
-    prompt = assemble(t, plan_input(_task(), TEMPLATE), ontology_version="v")
+    prompt = assemble(
+        t, for_prompt(plan_input(_task(), TEMPLATE), t.input_model), ontology_version="v"
+    )
     system = prompt.messages[0].content
     assert "covers: {문자열: [문자열]}" in system
     assert "harness?: {문자열: 정수 | 수 | 문자열 | [정수]}" in system
     assert "$defs" not in system
     user = prompt.messages[-1].content
     assert "숨은 요구 (hidden_plan 에만" in user and "t1 요청 하나가 연결을 둘 쥐지 않는다" in user
+
+
+def test_v3_prompt_states_seed_rules_from_code() -> None:
+    """v3 (2026-11-07): 시드 행 수 규칙은 검사(seed_rows)와 같은 값을 코드가 넣는다. v2 는 그 자리가 없어도 조립된다."""
+    from task_spec.starter.seed_rows import RESERVED_ROWS
+    from task_spec.starter.templates import load_template
+
+    java = load_template("backend/java-spring-boot3-jpa")
+    inp = plan_input(_task(), java)
+    assert (
+        f"작은 id {RESERVED_ROWS}행" in inp.seed_rules and "concurrency × bursts" in inp.seed_rules
+    )
+    v3 = assemble(PROMPTS.get("plan_contract", 3), inp, ontology_version="v")
+    system, user = v3.messages[0].content, v3.messages[-1].content
+    assert "groups?: [{" in system and "burst?: 참/거짓" in system  # 출력 스키마에 새 필드
+    assert "id 범위는 적지 않습니다" in system
+    assert "시드 규칙 (seed.rows · hidden_plan.cases.data):\n- 숨은 케이스는 작은 id" in user
+    # 테스트 템플릿엔 burst_rows 가 없어 곱 규칙 줄이 빠진다
+    assert "concurrency × bursts" not in plan_input(_task(), TEMPLATE).seed_rules
+    t2 = PROMPTS.get("plan_contract", 2)
+    v2 = assemble(t2, for_prompt(inp, t2.input_model), ontology_version="v")
+    assert "시드 규칙" not in v2.messages[-1].content
+
+
+async def test_row_counts_are_fitted_by_code_without_reask() -> None:
+    """시드가 모자란 답 — 재요청 대신 코드가 맞추고(seed_rows.fit_seed) adjustments 로 남긴다."""
+    c = _contract()
+    c["seed"][0] = {
+        "entity_id": "m1",
+        "rows": 50,
+        "groups": [{"first": 1, "last": 50, "values": {"status": "READY"}}],
+    }
+    fake = FakeBackend().push(_out(c))
+    res = await _run(fake)
+    assert res.ok and len(fake.calls) == 1, res.problems
+    assert res.contract is not None and res.contract.seed[0].rows == 106  # 96 + 지원자 몫 10
+    assert any("Order 시드 50 → 106행" in a for a in res.adjustments)

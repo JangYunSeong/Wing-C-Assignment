@@ -44,7 +44,8 @@ def test_readme_fills_every_slot_from_spec_and_contract() -> None:
     assert "### `PATCH /orders/{id}/status`" in readme and "- 헤더: `X-Actor` (string)" in readme
     assert "→ `OrderHistory` 목록" in readme  # returns m2[]
     assert "#### `OrderHistory`" in readme and "| `orderId` | integer | 예 |" in readme
-    assert "`Order` 100–500행 — 상태는 READY" in readme
+    assert "- `Order` 200행 (id 1~200) — id 1~200: `status`=READY" in readme
+    assert "- `OrderHistory` 0행 (처음엔 비어 있음)" in readme
     assert "1. 핵심 구현" in readme
     assert "**최대 1번** 질문할 수 있다" in readme and "(최대 2개)" in readme
     assert "  - 운영 설정" in readme  # 자료 이름만

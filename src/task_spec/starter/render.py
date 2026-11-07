@@ -11,6 +11,7 @@ import re
 
 from task_spec.schemas import ContractField, GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.seed_rows import seed_markdown
 from task_spec.starter.templates import Template
 
 README = "README.md"
@@ -79,11 +80,7 @@ def contract_markdown(contract: TaskContract, *, public_tests: bool = False) -> 
         out.append("")
     if contract.seed:
         out += ["### 시드 데이터", ""]
-        for s in contract.seed:
-            rules = f" — {' · '.join(s.rules)}" if s.rules else ""
-            out.append(
-                f"- `{names.get(s.entity_id, s.entity_id)}` {s.rows_min}–{s.rows_max}행{rules}"
-            )
+        out += [seed_markdown(s, names.get(s.entity_id, s.entity_id)) for s in contract.seed]
         out.append("")
     if public_tests:
         out += ["### 공개 테스트", ""]

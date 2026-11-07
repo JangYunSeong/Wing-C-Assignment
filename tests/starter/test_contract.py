@@ -147,7 +147,14 @@ def _contract() -> dict[str, Any]:
                 "relations": ["OrderHistory.orderId → Order.id"],
             },
         ],
-        "seed": [{"entity_id": "m1", "rows_min": 100, "rows_max": 500, "rules": ["상태는 READY"]}],
+        "seed": [
+            {
+                "entity_id": "m1",
+                "rows": 200,
+                "groups": [{"first": 1, "last": 200, "values": {"status": "READY"}}],
+            },
+            {"entity_id": "m2", "rows": 0},
+        ],
         "public_tests": [
             {"test_id": "pt1", "ac_id": "p1", "checks": "변경 성공 시 이력 1건"},
             {"test_id": "pt2", "ac_id": "p2", "checks": "조회가 최신순"},
@@ -167,6 +174,9 @@ def _plan(**over: Any) -> dict[str, Any]:
                 "scenario": "같은 시각에 32건 상태 변경",
                 "expect": "모두 기대 코드, 요청마다 기록 1건",
                 "intended_reason": "pool_acquire_timeout",
+                "data": [
+                    {"entity_id": "m1", "rows": 96, "initial": {"status": "READY"}, "burst": True}
+                ],
             }
         ],
     }
@@ -449,3 +459,16 @@ def test_returns_must_point_to_contract_entity() -> None:
     assert _check(c).ok
     c["endpoints"][1]["responses"][0]["returns"] = "m9[]"
     assert _has(_check(c).problems, "returns", "m9[]")
+
+
+def test_concrete_ids_in_tests_match_contract_path_variables() -> None:
+    """2026-11-07 v3 스모크: 공개 테스트·숨은 케이스가 `PATCH /orders/15/status` 처럼 구체 id 를 쓰면 오탐했다."""
+    c = _contract()
+    c["public_tests"][0]["checks"] = "PATCH /orders/1/status 후 GET /orders/1/history 가 1건"
+    p = _plan()
+    p["cases"][0]["scenario"] = "PATCH /orders/150/status 를 32건 동시에"
+    assert not _has(_check(c, p).problems, "계약에 없는 API")
+    p["cases"][0]["scenario"] = "DELETE /orders/150 과 GET /orders/150/status"
+    assert _has(
+        _check(c, p).problems, "계약에 없는 API", "DELETE /orders/150", "GET /orders/150/status"
+    )

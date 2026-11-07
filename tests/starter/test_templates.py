@@ -237,6 +237,7 @@ def test_contract_check_with_real_java_manifest(java) -> None:  # type: ignore[n
             "pool_size": 8,
             "connection_timeout_ms": 5000,
             "concurrency": 32,
+            "bursts": 3,
             "query_delay_ms": 20,
         }
     )
@@ -247,3 +248,12 @@ def test_contract_check_with_real_java_manifest(java) -> None:  # type: ignore[n
         java.manifest,
     )
     assert res.ok, (res.problems, res.spec_gaps)
+    # 버스트 케이스 행 수 = concurrency × bursts (manifest burst_rows) — 값이 없으면 확인할 수 없어 재요청
+    del plan["harness"]["bursts"]
+    res = check_contract(
+        TaskContract.model_validate(_contract()),
+        HiddenPlan.model_validate(plan),
+        spec,
+        java.manifest,
+    )
+    assert any("버스트 행 수를 확인할 조절값" in p and "bursts" in p for p in res.problems)

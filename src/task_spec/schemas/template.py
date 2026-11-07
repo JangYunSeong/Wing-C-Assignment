@@ -189,6 +189,8 @@ class TemplateManifest(Schema):
     stack_conditions: list[str] = Field(
         default_factory=list
     )  # 허용 설계가 이 스택에서 성립하는 조건 (§4.2)
+    # 버스트 케이스(HiddenCase.data[].burst)가 요청마다 다른 행을 쓰려면 필요한 행 수 = 이 조절값들의 곱 (예: concurrency × bursts)
+    burst_rows: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _unique(self) -> TemplateManifest:
@@ -198,6 +200,10 @@ class TemplateManifest(Schema):
         ):
             if len(set(names)) != len(names):
                 raise ValueError(f"{label} 이름이 겹침")
+        for name in self.burst_rows:
+            param = self.param(name)
+            if param is None or param.kind != "int":
+                raise ValueError(f"burst_rows 의 {name} 이 int 조절값이 아님")
         return self
 
     @property

@@ -53,12 +53,14 @@ VERSION = "smoke"
 
 
 def latest_contract() -> Path:
-    found = sorted(OUT.glob("*-plan-contract-*v2*/contract-1.json"))
+    found = list(OUT.glob("*-plan-contract-*/contract-1.json"))
     if not found:
         raise SystemExit(
-            "plan_contract v2 스모크 결과가 없습니다 — 먼저 eval.starter.run_plan_contract --prompt-version 2"
+            "plan_contract 스모크 결과가 없습니다 — 먼저 eval.starter.run_plan_contract"
         )
-    return found[-1]
+    return max(
+        found, key=lambda p: p.stat().st_mtime
+    )  # 가장 최근 — 스키마가 바뀐 옛 결과는 검증에서 걸린다
 
 
 def _row(r: GenResult) -> dict[str, Any]:

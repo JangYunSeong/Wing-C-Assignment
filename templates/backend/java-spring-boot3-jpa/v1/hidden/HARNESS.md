@@ -55,9 +55,8 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 
 ## 데이터
 
-- **계약 시드가 보장하는 행만** 쓴다: id 1 ~ `rows_min`. 그 밖의 id 는 없을 수 있다 (404). 행을 만드는 API 가 없으면 행을 새로 만들지 않는다.
-- 행의 처음 값은 시드 규칙에 적힌 것만 가정한다. 규칙이 값을 정하지 않으면 그 행의 처음 상태로 기대 결과를 정하지 않는다 (먼저 계약 API 로 상태를 맞춘 뒤 확인).
-- 보장 범위 안에서 **큰 id 부터** 쓴다 (지원자 테스트와 겹치지 않게). 케이스끼리도 id 를 겹치지 않는다.
+- **케이스마다 받은 id 범위만** 쓴다 — 숨은 테스트 계획의 케이스 아래 `데이터: <엔티티> id a~b (…)` 줄. 범위는 빌드 파이프라인이 계약 시드에서 나눠 준 것이라 행이 반드시 있고, 케이스끼리·지원자 테스트(작은 id)와 겹치지 않는다. 범위 밖 id 를 쓰지 않고, 행을 새로 만들지 않는다. 케이스 시나리오 글에 다른 id 가 적혀 있어도 이 범위가 우선이다.
+- 행의 처음 값은 그 줄에 적힌 것(`처음 status=READY` 등)만 가정한다. `버스트` 라고 적힌 범위는 동시 요청마다 다른 id 를 하나씩 쓴다 (범위 크기 = 동시 요청 수 × 버스트 수).
 - 상태를 바꾸는 케이스는 그 케이스 안에서 필요한 상태를 만든 뒤 확인한다 (다른 케이스 순서에 기대지 않음).
 
 ## 예시 (모양만 — 과제마다 계약에 맞춘다)
@@ -81,13 +80,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("hc1 운영 피크와 같은 수의 동시 요청")
 class PeakBurstTest extends GraderSupport {
 
+    static final long FIRST_ID = 105; // 케이스 "데이터: … id 105~200 (…, 버스트)" 줄의 범위 시작
+
     @Test
     void 모든_요청이_정상_응답() throws Exception {
         int n = GraderParams.intValue("concurrency", 32);
         GraderJdbcHarness.queryDelayMs = GraderParams.longValue("query_delay_ms", 20);
         try {
             var outcomes = Burst.fire(n, i -> 200,
-                    i -> send("PATCH", "/items/" + (400 + i), Map.of("X-Actor", "grader"), "{\"state\":\"B\"}").statusCode(),
+                    i -> send("PATCH", "/items/" + (FIRST_ID + i), Map.of("X-Actor", "grader"), "{\"state\":\"B\"}").statusCode(),
                     Duration.ofSeconds(60));
             diag("%s", Burst.summary("hc1", 1, outcomes));
             assertThat(Burst.wrong(outcomes)).as(Reasons.as("pool_acquire_timeout", "기대와 다른 응답 수")).isZero();

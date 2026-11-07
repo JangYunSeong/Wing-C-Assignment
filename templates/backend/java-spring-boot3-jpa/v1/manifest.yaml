@@ -82,6 +82,9 @@ hidden_rules:
     - '(?<![\w.])send\(\s*"(?P<method>[A-Z]+)"\s*,\s*'
     - '(?<![\w.])get\(\s*(?=")'
 
+# 버스트 케이스가 요청마다 다른 시드 행을 쓰려면 필요한 행 수 = 이 조절값들의 곱 (HiddenCase.data[].burst, spec-to-code §10-16)
+burst_rows: [concurrency, bursts]
+
 # 하네스 조절값 — HiddenPlan.harness 의 키. visible = 명세 1단계 자료·구체 답에서 같은 값이 보여야 함 (spec-to-code §3.3).
 # spec_patterns 그룹 1 = 값. config_keys 는 GraderSupport.OPERATING 과 같아야 한다 (tests/starter/test_templates.py).
 harness_params:

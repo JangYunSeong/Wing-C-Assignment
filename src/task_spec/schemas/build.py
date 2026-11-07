@@ -13,7 +13,7 @@ import re
 from operator import add
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.provenance import NodeError, Provenance
@@ -84,13 +84,36 @@ class Entity(Schema):
     relations: list[str] = Field(default_factory=list)
 
 
+SeedScalar = str | int | bool
+
+
+class SeedGroup(Schema):
+    """시드 id 범위 하나와 그 행들의 처음 값 (예: id 1~150 은 status=READY)."""
+
+    first: int = Field(ge=1)
+    last: int = Field(ge=1)
+    values: dict[str, SeedScalar] = Field(
+        default_factory=dict,
+        description='이 범위 행들이 처음에 갖는 필드 값 (예: {"status": "READY"}). id 필드는 넣지 않는다',
+    )
+
+    @model_validator(mode="after")
+    def _order(self) -> SeedGroup:
+        if self.first > self.last:
+            raise ValueError(f"시드 범위 {self.first}~{self.last}: first 가 last 보다 큼")
+        return self
+
+
 class SeedRule(Schema):
-    """시드 데이터 규칙 (가상 데이터만)."""
+    """시드 데이터 (가상 데이터만). id 1~rows 가 반드시 있고, groups 가 그 범위를 빈틈·겹침 없이 덮어 처음 값을 정한다
+    (spec-to-code §10-16 — 숨은 테스트가 시작 코드를 보지 않고도 쓸 행과 처음 상태를 안다)."""
 
     entity_id: str = Field(pattern=r"^m\d{1,2}$")
-    rows_min: int = Field(ge=0)
-    rows_max: int = Field(ge=0)
-    rules: list[str] = Field(default_factory=list)
+    rows: int = Field(
+        ge=0, le=5000, description="정확한 행 수 — id 1~rows. 처음에 비어 있는 엔티티는 0"
+    )
+    groups: list[SeedGroup] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)  # 그 밖의 값 규칙 (예: 송장 번호 형식)
 
 
 class PublicTest(Schema):
@@ -116,6 +139,21 @@ class TaskContract(Schema):
 HarnessValue = int | float | str | list[int]
 
 
+class CaseRows(Schema):
+    """숨은 케이스 하나가 바꾸는 시드 행 — 수와 처음 값만 선언하고 id 범위는 코드가 나눈다 (starter/seed_rows.py)."""
+
+    entity_id: str = Field(pattern=r"^m\d{1,2}$")
+    rows: int = Field(ge=1, le=2000)
+    initial: dict[str, SeedScalar] = Field(
+        default_factory=dict,
+        description="이 행들이 처음에 가져야 하는 값 — 시드 groups 의 values 와 맞아야 함",
+    )
+    burst: bool = Field(
+        default=False,
+        description="동시 요청 버스트 — 요청마다 다른 행 (rows ≥ 템플릿 burst_rows 조절값의 곱)",
+    )
+
+
 class HiddenCase(Schema):
     case_id: str = Field(pattern=r"^hc\d{1,2}$")
     ac_id: str = Field(pattern=r"^h\d{1,2}$")
@@ -125,6 +163,7 @@ class HiddenCase(Schema):
     intended_reason: str = Field(
         min_length=1
     )  # 흔한 구현이 실패할 때의 사유 코드 — 템플릿 failure_reasons 안
+    data: list[CaseRows] = Field(default_factory=list)  # 바꾸는 시드 행 (읽기만 하면 비움)
 
 
 class HiddenPlan(Schema):
@@ -153,6 +192,12 @@ class PlanContractInput(Schema):
     materials: str  # 1단계 자료 — "[a2] 제목" + 본문
     clarifications: str  # 추가 요구 구체 답 — "[c1] 주제: 답"
     revision_note: str  # 재요청 사유 (없으면 "(없음)")
+
+
+class PlanContractInputV3(PlanContractInput):
+    """plan_contract v3~ — 시드 행 수 규칙을 더한다 (starter/seed_rows.py 와 같은 값)."""
+
+    seed_rules: str = Field(min_length=1)
 
 
 class PlanContractOutput(Schema):

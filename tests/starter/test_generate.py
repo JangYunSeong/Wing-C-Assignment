@@ -185,6 +185,11 @@ def test_hidden_input_has_plan_and_harness_but_no_code() -> None:
         "pool_size = 8" in text and "hc1 (h1, 숨은 요구 t1, 실패 사유 pool_acquire_timeout)" in text
     )
     assert "Burst.fire" in text  # 하네스 API 문서
+    # 시드 id 범위는 코드가 나눠 준다 (seed_rows) — 시작 코드를 보지 않고도 쓸 행을 안다
+    assert (
+        "데이터: Order id 105~200 (96행, 처음 status=READY, 버스트 — 요청마다 다른 id) — 이 범위만 쓴다 (시나리오에 적힌 id 보다 우선)"
+        in text
+    )
     assert "조절값 파일(src/test/resources/grader-params.properties)은 쓰지 않는다" in text
     assert "class Order" not in text and D1.summary not in text
 
