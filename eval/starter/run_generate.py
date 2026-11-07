@@ -231,6 +231,7 @@ async def run_loop(
     out = OUT / f"{date.today()}-loop{('-' + a.tag) if a.tag else ''}"
     if out.exists():
         shutil.rmtree(out)
+    out.mkdir(parents=True)  # 첫 생성에서 멈춰 오버레이·검증이 없어도 report.json 은 남긴다
     verifier = GradleVerifier(template, out / "builds")
     res = await build_and_repair(b, designs, verifier=verifier, **kw)
     for key, o in res.overlays.items():
@@ -250,6 +251,7 @@ async def run_loop(
         "regen_counts": res.regen_counts,
         "repairs": [r.model_dump() for r in res.repairs],
         "review_flags": res.review_flags,
+        "adjustments": res.adjustments,
         "verify": [[_run_row(r) for r in rep.runs] for rep in res.reports],
         "verify_failures": [
             [{r.target: [t.model_dump() for t in r.tests if t.result != "PASS"]} for r in rep.runs]
@@ -269,6 +271,8 @@ async def run_loop(
     )
     for f in res.review_flags:
         print(f"  검토: {f}")
+    for f in res.adjustments:
+        print(f"  코드가 고침: {f}")
 
 
 async def main() -> None:
