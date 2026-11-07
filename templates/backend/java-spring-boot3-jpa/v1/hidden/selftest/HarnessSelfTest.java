@@ -61,6 +61,20 @@ class HarnessSelfTest extends GraderSupport {
     }
 
     @Test
+    void 버스트가_시간을_넘긴_요청을_예외_대신_실패로_남긴다() throws Exception {
+        List<Burst.Outcome> outcomes = Burst.fire(2, i -> 200, i -> {
+            if (i == 1) {
+                Thread.sleep(10_000);
+            }
+            return 200;
+        }, Duration.ofMillis(100));
+        assertThat(outcomes).hasSize(2);
+        assertThat(outcomes.get(0).ok()).isTrue();
+        assertThat(outcomes.get(1).actual()).isEqualTo(-1);
+        assertThat(Burst.wrong(outcomes)).isEqualTo(1);
+    }
+
+    @Test
     void 데이터소스를_감쌌다() {
         assertThat(GraderJdbcHarness.WRAPPED_DATASOURCES.get()).isPositive();
     }

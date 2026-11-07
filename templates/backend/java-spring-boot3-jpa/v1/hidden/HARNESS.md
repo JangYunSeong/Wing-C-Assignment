@@ -13,7 +13,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 
 ## GraderSupport (상속)
 
-- `@SpringBootTest(RANDOM_PORT)` — 지원자 저장소 그대로 띄운다. 운영 조건(`pool_size` · `connection_timeout_ms` · `server_threads`)은 자동으로 Spring 속성에 들어간다.
+- `@SpringBootTest(RANDOM_PORT)` — 지원자 저장소 그대로 띄운다. 운영 조건(`pool_size` · `connection_timeout_ms` · `server_threads`)은 자동으로 Spring 속성에 들어간다. 요청 한도 `REQUEST_TIMEOUT` 은 `request_timeout_s` 를 주지 않으면 30초와 (연결 대기 한도 × 2 + 5초) 중 긴 쪽 — `Burst` 의 `wait` 에는 이것을 넘긴다.
 - `protected HttpResponse<String> send(String method, String path, Map<String, String> headers, String jsonBody)` — body 가 null 이면 본문 없음
 - `protected HttpResponse<String> get(String path)`
 - `send` · `get` 은 `IOException, InterruptedException`, `json` · `jsonObject` 는 `IOException`, `await` 는 `Exception` 을 던진다 (검사 예외) — 테스트 메서드와 이것들을 부르는 private 헬퍼에는 `throws Exception` 을 붙인다. `Burst.Call` 람다는 `throws Exception` 이라 그대로 써도 된다. `Predicate`·`Function` 같은 표준 람다 안에서는 이것들을 부르지 않는다.
@@ -41,7 +41,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 
 - **운영 피크 재현은 `List<Burst.Outcome> Burst.rounds(int concurrency, int rounds, IntUnaryOperator expectedStatus, Burst.Call call, Duration wait)`** — `concurrency` 건씩 한꺼번에, `rounds` 번 차례로. index 는 회차를 이어 0 ~ `concurrency × rounds - 1` (버스트마다 다른 행은 `FIRST_ID + index`). **`concurrency × rounds` 건을 한 번에 보내지 않는다** — 운영 조건보다 큰 부하라 올바른 설계도 시간 초과가 난다.
 - `List<Burst.Outcome> Burst.fire(int n, IntUnaryOperator expectedStatus, Burst.Call call, Duration wait)`
-  - n 건을 한꺼번에 보낸다. `call.send(i)` 는 i 번째 요청을 보내고 HTTP 상태 코드를 돌려준다. 시간 초과·연결 오류는 -1.
+  - n 건을 한꺼번에 보낸다. `call.send(i)` 는 i 번째 요청을 보내고 HTTP 상태 코드를 돌려준다. 시간 초과·연결 오류는 -1 — `wait` 안에 안 끝난 요청도 예외가 아니라 -1 이다 (테스트에서 `TimeoutException` 을 잡지 않는다).
   - `expectedStatus.applyAsInt(i)` = i 번째 요청의 기대 상태 코드.
 - `Burst.wrong(outcomes)` — 기대와 다른 수 · `Burst.summary(label, n, outcomes)` — 진단 줄
 - `Burst.Outcome` 는 **record** — 값은 접근자로 읽는다: `o.index()` · `o.expected()` · `o.actual()`(상태 코드, -1 = 시간 초과·연결 오류) · `o.millis()` · `o.error()` · `o.ok()`(actual == expected). 필드 직접 접근(`o.actual`)은 컴파일되지 않는다.

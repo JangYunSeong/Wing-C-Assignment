@@ -46,14 +46,25 @@ public abstract class GraderSupport {
             .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(5))
             .build();
-    protected static final Duration REQUEST_TIMEOUT =
-            Duration.ofSeconds(GraderParams.longValue("request_timeout_s", 30));
+    /**
+     * 요청 하나 한도. 정하지 않으면 30초와 (연결 대기 한도 × 2 + 5초) 중 긴 쪽 — 연결을 못 얻은 요청이 앱의 오류 응답으로
+     * 끝나는 것을 보려면 클라이언트가 그보다 오래 기다려야 한다 (연결 대기 한도 30초 과제에서 두 한도가 같아 경합했다).
+     */
+    protected static final Duration REQUEST_TIMEOUT = requestTimeout();
     /** 비동기(이벤트·아웃박스) 설계도 공정하게 보려고 결과가 나타날 때까지 기다리는 최대 시간. */
     protected static final Duration AWAIT_TIMEOUT =
             Duration.ofMillis(GraderParams.longValue("await_timeout_ms", 5000));
 
     @LocalServerPort
     protected int port;
+
+    static Duration requestTimeout() {
+        if (GraderParams.raw("request_timeout_s").isPresent()) {
+            return Duration.ofSeconds(GraderParams.longValue("request_timeout_s", 30));
+        }
+        long poolWaitMs = GraderParams.longValue("connection_timeout_ms", 0);
+        return Duration.ofMillis(Math.max(30_000, poolWaitMs * 2 + 5_000));
+    }
 
     private static Map<String, String> operating() {
         Map<String, String> m = new LinkedHashMap<>();

@@ -6,10 +6,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.IntUnaryOperator;
 
 /**
@@ -30,6 +32,9 @@ public final class Burst {
         /** index 번째 요청을 보내고 HTTP 상태 코드를 돌려준다. */
         int send(int index) throws Exception;
     }
+
+    /** 출발선 대기·스레드 시작 몫 — 요청 한도(wait)는 HTTP 클라이언트가 지키고, 이것은 그 결과를 모으는 쪽의 여유. */
+    static final Duration GRACE = Duration.ofSeconds(2);
 
     private Burst() {
     }
@@ -54,9 +59,21 @@ public final class Burst {
                     }
                 }));
             }
+            // 버스트 전체에 마감 하나 — 요청마다 wait 를 새로 주면 앞 요청을 기다린 시간만큼 뒤 요청 한도가 늘어난다.
+            // 출발선 대기·스레드 시작 몫으로 GRACE 를 더하고, 넘기면 예외 대신 -1 로 남긴다 (2026-11-07 알파 테스트:
+            // 연결 대기 한도 30초 과제에서 교착된 요청을 기다리다 TimeoutException 이 나 의도한 실패가 테스트 자체 오류로 분류됨).
+            long deadline = System.nanoTime() + wait.toNanos() + GRACE.toNanos();
             List<Outcome> outcomes = new ArrayList<>();
-            for (Future<Outcome> f : futures) {
-                outcomes.add(f.get(wait.toMillis(), TimeUnit.MILLISECONDS));
+            for (int i = 0; i < futures.size(); i++) {
+                Future<Outcome> f = futures.get(i);
+                long left = Math.max(0, deadline - System.nanoTime());
+                try {
+                    outcomes.add(f.get(left, TimeUnit.NANOSECONDS));
+                } catch (TimeoutException | ExecutionException e) {
+                    f.cancel(true);
+                    outcomes.add(new Outcome(i, expected.applyAsInt(i), -1, wait.toMillis() + GRACE.toMillis(),
+                            "grader wait: " + e));
+                }
             }
             return outcomes;
         } finally {
