@@ -28,6 +28,7 @@ from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import find_terms
+from task_spec.starter.seed_rows import case_rows_problems, seed_problems
 
 
 @dataclass(frozen=True)
@@ -260,6 +261,7 @@ def contract_text(contract: TaskContract) -> str:
         parts += [f.name, _words(f.name), f.type, f.constraints or ""]
     for s in contract.seed:
         parts += s.rules
+        parts += [f"{k} {v}" for g in s.groups for k, v in g.values.items()]
     parts += [t.checks for t in contract.public_tests]
     return "\n".join(p for p in parts if p)
 
@@ -346,13 +348,6 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
     for h in spec.hidden_acs:
         if h not in planned:
             problems.append(f"숨김 수용 기준 {h} 에 숨은 케이스가 없음")
-
-    entity_ids = {m.entity_id for m in contract.entities}
-    for s in contract.seed:
-        if s.entity_id not in entity_ids:
-            problems.append(f"시드 규칙의 엔티티 {s.entity_id} 가 계약에 없음")
-        if s.rows_min > s.rows_max:
-            problems.append(f"시드 규칙 {s.entity_id} 의 rows_min 이 rows_max 보다 큼")
     return problems
 
 
@@ -446,11 +441,32 @@ def mentioned_apis(texts: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in _API.findall(t)))
 
 
+def _contract_api_rx(contract: TaskContract) -> list[tuple[str, re.Pattern[str]]]:
+    """계약 API → (메서드, 경로 정규식). 경로 변수 자리는 아무 한 마디 — 글에 나온 `/deliveries/15/status` 도 맞는다."""
+    out: list[tuple[str, re.Pattern[str]]] = []
+    for e in contract.endpoints:
+        if e.method:
+            path = re.escape(e.path.rstrip("/") or "/")
+            out.append(
+                (
+                    e.method.upper(),
+                    re.compile("^" + re.sub(r"\\\{[^}]*\\\}", "[^/]+", path) + "/?$"),
+                )
+            )
+    return out
+
+
+def _in_contract(api: str, rx: list[tuple[str, re.Pattern[str]]]) -> bool:
+    method, _, path = api.partition(" ")
+    return any(method == m and pat.match(path) for m, pat in rx)
+
+
 def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[str]:
-    """명세·공개 테스트·숨은 케이스에 나온 API 는 계약에 있어야 한다 — 시작 코드·숨은 테스트가 그 계약으로 요청한다."""
-    have = {_api_key(e.method, e.path) for e in contract.endpoints if e.method}
+    """명세·공개 테스트·숨은 케이스에 나온 API 는 계약에 있어야 한다 — 시작 코드·숨은 테스트가 그 계약으로 요청한다.
+    글의 구체 id(`/deliveries/15/status`)는 계약의 경로 변수 자리와 맞는다 (2026-11-07 v3 스모크에서 오탐)."""
+    rx = _contract_api_rx(contract)
     problems: list[str] = []
-    missing = [a for a in mentioned_apis(spec.public_texts) if a not in have]
+    missing = [a for a in mentioned_apis(spec.public_texts) if not _in_contract(a, rx)]
     if missing:
         problems.append(
             f"명세(상황·요구·수용 기준)에 나온 API 가 계약에 없음: {', '.join(missing)} — "
@@ -462,7 +478,7 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
             *(f"{c.scenario} {c.expect}" for c in plan.cases),
         ]
     )
-    stray = [a for a in used if a not in have]
+    stray = [a for a in used if not _in_contract(a, rx)]
     if stray:
         problems.append(f"공개 테스트·숨은 케이스가 계약에 없는 API 를 씀: {', '.join(stray)}")
     entity_ids = {m.entity_id for m in contract.entities}
@@ -495,4 +511,6 @@ def check_contract(
     harness_problems, gaps = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest)
+    problems += seed_problems(contract)
+    problems += case_rows_problems(contract, plan, manifest)
     return ContractCheck(problems=problems, spec_gaps=gaps)

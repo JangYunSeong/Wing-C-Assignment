@@ -40,6 +40,7 @@ from task_spec.schemas.build import FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.starter.contract import SpecView, mentioned_apis
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
+from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
 from task_spec.starter.templates import Template
 
@@ -107,14 +108,29 @@ def files_text(files: Sequence[GeneratedFile]) -> str:
     return "\n\n".join(f"=== {f.path} ===\n{f.content.rstrip()}" for f in files) or NONE
 
 
-def plan_text(plan: HiddenPlan) -> str:
+def _range_text(r: RowRange, names: dict[str, str]) -> str:
+    initial = ", ".join(f"{k}={v}" for k, v in r.initial.items())
+    extra = [
+        f"{r.rows}행",
+        *([f"처음 {initial}"] if initial else []),
+        *(["버스트 — 요청마다 다른 id"] if r.burst else []),
+    ]
+    return f"  데이터: {names.get(r.entity_id, r.entity_id)} id {r.first}~{r.last} ({', '.join(extra)}) — 이 범위만 쓴다 (시나리오에 적힌 id 보다 우선)"
+
+
+def plan_text(plan: HiddenPlan, contract: TaskContract | None = None) -> str:
+    """HiddenPlan → 숨은 테스트 생성기 입력. 계약을 주면 케이스마다 코드가 나눈 시드 id 범위를 붙인다 (seed_rows)."""
+    alloc = allocate_rows(contract, plan) if contract is not None else None
+    names = {m.entity_id: m.name for m in contract.entities} if contract is not None else {}
     lines = ["조절값 (GraderParams 로 읽는 이름 = 값):"]
     lines += [f"- {k} = {v}" for k, v in plan.harness.items()] or ["- (없음)"]
     lines.append("케이스:")
-    lines += [
-        f"- {c.case_id} ({c.ac_id}, 숨은 요구 {c.trap_id}, 실패 사유 {c.intended_reason}): {c.scenario} → 통과 조건: {c.expect}"
-        for c in plan.cases
-    ]
+    for c in plan.cases:
+        lines.append(
+            f"- {c.case_id} ({c.ac_id}, 숨은 요구 {c.trap_id}, 실패 사유 {c.intended_reason}): {c.scenario} → 통과 조건: {c.expect}"
+        )
+        if alloc is not None:
+            lines += [_range_text(r, names) for r in alloc.for_case(c.case_id)]
     return "\n".join(lines)
 
 
@@ -165,7 +181,7 @@ def hidden_input(
         harness_api=harness.read_text("utf-8") if harness.is_file() else NONE,
         slots=slots_text(m, "hidden"),
         contract=contract_markdown(contract),
-        hidden_plan=plan_text(plan),
+        hidden_plan=plan_text(plan, contract),
         traps=_lines([f"{t.trap_id} {t.description}" for t in task.traps]),
         acceptance_hidden=_lines(
             [f"{h.ac_id} ({h.trap_id}) {h.text}" for h in task.acceptance_hidden]

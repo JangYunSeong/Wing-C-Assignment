@@ -26,6 +26,7 @@ from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TargetCompetency, TaskContract, TaskItem, TechEnv
 from task_spec.spec.incidents import load_incidents
 from task_spec.starter.contract import SpecView, extract_values
+from task_spec.starter.seed_rows import allocate_rows, seed_markdown
 from task_spec.starter.templates import load_template
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -195,6 +196,7 @@ def row(n: int, res: PlanResult, hand: dict[str, Any]) -> dict[str, Any]:
         "spec_gaps": res.spec_gaps,
         "flags": res.flags,
         "fail_reasons": res.fail_reasons,
+        "adjustments": res.adjustments,
         "calls": len(res.provenance),
         "cost_usd": round(sum(p.cost_usd or 0.0 for p in res.provenance), 4),
         "latency_s": round(sum(p.latency_ms or 0 for p in res.provenance) / 1000, 1),
@@ -210,7 +212,22 @@ def row(n: int, res: PlanResult, hand: dict[str, Any]) -> dict[str, Any]:
             for k, v in EXPECTED_HARNESS.items()
         }
         out["cases"] = [c.model_dump() for c in res.hidden_plan.cases]
+        names = {m.entity_id: m.name for m in res.contract.entities}
+        out["seed"] = [
+            seed_markdown(x, names.get(x.entity_id, x.entity_id)) for x in res.contract.seed
+        ]
+        alloc = allocate_rows(res.contract, res.hidden_plan)
+        out["allocation"] = [
+            f"{r.case_id} {names.get(r.entity_id, r.entity_id)} id {r.first}~{r.last} ({r.rows}행"
+            + (", 버스트" if r.burst else "")
+            + (", " + ", ".join(f"{k}={v}" for k, v in r.initial.items()) if r.initial else "")
+            + ")"
+            for r in alloc.ranges
+        ] + [f"배정 실패: {x}" for x in alloc.problems]
     return out
+
+
+HAND_SEED = "Delivery 1~500 모두 READY, 숨은 테스트 id 301~ (32×3)"
 
 
 def compare_md(rows: list[dict[str, Any]], hand: dict[str, Any]) -> str:
@@ -227,6 +244,8 @@ def compare_md(rows: list[dict[str, Any]], hand: dict[str, Any]) -> str:
         )
         if r["first_problems"]:
             lines.append("- 첫 답 문제: " + " / ".join(p[:160] for p in r["first_problems"]))
+        if r.get("adjustments"):
+            lines.append("- 코드가 맞춘 행 수: " + " / ".join(r["adjustments"]))
         if r["problems"] or r["spec_gaps"]:
             lines.append(
                 "- 남은 문제: " + " / ".join(p[:160] for p in r["problems"] + r["spec_gaps"])
@@ -239,6 +258,8 @@ def compare_md(rows: list[dict[str, Any]], hand: dict[str, Any]) -> str:
                 f"- 빠진 헤더 {c['headers_missing']} · 빠진 감사 필드 {c['audit_fields_missing']} · "
                 f"빠진 응답 키 {c['body_keys_missing']} · 빠진 오류 코드 {c['error_codes_missing']}",
                 f"- 하네스 값: {r['harness_vs_hand']}",
+                f"- 시드 (손 예시: {HAND_SEED}): " + " / ".join(r.get("seed", [])),
+                "- 숨은 케이스 행 배정: " + " / ".join(r.get("allocation", [])),
                 "- 숨은 케이스: "
                 + " / ".join(
                     f"{x['case_id']} {x['ac_id']} {x['intended_reason']}: {x['scenario']}"

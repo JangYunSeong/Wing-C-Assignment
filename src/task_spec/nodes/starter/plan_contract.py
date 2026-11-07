@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from pydantic import BaseModel
+
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
 from task_spec.prompting import PromptRegistry, assemble
@@ -18,13 +20,15 @@ from task_spec.schemas import (
     FeatureSeed,
     HiddenPlan,
     NodeError,
-    PlanContractInput,
+    PlanContractInputV3,
     PlanContractOutput,
     Provenance,
     TaskContract,
     TaskItem,
 )
+from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.contract import SpecView, check_contract, spec_missing_params
+from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.templates import Template
 
 TASK = "plan_contract"
@@ -47,6 +51,9 @@ class PlanResult:
     provenance: list[Provenance] = field(default_factory=list)
     errors: list[NodeError] = field(default_factory=list)
     fail_reasons: list[str] = field(default_factory=list)  # 위치·오류 종류만
+    adjustments: list[str] = field(
+        default_factory=list
+    )  # 코드가 맞춘 행 수 (seed_rows.fit_seed) — 승인 화면에 보임
 
     @property
     def ok(self) -> bool:
@@ -59,7 +66,26 @@ def _range(lo: float | None, hi: float | None) -> str:
     return f", {'' if lo is None else f'{lo:g}'}–{'' if hi is None else f'{hi:g}'}"
 
 
-def plan_input(task: TaskItem, template: Template, note: str | None = None) -> PlanContractInput:
+def seed_rules_text(m: TemplateManifest) -> str:
+    """시드 행 수 규칙 — 검사(seed_rows)와 같은 값을 프롬프트에 그대로."""
+    lines = [
+        f"- 숨은 케이스는 작은 id {RESERVED_ROWS}행(id 1~{RESERVED_ROWS})을 쓰지 않는다 (지원자·공개 테스트 몫). "
+        f"그래서 엔티티마다 rows ≥ 그 엔티티를 바꾸는 숨은 케이스 data 행 수의 합 + {RESERVED_ROWS}, "
+        "처음 값별로도 맞는 groups 의 행이 그만큼 있어야 한다.",
+    ]
+    if m.burst_rows:
+        lines.append(
+            f"- 버스트 케이스(data.burst=true)의 rows ≥ {' × '.join(m.burst_rows)} (hidden_plan.harness 에 넣은 값의 곱)."
+        )
+    return "\n".join(lines)
+
+
+def for_prompt(inp: PlanContractInputV3, model: type[BaseModel]) -> BaseModel:
+    """프롬프트 버전이 선언한 입력 모델로 — v1·v2 는 seed_rules 자리가 없다 (Schema 는 모르는 필드를 거부)."""
+    return model.model_validate({k: v for k, v in dict(inp).items() if k in model.model_fields})
+
+
+def plan_input(task: TaskItem, template: Template, note: str | None = None) -> PlanContractInputV3:
     m = template.manifest
     rx = m.naming
     params = "\n".join(
@@ -69,7 +95,7 @@ def plan_input(task: TaskItem, template: Template, note: str | None = None) -> P
         for p in m.harness_params
     )
     reasons = "\n".join(f"- {r.code} — {r.description}" for r in m.failure_reasons)
-    return PlanContractInput(
+    return PlanContractInputV3(
         template=(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"
             f"이름 규칙: 경로 {rx.path} · 헤더 {rx.header} · 엔티티 {rx.entity} · 필드 {rx.field}"
@@ -93,6 +119,7 @@ def plan_input(task: TaskItem, template: Template, note: str | None = None) -> P
         )
         or NONE,
         revision_note=note or NONE,
+        seed_rules=seed_rules_text(m),
     )
 
 
@@ -118,10 +145,12 @@ async def plan_contract(
 
     prompt_t = prompts.get(TASK)
     note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
-    best: tuple[PlanContractOutput, list[str], list[str]] | None = None
+    best: tuple[PlanContractOutput, list[str], list[str], list[str]] | None = None
     for attempt in range(2):
         prompt = assemble(
-            prompt_t, plan_input(task, template, note), ontology_version=ontology_version
+            prompt_t,
+            for_prompt(plan_input(task, template, note), prompt_t.input_model),
+            ontology_version=ontology_version,
         )
         try:
             r = await llm.call(prompt, prompt_t.output_model)  # type: ignore[arg-type]
@@ -133,6 +162,8 @@ async def plan_contract(
             continue
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
+        fitted, fitted_plan, notes = fit_seed(out.contract, out.hidden_plan, manifest)
+        out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
         check = check_contract(out.contract, out.hidden_plan, spec, manifest, seed)
         logger.info(
             "%s attempt=%d problems=%d gaps=%d latency_ms=%d",
@@ -144,7 +175,7 @@ async def plan_contract(
         )
         score = len(check.problems) + len(check.spec_gaps)
         if best is None or score < len(best[1]) + len(best[2]):
-            best = (out, check.problems, check.spec_gaps)
+            best = (out, check.problems, check.spec_gaps, notes)
         if check.ok or check.spec_gaps:
             break  # 통과 — 또는 명세 결함이라 재요청해도 소용없음
         if attempt == 0:
@@ -163,7 +194,7 @@ async def plan_contract(
     if best is None:
         res.flags.append(FLAG_FAILED)
         return res
-    out, res.problems, res.spec_gaps = best
+    out, res.problems, res.spec_gaps, res.adjustments = best
     res.contract, res.hidden_plan = out.contract, out.hidden_plan
     if res.spec_gaps:
         res.flags.append(FLAG_SPEC_GAP + "; ".join(res.spec_gaps))
