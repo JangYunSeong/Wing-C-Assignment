@@ -48,6 +48,8 @@ class HarnessParam(Schema):
     spec_patterns: list[str] = Field(default_factory=list)
     # 표(공백·| 구분)의 열 이름 정규식 — 그 열의 숫자를 값으로 뽑는다 (예: 요청 지표 표의 inflight_requests 열)
     spec_columns: list[str] = Field(default_factory=list)
+    # 표기 패턴이 서로 다른 값을 여럿 뽑을 때 정답 — unique(하나여야 함, 여럿이면 승인자 확인) · max · min (예: 분포의 상위 구간)
+    pick: Literal["unique", "max", "min"] = "unique"
     # 시작 코드 설정 파일에서 이 값을 담는 키 (§6 정적 검사 — 운영 값이 시작 코드에 박혔는지)
     config_keys: list[str] = Field(default_factory=list)
 

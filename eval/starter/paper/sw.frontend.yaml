@@ -30,6 +30,7 @@ harness_params:
     visible: true
     spec_patterns:
       - '(\d+)\s*개\s*이상'
+    pick: max  # 분포의 상위 구간 ("4개 이상") — 같은 자료의 "3개 이상은 21%" 도 패턴에 걸린다
   - name: edits_per_tab
     kind: int
     description: 탭마다 번갈아 저장하는 횟수 (기본 5)

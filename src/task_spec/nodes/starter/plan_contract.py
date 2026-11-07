@@ -149,7 +149,7 @@ async def plan_contract(
 
     prompt_t = prompts.get(TASK)
     note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
-    best: tuple[PlanContractOutput, list[str], list[str], list[str]] | None = None
+    best: tuple[PlanContractOutput, list[str], list[str], list[str], list[str]] | None = None
     for attempt in range(2):
         prompt = assemble(
             prompt_t,
@@ -183,7 +183,7 @@ async def plan_contract(
         )
         score = len(check.problems) + len(check.spec_gaps)
         if best is None or score < len(best[1]) + len(best[2]):
-            best = (out, check.problems, check.spec_gaps, notes)
+            best = (out, check.problems, check.spec_gaps, notes, check.review_flags)
         if check.ok or check.spec_gaps:
             break  # 통과 — 또는 명세 결함이라 재요청해도 소용없음
         if attempt == 0:
@@ -202,8 +202,9 @@ async def plan_contract(
     if best is None:
         res.flags.append(FLAG_FAILED)
         return res
-    out, res.problems, res.spec_gaps, res.adjustments = best
+    out, res.problems, res.spec_gaps, res.adjustments, review = best
     res.contract, res.hidden_plan = out.contract, out.hidden_plan
+    res.flags += review
     if res.spec_gaps:
         res.flags.append(FLAG_SPEC_GAP + "; ".join(res.spec_gaps))
     if res.problems:
