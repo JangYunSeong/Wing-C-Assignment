@@ -323,4 +323,7 @@ def seed_markdown(s: SeedRule, name: str) -> str:
         head += " — " + " · ".join(parts)
     if s.rules:
         head += " — " + " · ".join(s.rules)
+    if s.rows > RESERVED_ROWS:
+        # 채점 테스트는 큰 id 범위를 나눠 쓴다 (allocate_rows) — 시작 코드·지원자 테스트가 그 행을 바꾸면 채점이 흔들린다
+        head += f" — 테스트에서 바꿔도 되는 행은 id 1~{RESERVED_ROWS}"
     return head

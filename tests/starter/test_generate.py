@@ -228,3 +228,14 @@ def test_generator_prompts_assemble_with_compact_schema() -> None:
     for task, inp in inputs.items():
         prompt = assemble(PROMPTS.get(task), inp, ontology_version="v")
         assert "files: [{" in prompt.messages[0].content, task
+
+
+def test_gen_starter_v2_asks_for_independent_existing_tests() -> None:
+    """v2 (2026-11-07): 기존 기능 테스트 두 개가 같은 시드 행을 바꿔 실행 순서에 따라 실패했다."""
+    b = _inputs()
+    prompt = assemble(
+        PROMPTS.get("gen_starter", 2),
+        starter_input(b.task, b.contract, b.template),
+        ontology_version="v",
+    )
+    assert "테스트 메서드마다 서로 다른 시드 행" in prompt.messages[0].content

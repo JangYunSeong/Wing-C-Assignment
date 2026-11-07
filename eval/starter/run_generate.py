@@ -53,6 +53,51 @@ OUT = ROOT / "data" / "eval" / "build"
 VERSION = "smoke"
 
 
+class PinnedVersions:
+    """지정한 프롬프트만 버전 고정 (CURRENT 는 평가 뒤에 바꾼다)."""
+
+    def __init__(self, base: PromptRegistry, pins: dict[str, int]) -> None:
+        self.base, self.pins = base, pins
+
+    def get(self, task: str, version: int | None = None) -> Any:
+        return self.base.get(task, version or self.pins.get(task))
+
+
+async def run_starter_only(a: Any, b: BuildInputs, kw: dict[str, Any], template: Template) -> None:
+    """시작 코드만 a.starter_only 번 — 생성(정적 검사 포함) → 개발 서버 Gradle 로 기존 테스트."""
+    out = OUT / f"{date.today()}-starter{('-' + a.tag) if a.tag else ''}"
+    if out.exists():
+        shutil.rmtree(out)
+    verifier = GradleVerifier(template, out / "builds")
+    rows: list[dict[str, Any]] = []
+    for n in range(1, a.starter_only + 1):
+        res = await gen_starter(b, **kw)
+        row = _row(res) | {"run": n}
+        if res.overlay is not None:
+            _write(res.overlay, out / f"starter-{n}")
+            verifier.rounds = n
+            run = await asyncio.to_thread(
+                verifier._target, "starter", "starter", (res.overlay,), None
+            )
+            row["build"] = _run_row(run) | {
+                "failures": [t.model_dump() for t in run.tests if t.result != "PASS"]
+            }
+        rows.append(row)
+        print(
+            f"  run {n}: ok={res.ok} ${row['cost_usd']} prompt={res.provenance[-1].prompt if res.provenance else '-'} → {row.get('build')}"
+        )
+    cost = round(sum(r["cost_usd"] for r in rows), 4)
+    (out / "report.json").write_text(
+        json.dumps(
+            {"model": a.model, "pins": a.pin, "cost_usd": cost, "runs": rows},
+            ensure_ascii=False,
+            indent=1,
+        ),
+        "utf-8",
+    )
+    print(f"→ ${cost} · {out}")
+
+
 def latest_contract() -> Path:
     found = list(OUT.glob("*-plan-contract-*/contract-1.json"))
     if not found:
@@ -239,6 +284,18 @@ async def main() -> None:
         help="수리 루프 (nodes/starter/build.py) — 생성 → 정적 검사 → Gradle 검증 → 배정 → 그 생성기만 다시",
     )
     ap.add_argument("--designs", type=int, default=1, help="--loop 에서 만들 허용 설계 수")
+    ap.add_argument(
+        "--pin",
+        action="append",
+        default=[],
+        help="프롬프트 버전 고정 (CURRENT 는 그대로) — 예: --pin gen_starter=2",
+    )
+    ap.add_argument(
+        "--starter-only",
+        type=int,
+        default=0,
+        help="시작 코드만 N 번 생성·빌드 (다른 생성기는 돌리지 않음 — 시작 코드 프롬프트 확인용)",
+    )
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
 
@@ -264,12 +321,16 @@ async def main() -> None:
         avoid_terms=tuple(inc.avoid_terms),
     )
     llm = make_client(a.openai_key_env)
-    prompts = ModelOverride(PromptRegistry(ROOT / "prompts"), a.model)
+    pins = {k: int(v) for k, _, v in (x.partition("=") for x in a.pin)}
+    prompts = ModelOverride(PinnedVersions(PromptRegistry(ROOT / "prompts"), pins), a.model)  # type: ignore[arg-type]
     kw = {"llm": llm, "prompts": prompts, "ontology_version": VERSION}
     print(
         f"계약 {src.relative_to(ROOT)} · 허용 설계 {[d.design_id + ' ' + d.summary[:30] for d in designs]}"
     )
 
+    if a.starter_only:
+        await run_starter_only(a, b, kw, template)
+        return
     if a.loop:
         await run_loop(a, b, designs[: a.designs], kw, src, template)
         return
