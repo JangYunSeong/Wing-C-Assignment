@@ -378,13 +378,21 @@ def test_starter_existing_tests_must_not_call_new_apis() -> None:
 
 
 def test_imports_missing_from_the_template_classpath() -> None:
-    """2026-11-08 재평가: 시작 코드가 jakarta.validation 을 써 컴파일 실패 — 템플릿에 검증 스타터가 없다."""
+    """2026-11-08 재평가: 시작 코드가 jakarta.validation 을 써 컴파일 실패 (그 뒤 템플릿에 검증 스타터를 넣음 — 지금은 Lombok)."""
     ctl = _f(
+        f"{PKG}/order/OrderController.java",
+        "package com.example.service.order;\nimport lombok.Getter;\nclass OrderController {}\n",
+    )
+    res = _run(_overlays(starter=[*_overlays()[0].files, ctl]))
+    assert _has(res.for_target("gen_starter"), "템플릿에 없는 라이브러리", "lombok")
+    valid = _f(
         f"{PKG}/order/OrderController.java",
         "package com.example.service.order;\nimport jakarta.validation.Valid;\nclass OrderController {}\n",
     )
-    res = _run(_overlays(starter=[*_overlays()[0].files, ctl]))
-    assert _has(res.for_target("gen_starter"), "템플릿에 없는 라이브러리", "jakarta.validation")
+    assert not _has(
+        _run(_overlays(starter=[*_overlays()[0].files, valid])).for_target("gen_starter"),
+        "템플릿에 없는 라이브러리",
+    )
     naive = _run(_overlays(ref_naive=[ctl]))
     assert _has(naive.for_target("gen_naive"), "템플릿에 없는 라이브러리")
 

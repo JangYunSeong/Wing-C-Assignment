@@ -36,6 +36,7 @@ from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.seed_rows import case_rows_problems, seed_problems
+from task_spec.starter.state_rule import legacy_rule, state_problems
 
 
 @dataclass(frozen=True)
@@ -747,9 +748,6 @@ def _target_rows(contract: TaskContract, plan: HiddenPlan) -> list[str]:
     return out
 
 
-_ARROW = re.compile(r"\w+\s*(?:→|->)\s*\w+")
-
-
 def _entity_existing(contract: TaskContract, plan: HiddenPlan) -> tuple[list[str], list[str]]:
     """숨은 케이스 data 는 이미 있는 엔티티(existing)에만 — 엔티티에 표시가 하나도 없으면(옛 계약) 판단하지 않는다.
     새로 만드는 엔티티에 시드 행이 있으면 표시만 (드물게 새 참조 테이블일 수 있음)."""
@@ -793,16 +791,13 @@ def _needs(contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None) -
             f"숨은 요구에 필요한 것이 계약에 없음 — 상태를 가진 대상 엔티티: {need['stateful_target']}. "
             "entities 에 existing: true 로 두고, seed 에 행을 두고, 숨은 케이스 data 를 그 엔티티에 둔다"
         )
-    if "transition_rules" in need:
-        texts = [f.constraints or "" for m in targets for f in m.fields]
-        for e in contract.endpoints:
-            texts += [f.constraints or "" for f in e.request]
-            texts += [r.description for r in e.responses]
-        if not any(_ARROW.search(t) for t in texts):
-            out.append(
-                f"숨은 요구에 필요한 것이 계약에 없음 — 상태 전이 규칙: {need['transition_rules']}. 상태 필드나 상태를 바꾸는 요청 필드의 "
-                "constraints 에 'A→B' 꼴로 허용 전이를 빠짐없이 적는다 (숨은 테스트와 시작 코드가 같은 규칙을 따르게)"
-            )
+    # 칸(state)으로 — 화살표 글만 적은 답(plan_contract v9 이하)은 칸으로 옮길 수 있으면 있는 것으로 본다 (fit_state 가 옮긴다)
+    if "transition_rules" in need and not any(m.state or legacy_rule(contract, m) for m in targets):
+        out.append(
+            f"숨은 요구에 필요한 것이 계약에 없음 — 상태 전이 규칙: {need['transition_rules']}. 대상 엔티티의 state 칸에 "
+            "상태 값 전부(values)·허용 전이(transitions, 'A→B' 꼴로 빠짐없이)·거절 코드(rejected_status)를 적는다 "
+            "(숨은 테스트와 시작 코드가 같은 규칙을 따르게)"
+        )
     if "empty_record_entity" in need and not [
         m for m in contract.entities if rows.get(m.entity_id, 0) == 0 and not m.existing
     ]:
@@ -878,4 +873,5 @@ def check_contract(
         problems += entity_problems
         flags += entity_flags
         problems += _needs(contract, plan, seed)
+    problems += state_problems(contract, plan)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)
