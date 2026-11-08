@@ -161,9 +161,10 @@ async def build_and_repair(
     usable = sum(1 for r in accepted if not _voided(r))
     kept = [r for r in accepted if not drop(r, usable)]
     made = [took(r) for r in (*first[:2], *kept)]
+    # 하나라도 실패해도 만든 것은 남긴다 — 평가·사람이 볼 수 있게 (2026-11-08: 숨은 테스트 생성 실패로 시작 코드 파일도 안 남음)
+    out.overlays = {STARTER: starter, **{(o.label or HIDDEN): o for o in made if o is not None}}
     if any(o is None for o in made):
         return out
-    out.overlays = {STARTER: starter, **{(o.label or HIDDEN): o for o in made if o is not None}}
 
     for round_no in range(max_rounds + 1):
         out.rounds = round_no

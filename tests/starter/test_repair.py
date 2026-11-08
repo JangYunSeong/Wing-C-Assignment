@@ -703,3 +703,19 @@ async def test_compile_errors_get_two_repairs() -> None:
     assert out.status == "failed" and any(
         "재생성 예산을 다 씀 — gen_hidden" in f for f in out.review_flags
     )
+
+
+def test_boot_error_note_carries_the_root_cause() -> None:
+    """2026-11-08 알파 4케이스: 'boot_error' 만 가서 시작 코드가 같은 H2 문법 오류를 되풀이했다."""
+    detail = 'org.h2.jdbc.JdbcSQLSyntaxErrorException: Syntax error in SQL statement "CREATE TABLE t (id BIGINT PRIMARY KEY [*]GENERATED …"'
+    starter = _run("starter", "starter", setup="boot_error", setup_detail=detail)
+    plan = assign(VerifyReport(runs=[starter]), PLAN2, OVERLAYS, MISSED)
+    a = plan.actions[0]
+    assert (
+        a.generator == "gen_starter"
+        and "근본 원인: org.h2.jdbc.JdbcSQLSyntaxErrorException" in a.note
+    )
+    assert "[*]GENERATED" in a.reason
+    ref = _run("d1", "ref_accepted", setup="boot_error", setup_detail=detail)
+    acts = _assign(_report(_run("naive-all", "ref_naive", *GOOD_NAIVE), ref)).actions
+    assert any(x.key == "gen_accepted:d1" and "근본 원인" in x.note for x in acts)

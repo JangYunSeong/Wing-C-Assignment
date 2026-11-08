@@ -387,3 +387,40 @@ def test_imports_missing_from_the_template_classpath() -> None:
     assert _has(res.for_target("gen_starter"), "템플릿에 없는 라이브러리", "jakarta.validation")
     naive = _run(_overlays(ref_naive=[ctl]))
     assert _has(naive.for_target("gen_naive"), "템플릿에 없는 라이브러리")
+
+
+def test_injection_regex_built_from_helper_table_constants() -> None:
+    """2026-11-08: ContractCase 의 TABLE_ 상수를 이어 붙인 주입 정규식을 첫 조각만 보고 '넓은 주입'으로 오탐해 숨은 테스트 생성 실패."""
+    from task_spec.starter.static_check import inline_table_constants
+
+    consts = {"TABLE_ORDER": "orders"}
+    assert (
+        inline_table_constants(
+            'Pattern.compile("^\\\\s*update\\\\s+" + TABLE_ORDER + "\\\\b")', consts
+        )
+        == 'Pattern.compile("^\\\\s*update\\\\s+orders\\\\b")'
+    )
+    assert inline_table_constants(
+        'Pattern.compile("^\\\\s*update\\\\s+" + TABLE_ORDER)', consts
+    ).endswith('orders")')
+
+    def hidden(line: str) -> list[str]:
+        text = HC1.replace(
+            "        org.assertj",
+            f"        GraderJdbcHarness.failCommitAfter = {line};\n        org.assertj",
+        )
+        return static_check(
+            _overlays(hidden=[_f(f"{CASES}/OrderStatusBurstTest.java", text)]),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            contract=_contract_with_list(),
+            seed=BACKEND_SEED,
+        ).for_target("gen_hidden")
+
+    joined = (
+        'Pattern.compile("^\\\\s*update\\\\s+" + TABLE_ORDER + "\\\\b", Pattern.CASE_INSENSITIVE)'
+    )
+    assert not [m for m in hidden(joined) if "주입 정규식" in m]
+    bare = 'Pattern.compile("^\\\\s*update\\\\s+", Pattern.CASE_INSENSITIVE)'
+    assert any("넓음" in m for m in hidden(bare))
