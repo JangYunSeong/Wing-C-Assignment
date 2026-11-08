@@ -194,6 +194,26 @@ class InitScripts(Schema):
     noop: str = Field(min_length=1)  # 붙일 문장 (예: "SELECT 1;")
 
 
+class ConfigMerge(Schema):
+    """생성 코드의 설정 파일을 덮어쓰지 않고 바탕 설정(템플릿 → 시작 코드) 위에 키 단위로 합친다 (starter/config_merge.py).
+
+    2026-11-08 알파 (2df170e2): 참조 구현 4개가 모두 application.yml 을 통째로 새로 써 템플릿의 `ddl-auto: none`·`sql.init.mode`
+    를 지우거나(Hibernate 가 테이블을 다시 만들어 시드가 사라짐 → 모든 요청 404) DB 주소를 고정해(테스트 컨텍스트끼리 같은
+    메모리 DB → schema.sql 두 번 실행, 기동 실패) — 수리 배정은 '테스트 의심'·'계약 모호'로 잘못 짚었다.
+    """
+
+    paths: list[str] = Field(min_length=1)  # 프로젝트 기준 상대 경로 (YAML)
+    # 점 표기 키 — 생성 코드가 무엇을 쓰든 바탕 값으로 되돌린다 (바탕에 없으면 지움 = 프레임워크 기본값)
+    locked_keys: list[str] = Field(default_factory=list)
+
+    @field_validator("paths")
+    @classmethod
+    def _yaml(cls, v: list[str]) -> list[str]:
+        if bad := [p for p in v if not p.endswith((".yml", ".yaml"))]:
+            raise ValueError(f"YAML 설정 파일만 합칠 수 있음: {bad}")
+        return v
+
+
 class SeedSql(Schema):
     """시드 SQL 을 코드가 쓰는 규칙 (starter/seed_sql.py) — 시작 코드 생성기가 쓴 시드 파일은 이 렌더본으로 바뀐다."""
 
@@ -308,6 +328,7 @@ class TemplateManifest(Schema):
     # 숨은 테스트가 계약 시드의 DB 행을 바꾸는 과제인가 — 아니면(cli·file·ui) 시드·행 배정 대신 입력 환경(fixtures)과 케이스 setup
     seed_rows: bool = True
     init_scripts: InitScripts | None = None
+    config_merge: ConfigMerge | None = None
     seed_sql: SeedSql | None = None
     hidden_helper: HiddenHelper | None = None
     # 공개 테스트 도우미 — 같은 렌더러, 숨은 범위 대신 공개 테스트 몫 행 (starter/hidden_helpers.py audience="public")

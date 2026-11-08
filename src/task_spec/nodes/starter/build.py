@@ -335,7 +335,10 @@ async def build_and_repair(
             )
             out.reports.append(report)
             out.snapshots.append(dict(out.overlays))
-            plan = assign(report, b.plan, out.overlays, missed, out.regen_counts)
+            shared = set(b.template.files("project")) | {
+                f.path for f in out.overlays[STARTER].files
+            }  # 이미 있는 파일 — 모든 구현이 다시 쓰면 원인 후보
+            plan = assign(report, b.plan, out.overlays, missed, out.regen_counts, shared)
             for (
                 flag
             ) in plan.flags:  # 막지 않는 표시 (예: 다시 만든 시작 코드가 또 숨은 케이스 통과)
