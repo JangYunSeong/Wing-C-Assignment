@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Literal, Protocol
@@ -39,6 +39,9 @@ MAX_ROUNDS = 3  # 빌드 전체 재생성 상한
 PER_ARTIFACT = 1  # 산출물마다 재생성 상한
 COMPILE_BUDGET = 2  # 컴파일 오류만 고칠 때는 2회까지 — 고치기 싸고, 2026-11-07 루프에서 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다
 COMPILE_TEST_ATTEMPTS = 2  # 채점 코드 컴파일 오류 재요청 상한 (구현 만들기 전, compile_and_fix)
+COMPILE_IMPL_ATTEMPTS = (
+    2  # 구현(시작 코드·참조 구현) 컴파일 오류 재요청 상한 (무거운 검증 전, compile_impl_and_fix)
+)
 HIDDEN = "hidden"
 PUBLIC = "public"  # 공개 테스트 오버레이 키 (gen_public — 테스트 먼저, 2026-11-08)
 
@@ -65,6 +68,9 @@ class TestCompiler(Protocol):
         self, hidden: Overlay, public: Overlay | None
     ) -> list[CompileError]: ...
 
+    # 오버레이 조합을 컴파일 (구현 + 둘레 산출물 — compile_impl_and_fix). 없는 컴파일러는 구현 컴파일 루프를 건너뛴다.
+    async def compile_overlays(self, overlays: Sequence[Overlay]) -> list[CompileError]: ...
+
 
 @dataclass
 class CompileFix:
@@ -88,13 +94,20 @@ def _code_written(b: BuildInputs) -> set[str]:
     return paths | ({check.path} if check is not None else set())
 
 
-def compile_note(errors: Sequence[CompileError], overlay: Overlay) -> str:
+TESTS_NOTE = (
+    "채점 코드 컴파일 오류 (javac — 구현 없이 테스트·하네스·도우미만 컴파일) — 고쳐서 다시 쓴다. "
+    "하네스·도우미에 없는 이름은 문서·소스에 있는 이름으로, JDK 타입은 import 해서:"
+)
+IMPL_NOTE = (
+    "구현 컴파일 오류 (javac — 이 구현을 시작 코드·공개·숨은 테스트와 함께 컴파일) — 오류가 난 파일만 고쳐서 다시 쓴다. "
+    "쓰는 타입은 import 하고, 계약·시작 코드에 있는 이름 그대로:"
+)
+
+
+def compile_note(errors: Sequence[CompileError], overlay: Overlay, header: str = TESTS_NOTE) -> str:
     """재요청 사유 — javac 오류마다 위치·메시지·symbol/location, 그리고 그 줄의 코드."""
     files = {f.path: f.content.splitlines() for f in overlay.files}
-    lines = [
-        "채점 코드 컴파일 오류 (javac — 구현 없이 테스트·하네스·도우미만 컴파일) — 고쳐서 다시 쓴다. "
-        "하네스·도우미에 없는 이름은 문서·소스에 있는 이름으로, JDK 타입은 import 해서:"
-    ]
+    lines = [header]
     for e in errors[:10]:
         src = files.get(e.path, [])
         lines.append(f"- {e.path}:{e.line} {e.message}" + (f" ({e.detail})" if e.detail else ""))
@@ -168,6 +181,138 @@ async def compile_and_fix(
             elif ok:
                 fix.public = r.overlay
     return fix
+
+
+@dataclass
+class ImplFix:
+    """compile_impl_and_fix 결과 — 고친 구현 오버레이, 컴파일 횟수, 첫·마지막 오류, 수리 이력, 재요청 결과."""
+
+    overlay: Overlay
+    compiles: int = 0
+    first_errors: list[CompileError] = field(default_factory=list)
+    errors: list[CompileError] = field(default_factory=list)
+    repairs: list[RepairRecord] = field(default_factory=list)
+    results: list[GenResult] = field(default_factory=list)
+
+
+async def compile_impl_and_fix(
+    generator: str,
+    overlay: Overlay,
+    around: Callable[[Overlay], list[Overlay]],
+    regen: Callable[[str, Overlay], Awaitable[GenResult]],
+    compiler: TestCompiler,
+    attempts: int = COMPILE_IMPL_ATTEMPTS,
+) -> ImplFix:
+    """구현 하나(시작 코드·참조 구현)를 둘레 산출물과 함께 컴파일하고, 그 구현이 쓴 파일의 javac 오류만 그 생성기에 붙여 다시
+    요청한다 (최대 attempts 회). 다른 산출물 파일의 오류는 이 생성기로 못 고치므로 거기서 멈춘다 — 무거운 검증(기동·테스트)
+    전에 싸게 고친다. 2026-11-08 알파: 시작 코드가 자기 기존 테스트에서 import 를 빠뜨려(`Map`) 첫 검증 회차가 통째로
+    compile_error, 이어서 참조 구현 컴파일 수리로 회차 3·$0.40 — 컴파일 루프가 채점 코드만 보던 탓."""
+    fix = ImplFix(overlay=overlay)
+    compile_overlays = getattr(compiler, "compile_overlays", None)
+    if compile_overlays is None:
+        return fix
+    for attempt in range(attempts + 1):
+        errors = await compile_overlays(around(fix.overlay))
+        fix.compiles += 1
+        if attempt == 0:
+            fix.first_errors = list(errors)
+        fix.errors = list(errors)
+        if not errors or attempt == attempts:
+            break
+        mine = [e for e in errors if e.path in {f.path for f in fix.overlay.files}]
+        if not mine:
+            break
+        r = await regen(compile_note(mine, fix.overlay, IMPL_NOTE), fix.overlay)
+        fix.results.append(r)
+        ok = r.overlay is not None and r.ok
+        e = mine[0]
+        fix.repairs.append(
+            RepairRecord(
+                gate="compile",
+                target=generator,  # type: ignore[arg-type]
+                reason=(
+                    (f"{overlay.label}: " if overlay.label else "")
+                    + f"{PurePosixPath(e.path).name}:{e.line} {e.message}"
+                )[:300],
+                result="regenerated" if ok else "failed",
+            )
+        )
+        if ok:
+            fix.overlay = r.overlay  # type: ignore[assignment]
+    return fix
+
+
+def _starter_around(public: Overlay | None) -> Callable[[Overlay], list[Overlay]]:
+    return lambda s: [s, *([public] if public is not None else [])]
+
+
+def _ref_around(
+    starter: Overlay, public: Overlay | None, hidden: Overlay
+) -> Callable[[Overlay], list[Overlay]]:
+    return lambda r: [starter, r, *([public] if public is not None else []), hidden]
+
+
+def _ref_regen(
+    b: BuildInputs,
+    o: Overlay,
+    starter: Overlay,
+    public: Overlay | None,
+    by_id: dict[str, AcceptedDesign],
+    kw: dict[str, object],
+) -> tuple[str, Callable[[str, Overlay], Awaitable[GenResult]]]:
+    if o.kind == "ref_naive":
+        return "gen_naive", lambda note, prev: gen_naive(
+            b,
+            starter,
+            note=note,
+            previous=prev,
+            public=public,
+            **kw,  # type: ignore[arg-type]
+        )
+    design = by_id[o.label]
+    return "gen_accepted", lambda note, prev: gen_accepted(
+        b,
+        starter,
+        design,
+        note=note,
+        previous=prev,
+        public=public,
+        **kw,  # type: ignore[arg-type]
+    )
+
+
+def _compile_flag(what: str, fix: ImplFix) -> str:
+    e = fix.errors[0]
+    return (
+        f"{what} 컴파일 실패 (재요청 {len(fix.repairs)}회 뒤, 오류 {len(fix.errors)}건): "
+        f"{e.path}:{e.line} {e.message} {e.detail}"
+    ).strip()[:300]
+
+
+async def _compile_refs(
+    out: BuildOutcome,
+    b: BuildInputs,
+    by_id: dict[str, AcceptedDesign],
+    kw: dict[str, object],
+    compiler: TestCompiler,
+    absorb: Callable[[ImplFix], None],
+    labels: Sequence[str],
+) -> None:
+    """참조 구현마다 시작 코드·공개·숨은 테스트와 함께 컴파일 — 오류는 그 구현에 (개발 서버 한 대 — 차례로).
+    끝까지 안 되면 표시만 하고 검증으로 넘긴다 (다른 구현은 판정할 수 있고, 배정 규칙이 컴파일 오류를 다시 다룬다)."""
+    starter, public, hidden = out.overlays[STARTER], out.overlays.get(PUBLIC), out.overlays[HIDDEN]
+    for label in labels:
+        o = out.overlays.get(label)
+        if o is None:
+            continue
+        generator, regen = _ref_regen(b, o, starter, public, by_id, kw)
+        fix = await compile_impl_and_fix(
+            generator, o, _ref_around(starter, public, hidden), regen, compiler
+        )
+        absorb(fix)
+        out.overlays[label] = fix.overlay
+        if fix.errors:
+            out.review_flags.append(_compile_flag(label, fix))
 
 
 @dataclass
@@ -261,6 +406,12 @@ async def build_and_repair(
             return None
         return r.overlay
 
+    def absorb(fix: ImplFix) -> None:
+        for r in fix.results:
+            out.provenance += r.provenance
+            out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
+        out.repairs += fix.repairs
+
     def drop(r: GenResult, others: int) -> bool:
         """허용 구현이 재요청에도 하네스가 덮어쓰는 설정에 기대면 그 설계를 뺀다 — 다른 허용 설계가 남을 때만 (사람 확인)."""
         if not (_voided(r) and others > 0):
@@ -307,6 +458,22 @@ async def build_and_repair(
     if starter is None:
         out.overlays = made_tests
         return out
+    if (
+        compiler is not None
+    ):  # 시작 코드가 (공개 테스트와 함께) 컴파일되어야 그 위에 참조 구현을 쓴다
+        sfix = await compile_impl_and_fix(
+            "gen_starter",
+            starter,
+            _starter_around(public),
+            lambda note, prev: gen_starter(b, note=note, previous=prev, public=public, **kw),  # type: ignore[arg-type]
+            compiler,
+        )
+        absorb(sfix)
+        starter = sfix.overlay
+        if sfix.errors:
+            out.review_flags.append(_compile_flag("시작 코드", sfix))
+            out.overlays = {STARTER: starter, **made_tests}
+            return out
     first = await asyncio.gather(
         gen_naive(b, starter, public=public, **kw),  # type: ignore[arg-type]
         *(gen_accepted(b, starter, d, public=public, **kw) for d in designs),  # type: ignore[arg-type]
@@ -319,6 +486,8 @@ async def build_and_repair(
     out.overlays = {STARTER: starter, **made_tests, **{o.label: o for o in made if o is not None}}
     if any(o is None for o in made):
         return out
+    if compiler is not None:
+        await _compile_refs(out, b, by_id, kw, compiler, absorb, [o.label for o in made if o])
 
     for round_no in range(max_rounds + 1):
         out.rounds = round_no
@@ -368,7 +537,7 @@ async def build_and_repair(
                 )
             out.repairs += [_record(a, "skipped") for a in plan.actions]
             return out
-        if not await _regenerate(plan.actions, out, b, by_id, kw, took, drop):
+        if not await _regenerate(plan.actions, out, b, by_id, kw, took, drop, compiler, absorb):
             return out
     return out
 
@@ -381,6 +550,8 @@ async def _regenerate(
     kw: dict[str, object],
     took,  # type: ignore[no-untyped-def]
     drop,  # type: ignore[no-untyped-def]
+    compiler: TestCompiler | None = None,
+    absorb: Callable[[ImplFix], None] | None = None,
 ) -> bool:
     """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
     시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
@@ -415,6 +586,22 @@ async def _regenerate(
         ]
         if new is None:
             return False
+        if (
+            compiler is not None and absorb is not None
+        ):  # 다시 만든 시작 코드도 무거운 검증 전에 컴파일
+            sfix = await compile_impl_and_fix(
+                "gen_starter",
+                new,
+                _starter_around(public),
+                lambda note, prev: gen_starter(b, note=note, previous=prev, public=public, **kw),  # type: ignore[arg-type]
+                compiler,
+            )
+            absorb(sfix)
+            new = sfix.overlay
+            if sfix.errors:
+                out.review_flags.append(_compile_flag("다시 만든 시작 코드", sfix))
+                out.overlays[STARTER] = new
+                return False
         out.overlays[STARTER] = starter = new
     refs = [(k, o) for k, o in out.overlays.items() if k not in (STARTER, HIDDEN, PUBLIC)]
     jobs: list[tuple[str, object]] = []
@@ -457,6 +644,7 @@ async def _regenerate(
                 )
     results = await asyncio.gather(*(j for _, j in jobs))  # type: ignore[arg-type]
     ok_all = True
+    remade: list[str] = []
     for (label, _), r in zip(jobs, results, strict=True):
         others = sum(1 for k, o in out.overlays.items() if o.kind == "ref_accepted" and k != label)
         if drop(r, others):
@@ -467,6 +655,12 @@ async def _regenerate(
             ok_all = False
         else:
             out.overlays[label] = new
+            if label != HIDDEN:
+                remade.append(label)
+    if (
+        compiler is not None and absorb is not None and remade
+    ):  # 다시 만든 참조 구현도 검증 전에 컴파일
+        await _compile_refs(out, b, by_id, kw, compiler, absorb, remade)
     for a in actions:
         if a.generator in ("gen_starter", "gen_public"):
             continue
