@@ -186,8 +186,13 @@ def junit_results(results_dir: Path, ids: dict[str, str]) -> list[TestResult]:
 class GradleVerifier:
     """대상마다 조립 → gradle test → TargetRun. 조립 폴더는 지우고 로그만 남긴다."""
 
-    def __init__(self, template: Template, work: Path, timeout: int = 1200) -> None:
+    def __init__(
+        self, template: Template, work: Path, timeout: int = 1200, keep_code: bool = False
+    ) -> None:
         self.template, self.work, self.timeout = template, work, timeout
+        self.keep_code = (
+            keep_code  # True 면 회차마다 생성 코드(오버레이)를 r<n>-code/<대상>/ 에 남긴다
+        )
         self.rounds = 0
         self.compiles = 0
 
@@ -228,6 +233,10 @@ class GradleVerifier:
         self.compiles += 1
         dest = self.work / f"c{self.compiles}-tests"
         log = self.work / f"c{self.compiles}-tests.log"
+        if self.keep_code:
+            write_overlay(hidden, self.work / f"c{self.compiles}-code" / "hidden")
+            if public is not None:
+                write_overlay(public, self.work / f"c{self.compiles}-code" / "public")
         assemble(self.template, dest, hidden, *((public,) if public is not None else ()))
         cmds = self.template.manifest.commands
         cmd = (cmds.test_compile if cmds is not None else None) or "gradlew compileTestJava"
@@ -262,6 +271,13 @@ class GradleVerifier:
         self.rounds += 1
         self.work.mkdir(parents=True, exist_ok=True)
         pub = (public,) if public is not None else ()
+        if self.keep_code:
+            code = self.work / f"r{self.rounds}-code"
+            for name, o in (("starter", starter), ("hidden", hidden), ("public", public)):
+                if o is not None:
+                    write_overlay(o, code / name)
+            for r in refs:
+                write_overlay(r, code / (r.label or r.kind))
         runs = [await asyncio.to_thread(self._target, "starter", "starter", (starter, *pub), None)]
         if (
             runs[0].setup == "ok"
