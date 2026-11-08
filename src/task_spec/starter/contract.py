@@ -35,6 +35,7 @@ from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import find_terms
+from task_spec.starter.header_values import header_problems
 from task_spec.starter.seed_rows import case_rows_problems, seed_problems
 from task_spec.starter.state_rule import legacy_rule, state_problems
 
@@ -874,4 +875,5 @@ def check_contract(
         flags += entity_flags
         problems += _needs(contract, plan, seed)
     problems += state_problems(contract, plan)
+    problems += header_problems(contract)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)

@@ -292,7 +292,10 @@ def _public_refs(
 
 
 def _starter_solves(
-    run: TargetRun, plan: HiddenPlan, regen_counts: Mapping[str, int]
+    run: TargetRun,
+    plan: HiddenPlan,
+    regen_counts: Mapping[str, int],
+    starter: TargetRun | None = None,
 ) -> tuple[list[RepairAction], list[str]]:
     """시작 코드 그대로(지원자가 아무것도 안 함)로 숨은 케이스를 **하나라도** 통과 → 새 기능이 시작 코드에 들어 있다 → `gen_starter`.
     이미 다시 만든 시작 코드가 또 통과하면 막지 않고 표시만 — 그 케이스가 지원자의 작업을 재지 않을 수 있다 (사람 확인).
@@ -310,6 +313,32 @@ def _starter_solves(
     if not passed:
         return [], []
     ids = ", ".join(passed)
+    missing = (
+        [t.name for t in starter.results("public") if t.result != "PASS"]
+        if starter is not None
+        else []
+    )
+    if missing:
+        # 시작 코드가 공개 테스트에서 실패 = 새 기능이 없다는 증거 → 기능 없이도 통과하는 숨은 케이스가 비어 있는 것.
+        # 2026-11-08 알파 (2df170e2): 숨은 테스트가 계약에 없는 요청자로 요청해 모두 403 — hc2 는 "성공 기록 0건"만 단언해
+        # 시작 코드 그대로 통과, 배정은 시작 코드를 두 번 다시 만들었다.
+        if regen_counts.get("gen_hidden", 0) >= 1:
+            return [], [
+                f"숨은 테스트를 다시 만든 뒤에도 기능 없는 시작 코드(공개 테스트 {', '.join(missing)} 실패)가 숨은 케이스 {ids} 를 통과 "
+                "— 그 케이스가 기능 단계에 닿지 않는다 (숨은 테스트·계약 사람 확인)"
+            ]
+        return [
+            RepairAction(
+                "gen_hidden",
+                "",
+                "②'",
+                f"기능 없는 시작 코드가 숨은 케이스 {ids} 통과 — 숨은 테스트가 기능 단계에 닿지 않음",
+                f"시작 코드 그대로(새 기능 없음 — 공개 테스트 {', '.join(missing)} 실패)로 숨은 케이스 {ids} 를 통과했다 — 이 케이스는 "
+                "아무것도 구현하지 않아도 통과한다. 요청이 기능 단계(저장·기록)에 닿았는지 먼저 확인한다: 규칙·권한을 통과하는 "
+                "값(ContractCase 의 NEXT_OK_…·HEADER_…_OK·okHeaders())으로 요청하고, 응답 상태를 단언한 뒤, '없다'만이 아니라 "
+                "있어야 할 결과(실패 기록 등)도 확인한다.",
+            )
+        ], []
     if regen_counts.get("gen_starter", 0) >= 1:
         return [], [
             f"시작 코드를 다시 만든 뒤에도 시작 코드 그대로 숨은 케이스 {ids} 를 통과 — 그 케이스가 지원자의 작업을 재지 않을 수 있다 "
@@ -720,7 +749,7 @@ def assign(
         return res
     bare = next((r for r in report.runs if r.kind == "starter_hidden"), None)
     if bare is not None:
-        acts, flags = _starter_solves(bare, plan, counts)
+        acts, flags = _starter_solves(bare, plan, counts, starter)
         res.flags += flags
         if acts:  # 참조 구현은 새 시작 코드 위에 처음부터 다시 쓰이므로 이번 결과는 보지 않는다
             res.actions = acts

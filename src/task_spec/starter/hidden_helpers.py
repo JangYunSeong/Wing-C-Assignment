@@ -7,6 +7,7 @@
 - 계약 테이블 이름 상수 (오류 주입 정규식용)
 - 계약 API 호출 함수 (경로·메서드 그대로) + 200 응답 본문을 계약 `returns` 모양(목록/객체)으로 읽는 함수
 - `peak(expectedStatus, call)` — 조절값(동시 요청 수·버스트 수)과 시간 한도를 넣은 동시 요청
+- 요청 헤더 값 상수 (`HEADER_<헤더>_OK`·`_DENIED`)와 `okHeaders()` — 계약 공개 테스트 예시에서 (starter/header_values.py)
 - `num(v)` — JSON 숫자 → long
 조절값 파일처럼 숨은 테스트 생성기는 이 파일을 쓰지 않는다 (gen_hidden 이 코드 렌더본으로 바꾼다).
 """
@@ -18,6 +19,7 @@ from typing import Literal
 
 from task_spec.schemas.build import Endpoint, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.header_values import header_values
 from task_spec.starter.seed_rows import allocate_rows, public_free
 from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
@@ -101,6 +103,38 @@ def _state_lines(contract: TaskContract) -> list[str]:
             lines.append(f'    protected static final String NEXT_OK_{key} = "{ok}";')
         if bad is not None:
             lines.append(f'    protected static final String NEXT_BAD_{key} = "{bad}";')
+    return lines
+
+
+def _header_lines(contract: TaskContract) -> list[str]:
+    """요청 헤더 값 — 테스트가 요청자 등을 지어내지 않게 (2026-11-08 알파: 지어낸 `grader` 로 모든 요청이 403).
+    값을 정할 수 없는 헤더는 상수를 두지 않는다 (지어내지 않는다)."""
+    values = header_values(contract)
+    if not values:
+        return []
+    lines = [
+        "",
+        "    // ── 요청 헤더 값: 규칙(권한)을 통과하는 값(_OK)과 권한이 거절되는 값(_DENIED) — 값을 직접 쓰지 않는다 ──",
+    ]
+    for h in values:
+        key = _value_const(h.name)
+        src = "계약 공개 테스트 예시" if h.source == "예시" else "계약상 아무 값이나 받음"
+        if h.ok is not None:
+            lines.append(f'    protected static final String HEADER_{key}_OK = "{h.ok}"; // {src}')
+        if h.denied is not None:
+            lines.append(
+                f'    protected static final String HEADER_{key}_DENIED = "{h.denied}"; // {src}'
+            )
+    oks = [h for h in values if h.ok is not None]
+    if oks:
+        pairs = ", ".join(f'"{h.name}", HEADER_{_value_const(h.name)}_OK' for h in oks)
+        lines += [
+            "",
+            "    /** 규칙(권한)을 통과하는 헤더 묶음 — 기능 단계(저장·기록)에 닿아야 하는 요청에 쓴다 */",
+            "    protected static Map<String, String> okHeaders() {",
+            f"        return Map.of({pairs});",
+            "    }",
+        ]
     return lines
 
 
@@ -205,6 +239,7 @@ def render_contract_case(
                 f"    protected static final int {prefix}_ROWS = {r.rows};",
             ]
     lines += _state_lines(contract)
+    lines += _header_lines(contract)
     tables = contract_tables(contract, manifest.naming.table) if audience == "hidden" else {}
     if tables:
         lines += ["", "    // ── 계약 테이블 이름 (오류 주입 정규식에는 이 이름을 그대로) ──"]

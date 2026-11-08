@@ -789,3 +789,29 @@ def test_shared_file_rewritten_by_every_impl_is_named_as_a_cause() -> None:
     )
     acts = assign(report, PLAN2, overlays, MISSED, {}, shared_paths={yml}).actions
     assert len(acts) == 2 and all("공유 파일" in a.reason for a in acts)
+
+
+def test_hidden_case_passed_by_a_starter_without_the_feature_regenerates_the_hidden_test() -> None:
+    """2026-11-08 알파 (2df170e2): 숨은 테스트가 계약에 없는 요청자로 요청해 모두 403 — hc2 는 '성공 기록 0건'만 단언해
+    기능 없는 시작 코드(공개 테스트 실패)도 통과했는데, 배정은 시작 코드를 다시 만들었다 → 숨은 테스트를 다시 만든다."""
+    refs = (_run("naive-all", "ref_naive", *GOOD_NAIVE), _run("d1", "ref_accepted", *GOOD_ACC))
+    no_feature = TargetRun.model_validate(
+        {
+            "target": "starter",
+            "kind": "starter",
+            "tests": [
+                _t("existing", "OrderControllerTest"),
+                _t("public", "PersistenceCheckTest"),
+                _t("public", "Pt1Test", "ASSERT", msg="expected 200 but was 501"),
+            ],
+        }
+    )
+    solved = _run("starter+hidden", "starter_hidden", *GOOD_ACC)
+    report = VerifyReport(runs=[no_feature, solved, *refs])
+    plan = assign(report, PLAN2, OVERLAYS, MISSED)
+    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].gate == "②'"
+    assert "Pt1Test" in plan.actions[0].note and "기능 단계" in plan.actions[0].note
+    # 숨은 테스트를 이미 다시 만들었으면 막지 않고 표시만
+    again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_hidden": 1})
+    assert not any(a.generator == "gen_hidden" and a.gate == "②'" for a in again.actions)
+    assert any("숨은 테스트를 다시 만든 뒤에도" in f for f in again.flags)
