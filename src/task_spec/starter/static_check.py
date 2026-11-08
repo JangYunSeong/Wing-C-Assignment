@@ -33,6 +33,7 @@ from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.render import README, render_params
+from task_spec.starter.seed_sql import schema_problems
 from task_spec.starter.tables import contract_tables, declared_tables, referenced_tables, same_table
 from task_spec.starter.templates import Template, glob_match, slot_allows
 
@@ -396,6 +397,15 @@ def _endpoint_rx(endpoints: Iterable[Endpoint]) -> list[tuple[str, re.Pattern[st
     ]
 
 
+def _starter_schema(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
+    """시작 코드 스키마가 코드가 쓸 시드와 맞는가 (starter/seed_sql.schema_problems) — 맞지 않으면 기동이 깨진다."""
+    rule = t.manifest.seed_sql
+    if contract is None or rule is None:
+        return []
+    schema = next((f.content for f in o.files if f.path == rule.schema_path), None)
+    return [StaticProblem("gen_starter", p) for p in schema_problems(schema, contract, t.manifest)]
+
+
 def _starter_new_api_tests(
     o: Overlay, t: Template, contract: TaskContract | None, spec: SpecView
 ) -> list[StaticProblem]:
@@ -720,6 +730,7 @@ def static_check(
             res.problems += _starter_tables(o, template, contract)
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
+            res.problems += _starter_schema(o, template, contract)
             res.review_flags += flags
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract)

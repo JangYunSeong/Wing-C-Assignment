@@ -701,6 +701,26 @@ def _target_rows(contract: TaskContract, plan: HiddenPlan) -> list[str]:
     return out
 
 
+def _internal_expect(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
+    """숨은 케이스 통과 조건(expect)이 조절값 이름을 말하면 표시만 (재요청 아님 — 낱말 판단이라 오탐 위험).
+    2026-11-07 알파 5회차: "모든 요청이 pool_size(30) 내에서 연결을 점유" 처럼 HTTP 로 관찰할 수 없는 조건이라, 숨은 테스트가 단언으로
+    옮기다 '시간 초과가 일어나야 한다'로 거꾸로 써 올바른 구현까지 떨어뜨렸다."""
+    names = [p.name for p in manifest.harness_params]
+    out: list[str] = []
+    for c in plan.cases:
+        hit = [
+            n
+            for n in names
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])", c.expect)
+        ]
+        if hit:
+            out.append(
+                f"숨은 케이스 {c.case_id} 의 통과 조건이 조절값({', '.join(hit)})을 말함: {c.expect[:120]} — "
+                "HTTP 로 관찰할 수 있는 결과(응답·기록)로 적혀야 숨은 테스트가 단언으로 옮길 수 있다 (사람 확인)"
+            )
+    return out
+
+
 def _foreign_keys(contract: TaskContract) -> list[str]:
     """foreign_keys 의 필드·대상 엔티티가 계약에 있다."""
     names = {m.name for m in contract.entities}
@@ -738,4 +758,5 @@ def check_contract(
     else:
         problems += _no_seed_rows(contract, plan, manifest)
     problems += _foreign_keys(contract)
+    flags += _internal_expect(plan, manifest)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)

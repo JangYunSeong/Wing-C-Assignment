@@ -47,6 +47,7 @@ from task_spec.starter.contract import SpecView, existing_endpoints
 from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
 from task_spec.starter.seed_rows import RowRange, allocate_rows
+from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
 from task_spec.starter.templates import Template
 
@@ -237,7 +238,14 @@ def naive_input(
 ) -> GenRefInput:
     """흔한 구현 — 재료의 naive_impl 만 (깨지는 이유는 주지 않는다: 알면 피해 간다). keep_traps = 하나만 놓친 판에서 지킬 숨은 요구."""
     keep = [t.description for t in task.traps if t.trap_id in keep_traps]
-    return _ref_input(task, contract, template, starter, seed.naive_impl, _lines(keep), note)
+    goal = seed.naive_impl
+    if (
+        template.manifest.naive_conditions
+    ):  # 설명한 구조가 이 스택에서 정말 그렇게 동작하게 (깨지는 이유는 아님)
+        goal += "\n\n이 스택에서 위 구조를 설명대로 동작하게 쓰는 법:\n" + _lines(
+            [f"- {c}" for c in template.manifest.naive_conditions]
+        )
+    return _ref_input(task, contract, template, starter, goal, _lines(keep), note)
 
 
 def accepted_input(
@@ -390,8 +398,36 @@ class BuildInputs:
         return res.for_target(KIND_TARGET[overlay.kind])
 
     def fix(self, files: list[GeneratedFile]) -> tuple[list[GeneratedFile], list[str]]:
-        """생성기 출력에서 코드가 고칠 수 있는 것 — 빈 시작 스크립트 (starter/init_scripts.py)."""
-        return ensure_statements(files, self.template.manifest)
+        """참조 구현 출력에서 코드가 고칠 것 — 시드 파일은 빼고(시작 코드의 계약 시드를 씀), 빈 시작 스크립트 보정."""
+        return self._fixed(files, starter=False)
+
+    def fix_starter(self, files: list[GeneratedFile]) -> tuple[list[GeneratedFile], list[str]]:
+        """시작 코드 출력에서 코드가 고칠 것 — 시드 파일을 계약 시드 렌더본으로 바꾸고, 빈 시작 스크립트 보정."""
+        return self._fixed(files, starter=True)
+
+    def _fixed(
+        self, files: list[GeneratedFile], *, starter: bool
+    ) -> tuple[list[GeneratedFile], list[str]]:
+        m = self.template.manifest
+        notes: list[str] = []
+        rule = m.seed_sql
+        if rule is not None:
+            mine = next((f for f in files if f.path == rule.path), None)
+            rest = [f for f in files if f.path != rule.path]
+            if starter:
+                schema = next((f.content for f in files if f.path == rule.schema_path), None)
+                rendered = render_seed_sql(self.contract, m, schema)
+                if rendered is not None:
+                    if mine is None or mine.content != rendered.content:
+                        notes.append(
+                            f"{rule.path} 를 계약 시드로 코드가 씀 (생성기가 쓴 시드는 쓰지 않음)"
+                        )
+                    files = [*rest, rendered]
+            elif mine is not None:
+                notes.append(f"{rule.path} 를 뺌 — 시드는 시작 코드의 계약 시드를 쓴다")
+                files = rest
+        files, fixed = ensure_statements(files, m)
+        return files, notes + fixed
 
 
 def _overlay(kind: FileKind, label: str = "") -> Callable[[list[GeneratedFile]], Overlay]:
@@ -417,7 +453,7 @@ async def gen_starter(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
-        fix=b.fix,
+        fix=b.fix_starter,
     )
 
 
