@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.template import TemplateManifest
 
+PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 행 수 — 숨은 범위·작은 id 밖
 RESERVED_ROWS = 10  # 작은 id 쪽 — 숨은 케이스에 나눠 주지 않는다 (지원자 테스트·공개 테스트·시작 코드 테스트 몫)
 _ID_FIELDS = {"id"}
 _QUOTED = re.compile(r"""["'`]([^"'`]+)["'`]""")
@@ -189,6 +190,30 @@ def allocate_rows(
     return res
 
 
+def public_free(
+    contract: TaskContract, plan: HiddenPlan, reserved: int = RESERVED_ROWS
+) -> list[tuple[str, dict[str, SeedScalar], list[int]]]:
+    """공개 테스트 몫 행 — (엔티티 id, 처음 값, id 들). 처음 값이 같은 그룹은 하나로, 작은 id(1~reserved)와 숨은 케이스 범위를
+    피해 낮은 id 부터 PUBLIC_PER_GROUP 개까지. 공개·숨은·시작 코드 테스트가 같은 DB 를 함께 써도 서로의 행을 바꾸지 않게."""
+    used = {
+        i
+        for r in allocate_rows(contract, plan, reserved).ranges
+        for i in range(r.first, r.last + 1)
+    }
+    out: dict[tuple[str, tuple[tuple[str, SeedScalar], ...]], list[int]] = {}
+    for s in contract.seed:
+        if s.rows <= 0:
+            continue
+        for g in sorted(s.groups, key=lambda x: x.first):
+            ids = out.setdefault((s.entity_id, tuple(g.values.items())), [])
+            for i in range(max(g.first, reserved + 1), g.last + 1):
+                if len(ids) >= PUBLIC_PER_GROUP:
+                    break
+                if i not in used:
+                    ids.append(i)
+    return [(eid, dict(vals), ids) for (eid, vals), ids in out.items()]
+
+
 def _cond(initial: Mapping[str, SeedScalar]) -> str:
     return ", ".join(f"{k}={v}" for k, v in initial.items()) or "조건 없음"
 
@@ -284,10 +309,52 @@ def fit_seed(
         )
         seeds[d.entity_id] = grown
         contract = contract.model_copy(update={"seed": [seeds[s.entity_id] for s in contract.seed]})
+    if manifest.public_helper is not None:
+        contract = _fit_public(contract, plan, seeds, names, reserved, notes)
     if notes:  # 고친 결과도 스키마(행 상한 등)를 지키는지
         contract = TaskContract.model_validate(contract.model_dump())
         plan = HiddenPlan.model_validate(plan.model_dump())
     return contract, plan, notes
+
+
+def _fit_public(
+    contract: TaskContract,
+    plan: HiddenPlan,
+    seeds: dict[str, SeedRule],
+    names: Mapping[str, str],
+    reserved: int,
+    notes: list[str],
+) -> TaskContract:
+    """처음 값마다 공개 테스트 몫 PUBLIC_PER_GROUP 행이 비게 시드 끝에 덧붙인다.
+
+    2026-11-08 상류 평가: 시드 172행을 숨은 케이스가 11~172 전부 가져가 공개 몫 상수가 하나도 없었고, 공개 테스트가 없는 이름
+    (PUBLIC_ORDER_READY)을 짐작해 재요청으로도 못 고쳤다 (2/2). 행 수는 LLM 이 아니라 코드가 맞춘다."""
+    for _ in range(sum(len(s.groups) for s in contract.seed) + 1):
+        short = [
+            (e, v, PUBLIC_PER_GROUP - len(ids))
+            for e, v, ids in public_free(contract, plan, reserved)
+        ]
+        short = [x for x in short if x[2] > 0]
+        if not short:
+            break
+        eid, values, deficit = short[0]
+        seed = seeds[eid]
+        first = seed.rows + 1
+        last = max(seed.rows, reserved) + deficit
+        tail = max(seed.groups, key=lambda g: g.last) if seed.groups else None
+        if tail is not None and tail.last == seed.rows and dict(tail.values) == values:
+            groups = [
+                g if g is not tail else g.model_copy(update={"last": last}) for g in seed.groups
+            ]
+        else:
+            groups = [*seed.groups, SeedGroup(first=first, last=last, values=dict(values))]
+        seeds[eid] = seed.model_copy(update={"rows": last, "groups": groups})
+        notes.append(
+            f"{names.get(eid, eid)} 시드 {seed.rows} → {last}행: id {first}~{last} ({_cond(values)}) 덧붙임 "
+            f"— 공개 테스트 몫 {PUBLIC_PER_GROUP}행 (숨은 케이스 범위·작은 id {reserved}행 밖)"
+        )
+        contract = contract.model_copy(update={"seed": [seeds[s.entity_id] for s in contract.seed]})
+    return contract
 
 
 def case_rows_problems(

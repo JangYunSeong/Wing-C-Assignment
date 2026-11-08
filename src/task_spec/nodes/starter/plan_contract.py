@@ -27,7 +27,7 @@ from task_spec.schemas import (
     TaskItem,
 )
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.contract import SpecView, check_contract
+from task_spec.starter.contract import SpecView, check_contract, fit_covers
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.templates import Template
 
@@ -64,6 +64,11 @@ def _range(lo: float | None, hi: float | None) -> str:
     if lo is None and hi is None:
         return ""
     return f", {'' if lo is None else f'{lo:g}'}–{'' if hi is None else f'{hi:g}'}"
+
+
+# 계약 생성 시도 수 — 첫 답 + 재요청 2회. 2026-11-08 상류 평가: 검사 항목이 늘자(전이 규칙 + 관찰 불가 통과 조건) 재요청 한 번에
+# 다 고치지 못해 계약 실패가 0/9 → 3/9 로 늘었다 (재요청은 필요할 때만 — 회당 약 $0.03).
+ATTEMPTS = 3
 
 
 def fill_hidden_defaults(plan: HiddenPlan, m: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
@@ -178,9 +183,10 @@ async def plan_contract(
     # → LLM 이 값 + 근거 인용을 내고 코드가 확인한다 (check_contract). 근거가 "없음"이면 그때 명세 결함.
 
     prompt_t = prompts.get(TASK)
-    note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
+    base_note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
+    note = base_note
     best: tuple[PlanContractOutput, list[str], list[str], list[str], list[str]] | None = None
-    for attempt in range(2):
+    for attempt in range(ATTEMPTS):
         prompt = assemble(
             prompt_t,
             for_prompt(plan_input(task, template, note, seed), prompt_t.input_model),
@@ -204,6 +210,9 @@ async def plan_contract(
             fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
             out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
             notes += seed_notes
+        covered, cover_notes = fit_covers(out.contract, spec)
+        out = out.model_copy(update={"contract": covered})
+        notes += cover_notes
         check = check_contract(out.contract, out.hidden_plan, spec, manifest, seed)
         logger.info(
             "%s attempt=%d problems=%d gaps=%d latency_ms=%d",
@@ -220,17 +229,19 @@ async def plan_contract(
             break  # 통과 — 또는 명세 결함이라 재요청해도 소용없음
         if attempt == 0:
             res.first_problems = list(check.problems)
-            res.errors.append(
-                NodeError(
-                    node=TASK,
-                    code="contract_invalid",
-                    message=f"자동 검증 실패 {len(check.problems)}건 — 재요청",
-                )
+        res.errors.append(
+            NodeError(
+                node=TASK,
+                code="contract_invalid",
+                message=f"자동 검증 실패 {len(check.problems)}건 — 재요청",
             )
-            lines = "\n".join(f"- {p}" for p in check.problems)
-            note = "\n".join(
-                x for x in (note, f"이전 답의 문제 (고쳐서 다시 쓰세요):\n{lines}") if x
-            )
+        )
+        lines = "\n".join(
+            f"- {p}" for p in check.problems
+        )  # 직전 답의 문제만 (앞 회차 문제는 이미 고쳤을 수 있다)
+        note = "\n".join(
+            x for x in (base_note, f"이전 답의 문제 (고쳐서 다시 쓰세요):\n{lines}") if x
+        )
     if best is None:
         res.flags.append(FLAG_FAILED)
         return res

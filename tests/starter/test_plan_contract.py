@@ -110,12 +110,12 @@ async def test_first_answer_ok() -> None:
 
 async def test_failed_calls_are_counted_in_provenance() -> None:
     bad = Completion("{not json", usage=Usage(input=1000, output=500))
-    fake = FakeBackend().push(*[bad] * 4)  # 시도 2번 × (첫 답 + 형식 재요청)
+    fake = FakeBackend().push(*[bad] * 6)  # 시도 3번 (ATTEMPTS) × (첫 답 + 형식 재요청)
     res = await _run(fake)
     assert not res.ok and res.contract is None
-    assert len(fake.calls) == 4
-    assert len(res.provenance) == 2 and all(p.prompt == "plan_contract@7" for p in res.provenance)
-    assert sum(p.tokens.out for p in res.provenance) == 4 * 500
+    assert len(fake.calls) == 6
+    assert len(res.provenance) == 3 and all(p.prompt == "plan_contract@7" for p in res.provenance)
+    assert sum(p.tokens.out for p in res.provenance) == 6 * 500
 
 
 async def test_problems_are_reasked_once() -> None:
@@ -127,9 +127,10 @@ async def test_problems_are_reasked_once() -> None:
 
 
 async def test_persistent_problem_is_flagged_and_best_kept() -> None:
-    fake = FakeBackend().push(_out(_leaky()), _out(_leaky()))
+    """2026-11-08: 재요청 2번까지 (ATTEMPTS=3) — 검사 항목이 늘어 한 번에 다 못 고치는 경우가 늘었다."""
+    fake = FakeBackend().push(_out(_leaky()), _out(_leaky()), _out(_leaky()))
     res = await _run(fake)
-    assert len(fake.calls) == 2 and not res.ok
+    assert len(fake.calls) == 3 and not res.ok
     assert res.contract is not None and res.problems
     assert any(f.startswith(FLAG_INVALID) for f in res.flags)
 
@@ -264,3 +265,22 @@ def test_seed_needs_go_into_the_prompt_seed_rules() -> None:
         "숨은 요구가 계약에"
         not in plan_input(_task(), load_template("backend/java-spring-boot3-jpa")).seed_rules
     )
+
+
+async def test_second_reask_carries_only_the_latest_problems() -> None:
+    """재요청마다 직전 답의 문제만 — 앞 회차 문제는 이미 고쳤을 수 있다."""
+    from tests.starter.test_generate import _Capture
+    from tests.starter.test_generate import _llm as capture_llm
+
+    cap = _Capture(_out(_leaky()), _out(_leaky()), _out())
+    res = await plan_contract(
+        _task(),
+        TEMPLATE,
+        llm=capture_llm(cap),
+        prompts=PROMPTS,
+        ontology_version="onto-test",
+        seed=BACKEND_SEED,
+    )
+    assert len(cap.users) == 3 and res.ok
+    assert "이전 답의 문제" not in cap.users[0]
+    assert cap.users[2].count("이전 답의 문제") == 1 and "connection pool" in cap.users[2]

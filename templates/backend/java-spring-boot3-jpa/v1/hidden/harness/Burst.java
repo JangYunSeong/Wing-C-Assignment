@@ -108,7 +108,21 @@ public final class Burst {
                 label, n, byStatus, wrong, maxMs);
     }
 
+    /** 기대와 다른 응답 수 (모든 종류) — 의도한 사유를 붙이지 않는다: 500·시간 초과·규칙 불일치가 섞여 어떤 실패든 같은 사유로 보인다. */
     public static long wrong(List<Outcome> outcomes) {
         return outcomes.stream().filter(o -> !o.ok()).count();
+    }
+
+    /**
+     * 시간 초과(-1)·서버 오류(5xx) 수 — 연결 고갈·교착 같은 운영 조건 실패. 운영 조건 사유(예: pool_acquire_timeout)는 이 수에 붙인다.
+     * 2026-11-08 숨은 테스트 검토: 14개 케이스 모두 사유를 wrong(...) 에 붙여 원인과 상관없이 의도한 사유로 분류됐다.
+     */
+    public static long failures(List<Outcome> outcomes) {
+        return outcomes.stream().filter(o -> o.actual() == -1 || o.actual() >= 500).count();
+    }
+
+    /** 그 밖의 기대와 다른 응답 수 (예: 200 기대에 400·404) — 규칙·계약 불일치. 운영 조건 사유를 붙이지 않는다. */
+    public static long mismatches(List<Outcome> outcomes) {
+        return outcomes.stream().filter(o -> !o.ok() && o.actual() != -1 && o.actual() < 500).count();
     }
 }

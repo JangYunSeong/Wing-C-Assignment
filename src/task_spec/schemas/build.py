@@ -25,7 +25,9 @@ FileKind = Literal["starter", "hidden", "public_test", "ref_naive", "ref_accepte
 BuildStatus = Literal[
     "pending", "generating", "verifying", "review", "failed", "approved", "published"
 ]
-GeneratorName = Literal["plan_contract", "gen_starter", "gen_hidden", "gen_naive", "gen_accepted"]
+GeneratorName = Literal[
+    "plan_contract", "gen_public", "gen_starter", "gen_hidden", "gen_naive", "gen_accepted"
+]
 
 _REF = r"^[rp]\d{1,2}$"  # 공개 요구(r*)·공개 수용 기준(p*) — 계약 요소가 나온 곳
 
@@ -383,6 +385,27 @@ class GenStarterInputV2(GenStarterInput):
     previous_files: str = "(없음)"
 
 
+class GenStarterInputV3(GenStarterInputV2):
+    """gen_starter v7~ — 공개 테스트를 보고 쓴다 (TDD: 저장 확인은 통과, 새 기능 공개 테스트는 실패 = 지원자 몫)."""
+
+    public_tests: str = "(없음)"
+
+
+class GenPublicInput(Schema):
+    """gen_public 프롬프트 변수 — 공개 정보만 (숨은 요구·HiddenPlan·운영 조건·구현 없음). 공개 수용 기준을 확인하는 기능 테스트.
+    2026-11-08 사용자 결정: 테스트 먼저(TDD) — 시작 코드·참조 구현이 이 테스트를 보고 맞춘다. 숨은 테스트는 여전히 독립."""
+
+    stack: str = Field(min_length=1)
+    harness_api: str = Field(min_length=1)  # 공개 테스트 하네스 문서 + 이 과제의 PublicCase 소스
+    slots: str = Field(min_length=1)
+    contract: str = Field(min_length=1)
+    public_tests: str = Field(min_length=1)  # 계약 public_tests (pt* — 공개 수용 기준별 확인 방법)
+    requirements: str = Field(min_length=1)
+    acceptance_public: str = Field(min_length=1)
+    revision_note: str
+    previous_files: str = "(없음)"
+
+
 class GenHiddenInputV2(GenHiddenInput):
     """gen_hidden v2~ — 수리면 자기 이전 출력."""
 
@@ -393,6 +416,12 @@ class GenRefInputV2(GenRefInput):
     """gen_naive·gen_accepted v2~ — 수리면 자기 이전 출력."""
 
     previous_files: str = "(없음)"
+
+
+class GenRefInputV3(GenRefInputV2):
+    """gen_naive v4~·gen_accepted v4~ — 공개 테스트를 모두 통과하게 (숨은 테스트는 보지 않음)."""
+
+    public_tests: str = "(없음)"
 
 
 class GeneratedFile(Schema):

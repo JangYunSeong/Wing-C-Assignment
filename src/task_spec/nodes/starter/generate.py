@@ -31,10 +31,11 @@ from task_spec.schemas import (
     GeneratedFiles,
     GenHiddenInput,
     GenHiddenInputV2,
+    GenPublicInput,
     GenRefInput,
-    GenRefInputV2,
+    GenRefInputV3,
     GenStarterInput,
-    GenStarterInputV2,
+    GenStarterInputV3,
     HiddenPlan,
     NodeError,
     Provenance,
@@ -44,7 +45,7 @@ from task_spec.schemas import (
 from task_spec.schemas.build import FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.starter.contract import SpecView, existing_endpoints
-from task_spec.starter.hidden_helpers import render_contract_case
+from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
 from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
 from task_spec.starter.seed_rows import RowRange, allocate_rows
@@ -168,11 +169,20 @@ def _lines(items: Sequence[str]) -> str:
     return "\n".join(items) or NONE
 
 
+def public_text(public: Overlay | None) -> str:
+    """생성기 입력의 공개 테스트 — 테스트 먼저(TDD): 시작 코드·참조 구현이 이것을 보고 맞춘다 (숨은 테스트는 보지 않음)."""
+    return files_text(public.files) if public is not None else NONE
+
+
 def starter_input(
-    task: TaskItem, contract: TaskContract, template: Template, note: str | None = None
+    task: TaskItem,
+    contract: TaskContract,
+    template: Template,
+    note: str | None = None,
+    public: Overlay | None = None,
 ) -> GenStarterInput:
     m = template.manifest
-    return GenStarterInputV2(
+    return GenStarterInputV3(
         stack=stack_text(m),
         template_files=template_files_text(template),
         slots=slots_text(m, "starter"),
@@ -182,6 +192,37 @@ def starter_input(
         requirements=_lines([f"{r.req_id} {r.text}" for r in task.requirements]),
         acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
+        revision_note=note or NONE,
+        public_tests=public_text(public),
+    )
+
+
+def public_input(
+    task: TaskItem,
+    contract: TaskContract,
+    plan: HiddenPlan,
+    template: Template,
+    note: str | None = None,
+) -> GenPublicInput:
+    """공개 테스트 생성 입력 — 공개 정보만 (숨은 요구·HiddenPlan 의 케이스·운영 조건 없음). plan 은 공개 몫 행을 숨은 범위와 겹치지 않게
+    나누는 데만 쓴다 (PublicCase 상수 — 숨은 케이스 내용은 들어가지 않는다)."""
+    m = template.manifest
+    doc = template.hidden / "PUBLIC.md"
+    api = doc.read_text("utf-8") if doc.is_file() else NONE
+    helper = render_contract_case(contract, plan, m, audience="public")
+    if helper is not None:
+        api += (
+            f"\n\n## {m.public_helper.class_name if m.public_helper else ''} — 이 과제의 공개 테스트 도우미 "
+            f"(`{helper.path}`, 빌드 파이프라인이 만든다 — 쓰지 않는다)\n\n```java\n{helper.content}```\n"
+        )
+    return GenPublicInput(
+        stack=stack_text(m),
+        harness_api=api,
+        slots=slots_text(m, "public_test"),
+        contract=contract_markdown(contract, tables=m.naming.table),
+        public_tests=_lines([f"{t.test_id} ({t.ac_id}) {t.checks}" for t in contract.public_tests]),
+        requirements=_lines([f"{r.req_id} {r.text}" for r in task.requirements]),
+        acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
         revision_note=note or NONE,
     )
 
@@ -227,9 +268,10 @@ def _ref_input(
     goal: str,
     conditions: str,
     note: str | None,
+    public: Overlay | None = None,
 ) -> GenRefInput:
     m = template.manifest
-    return GenRefInputV2(
+    return GenRefInputV3(
         stack=stack_text(m),
         slots=slots_text(m, "ref"),
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
@@ -239,6 +281,7 @@ def _ref_input(
         goal=goal,
         conditions=conditions or NONE,
         revision_note=note or NONE,
+        public_tests=public_text(public),
     )
 
 
@@ -250,6 +293,7 @@ def naive_input(
     seed: FeatureSeed,
     keep_traps: Sequence[str] = (),
     note: str | None = None,
+    public: Overlay | None = None,
 ) -> GenRefInput:
     """흔한 구현 — 재료의 naive_impl 만 (깨지는 이유는 주지 않는다: 알면 피해 간다). keep_traps = 하나만 놓친 판에서 지킬 숨은 요구."""
     keep = [t.description for t in task.traps if t.trap_id in keep_traps]
@@ -260,7 +304,7 @@ def naive_input(
         goal += "\n\n이 스택에서 위 구조를 설명대로 동작하게 쓰는 법:\n" + _lines(
             [f"- {c}" for c in template.manifest.naive_conditions]
         )
-    return _ref_input(task, contract, template, starter, goal, _lines(keep), note)
+    return _ref_input(task, contract, template, starter, goal, _lines(keep), note, public)
 
 
 def accepted_input(
@@ -270,6 +314,7 @@ def accepted_input(
     starter: Overlay,
     design: AcceptedDesign,
     note: str | None = None,
+    public: Overlay | None = None,
 ) -> GenRefInput:
     """허용 구현 — 허용 설계 1건 + 그 설계가 다루는 숨은 요구·숨김 수용 기준 + 템플릿 스택 조건."""
     traps = [t for t in task.traps if t.trap_id in design.trap_ids]
@@ -283,7 +328,7 @@ def accepted_input(
         ]
     )
     conditions = _lines([f"- {c}" for c in template.manifest.stack_conditions])
-    return _ref_input(task, contract, template, starter, goal, conditions, note)
+    return _ref_input(task, contract, template, starter, goal, conditions, note, public)
 
 
 # ── 생성 루프 ─────────────────────────────────────────────
@@ -457,10 +502,11 @@ async def gen_starter(
     ontology_version: str,
     note: str | None = None,
     previous: Overlay | None = None,
+    public: Overlay | None = None,
 ) -> GenResult:
     return await _generate(
         "gen_starter",
-        lambda n: starter_input(b.task, b.contract, b.template, n),
+        lambda n: starter_input(b.task, b.contract, b.template, n, public),
         _overlay("starter"),
         b.check,
         llm=llm,
@@ -469,6 +515,44 @@ async def gen_starter(
         note=note,
         previous=previous,
         fix=b.fix_starter,
+    )
+
+
+async def gen_public(
+    b: BuildInputs,
+    *,
+    llm: LLMClient,
+    prompts: PromptRegistry,
+    ontology_version: str,
+    note: str | None = None,
+    previous: Overlay | None = None,
+) -> GenResult:
+    """공개 테스트 — 공개 수용 기준(pt*)마다 기능 테스트. 테스트 먼저(TDD): 시작 코드·참조 구현이 이것을 보고 맞춘다.
+    도우미(PublicCase)·저장 확인(PersistenceCheckTest)은 코드가 쓴다 — 생성기가 같은 경로를 쓰면 버린다."""
+    m = b.template.manifest
+    code_written = [
+        f
+        for f in (
+            render_contract_case(b.contract, b.plan, m, audience="public"),
+            render_persistence_check(b.contract, m),
+        )
+        if f is not None
+    ]
+
+    def with_helpers(files: list[GeneratedFile]) -> Overlay:
+        kept = [f for f in files if f.path not in {c.path for c in code_written}]
+        return Overlay(kind="public_test", files=(*kept, *code_written))
+
+    return await _generate(
+        "gen_public",
+        lambda n: public_input(b.task, b.contract, b.plan, b.template, n),
+        with_helpers,
+        b.check,
+        llm=llm,
+        prompts=prompts,
+        ontology_version=ontology_version,
+        note=note,
+        previous=previous,
     )
 
 
@@ -513,6 +597,7 @@ async def gen_naive(
     keep_traps: Sequence[str] = (),
     note: str | None = None,
     previous: Overlay | None = None,
+    public: Overlay | None = None,
 ) -> GenResult:
     if b.seed is None:
         raise ValueError("gen_naive 는 재료(feature seed)의 흔한 구현 설명이 필요하다")
@@ -525,7 +610,7 @@ async def gen_naive(
     )
     return await _generate(
         "gen_naive",
-        lambda n: naive_input(b.task, b.contract, b.template, starter, seed, keep_traps, n),
+        lambda n: naive_input(b.task, b.contract, b.template, starter, seed, keep_traps, n, public),
         _overlay("ref_naive", label),
         b.check,
         llm=llm,
@@ -547,10 +632,11 @@ async def gen_accepted(
     ontology_version: str,
     note: str | None = None,
     previous: Overlay | None = None,
+    public: Overlay | None = None,
 ) -> GenResult:
     return await _generate(
         "gen_accepted",
-        lambda n: accepted_input(b.task, b.contract, b.template, starter, design, n),
+        lambda n: accepted_input(b.task, b.contract, b.template, starter, design, n, public),
         _overlay("ref_accepted", design.design_id),
         lambda o: b.check(o, starter),
         llm=llm,

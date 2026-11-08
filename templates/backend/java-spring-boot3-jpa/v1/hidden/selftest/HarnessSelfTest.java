@@ -75,6 +75,19 @@ class HarnessSelfTest extends GraderSupport {
     }
 
     @Test
+    void 버스트_결과를_운영_실패와_규칙_불일치로_나눠_센다() {
+        List<Burst.Outcome> outcomes = List.of(
+                new Burst.Outcome(0, 200, 200, 1, null),
+                new Burst.Outcome(1, 200, 500, 1, null),
+                new Burst.Outcome(2, 200, -1, 1, "timeout"),
+                new Burst.Outcome(3, 200, 400, 1, null),
+                new Burst.Outcome(4, 400, 400, 1, null));
+        assertThat(Burst.wrong(outcomes)).isEqualTo(3);
+        assertThat(Burst.failures(outcomes)).isEqualTo(2);
+        assertThat(Burst.mismatches(outcomes)).isEqualTo(1);
+    }
+
+    @Test
     void 데이터소스를_감쌌다() {
         assertThat(GraderJdbcHarness.WRAPPED_DATASOURCES.get()).isPositive();
     }

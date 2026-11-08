@@ -86,8 +86,11 @@ class FailureReason(Schema):
     code: str = Field(pattern=_NAME)
     description: str = Field(min_length=1, max_length=300)
     log_patterns: list[str] = Field(min_length=1)
+    # 이 사유를 의도한 숨은 케이스 파일에 반드시 있어야 할 것 (정규식 하나라도) — 예: 저장 실패 사유면 오류 주입.
+    # 2026-11-08 숨은 테스트 검토: rollback_left_success 5건 중 4건이 주입 없이 거절되는 전이를 보내 롤백될 변경이 없었다.
+    requires: list[str] = Field(default_factory=list)
 
-    @field_validator("log_patterns")
+    @field_validator("log_patterns", "requires")
     @classmethod
     def _patterns(cls, v: list[str]) -> list[str]:
         return _compiles(v)
@@ -248,6 +251,9 @@ class HiddenRules(Schema):
     # 2026-11-07 알파 테스트: assertThat(log.get("transactionId")).isEqualTo(txId) — Integer 105 ≠ 105L 로 모든 구현이 실패.
     # HARNESS.md 에 규칙이 있었는데도 어겨서 문서 대신 검사로.
     raw_number_asserts: list[str] = Field(default_factory=list)
+    # 의도한 사유를 붙이면 안 되는 단언 (정규식, 한 문장 안) — 모든 실패를 세는 단언에 붙이면 어떤 실패든 그 사유로 보인다.
+    # 2026-11-08 숨은 테스트 검토: 14개 케이스 모두 사유를 Burst.wrong(...) 에 붙였다.
+    reason_not_on: list[str] = Field(default_factory=list)
 
     @field_validator(
         "forbidden_imports",
@@ -256,6 +262,7 @@ class HiddenRules(Schema):
         "table_refs",
         "reason_labels",
         "raw_number_asserts",
+        "reason_not_on",
     )
     @classmethod
     def _rx(cls, v: list[str]) -> list[str]:
@@ -297,6 +304,8 @@ class TemplateManifest(Schema):
     init_scripts: InitScripts | None = None
     seed_sql: SeedSql | None = None
     hidden_helper: HiddenHelper | None = None
+    # 공개 테스트 도우미 — 같은 렌더러, 숨은 범위 대신 공개 테스트 몫 행 (starter/hidden_helpers.py audience="public")
+    public_helper: HiddenHelper | None = None
     # 시작 코드의 기존 기능 테스트가 HTTP API 를 부르는 곳 (정규식, 그룹 method, 매치 끝 = 경로 인자 시작) — 새 API 를 부르면
     # 새 기능을 구현한 것 (static_check._starter_new_api_tests). 2026-11-07 알파 4회차: 배송 감사 시작 코드가 감사 기록 조회 API 와 그 테스트까지 구현.
     starter_test_calls: list[str] = Field(default_factory=list)
