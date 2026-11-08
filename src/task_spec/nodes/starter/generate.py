@@ -44,6 +44,7 @@ from task_spec.schemas import (
 )
 from task_spec.schemas.build import FileKind
 from task_spec.schemas.template import FailureReason, SlotKind, TemplateManifest
+from task_spec.starter.config_merge import merge_config
 from task_spec.starter.contract import SpecView, existing_endpoints
 from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
 from task_spec.starter.init_scripts import ensure_statements
@@ -275,6 +276,22 @@ def hidden_input(
     )
 
 
+def config_files(template: Template, under: Overlay | None = None) -> dict[str, str]:
+    """지금 적용되는 설정 파일 (config_merge 경로) — 템플릿 project/ 의 것, 그 위에 시작 코드가 쓴 것 (시작 코드 설정은 생성 직후
+    이미 템플릿 위에 합쳐졌다). 설정 합치기의 바탕이자 참조 구현 입력에 보이는 설정."""
+    rule = template.manifest.config_merge
+    if rule is None:
+        return {}
+    out = {
+        p: (template.project / p).read_text("utf-8")
+        for p in rule.paths
+        if (template.project / p).is_file()
+    }
+    if under is not None:
+        out |= {f.path: f.content for f in under.files if f.path in rule.paths}
+    return out
+
+
 def _ref_input(
     task: TaskItem,
     contract: TaskContract,
@@ -290,7 +307,17 @@ def _ref_input(
         stack=stack_text(m),
         slots=slots_text(m, "ref"),
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
-        starter_files=files_text(starter.files),
+        # 시작 코드가 쓰지 않은 설정 파일도 지금 적용되는 내용으로 보인다 — 모르고 새로 쓰는 일을 줄인다 (합치기는 생성 직후 코드가 함)
+        starter_files=files_text(
+            [
+                *starter.files,
+                *(
+                    GeneratedFile(path=p, content=c)
+                    for p, c in config_files(template, starter).items()
+                    if p not in {f.path for f in starter.files}
+                ),
+            ]
+        ),
         requirements=_lines([f"{r.req_id} {r.text}" for r in task.requirements]),
         acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
         goal=goal,
@@ -472,19 +499,23 @@ class BuildInputs:
         )
         return res.for_target(KIND_TARGET[overlay.kind])
 
-    def fix(self, files: list[GeneratedFile]) -> tuple[list[GeneratedFile], list[str]]:
-        """참조 구현 출력에서 코드가 고칠 것 — 시드 파일은 빼고(시작 코드의 계약 시드를 씀), 빈 시작 스크립트 보정."""
-        return self._fixed(files, starter=False)
+    def fix(
+        self, files: list[GeneratedFile], starter: Overlay | None = None
+    ) -> tuple[list[GeneratedFile], list[str]]:
+        """참조 구현 출력에서 코드가 고칠 것 — 시드 파일은 빼고(시작 코드의 계약 시드를 씀), 설정 파일은 시작 코드 설정 위에
+        합치고, 빈 시작 스크립트 보정."""
+        return self._fixed(files, starter=False, base=starter)
 
     def fix_starter(self, files: list[GeneratedFile]) -> tuple[list[GeneratedFile], list[str]]:
-        """시작 코드 출력에서 코드가 고칠 것 — 시드 파일을 계약 시드 렌더본으로 바꾸고, 빈 시작 스크립트 보정."""
+        """시작 코드 출력에서 코드가 고칠 것 — 시드 파일을 계약 시드 렌더본으로 바꾸고, 설정 파일은 템플릿 설정 위에 합치고,
+        빈 시작 스크립트 보정."""
         return self._fixed(files, starter=True)
 
     def _fixed(
-        self, files: list[GeneratedFile], *, starter: bool
+        self, files: list[GeneratedFile], *, starter: bool, base: Overlay | None = None
     ) -> tuple[list[GeneratedFile], list[str]]:
         m = self.template.manifest
-        notes: list[str] = []
+        files, notes = merge_config(files, m, config_files(self.template, base))
         rule = m.seed_sql
         if rule is not None:
             mine = next((f for f in files if f.path == rule.path), None)
@@ -633,7 +664,7 @@ async def gen_naive(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
-        fix=b.fix,
+        fix=lambda fs: b.fix(fs, starter),
     )
 
 
@@ -659,5 +690,5 @@ async def gen_accepted(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
-        fix=b.fix,
+        fix=lambda fs: b.fix(fs, starter),
     )

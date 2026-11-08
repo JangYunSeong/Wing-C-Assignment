@@ -27,7 +27,7 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from task_spec.schemas import HiddenPlan, TargetRun, TestResult, VerifyReport
@@ -92,6 +92,24 @@ def _owner(path: str, run: TargetRun, overlays: Mapping[str, Overlay]) -> str:
         if o is not None and any(f.path == path for f in o.files):
             return key
     return run.target
+
+
+def _shared_note(
+    runs: Sequence[TargetRun], overlays: Mapping[str, Overlay], shared: Collection[str]
+) -> str:
+    """구현 둘 이상이 **모두** 다시 쓴 공유 파일(템플릿·시작 코드에 이미 있는 파일) — 모든 구현이 같은 오류를 낼 때 원인 후보.
+    2026-11-08 알파: 참조 구현 4개가 모두 application.yml 을 다시 써 같은 404·기동 실패를 냈는데 '테스트 의심'·'계약 모호'로 짚었다."""
+    if len(runs) < 2 or not shared:
+        return ""
+    common = set(shared)
+    for r in runs:
+        o = overlays.get(r.target)
+        common &= {f.path for f in o.files} if o is not None else set()
+    if not common:
+        return ""
+    return (
+        f" (구현 {len(runs)}개가 모두 공유 파일 {', '.join(sorted(common))} 을 다시 씀 — 원인 후보)"
+    )
 
 
 def _gen_for(run: TargetRun) -> GeneratorName:
@@ -205,7 +223,7 @@ def _starter_public(
 
 
 def _public_refs(
-    runs: Sequence[TargetRun], regen_counts: Mapping[str, int]
+    runs: Sequence[TargetRun], regen_counts: Mapping[str, int], shared: str = ""
 ) -> tuple[list[RepairAction], set[str]]:
     """참조 구현 + 공개 테스트 — 공개 요구는 흔한 구현·허용 구현 모두 지켜야 한다. 구현끼리 비교해 탓을 정한다.
     - 일부 구현만 실패 → 그 구현. 단 흔한 구현만 실패하고 이미 다시 만들었으면 공개 테스트가 숨은 요구를 시험하는 것(누설, ⑤) → gen_public
@@ -254,9 +272,9 @@ def _public_refs(
                     "gen_starter",
                     "",
                     "⑤",
-                    f"모든 구현이 공개 테스트 {name} 에서 같은 서버 오류 — 시작 코드(공유 코드) 의심",
+                    f"모든 구현이 공개 테스트 {name} 에서 같은 서버 오류 — 시작 코드(공유 코드) 의심{shared}",
                     f"참조 구현 {len(runs)}개가 모두 공개 테스트 {name} 에서 같은 서버 쪽 오류로 실패한다: {_short(first)} — "
-                    "참조 구현이 함께 쓰는 시작 코드(엔티티 매핑·스키마·설정)를 고친다.",
+                    "참조 구현이 함께 쓰는 시작 코드(엔티티 매핑·스키마·설정)를 고친다." + shared,
                 )
             )
         else:
@@ -265,9 +283,9 @@ def _public_refs(
                     "gen_public",
                     "",
                     "⑤",
-                    f"모든 구현이 공개 테스트 {name} 에서 실패 — 테스트 의심",
+                    f"모든 구현이 공개 테스트 {name} 에서 실패 — 테스트 의심{shared}",
                     f"독립으로 만든 참조 구현 {len(runs)}개가 모두 공개 테스트 {name} 에서 실패한다: {_short(first)} — "
-                    "계약의 응답 모양·상태 코드·규칙 그대로만 확인한다.",
+                    "계약의 응답 모양·상태 코드·규칙 그대로만 확인한다." + shared,
                 )
             )
     return out, trusted
@@ -310,7 +328,9 @@ def _starter_solves(
     ], []
 
 
-def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAction]:
+def _ref_setup(
+    run: TargetRun, overlays: Mapping[str, Overlay], shared: str = ""
+) -> list[RepairAction]:
     if run.setup == "timeout":
         return [
             RepairAction(
@@ -328,9 +348,11 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
                 run.target,
                 "setup",
                 f"{run.target} 기동 실패"
-                + (f": {_short(run.setup_detail)}" if run.setup_detail else ""),
+                + (f": {_short(run.setup_detail)}" if run.setup_detail else "")
+                + shared,
                 "구현을 넣은 앱이 기동하지 않는다 — 시작 코드의 설정·빈 구성을 깨뜨리지 않는다.\n"
-                + _boot_text(run),
+                + _boot_text(run)
+                + shared,
             )
         ]
     if run.setup != "compile_error":
@@ -413,7 +435,7 @@ def _broke_existing(run: TargetRun, starter: TargetRun) -> list[TestResult]:
 
 
 def _contract_ambiguity(
-    runs: Sequence[TargetRun], starter: TargetRun
+    runs: Sequence[TargetRun], starter: TargetRun, shared: str = ""
 ) -> tuple[list[str], set[str]]:
     """참조 구현이 둘 이상이고 **모두** 시작 코드에서 통과하던 같은 기존 테스트를 같은 오류로 깨면 계약 모호 의심 (§7).
 
@@ -429,7 +451,7 @@ def _contract_ambiguity(
         common &= {name for name, sig in broke.items() if sig == per_run[0].get(name)}
     flags = [
         f"계약 모호 의심 — 참조 구현 {len(runs)}개가 모두 기존 테스트 {name} 를 같은 오류로 깸: {_short(next(t.message for t in runs[0].tests if t.name == name and t.group == 'existing').rsplit('Exception: ', 1)[-1])} "
-        "— 계약에서 그 경우(필드 값·기록 여부)를 정해야 한다 (구현을 다시 만들지 않음)"
+        "— 계약에서 그 경우(필드 값·기록 여부)를 정해야 한다 (구현을 다시 만들지 않음)" + shared
         for name in sorted(common)
     ]
     return flags, common
@@ -675,9 +697,11 @@ def assign(
     overlays: Mapping[str, Overlay],
     missed_traps: Mapping[str, set[str]],
     regen_counts: Mapping[str, int] | None = None,
+    shared_paths: Collection[str] = (),
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
-    missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부)."""
+    missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
+    shared_paths: 템플릿·시작 코드에 이미 있는 파일 — 모든 구현이 같은 오류를 낼 때, 모두 다시 쓴 파일을 원인 후보로 싣는다."""
     counts = regen_counts or {}
     res = RepairPlan()
     starter = report.run(STARTER)
@@ -704,18 +728,24 @@ def assign(
 
     actions: list[RepairAction] = []
     ready: list[TargetRun] = []
-    for run in report.runs:
-        if run.kind in ("starter", "starter_hidden"):
-            continue
+    refs = [r for r in report.runs if r.kind not in ("starter", "starter_hidden")]
+    booted = [r for r in refs if r.setup == "boot_error"]
+    boot_note = (
+        _shared_note(booted, overlays, shared_paths)
+        if len(booted) == len(refs) and len({_signature(r.setup_detail) for r in booted}) == 1
+        else ""
+    )
+    for run in refs:
         if run.setup != "ok":
-            actions += _ref_setup(run, overlays)
+            actions += _ref_setup(run, overlays, boot_note)
             continue
         ready.append(run)
-    ambiguous, skip = _contract_ambiguity(ready, starter)
+    shared = _shared_note(ready, overlays, shared_paths)
+    ambiguous, skip = _contract_ambiguity(ready, starter, shared)
     res.unresolved += ambiguous
     for run in ready:
         actions += _ref_existing(run, starter, skip)
-    public_acts, trusted = _public_refs(ready, counts)
+    public_acts, trusted = _public_refs(ready, counts, shared)
     actions += public_acts
     # 숨은 게이트는 공개 테스트를 통과한 구현만 믿는다 — 공개 요구가 깨진 구현의 숨은 결과는 그 결함 탓일 수 있다
     # (2026-11-08: 시작 코드 결함으로 두 구현이 같은 500 을 내자 흔한 구현이 '의도한 사유'로 실패한 것처럼 보였다)

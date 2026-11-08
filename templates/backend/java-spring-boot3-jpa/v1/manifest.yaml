@@ -64,6 +64,12 @@ fill_slots:
 init_scripts:
   paths: [src/main/resources/schema.sql, src/main/resources/data.sql]
   noop: "SELECT 1;"
+# 설정 파일은 덮어쓰지 않고 바탕(템플릿 → 시작 코드) 위에 키 단위로 합친다 (starter/config_merge.py). 잠긴 키는 늘 바탕 값 —
+# 바탕에 없으면 지운다(Spring Boot 기본값: 컨텍스트마다 다른 이름의 메모리 DB). 2026-11-08 알파: 참조 구현 4개가 application.yml 을
+# 통째로 다시 써 ddl-auto·sql.init 을 지우거나(시드가 사라져 404) DB 주소를 고정(schema.sql 두 번 실행, 기동 실패).
+config_merge:
+  paths: [src/main/resources/application.yml]
+  locked_keys: [spring.datasource.url, spring.jpa.hibernate.ddl-auto, spring.sql.init.mode]
 # 시드 SQL 은 코드가 계약 시드(행 수·id 범위별 처음 값)에서 쓴다 (starter/seed_sql.py) — 생성기가 쓴 data.sql 은 렌더본으로 바뀐다.
 # 2026-11-07 알파 3×3: 시작 코드가 수백 행 시드를 "같은 방식으로" 주석으로 생략(3/7), GENERATED ALWAYS 에 id 직접 입력 H2 오류.
 seed_sql:

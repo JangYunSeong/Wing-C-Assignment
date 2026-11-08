@@ -757,3 +757,35 @@ def test_boot_error_note_carries_the_root_cause() -> None:
     ref = _run("d1", "ref_accepted", setup="boot_error", setup_detail=detail)
     acts = _assign(_report(_run("naive-all", "ref_naive", *GOOD_NAIVE), ref)).actions
     assert any(x.key == "gen_accepted:d1" and "근본 원인" in x.note for x in acts)
+
+
+def test_shared_file_rewritten_by_every_impl_is_named_as_a_cause() -> None:
+    """2026-11-08 알파: 참조 구현이 모두 application.yml 을 다시 써 같은 404 를 냈는데 '계약 모호'·'테스트 의심'으로만 짚었다
+    → 모두 다시 쓴 공유 파일(템플릿·시작 코드에 이미 있는 파일)을 원인 후보로 싣는다."""
+    yml = "src/main/resources/application.yml"
+    overlays = {
+        k: (
+            o
+            if o.kind not in ("ref_naive", "ref_accepted")
+            else Overlay(
+                kind=o.kind,
+                label=o.label,
+                files=(*o.files, GeneratedFile(path=yml, content="spring: {}\n")),
+            )
+        )
+        for k, o in OVERLAYS.items()
+    }
+    report = _report(
+        _breaks("naive-all", "ref_naive", NOT_NULL), _breaks("d1", "ref_accepted", NOT_NULL)
+    )
+    plan = assign(report, PLAN2, overlays, MISSED, {}, shared_paths={yml})
+    assert "공유 파일 src/main/resources/application.yml" in plan.unresolved[0]
+    assert "공유 파일" not in assign(report, PLAN2, overlays, MISSED, {}).unresolved[0]
+    # 같은 기동 실패도
+    boot = 'org.h2.jdbc.JdbcSQLSyntaxErrorException: Table "T" already exists'
+    report = _report(
+        _run("naive-all", "ref_naive", setup="boot_error", setup_detail=boot),
+        _run("d1", "ref_accepted", setup="boot_error", setup_detail=boot),
+    )
+    acts = assign(report, PLAN2, overlays, MISSED, {}, shared_paths={yml}).actions
+    assert len(acts) == 2 and all("공유 파일" in a.reason for a in acts)
