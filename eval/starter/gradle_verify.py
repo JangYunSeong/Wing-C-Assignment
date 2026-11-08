@@ -82,16 +82,32 @@ def run_gradle(
     return code, round(time.monotonic() - t0, 1)
 
 
+_DETAIL = re.compile(r"^\s*(symbol|location):\s*(.+)$")
+
+
 def compile_errors(log_text: str, work: Path, limit: int = 20) -> list[CompileError]:
+    """javac 오류 — 경로는 작업 폴더 기준, 없는 이름이면 뒤따르는 symbol·location 줄을 detail 로."""
     out: list[CompileError] = []
     prefix = str(work.resolve()) + "/"
-    for line in log_text.splitlines():
+    lines = log_text.splitlines()
+    for i, line in enumerate(lines):
         m = _JAVAC.match(line)
         if not m:
             continue
         path = m.group(1)
         path = path[len(prefix) :] if path.startswith(prefix) else path
-        err = CompileError(path=path, line=int(m.group(2)), message=m.group(3)[:300])
+        detail = []
+        for nxt in lines[i + 1 : i + 6]:
+            if _JAVAC.match(nxt):
+                break
+            if d := _DETAIL.match(nxt):
+                detail.append(f"{d.group(1)}: {d.group(2).strip()}")
+        err = CompileError(
+            path=path,
+            line=int(m.group(2)),
+            message=m.group(3)[:300],
+            detail=", ".join(detail)[:300],
+        )
         if err not in out:
             out.append(err)
     return out[:limit]
@@ -173,6 +189,7 @@ class GradleVerifier:
     def __init__(self, template: Template, work: Path, timeout: int = 1200) -> None:
         self.template, self.work, self.timeout = template, work, timeout
         self.rounds = 0
+        self.compiles = 0
 
     def _target(
         self, target: str, kind: str, parts: Sequence[Overlay], hidden: Overlay | None
@@ -206,6 +223,33 @@ class GradleVerifier:
                 "seconds": seconds,
             }
         )
+
+    def _compile(self, hidden: Overlay, public: Overlay | None) -> list[CompileError]:
+        self.compiles += 1
+        dest = self.work / f"c{self.compiles}-tests"
+        log = self.work / f"c{self.compiles}-tests.log"
+        assemble(self.template, dest, hidden, *((public,) if public is not None else ()))
+        cmds = self.template.manifest.commands
+        cmd = (cmds.test_compile if cmds is not None else None) or "gradlew compileTestJava"
+        task = next(t for t in cmd.split()[1:] if not t.startswith("-"))
+        code, _ = run_gradle(dest, log, self.timeout, task)
+        text = log.read_text("utf-8", errors="ignore")
+        errors = compile_errors(text, dest)
+        shutil.rmtree(dest, ignore_errors=True)
+        if (
+            code != 0 and not errors
+        ):  # 시간 초과·Gradle 자체 실패 — 생성기 탓이 아니므로 오류 줄 없이 알린다
+            return [
+                CompileError(
+                    path="(gradle)", line=0, message=f"컴파일 실행 실패 (종료 코드 {code})"
+                )
+            ]
+        return errors
+
+    async def compile_tests(self, hidden: Overlay, public: Overlay | None) -> list[CompileError]:
+        """채점 코드(숨은·공개 테스트 + 하네스 + 도우미)만 구현 없이 컴파일 — 템플릿 commands.test_compile."""
+        self.work.mkdir(parents=True, exist_ok=True)
+        return await asyncio.to_thread(self._compile, hidden, public)
 
     async def verify(
         self,

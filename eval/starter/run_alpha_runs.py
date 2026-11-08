@@ -154,9 +154,8 @@ async def main() -> None:
                 break
             lo = out / f"loop-{n}"
             t0 = time.monotonic()
-            res = await build_and_repair(
-                b, designs, verifier=GradleVerifier(template, lo / "builds"), **kw
-            )  # type: ignore[arg-type]
+            g = GradleVerifier(template, lo / "builds")
+            res = await build_and_repair(b, designs, verifier=g, compiler=g, **kw)  # type: ignore[arg-type]
             seconds = round(time.monotonic() - t0, 1)
             spent += res.cost_usd
             worst = max(worst, res.cost_usd)

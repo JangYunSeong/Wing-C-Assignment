@@ -233,7 +233,7 @@ async def run_loop(
         shutil.rmtree(out)
     out.mkdir(parents=True)  # 첫 생성에서 멈춰 오버레이·검증이 없어도 report.json 은 남긴다
     verifier = GradleVerifier(template, out / "builds")
-    res = await build_and_repair(b, designs, verifier=verifier, **kw)
+    res = await build_and_repair(b, designs, verifier=verifier, compiler=verifier, **kw)
     for key, o in res.overlays.items():
         _write(o, out / "overlays" / key)
     for n, snap in enumerate(res.snapshots):  # 검증한 회차마다 (다시 만든 산출물만 새로 씀)
