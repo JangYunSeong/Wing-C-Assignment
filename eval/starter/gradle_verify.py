@@ -229,15 +229,16 @@ class GradleVerifier:
             }
         )
 
-    def _compile(self, hidden: Overlay, public: Overlay | None) -> list[CompileError]:
+    def _compile(self, parts: Sequence[Overlay], tag: str = "tests") -> list[CompileError]:
+        """템플릿 project/ + 오버레이들(숨은·공개 테스트가 있으면 하네스도)을 조립해 컴파일만 — 템플릿 commands.test_compile."""
         self.compiles += 1
-        dest = self.work / f"c{self.compiles}-tests"
-        log = self.work / f"c{self.compiles}-tests.log"
+        dest = self.work / f"c{self.compiles}-{tag}"
+        log = self.work / f"c{self.compiles}-{tag}.log"
         if self.keep_code:
-            write_overlay(hidden, self.work / f"c{self.compiles}-code" / "hidden")
-            if public is not None:
-                write_overlay(public, self.work / f"c{self.compiles}-code" / "public")
-        assemble(self.template, dest, hidden, *((public,) if public is not None else ()))
+            for o in parts:
+                name = {"hidden": "hidden", "public_test": "public"}.get(o.kind, o.label or o.kind)
+                write_overlay(o, self.work / f"c{self.compiles}-code" / name)
+        assemble(self.template, dest, *parts)
         cmds = self.template.manifest.commands
         cmd = (cmds.test_compile if cmds is not None else None) or "gradlew compileTestJava"
         task = next(t for t in cmd.split()[1:] if not t.startswith("-"))
@@ -258,7 +259,16 @@ class GradleVerifier:
     async def compile_tests(self, hidden: Overlay, public: Overlay | None) -> list[CompileError]:
         """채점 코드(숨은·공개 테스트 + 하네스 + 도우미)만 구현 없이 컴파일 — 템플릿 commands.test_compile."""
         self.work.mkdir(parents=True, exist_ok=True)
-        return await asyncio.to_thread(self._compile, hidden, public)
+        parts = [hidden, *((public,) if public is not None else ())]
+        return await asyncio.to_thread(self._compile, parts, "tests")
+
+    async def compile_overlays(self, overlays: Sequence[Overlay]) -> list[CompileError]:
+        """구현(시작 코드·참조 구현)을 둘레 산출물과 함께 컴파일 — 무거운 검증(기동·테스트) 전에 (build.compile_impl_and_fix)."""
+        self.work.mkdir(parents=True, exist_ok=True)
+        tag = "-".join(
+            o.label or o.kind for o in overlays if o.kind not in ("hidden", "public_test")
+        )
+        return await asyncio.to_thread(self._compile, list(overlays), tag or "parts")
 
     async def verify(
         self,
