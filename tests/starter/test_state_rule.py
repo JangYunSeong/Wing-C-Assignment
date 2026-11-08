@@ -120,4 +120,35 @@ def test_helpers_carry_next_states_and_names_are_checked() -> None:
     msgs = unknown_helper_names([case], helper, "숨은 테스트")
     assert _has(msgs, "NEXT_OK_ORDER_SHIPPED")
     # 칸이 없으면 상수 없음
-    assert "NEXT_OK_" not in render_contract_case(_with_state(None), plan, manifest).content  # type: ignore[union-attr]
+    assert "String NEXT_OK_" not in render_contract_case(_with_state(None), plan, manifest).content  # type: ignore[union-attr]
+
+
+def test_failure_reason_how_reaches_both_generators() -> None:
+    """2026-11-08: 롤백 사유 케이스 9개 중 8개가 계획부터 '허용되지 않은 전이' — 사유를 일으키는 법을 케이스 줄·사유 목록에 싣는다."""
+    from task_spec.nodes.starter.generate import plan_text, reason_line
+
+    manifest = load_template(JAVA).manifest
+    how = {r.code: r.how for r in manifest.failure_reasons if r.how}
+    assert "injectCommitFailure" in how["rollback_left_success"]
+    rollback = {**_plan()["cases"][0], "intended_reason": "rollback_left_success"}
+    plan = HiddenPlan.model_validate(_plan(cases=[rollback]))
+    text = plan_text(plan, _with_state(), how)
+    assert "  일으키는 법 (rollback_left_success — 시나리오보다 우선): 규칙을 통과하는 요청" in text
+    assert "일으키는 법" not in plan_text(plan, _with_state())  # how 를 주지 않으면 예전 그대로
+    line = reason_line(
+        next(r for r in manifest.failure_reasons if r.code == "rollback_left_success")
+    )
+    assert line.startswith("- rollback_left_success — ") and "일으키는 법: 규칙을 통과하는" in line
+    # 숨은 도우미에만 주입 함수 (공개 테스트는 주입 금지)
+    contract, _ = fit_state(_with_state())
+    hidden = render_contract_case(contract, plan, manifest)
+    public = render_contract_case(contract, plan, manifest, audience="public")
+    assert (
+        hidden is not None
+        and "protected static void injectCommitFailure(String verb, String table)" in hidden.content
+    )
+    assert (
+        public is not None
+        and "injectCommitFailure" not in public.content
+        and "GraderJdbcHarness" not in public.content
+    )

@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,7 +43,7 @@ from task_spec.schemas import (
     TaskItem,
 )
 from task_spec.schemas.build import FileKind
-from task_spec.schemas.template import SlotKind, TemplateManifest
+from task_spec.schemas.template import FailureReason, SlotKind, TemplateManifest
 from task_spec.starter.contract import SpecView, existing_endpoints
 from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
 from task_spec.starter.init_scripts import ensure_statements
@@ -139,8 +139,19 @@ def _range_text(r: RowRange, names: dict[str, str]) -> str:
     return f"  데이터: {names.get(r.entity_id, r.entity_id)} id {r.first}~{r.last} ({', '.join(extra)}) — 이 범위만 쓴다 (시나리오에 적힌 id 보다 우선)"
 
 
-def plan_text(plan: HiddenPlan, contract: TaskContract | None = None) -> str:
-    """HiddenPlan → 숨은 테스트 생성기 입력. 계약을 주면 케이스마다 코드가 나눈 시드 id 범위를 붙인다 (seed_rows)."""
+def reason_line(r: FailureReason) -> str:
+    """실패 사유 한 줄 — 일으키는 법(manifest how)이 있으면 함께 (계약·숨은 테스트 생성기 입력)."""
+    return f"- {r.code} — {r.description}" + (f" — 일으키는 법: {r.how}" if r.how else "")
+
+
+def plan_text(
+    plan: HiddenPlan,
+    contract: TaskContract | None = None,
+    how: Mapping[str, str] | None = None,
+) -> str:
+    """HiddenPlan → 숨은 테스트 생성기 입력. 계약을 주면 케이스마다 코드가 나눈 시드 id 범위를 붙인다 (seed_rows).
+    how(사유 → 일으키는 법)를 주면 케이스마다 그 사유를 일으키는 법을 붙인다 — 시나리오가 사유와 어긋나도(예: 롤백 사유인데
+    '허용되지 않은 전이') 사유 쪽을 따르게 (2026-11-08 상류 평가: 롤백 사유 케이스 9개 중 8개)."""
     alloc = allocate_rows(contract, plan) if contract is not None else None
     names = {m.entity_id: m.name for m in contract.entities} if contract is not None else {}
     lines = ["조절값 (GraderParams 로 읽는 이름 = 값):"]
@@ -150,6 +161,10 @@ def plan_text(plan: HiddenPlan, contract: TaskContract | None = None) -> str:
         lines.append(
             f"- {c.case_id} ({c.ac_id}, 숨은 요구 {c.trap_id}, 실패 사유 {c.intended_reason}): {c.scenario} → 통과 조건: {c.expect}"
         )
+        if how and c.intended_reason in how:
+            lines.append(
+                f"  일으키는 법 ({c.intended_reason} — 시나리오보다 우선): {how[c.intended_reason]}"
+            )
         if alloc is not None:
             lines += [_range_text(r, names) for r in alloc.for_case(c.case_id)]
         lines += [f"  준비 (하네스가 입력 환경을 바꿈): {step}" for step in c.setup]
@@ -250,12 +265,12 @@ def hidden_input(
         harness_api=api,
         slots=slots_text(m, "hidden"),
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
-        hidden_plan=plan_text(plan, contract),
+        hidden_plan=plan_text(plan, contract, {r.code: r.how for r in m.failure_reasons if r.how}),
         traps=_lines([f"{t.trap_id} {t.description}" for t in task.traps]),
         acceptance_hidden=_lines(
             [f"{h.ac_id} ({h.trap_id}) {h.text}" for h in task.acceptance_hidden]
         ),
-        failure_reasons=_lines([f"- {r.code} — {r.description}" for r in m.failure_reasons]),
+        failure_reasons=_lines([reason_line(r) for r in m.failure_reasons]),
         revision_note=note or NONE,
     )
 

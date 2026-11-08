@@ -245,26 +245,33 @@ failure_reasons:
       - 'CannotCreateTransactionException'
       - '\[reason:pool_acquire_timeout\]'
     requires: ['\bpeak\(', 'Burst\.(?:rounds|fire)\(']  # 운영 피크를 실제로 재현해야 이 사유가 나온다
+    how: 운영 피크를 peak(…) 로 재현한다 (동시 요청 수만큼씩 버스트 수만큼, 요청마다 다른 행). 사유는 Burst.failures(…) 단언에
   - code: request_timeout
     description: 채점 클라이언트 요청이 시간 한도 안에 끝나지 않음
     log_patterns: ['HttpTimeoutException', '\[reason:request_timeout\]']
+    how: 동시 요청(peak(…))이나 지연 주입(GraderJdbcHarness.queryDelayMs)으로 시간 한도를 넘게 만든다. 사유는 Burst.failures(…) 단언에
   - code: server_error
     description: 기대한 응답 대신 5xx
     log_patterns: ['\[reason:server_error\]']
+    how: 규칙을 통과하는 요청(NEXT_OK_…)을 보내고 5xx 가 없는지 본다. 사유는 상태 코드 단언에
   - code: rollback_left_success
     description: 롤백된 변경에 성공 기록이 남음
     log_patterns: ['\[reason:rollback_left_success\]']
     # 규칙을 통과한 변경을 저장 단계에서 실패시켜야 롤백이 생긴다 (거절되는 전이는 롤백될 변경이 없음 — 2026-11-08 검토 4/5)
-    requires: ['GraderJdbcHarness\.fail(?:CommitAfter|Statements)\s*=']
+    requires: ['GraderJdbcHarness\.fail(?:CommitAfter|Statements)\s*=', '\binject(?:Commit|Statement)Failure\s*\(']
+    how: 규칙을 통과하는 요청(NEXT_OK_…)에 injectCommitFailure("update", TABLE_<대상>) 로 저장 단계 실패를 주입한다 (finally 에서 GraderJdbcHarness.reset()). 거절되는 전이는 저장 전에 끝나 롤백될 변경이 없다. 사유는 그 요청의 SUCCESS 기록 없음 단언에
   - code: record_missing
     description: 요청에 대한 기록이 없음
     log_patterns: ['\[reason:record_missing\]']
+    how: 요청마다 계약의 조회 API 로 기록을 읽어 hasSize(1). 사유는 그 단언에
   - code: record_mismatch
     description: 기록 결과가 응답과 맞지 않음
     log_patterns: ['\[reason:record_mismatch\]']
+    how: 기록의 대상 id·결과가 그 요청의 응답과 같은지 비교한다. 사유는 그 비교 단언에
   - code: injected_failure_ignored
     description: 주입한 DB 오류에도 성공 응답
     log_patterns: ['\[reason:injected_failure_ignored\]']
+    how: 규칙을 통과하는 요청(NEXT_OK_…)에 injectStatementFailure("update", TABLE_<대상>) 로 저장 SQL 을 실패시키고 성공 응답(200)이 없는지 본다 (finally 에서 GraderJdbcHarness.reset()). 사유는 상태 코드 단언에
 
 # 허용 설계가 이 스택에서 성립하는 조건 (spec-to-code §4.2) — 배송 감사 손 예시 실험(REPORT §5·§6)에서.
 # 흔한 구현이 재료 설명대로 실제로 동작하게 하는 스택 사실 (gen_naive 구현 목표에 붙음 — 깨지는 이유는 쓰지 않는다).

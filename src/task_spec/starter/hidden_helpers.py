@@ -104,6 +104,29 @@ def _state_lines(contract: TaskContract) -> list[str]:
     return lines
 
 
+def _inject_lines() -> list[str]:
+    """오류 주입 함수 — 테이블 이름(TABLE_…)과 SQL 종류만 받아 정규식은 코드가 쓴다. 2026-11-08 상류 평가: 롤백 사유 케이스의 첫 답에
+    주입이 빠지거나(8/9) 정규식을 손으로 써 테이블·SQL 종류를 넓게 잡던 일(기록 INSERT 까지 막음)을 줄인다."""
+    return [
+        "",
+        '    /** 저장 단계 실패 주입 — verb("update"·"insert"·"delete")로 table(TABLE_…)을 바꾸는 SQL 을 실행한 연결의 다음 commit 을',
+        "     *  실패시킨다. 규칙을 통과하는 요청(NEXT_OK_…)에 쓴다 — 거절되는 요청은 저장 전에 끝나 롤백될 변경이 없다.",
+        "     *  케이스가 끝나면 finally 에서 GraderJdbcHarness.reset(). */",
+        "    protected static void injectCommitFailure(String verb, String table) {",
+        "        GraderJdbcHarness.failCommitAfter = sqlOn(verb, table);",
+        "    }",
+        "",
+        "    /** SQL 실행 실패 주입 — verb 로 table 을 바꾸는 SQL 자체를 실패시킨다. 끝나면 finally 에서 GraderJdbcHarness.reset(). */",
+        "    protected static void injectStatementFailure(String verb, String table) {",
+        "        GraderJdbcHarness.failStatements = sqlOn(verb, table);",
+        "    }",
+        "",
+        "    private static Pattern sqlOn(String verb, String table) {",
+        '        return Pattern.compile("^\\\\s*" + verb + "\\\\s+(?:into\\\\s+|from\\\\s+)?" + Pattern.quote(table) + "\\\\b", Pattern.CASE_INSENSITIVE);',
+        "    }",
+    ]
+
+
 def render_contract_case(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -127,6 +150,14 @@ def render_contract_case(
         "import java.util.List;",
         "import java.util.Map;",
         "import java.util.function.IntUnaryOperator;",
+        *(
+            [
+                "import com.example.service.grading.GraderJdbcHarness;",
+                "import java.util.regex.Pattern;",
+            ]
+            if audience == "hidden"
+            else []
+        ),
         "",
         "/**",
         f" * 이 과제의 공개 계약에서 빌드 파이프라인이 만든 도우미 — 손으로 고치지 않는다. {'숨은 케이스' if audience == 'hidden' else '공개 테스트'}는 이 클래스를 상속한다.",
@@ -242,6 +273,8 @@ def render_contract_case(
             f'        return Burst.rounds(GraderParams.intValue("{c_name}", {c_default}), {rounds}, expectedStatus, call, REQUEST_TIMEOUT);',
             "    }",
         ]
+    if audience == "hidden":
+        lines += _inject_lines()
     lines += [
         "",
         "    /** JSON 숫자 → long (크기에 따라 Integer·Long 으로 읽혀 그대로 비교하면 틀린다) */",

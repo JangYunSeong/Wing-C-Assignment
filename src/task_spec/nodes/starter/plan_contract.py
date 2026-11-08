@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
+from task_spec.nodes.starter.generate import reason_line
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     FeatureSeed,
@@ -136,7 +137,7 @@ def plan_input(
         f"{_range(p.minimum, p.maximum)}) — {p.description}"
         for p in m.harness_params
     )
-    reasons = "\n".join(f"- {r.code} — {r.description}" for r in m.failure_reasons)
+    reasons = "\n".join(reason_line(r) for r in m.failure_reasons)
     return PlanContractInputV3(
         template=(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"

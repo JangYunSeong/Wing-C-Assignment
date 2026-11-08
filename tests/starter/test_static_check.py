@@ -553,3 +553,19 @@ def test_unknown_harness_members_are_regenerated() -> None:
     assert _has(msgs, "Burst.wrongs (가까운 이름: Burst.wrong")
     assert not _has(msgs, "notInComments")
     assert not _has(_run().for_target("gen_hidden"), "하네스에 없는 멤버")
+
+
+def test_injection_helper_counts_as_what_causes_a_rollback() -> None:
+    """2026-11-08: 도우미 injectCommitFailure(verb, TABLE_…) 도 롤백 사유의 필수 패턴을 채운다."""
+    plan = HiddenPlan.model_validate(
+        _plan(
+            harness={"pool_size": 8, "concurrency": 32, "connection_timeout_ms": 5000},
+            cases=[{**_plan()["cases"][0], "intended_reason": "rollback_left_success"}],
+        )
+    )
+    case = ROLLBACK.replace("INJECT", 'injectCommitFailure("update", TABLE_ORDER);')
+    files = [_f(f"{CASES}/OrderRollbackTest.java", case), render_params(plan, JAVA.manifest)]
+    assert not _has(
+        _run(_overlays(hidden=files), plan=plan).for_target("gen_hidden"),
+        "그 사유를 일으키는 것을 쓰지 않음",
+    )
