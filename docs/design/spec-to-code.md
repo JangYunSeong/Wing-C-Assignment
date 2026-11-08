@@ -1,6 +1,8 @@
 # 과제 명세 → 시작 코드 생성 파이프라인 설계 [제안]
 
 > 상태: 설계 초안 (2026-11-07). 방향 [확정: 2026-11-07 사용자 — 공개 계약을 기준점으로 두고 생성을 나눔, README 는 결정적, 실패는 원인 산출물에 배정].
+> 갱신 (2026-11-08): **테스트 먼저** 흐름 [확정: 2026-11-08 사용자 — "기능 명세, 디버깅에 필요한 test case 생성 → 여기에 맞는 코드 구현"] — 공개·숨은 테스트를 계약에서 먼저 만들고 컴파일한 뒤 구현을 만든다 (§2·§4·§7).
+> 기계적 출력(행 수·시드 SQL·도우미·covers 역색인·상태 규칙 문장)은 코드가 쓰고, LLM 에는 일반 원칙만 준다 [확정: 2026-11-08 사용자].
 > 결정 표기는 온톨로지 레포와 같다 — `[확정]` / `[제안]` / `[미정]`.
 > 관련: `docs/design/starter-templates.md`(템플릿·검증 게이트 §5·전달 §6.1·구현 레이어 §13 — 이 문서는 그 §4 "생성 흐름"을 구체화한다),
 > `docs/design/feature-task-backend.md`(기능형 명세), #50 · #52 · #55 · #58(프로젝트 설명 태그).
@@ -17,6 +19,7 @@
 - 지원자용 **README 는 LLM 이 쓰지 않는다** — 승인된 명세 문장과 계약으로 결정적으로 채운다 (승인한 문장 = 지원자가 보는 문장).
 - 검증(게이트 ①~⑨)이 실패하면 **실패를 원인 산출물에 배정해 그것만 다시 만든다** (산출물마다 1회). 그래도 실패하면 빌드 `failed` 로 승인 화면에 올린다.
 - 검증은 **1회 실행 → 시간에 민감한 케이스만 반복** 순서로 시간을 아낀다 (§7.1). 게이트 통과와 별개로 **AI 기본 풀이 결과**를 승인 화면에 지표로 보인다 (막지 않음, §8) [제안].
+- **테스트 먼저** [확정: 2026-11-08]: 계약 → 공개 테스트(`gen_public`)·숨은 테스트(`gen_hidden`)를 따로 → 구현 없이 컴파일하고 오류는 쓴 생성기에 되돌림 → 시작 코드·참조 구현은 **공개 테스트를 보고** 맞춘다 (숨은 테스트는 보지 않음). 숨은 게이트는 공개 테스트를 다 통과한 참조 구현만 믿는다 (§7).
 - 첫 범위: Java Spring 템플릿 v1 하나, 배송 감사 예시를 기준(golden)으로 둔다 (§9).
 
 ## 1. 범위 · 경계
@@ -37,11 +40,16 @@
 명세 승인 (공통 과제 판 approved, task_kind=feature) → common_task_build(pending) 생성
   ① select_template    결정적. 공고 매칭 기술 → 템플릿 id@vN. 없으면 문서 과제 + review_flags (빌드 종료)
   ② plan_contract      LLM 1회 → TaskContract + HiddenPlan
-                       → 결정적 검사 (§3.3). 실패하면 사유 붙여 1회 재요청
-  ③ 병렬 생성 — 서로의 산출물을 보지 않는다
-       gen_starter    계약 + 명세 공개 부분 + 템플릿 → 시작 코드(구현 자리는 비움) + 기존 기능 테스트 (+ 공개 테스트 — §4 [미정])
-       gen_hidden     계약 + HiddenPlan + h* 기준·숨은 요구 + 템플릿 하네스 API → 숨은 테스트 케이스 + 케이스 목록
-       gen_refs       계약 + 시작 코드 + naive_impl · 허용 설계(+스택 조건) → 흔한 구현들 + 허용 구현들   (시작 코드가 나온 뒤)
+                       → 코드가 맞춤: 조절값 기본값 · 행 수·공개 몫(fit_seed) · 상태 규칙(fit_state) · covers 역색인(fit_covers)
+                       → 결정적 검사 (§3.3). 실패하면 최근 문제만 붙여 재요청 (최대 2회)
+  ③ 테스트 먼저 — 계약에서 따로, 서로 보지 않는다 [확정: 2026-11-08]
+       gen_public     계약 공개 부분 + 공개 수용 기준 → pt 마다 기능 테스트 (도우미 PublicCase·저장 확인은 코드가 씀)
+       gen_hidden     계약 + HiddenPlan + h* 기준·숨은 요구 + 하네스 API → 숨은 케이스 (도우미 ContractCase·조절값 파일은 코드가 씀)
+     compile_and_fix  구현 없이 채점 코드만 컴파일 (manifest commands.test_compile) → javac 오류를 쓴 생성기에 (최대 2회),
+                      그래도 안 되면 구현을 만들지 않고 failed
+  ③' 구현 — 공개 테스트를 보고 맞춘다 (숨은 테스트는 보지 않음)
+       gen_starter    계약 + 명세 공개 부분 + 템플릿 + 공개 테스트 → 시작 코드(구현 자리는 비움) + 기존 기능 테스트 (시드 SQL 은 코드가 씀)
+       gen_refs       계약 + 시작 코드 + 공개 테스트 + naive_impl · 허용 설계(+스택 조건) → 흔한 구현들 + 허용 구현들
        render_readme  결정적. README.tpl.md ← 명세 문장 + 계약
   ④ static_check       결정적 (§6)
   ⑤ build_images       응시용(기준 커밋 포함)·채점용 이미지 (starter-templates.md §6.1)
@@ -52,7 +60,9 @@
   ⑧ publish            검증한 다이제스트를 그대로 (starter-templates.md §6.1)
 ```
 
-- `gen_refs` 는 시작 코드가 있어야 그 위에 구현을 쓸 수 있어 `gen_starter` 뒤에 돈다. `gen_hidden` 은 `gen_starter`·`gen_refs` 와 병렬이다 (숨은 테스트는 시작 코드 내부를 보지 않는다 — 게이트 ⑥).
+- `gen_refs` 는 시작 코드가 있어야 그 위에 구현을 쓸 수 있어 `gen_starter` 뒤에 돈다. 숨은 테스트는 시작 코드 내부를 보지 않는다 (게이트 ⑥) — 테스트 먼저라 순서상으로도 앞선다.
+- 공개 테스트는 시작 코드에서 **저장 확인(`PersistenceCheckTest`)만 통과하고 기능 테스트는 실패**해야 한다 (구현 전임을 확인). 참조 구현은 공개 테스트를 **모두 통과**해야 숨은 게이트 판정에 쓴다 (§7).
+- 구현: `nodes/starter/build.py`(`build_and_repair` — `compiler` 를 주면 `compile_and_fix`), 개발 서버 대용 `eval/starter/gradle_verify.GradleVerifier`(`verify` · `compile_tests`).
 - 상태 `common_task_build.status`: `pending → generating → verifying → review`(실패 `failed`) `→ approved → published` (§4 그대로). `repairing` 은 따로 두지 않고 `generating` 으로 돌아간다.
 - 그래프 State 는 오버레이 **본문을 담지 않는다** — 파일은 `starter_file` 테이블(#52)에 쓰고 State 에는 `(kind, path, sha256)` 목록만 (체크포인트 크기·숨은 테스트 노출 방지).
 - **응시용 이미지의 기준 커밋** [제안]: 응시용 이미지를 만들 때 작업 경로를 git 저장소로 만들고, 조립 트리로 첫 커밋을 고정 작성자·고정 시각으로 넣는다. 그러면 기준 커밋 sha 가 모든 지원자에게 같고, 응시 중 커밋 기록(플랫폼 쪽)의 시작점을 sha 하나로 대조할 수 있다. sha 는 이미지 라벨과 `common_task_build` 에 남긴다.
@@ -70,7 +80,9 @@
 TaskContract                         ← 지원자에게 보임 (README "계약" 절)
   interface_kind: http | cli | file   (템플릿 manifest 가 허용하는 것 중)
   endpoints[]:  id(e1…) · method(http 만) · path · summary · headers · query · request(필드) · responses(상태 코드·설명·본문 필드 또는 returns: m1 · m1[]) · refs(r*·p*)
-  entities[]:   id(m1…) · name · fields · relations      ← #58 [데이터 모델]
+  entities[]:   id(m1…) · name · fields · relations · foreign_keys("필드 → 엔티티" — DB 외래 키로 둘 것만)      ← #58 [데이터 모델]
+                · existing(이 과제 전에 있던 테이블인가 — 숨은 케이스 data 는 existing 엔티티에만, 새 엔티티는 0행)
+                · state(상태를 바꾸는 엔티티만: field · values · transitions "A→B" · rejected_status) [확정: 2026-11-08, plan_contract v10]
     필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
   seed[]:       entity id · rows(정확한 행 수, id 1~rows) · groups(id 범위마다 처음 값, 1~rows 를 빈틈·겹침 없이) · 값 규칙 (가상 데이터만, §10-16)
   public_tests[]: id(pt1…) · ac_id(p*) · 무엇을 확인하나 (공개 수용 기준 1:1 이상)
@@ -109,18 +121,27 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - 표기 패턴만으로 못 읽는 표(요청 지표처럼 열 이름 + 값 줄)는 manifest `spec_columns`(열 이름 정규식)로 그 열의 숫자를 읽는다.
 - **패턴 값이 정답, 근거 인용은 엄격하게** (2026-11-07 알파 테스트): 표기 패턴이 값을 뽑으면 그 값만 정답이다. 서로 다른 값이 여럿이면 manifest `pick`(unique·max·min)으로 고르고, unique 인데 여럿이면 통과시키되 승인자 확인. 패턴과 다른 값은 숫자가 하나뿐인 근거 인용일 때만 받고 표시한다. 근거 인용 경로에서는 백분율·시각을 값 후보에서 빼고 160자 상한, 남은 숫자가 여럿이면 승인자 확인. (분포 "1개: 38% … 4개 이상: 7%" 를 통째로 인용하면 동시 탭 수 1~4 아무것이나 통과했다 — 1 이면 함정이 아예 일어나지 않는다.)
 - **시드와 케이스 행** (§10-16, `starter/seed_rows.py`): 시드 groups 가 id 1~rows 를 빈틈·겹침 없이 덮고, 처음 값·케이스 `initial` 의 필드가 엔티티에 있으며 값 목록(`enum(A|B)` 형식 또는 제약 문장의 따옴표 낱말 2개 이상)이 있으면 그 안. 버스트 케이스 행 수 ≥ manifest `burst_rows` 조절값의 곱(Java: `concurrency × bursts`). 케이스 순서대로 처음 값이 맞는 그룹의 **큰 id 부터** 이어진 범위를 나누되 작은 id 10행(`RESERVED_ROWS`)은 지원자·공개 테스트 몫 — 나눌 수 없으면 재요청. 나눈 범위는 `gen_hidden` 입력의 케이스 아래 `데이터: <엔티티> id a~b (…)` 줄로 간다.
+- **재요청은 최근 문제만, 2회까지** (2026-11-08): 문제 여러 개를 한 번에 다 고치지 못해 실패한 실행이 있어(상류 평가 3/9) 재요청을 2회로, 매번 직전 답의 문제만 붙인다.
+- **코드가 맞추는 것** (재요청 대신, 바꾼 것은 `adjustments` 로 승인 화면에): 빠진 숨은 조절값 → manifest 기본값 · 행 수(`fit_seed`) — 처음 값마다 **공개 테스트 몫 3행**도 숨은 범위·작은 id 밖에 (2026-11-08: 숨은 케이스가 11~172 를 다 가져가 공개 몫이 없었다) · covers 에 빠진 요소를 그 요소가 적은 `refs` 대로(`fit_covers` — refs 는 공개 id 만이라 숨은 요구가 들어오지 않음) · 화살표 글만 적은 전이를 `state` 칸으로 + 상태 필드 constraints 문장을 칸에서(`fit_state`, `starter/state_rule.py`).
+- **상태 규칙 칸** (`state_problems`): 필드가 엔티티에 있음 · 전이 양끝이 values 안 · 거절 코드가 응답에 · 시드·숨은 케이스 처음 값이 values 안 · **숨은 케이스 처음 값에서 나갈 허용 전이**가 있음 (롤백·버스트 케이스가 규칙을 통과하는 요청을 보낼 수 있게). 2026-11-08: 계약 첫 답 9개 중 5개가 전이를 빠뜨림(자유 글 시절) → 칸으로 바꾼 뒤 0/9.
+- **재료가 선언한 필요 요소** (`FeatureSeed.contract_needs` — `stateful_target` · `transition_rules` · `empty_record_entity`): 숨은 요구가 계약에 꼭 필요로 하는 것을 재료가 선언하고 코드가 대조한다 (`contract._needs`).
+- **통과 조건은 HTTP 로 관찰할 수 있는 것만**: 숨은 케이스 `expect` 가 조절값 이름(풀 크기 등)을 말하면 재요청 — 연결 수 같은 내부 동작은 단언할 수 없다.
 - **테이블 이름은 템플릿 규칙으로** (2026-11-07, `starter/tables.py`, manifest `naming.table`): 숨은 테스트는 시작 코드를 보지 않으므로 오류 주입 정규식의 테이블을 계약에서 안다 — 생성 스모크에서 경로로 짐작(`deliveries`, 실제 `delivery`)해 주입이 안 걸렸다. 규칙은 스택마다 다르다 (`DeliveryAuditLog` 기준, 공식 문서·소스로 확인): Spring Boot JPA `delivery_audit_log` · Rails `delivery_audit_logs` · Django `<앱>_deliveryauditlog` · Hibernate 기본(Spring 없이, 이름 그대로·따옴표 없음 → PostgreSQL `deliveryauditlog`, 표준대로 대문자로 접는 Oracle 등 `DELIVERYAUDITLOG`) · Prisma(`@@map` 없음, PostgreSQL 기준 따옴표로 대소문자 유지) `"DeliveryAuditLog"` · 프론트엔드·파일형은 없음. 템플릿이 정한 SQL 예약어로 나오면 복수형 (`order` → `orders`). 계약(README)에 "`Delivery` — 테이블 `delivery`" 로 보인다.
 
 ## 4. 생성기
 
 모든 생성기는 출력이 `{files: [{path, content}]}` 이고, 경로는 `fill_slots`(숨은 테스트는 `hidden/cases/`) 안이어야 한다. 경로 규칙·상한은 `starter/overlay.py` 가 본다 (#55).
 
-| 노드 | 프롬프트 | 보는 것 | 보지 않는 것 | 산출 `kind` |
+| 노드 | 프롬프트 (테스트 먼저 흐름의 버전) | 보는 것 | 보지 않는 것 | 산출 `kind` |
 |---|---|---|---|---|
-| `gen_starter` | `gen_starter/v1` | 계약, 명세 공개 부분(제목·상황·요구·공개 기준), 템플릿 골격·`fill_slots` | `HiddenPlan`, 숨은 요구, 허용 설계 | `starter` |
-| `gen_hidden` | `gen_hidden/v1` | 계약, `HiddenPlan`, h* 기준, 숨은 요구 설명, 템플릿 하네스 **API 문서**(하네스 코드 자체는 잠김) | 시작 코드 본문, 참조 구현 | `hidden` |
-| `gen_naive` | `gen_naive/v1` | 계약, 시작 코드, seed `naive_impl`, (하나만 놓친 판이면) 지킬 숨은 요구 목록 | 숨은 테스트 | `ref_naive` |
-| `gen_accepted` | `gen_accepted/v1` | 계약, 시작 코드, 허용 설계 1건(`summary`·`conditions`) + **그 스택의 조건**(§4.2) | 숨은 테스트, 다른 허용 설계 | `ref_accepted` |
+| `gen_public` | `gen_public/v1` | 계약, 공개 수용 기준, 공개 테스트 문서(`hidden/PUBLIC.md`) + 코드가 쓴 `PublicCase` 소스 | `HiddenPlan`, 숨은 요구, 하네스 동시 요청·주입, 시작 코드 | `public_test` |
+| `gen_hidden` | `gen_hidden/v3` | 계약, `HiddenPlan`(케이스별 id 범위), h* 기준, 숨은 요구 설명, 하네스 **API 문서**(`HARNESS.md`) + 코드가 쓴 `ContractCase` 소스 | 시작 코드 본문, 공개 테스트, 참조 구현 | `hidden` |
+| `gen_starter` | `gen_starter/v7` | 계약, 명세 공개 부분(제목·상황·요구·공개 기준), 템플릿 골격·`fill_slots`, **공개 테스트** | `HiddenPlan`, 숨은 요구, 허용 설계, 숨은 테스트 | `starter` |
+| `gen_naive` | `gen_naive/v4` | 계약, 시작 코드, **공개 테스트**, seed `naive_impl`, (하나만 놓친 판이면) 지킬 숨은 요구 목록 | 숨은 테스트 | `ref_naive` |
+| `gen_accepted` | `gen_accepted/v4` | 계약, 시작 코드, **공개 테스트**, 허용 설계 1건(`summary`·`conditions`) + **그 스택의 조건**(§4.2) | 숨은 테스트, 다른 허용 설계 | `ref_accepted` |
+
+- **코드가 쓰는 파일** (생성기가 같은 경로를 쓰면 버리고 렌더본): 시드 SQL(`starter/seed_sql.py`) · 숨은 테스트 도우미 `ContractCase`(케이스별 id 범위 `HC1_FIRST`…, 테이블 이름 `TABLE_…`, 처음 값별 다음 상태 `NEXT_OK_…`·`NEXT_BAD_…`, 계약 API 함수·200 본문 파싱, `peak(…)`) · 공개 테스트 도우미 `PublicCase`(공개 몫 행 `PUBLIC_…`, 다음 상태, 계약 API 함수 — 숨은 범위·주입 없음) · 저장 확인 `PersistenceCheckTest`(새 엔티티를 JPA 메타모델로 만들어 저장, id 생성 확인) · 조절값 파일 · README (`starter/hidden_helpers.py`·`starter/render.py`).
+- **생성기 `CURRENT` 와의 차이** [미정 — §10-17]: 위 버전은 평가에서 고정해 쓰는 것이고, 2026-11-08 기준 `CURRENT` 는 `gen_starter` v3 · `gen_naive`·`gen_accepted` v2 · `gen_hidden` v2 (`gen_public` v1, `plan_contract` v10). 고정 없이 돌리면 공개 테스트를 받지 않는 옛 프롬프트가 쓰인다.
 
 - **시작 코드는 "구현 자리를 비운" 코드다**: 엔티티·저장소·컨트롤러 시그니처·시드·기존 기능 테스트까지 쓰고, 기능 본문은 `TODO` 로 둔다(컴파일되게 — Java 는 예외를 던지는 스텁).
 - **기존 테스트와 공개 테스트를 구분한다**:
@@ -165,7 +186,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | | 지원자에게 줌 | 주지 않음 |
 |---|---|---|
 | `kind` | `starter` (응시용 이미지에 들어감) | `public_test` (채점용 이미지에만 — `hidden` 과 같은 취급, 응시용·API·로그 노출 금지) |
-| 쓰는 생성기 | `gen_starter` (공개 정보만 보므로 그대로) | `gen_starter` 가 같이 쓰되 출력에서 경로로 갈라 `public_test` 로 저장 — 공개 정보만으로 쓰는 테스트라 `gen_hidden` 에 맡기지 않는다 (숨은 테스트와 섞이면 게이트 ⑤ 누설 판정이 흐려짐) |
+| 쓰는 생성기 | `gen_public` [확정: 2026-11-08 — 테스트 먼저] | `gen_public` — 공개 정보만으로 쓰는 테스트라 `gen_hidden` 에 맡기지 않는다 (숨은 테스트와 섞이면 게이트 ⑤ 누설 판정이 흐려짐). 처음 안(`gen_starter` 가 같이 씀)은 시작 코드가 자기 테스트에 맞춰져 테스트 먼저가 안 됨 |
 | README "계약" 절 | `public_tests` 목록 실음 | 목록 빼고 공개 수용 기준 문장만 (기준 자체는 원래 공개) |
 | 검증 | 시작 코드에서 **실패**(구현 전임을 확인 — 게이트 ② 의 기존 테스트 통과와 별개), 참조 구현에서 통과, ⑤ 누설 | 같음 (채점용 이미지에서 실행) |
 
@@ -196,6 +217,11 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | 시작 코드가 선언한 테이블(`CREATE TABLE`·`@Table`, manifest `naming.table.declare_patterns`)이 계약 테이블 밖 | `starter` | `gen_starter` |
 | 숨은 테스트의 오류 주입 정규식(Java: `Pattern.compile` 문자열, `hidden_rules.table_refs`)이 계약 테이블 밖을 가리킴 (대소문자는 따옴표 없는 스택이면 무시) | `hidden` | `gen_hidden` |
 | 케이스 목록이 `HiddenPlan.cases` 와 1:1, selector 가 실제 테스트에 있음 | `hidden` | `gen_hidden` |
+| 숨은·공개 테스트가 코드가 쓴 도우미에 없는 상수·계약 API 함수를 씀 (가까운 이름을 힌트로 — 2026-11-08: `PUBLIC_ORDER_READY`·`getApiOrdersOrderIdStatus` 를 짐작해 컴파일 실패) | `hidden`, `public_test` | `gen_hidden` / `gen_public` |
+| 하네스 클래스(`Burst`·`GraderJdbcHarness`·`GraderParams`·`Reasons` …)에 없는 멤버 — 템플릿 하네스 소스에서 static 멤버·중첩 타입을 읽어 대조 (2026-11-08: `Burst.IntUnaryOperator`) | `hidden`, `public_test` | `gen_hidden` / `gen_public` |
+| 실패 사유별 필수 패턴(manifest `failure_reasons[].requires` — 롤백 사유는 오류 주입, 풀 사유는 동시 요청)이 그 케이스 파일에 없음 · 모든 실패를 세는 단언(`hidden_rules.reason_not_on`, `Burst.wrong(...)`)에 사유를 붙임 (2026-11-08 숨은 테스트 검토: 사유를 `Burst.wrong` 에 붙임 14/14, 롤백 사유인데 주입 없음 4/5) | `hidden` | `gen_hidden` |
+| 템플릿 클래스패스에 없는 패키지 import (manifest `unavailable_imports`, 지금 Lombok — 검증 스타터는 2026-11-08 템플릿에 넣음) | `starter`, `ref_*` | 그 생성기 |
+| 공개 테스트: `PublicCase` 상속 · pt 마다 하나 · 계약 API 만 · 숨은 영역(`Burst`·`peak`·주입·조절값) 금지 · 코드가 쓴 파일을 바꾸지 않음 | `public_test` | `gen_public` |
 | 허용 구현이 하네스 조절값의 설정 키(`harness_params.config_keys`)를 시작 코드와 다른 값으로 바꿈 — 채점 때 운영 값으로 덮어써져 그 설계는 무효 (2026-11-07 알파 테스트: 재료의 허용 설계 '풀 크기 산정'을 뺌). 재요청에도 같으면 다른 허용 설계가 남을 때 그 설계를 빼고 계속 (review_flags) | `ref_accepted` | `gen_accepted` |
 
 ## 7. 실패 배정 · 수리 (`repair`) [제안]
@@ -213,7 +239,9 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | ③' 하나만 놓친 구현이 그 테스트가 아닌 다른 테스트로만 잡힘 | 숨은 테스트 간 의존 | `gen_hidden` |
 | ④ 허용 구현이 **모두** 같은 케이스에서 실패 | 숨은 테스트가 너무 엄격 | `gen_hidden` |
 | ④ 허용 구현 **하나만** 실패 | 먼저 그 스택 조건(§4.2)을 붙여 그 구현만 재생성 → 그래도 실패면 설계 조건 부족 → review_flags | `gen_accepted` 그 하나 |
-| ⑤ 흔한 구현이 공개 테스트에서 실패 | 공개 테스트가 함정을 잡음 (누설) | `gen_starter` |
+| ⑤ 흔한 구현만 공개 테스트에서 실패 | 처음엔 흔한 구현 탓 → 다시 만든 뒤에도 그 테스트만 실패면 공개 테스트가 함정을 잡음 (누설) | `gen_naive` → `gen_public` |
+| 공개 테스트를 시작 코드가 이미 통과 / 저장 확인 실패 | 시작 코드가 새 기능을 구현함 / 새 엔티티를 저장할 수 없음 (예: id 생성 전략 없음) | `gen_starter` |
+| 참조 구현이 모두 같은 서버 오류로 공개 테스트 실패 / 모두 같은 단언 실패 | 공유 코드(시작 코드) / 공개 테스트 | `gen_starter` / `gen_public` |
 | ⑦ 주입 테스트가 허용 설계를 떨어뜨림 | 숨은 테스트 — 감점 여부는 `starter-templates.md` §11 [미정] | `gen_hidden` |
 | ⑧ 반복마다 결과가 다름 / ⑨ 시간 초과 | 숨은 테스트 불안정·과부하 | `gen_hidden` |
 
@@ -239,7 +267,12 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
   - 실제 루프 1회 (gpt-4.1, 배송 감사 v3 계약, 허용 설계 1, `data/eval/build/2026-11-07-loop-gpt41`, $0.19 · 호출 7): 시작 코드 기존 테스트 실패 → `gen_starter` 1회 다시 → 또 실패 → 예산 소진 `failed` (배정·예산은 설계대로). 원인: 시작 코드의 두 테스트가 **같은 시드 행(id 1)** 을 바꿔 실행 순서에 따라 결과가 달라짐 (READY→SHIPPED 뒤 'READY→DELIVERED 는 400' 확인) — 지난 스모크들의 '400 기대인데 200' 도 같은 원인. 수정 요청이 원인을 가리키지 못해 다시 만들어도 같았다 → `gen_starter` 프롬프트에 '테스트마다 다른 시드 행' 규칙 [제안].
   - `gen_starter` v2 ('테스트마다 다른 시드 행', 아직 CURRENT 아님 — `prompts/gen_starter/PROMOTIONS.md`) 로 루프 1회 ($0.18): 시작 코드 통과, **숨은 테스트가 처음으로 의도대로 가름** — 흔한 구현 hc1·hc2 모두 의도한 사유로 실패, 허용 구현 d1 둘 다 통과. 남은 실패: 두 참조 구현이 '없음 404' 기존 테스트에서 `beforeStatus` not-null — 계약이 '시도마다 기록'인데 `beforeStatus` 를 필수로 두어 없는 배송 건의 시도를 기록할 값이 없다 (**계약 모호**). d1 은 다시 만들어 통과, 흔한 구현은 다시 만들어도 같아 예산 소진 `failed`. → 계약 쪽(실패 경로에서 값이 없는 필드는 선택, 또는 기록하지 않는 경우를 적기)과, 첫 회차에 모든 참조 구현이 같은 기존 테스트를 같은 오류로 깨면 '계약·시작 코드 모호'로 보는 배정 규칙 [제안].
   - 수리 요청 문구: 시작 코드 기존 테스트 실패에 '테스트끼리 같은 DB·실행 순서 미정 — 테스트마다 다른 시드 행' 을 붙임. 계약 시드 줄에 '테스트에서 바꿔도 되는 행은 id 1~10' (채점 테스트 범위와 겹치지 않게).
-- **예산**: 산출물마다 재생성 1회, 빌드 전체 재생성 최대 3회 [제안]. 예산을 넘거나 배정이 모호하면(두 쪽 다 의심) 재생성하지 않고 `failed` — 승인자가 다시 빌드 · 문서 과제로 전환 · 명세 수정 중 고른다 (§4 그대로).
+- **테스트 먼저 (2026-11-08)** — 구현 [확정: 2026-11-08 사용자]:
+  - **구현 전 컴파일 루프** (`build.compile_and_fix`): 공개·숨은 테스트를 만든 직후 구현 없이 컴파일하고, javac 오류(위치·symbol/location·그 줄의 코드)를 그 파일을 쓴 생성기에 붙여 최대 2회. 코드가 쓴 파일의 오류·Gradle 자체 오류는 생성기로 못 고치므로 바로 멈춤. 그래도 컴파일 안 되면 구현을 만들지 않고 `failed`. 근거: Gradle 로그 314개에서 숨은 테스트 컴파일 오류 141줄 — 없는 이름은 일부, 나머지는 타입·람다·검사 예외·import 라 이름 검사만으로는 못 막는다.
+  - **신뢰 규칙**: 공개 테스트를 모두 통과한 참조 구현만 숨은 게이트(③④)·숨은 테스트 의심 판정에 쓴다 — 공개 기능도 못 하는 구현의 숨은 결과는 근거가 안 된다.
+  - **구현 간 비교 배정**: HARNESS_ERR·공개 테스트 실패는 한 구현만이면 그 구현, 모두 같으면 공유 코드·테스트 쪽. 흔한 구현을 먼저 의심(처음 실패는 흔한 구현을 다시). 컴파일 오류 예산은 따로(`#compile` 키, 2회).
+  - **기동 실패 근본 원인**: 기동 실패면 가장 깊은 `Caused by` 한 줄을 수리 요청에 싣는다 (`TargetRun.setup_detail`).
+- **예산**: 산출물마다 재생성 1회(컴파일 오류만이면 2회), 빌드 전체 재생성 최대 3회 [제안]. 예산을 넘거나 배정이 모호하면(두 쪽 다 의심) 재생성하지 않고 `failed` — 승인자가 다시 빌드 · 문서 과제로 전환 · 명세 수정 중 고른다 (§4 그대로).
 - 시작 코드를 다시 만들면 그 위에 쓴 참조 구현도 무효라 `gen_refs` 도 다시 돈다 (숨은 테스트는 그대로 — 계약이 같으므로).
 - 계약 자체가 원인으로 보이는 실패(여러 생성기가 같은 엔드포인트에서 서로 다른 형식을 가정, **또는 참조 구현이 모두 같은 계약 제약에 같은 오류로 부딪힘** — 2026-11-07: 명세는 "요청마다 기록(… 이전 상태 …)" 인데 계약이 이전 상태를 필수로 둬 없는 배송 건 요청에서 not-null)는 수리하지 않고 `failed` + 사유 "계약 모호" — 계약을 다시 만들면 모든 산출물이 무효라 비용이 크다. 계약 재생성 허용 여부 [미정].
 - 수리 이력(어떤 게이트 → 어떤 산출물 → 결과)은 `common_task_build` 에 남기고 승인 화면에 보인다. 내용(코드)은 로그에 남기지 않는다.
@@ -275,6 +308,9 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
   - 같은 명세로 파이프라인을 돌려 판정 표가 손 예시와 같은 모양인지 본다: 흔한 구현 t1·t2·t2-commit FAIL, 하나만 놓친 구현 t1·t2-commit FAIL, 허용 설계 ALL PASS, 5회 동일.
 - **통과율**: 백엔드 기능형 seed 6건 이상으로 빌드 성공률(재생성 포함) · 재생성 횟수 · 게이트별 실패 분포 · 생성 시간·비용.
 - **AI 단독 풀이**: 생성된 시작 코드 + README 만 주고 코딩 AI 가 구현 → 숨은 테스트 채점 (`starter-templates.md` §9 와 같은 방식). 손 예시 r1 에서 4개 모델 모두 함정을 피했으므로 **판별력은 소재 문제**이고, 이 파이프라인의 승격 조건은 "손 예시와 같은 판정 표를 재현"까지로 둔다 [제안]. 판별력은 §8 의 AI 기본 풀이 지표로 과제마다 따로 본다.
+- **상류 평가** (2026-11-08, `eval/starter/run_grading.py`): 계약 → 숨은·공개 테스트 → 정적 검사 → 컴파일 루프까지만, 구현 없이. 공고 여러 개 × 여러 회, 단계별 첫 답·최종·컴파일 첫 답·비용을 `data/eval/build/<날짜>-grading-<tag>/summary.md` 로. 구현까지 돌리기 전에 채점 코드를 싸게(회당 약 $0.1) 고친다.
+  - 새 공고 3개 × 3회 (premium gpt-4.1) 끝까지 통과: 공개 테스트 없는 기준 9/9 → 테스트 먼저 첫 판 5/9 → 도우미 이름·재요청 2회·단언 품질 6/9 → 공개 몫 행·covers 역색인 7/9 → **plan_contract v10(state 칸) + 컴파일 루프 9/9** ($1.09).
+  - 단언 품질(같은 평가의 숨은 케이스 파일): `Burst.wrong` 에 사유 11/14 → 0/9, '1건'을 `isNotEmpty` 로 12/14 → 0/9.
 - 프롬프트별 `CURRENT` 승격은 평가 통과 후 (불변식 7). 생성기는 따로 승격한다.
 
 ## 10. 미정 · 결정 필요
@@ -294,7 +330,9 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 12. **검증 시간 예산** (§7.1) — 시간 민감 케이스 반복 횟수, 동시 실행 상한.
 13. **명세 단계에서 운영 수치를 미리 검사**할지 (§3.3) — 하면 명세 승인 전에 `select_template` 을 한 번 돌려야 한다.
 14. **`gen_hidden` 에 `why_naive_breaks` 를 줄지** (§4) — 정확도 / 독립성.
-15. **`kind=public_test` 추가** (§4.3, #52 테이블).
+15. **`kind=public_test` 추가** (§4.3, #52 테이블) — 오버레이 종류로는 구현 (2026-11-08), 저장 테이블은 #52 와 함께.
+17. **생성기 `CURRENT` 승격** (§4): 테스트 먼저 흐름은 `gen_starter` v7 · `gen_naive`·`gen_accepted` v4 · `gen_hidden` v3 를 고정해야 돈다. 상류 평가(채점 코드까지)만 했고 구현까지 끝까지 도는 알파 평가가 남았다 — 그 뒤 승격.
+18. **사유를 일으키는 법을 생성기에 미리**: 숨은 테스트 첫 답 2/9 — 롤백 사유 케이스 9개 중 8개가 계획 단계부터 "허용되지 않은 전이"로 적혀 오류 주입이 빠짐 (정적 검사·재요청으로는 고쳐짐). [제안] manifest 사유마다 일으키는 법(`how`)을 계약·숨은 테스트 입력에 코드가 싣고, 도우미에 주입 함수.
 16. **계약 시드를 숨은 테스트가 쓸 수 있게 정하기** [제안] (5단계 스모크) — 시드 규칙이 모든 행의 처음 값을 정하고(예: "id 1~N 모두 READY"), 행 수가 숨은 테스트가 동시에 바꿀 행 수(`concurrency × bursts`) + 지원자 몫 이상이어야 한다. `gen_hidden` 에 시작 코드의 `data.sql` 을 보여 주는 길은 §2 의 독립성(숨은 테스트는 시작 코드를 보지 않음)을 깨서 택하지 않음.
     — 1단계 구현 (2026-11-07): `SeedRule`(rows · groups) · `HiddenCase.data` · manifest `burst_rows` · 검사·배정 `starter/seed_rows.py` (§3.3), README·생성기 입력의 시드 줄, `gen_hidden` 입력의 케이스별 id 범위, HARNESS.md 데이터 규칙. 기본값: 처음 값은 id 범위별 groups, 지원자 몫 작은 id 10행, README 에 행 수 공개. 2단계 (2026-11-07): `plan_contract` v3 + 입력 `seed_rules`. v3 스모크에서 LLM 이 버스트 곱·시드 합을 재요청에도 틀려 **행 수는 코드가 맞춘다** (`seed_rows.fit_seed` — 버스트 행 = 곱, 빈 엔티티 data 뺌, 모자란 시드 늘림, 바꾼 것은 `adjustments` 로 승인 화면에) → 2/2 첫 답 통과. 검사 오탐(글의 구체 id ↔ 계약 `{id}`)도 고침. 기록 `prompts/plan_contract/PROMOTIONS.md`. 3단계 (2026-11-07): 그 계약으로 생성 스모크 — 행 부족 실패 0, hc1 에서 흔한 구현은 의도한 사유로 실패·허용 구현 d1 은 통과 (숨은 테스트가 둘을 가른 첫 실행). hc2 는 숨은 테스트가 테이블 이름을 짐작해 틀림(`deliveries` ↔ `delivery`) → 테이블 이름을 템플릿 규칙(언어별)으로 계약에 두는 일이 남음, 고친 뒤 d1 참조 구현의 실패 기록 누락은 6단계 수리 대상. 4단계: CURRENT v3 (사용자 확인 2026-11-07). 테이블 이름 규칙 반영 뒤 생성 스모크 ($0.11): 숨은 테스트가 계약의 `delivery` 로 오류를 주입해 hc2 가 걸림, hc1 은 다시 흔한 구현 실패(의도한 사유)·d1 통과. 남은 실패는 모두 6단계 수리 대상 — 시작 코드 자체 테스트 불일치(`gen_starter`, 회차마다 다름), d1 참조 구현이 커밋 실패 때 실패 기록 누락(`gen_accepted`), hc2 가 '실패 기록 있음'을 '성공 기록 없음'보다 먼저 확인해 흔한 구현이 의도한 사유(`rollback_left_success`) 대신 `record_missing` 으로 실패(`gen_hidden` — 의도한 실패를 먼저 확인).
 
@@ -320,6 +358,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
    — 나눔 (2026-11-07): **6a** 배정 규칙 + 수리 루프 함수 + 결과 형식 + 개발 서버 Gradle verifier (§7 구현 줄) — 가짜 verifier 로 배정 표 행마다·루프 예산 시험. **6b** 그래프 연결(State·interrupt·저장)은 저장소(#52)·verifier(#55) 뒤.
 7. verifier 연결 후 golden 재현 (§9, 단계적 반복 §7.1) → seed 6건 평가 → `CURRENT`.
 8. AI 기본 풀이 지표 (§8) — 실행 구조 결정(§10-10) 뒤. (a) 면 에이전트 실행기(sandbox 밖 루프 · `exec` 도구 · 호출 상한 · 기록)부터, 별도 PR 여러 개.
+9. **테스트 먼저 전환** (2026-11-08, 6a 뒤): `gen_public` + 코드가 쓰는 도우미·저장 확인 · 공개 게이트·신뢰 규칙(§7) · 상류 평가 `run_grading` · 정적 검사 보강(§6) · 계약 `state` 칸 + `plan_contract` v10(CURRENT) · 구현 전 컴파일 루프 · 템플릿 검증 스타터. 남은 것: 생성기 CURRENT 승격(§10-17), 사유를 일으키는 법(§10-18).
 
 ### 11.1 직군별 종이 단계 (2026-11-07) — 계약 생성까지, 빌드·하네스 없음
 
