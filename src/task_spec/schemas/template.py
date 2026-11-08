@@ -89,6 +89,9 @@ class FailureReason(Schema):
     # 이 사유를 의도한 숨은 케이스 파일에 반드시 있어야 할 것 (정규식 하나라도) — 예: 저장 실패 사유면 오류 주입.
     # 2026-11-08 숨은 테스트 검토: rollback_left_success 5건 중 4건이 주입 없이 거절되는 전이를 보내 롤백될 변경이 없었다.
     requires: list[str] = Field(default_factory=list)
+    # 이 사유를 하네스로 일으키는 법 한 줄 — 코드가 계약·숨은 테스트 생성기 입력과 케이스 줄에 싣는다.
+    # 2026-11-08 상류 평가: 롤백 사유 케이스 9개 중 8개가 계획 단계부터 "허용되지 않은 전이"로 적혀 숨은 테스트 첫 답에 주입이 빠짐 (2/9).
+    how: str | None = Field(default=None, max_length=300)
 
     @field_validator("log_patterns", "requires")
     @classmethod

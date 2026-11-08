@@ -11,7 +11,8 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 - **`ContractCase` 를 상속한다** (`GraderSupport` 를 직접 상속하지 않는다). `ContractCase` 는 빌드 파이프라인이 이 과제의 계약에서 만든
   도우미로 이 문서 끝에 소스가 붙어 있다 — 케이스별 id 범위 상수(`HC1_FIRST` …), 계약 테이블 이름(`TABLE_…`), 처음 값별 다음 상태
   (`NEXT_OK_<엔티티>_<처음 값>` 허용되는 값 · `NEXT_BAD_…` 거절되는 값 — 계약 state 칸에서), 계약 API 호출 함수와 200 본문을 계약 모양
-  (목록/객체)대로 읽는 `…Body` 함수, 운영 피크 `peak(…)`, 숫자 비교 `num(…)`. **id·경로·응답 파싱·상태 전이·동시 요청 시간 한도를
+  (목록/객체)대로 읽는 `…Body` 함수, 운영 피크 `peak(…)`, 오류 주입 `injectCommitFailure(verb, TABLE_…)`·`injectStatementFailure(verb, TABLE_…)`,
+  숫자 비교 `num(…)`. **id·경로·응답 파싱·상태 전이·동시 요청 시간 한도를
   손으로 쓰지 말고 이것들을 쓴다** — 계약과 어긋날 수 없게. `ContractCase.java` 와 조절값 파일(`grader-params.properties`)은 쓰지 않는다
   (빌드 파이프라인이 쓴다).
 - 지원자 구현(`com.example.service.*` 중 `grading` 밖)을 import 하지 않는다 — 공개 계약(HTTP)으로만 판정.
@@ -61,7 +62,8 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 - 기대 결과는 HiddenPlan 케이스의 `expect` 에서만 나온다. `expect` 에 없는 조건(응답 시간·로그 순서 등)을 더 요구하지 않는다.
 - **의도한 사유는 그 실패만 걸리는 단언에 붙인다.** 운영 조건 사유(`pool_acquire_timeout` 등)는 `Burst.failures(...)` 단언에, 기록 사유는 그 기록을 보는
   단언에. `Burst.wrong(...)` 처럼 모든 실패를 세는 단언에 사유를 붙이지 않는다 — 500·시간 초과·규칙 불일치가 모두 같은 사유로 보인다.
-- **저장 단계 실패(롤백) 사유의 케이스는 `GraderJdbcHarness.failCommitAfter`·`failStatements` 로 실패를 일으킨다.** 규칙상 거절되는 요청(허용되지 않은
+- **저장 단계 실패(롤백) 사유의 케이스는 `injectCommitFailure("update", TABLE_<대상>)`(또는 `GraderJdbcHarness.failCommitAfter`·`failStatements`)로 실패를 일으킨다.**
+  숨은 테스트 계획의 케이스 아래 `일으키는 법` 줄이 있으면 시나리오 글보다 그것을 따른다. 규칙상 거절되는 요청(허용되지 않은
   전이)은 저장 전에 끝나 롤백될 변경이 없다 — 규칙을 통과하는 요청(처음 값에서 허용된 전이 `NEXT_OK_…`)에 주입한다.
 - 기록이 "1건" 이면 `hasSize(1)` (`isNotEmpty()` 는 2건도 통과). 테스트 메서드끼리 서로 독립 — 순서에 기대지 않고 메서드마다 다른 행을 쓴다.
 
