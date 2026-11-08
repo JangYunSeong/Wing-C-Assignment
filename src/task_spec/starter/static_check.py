@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import difflib
+import functools
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -30,9 +32,10 @@ import yaml
 
 from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import Endpoint, FileKind
+from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
-from task_spec.starter.hidden_helpers import render_contract_case
+from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
 from task_spec.starter.tables import (
@@ -53,7 +56,7 @@ KIND_SLOT = {
 }
 KIND_TARGET = {
     "starter": "gen_starter",
-    "public_test": "gen_starter",
+    "public_test": "gen_public",
     "hidden": "gen_hidden",
     "ref_naive": "gen_naive",
     "ref_accepted": "gen_accepted",
@@ -660,6 +663,47 @@ def _broad_injections(
     return out
 
 
+def _reason_rules(
+    cases: Iterable[GeneratedFile],
+    m: TemplateManifest,
+    plan: HiddenPlan,
+    case_rx: re.Pattern[str],
+    reason_rx: list[re.Pattern[str]],
+) -> list[str]:
+    """의도한 사유가 제대로 나오게 — (1) 사유를 붙이면 안 되는 단언(모든 실패를 세는 것)에 붙임, (2) 사유가 요구하는 것(오류 주입·운영 피크)을
+    케이스가 쓰지 않음. 2026-11-08 숨은 테스트 검토: 사유를 Burst.wrong 에 붙임 14/14, 저장 실패 사유인데 주입 없음 4/5."""
+    intended = {c.case_id: c.intended_reason for c in plan.cases}
+    requires = {r.code: r.requires for r in m.failure_reasons if r.requires}
+    bad_on = [re.compile(p) for p in m.hidden_rules.reason_not_on]
+    out: list[str] = []
+    for f in cases:
+        if bad_on:
+            hits = [
+                " ".join(stmt.split())[:120]
+                for stmt in f.content.split(";")
+                if any(rx.search(stmt) for rx in reason_rx)
+                and any(rx.search(stmt) for rx in bad_on)
+            ]
+            if hits:
+                out.append(
+                    f"숨은 테스트 {f.path} 가 모든 실패를 세는 단언에 사유를 붙임: {hits[0]} — 어떤 실패든 그 사유로 보인다. "
+                    "운영 조건 사유는 Burst.failures(...) 에, 그 밖의 불일치는 Burst.mismatches(...) 로 따로 (사유 없이 또는 기록 사유)"
+                )
+        for cid in sorted(set(case_rx.findall(f.content))):
+            code = intended.get(cid)
+            need = requires.get(code or "")
+            if need and not any(re.search(p, f.content) for p in need):
+                out.append(
+                    f"숨은 케이스 {cid} (의도한 사유 {code}) 가 그 사유를 일으키는 것을 쓰지 않음 — 필요한 것: {' 또는 '.join(need)}. "
+                    + (
+                        "저장 단계 실패는 규칙을 통과하는 요청에 GraderJdbcHarness 주입으로 일으킨다 (거절되는 전이는 롤백될 변경이 없다)"
+                        if "GraderJdbcHarness" in "".join(need)
+                        else "운영 피크는 peak(...) 로 재현한다"
+                    )
+                )
+    return out
+
+
 def _hidden_cases(
     o: Overlay, t: Template, plan: HiddenPlan, contract: TaskContract | None = None
 ) -> list[StaticProblem]:
@@ -702,6 +746,10 @@ def _hidden_cases(
             used_codes |= {mt.group(1) for mt in rx.finditer(f.content)}
         seen_ids.update(set(case_rx.findall(f.content)))
     cases = [f for f in o.files if f.path not in (params_path, helper_path)]
+    if helper is not None:
+        out += unknown_helper_names(cases, helper, "숨은 테스트")
+    out += unknown_harness_members(cases, t.hidden / "harness", "숨은 테스트")
+    out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
         out += _unknown_calls(cases, contract, rules.http_calls)
     if contract is not None:
@@ -724,6 +772,178 @@ def _hidden_cases(
             f"케이스 id 가 여러 파일에 나옴 (케이스 하나 = 테스트 파일 하나): {', '.join(twice)}"
         )
     return [StaticProblem("gen_hidden", msg) for msg in out]
+
+
+_HELPER_CONST = re.compile(
+    r"\b(HC\d+(?:_[A-Z0-9]+)*_(?:FIRST|LAST|ROWS)|PUBLIC_[A-Z0-9_]+|TABLE_[A-Z0-9_]+)\b"
+)
+_VERB_CALL = re.compile(r"(?<![\w.])((?:get|post|put|patch|delete)[A-Z]\w*)\s*\(")
+_OWN_METHOD = re.compile(r"[\w>\]]\s+(\w+)\s*\([^;{}]*\)\s*(?:throws\s+[\w., ]+)?\s*\{")
+_OWN_FIELD = re.compile(r"\b([A-Z][A-Z0-9_]+)\s*=")
+_JDK_VERB = {"getClass"}
+
+
+def helper_names(helper: GeneratedFile) -> set[str]:
+    """코드가 쓴 도우미(ContractCase·PublicCase)의 함수·상수 이름."""
+    methods = re.findall(r"protected (?:static )?[\w<>, \[\]]+? (\w+)\(", helper.content)
+    consts = re.findall(r"protected static final [\w\[\]]+ (\w+) =", helper.content)
+    return set(methods) | set(consts)
+
+
+def unknown_helper_names(
+    cases: Iterable[GeneratedFile], helper: GeneratedFile, label: str
+) -> list[str]:
+    """케이스가 도우미에 없는 범위·공개 행·테이블 상수나 계약 API 함수를 쓰면 가까운 실제 이름과 함께.
+    2026-11-08 상류 평가: 도우미 소스를 보여 줬는데도 getApiOrdersOrderIdStatus(실제 …StatusAudit)·PUBLIC_ORDER_READY(없는 처음 값)를
+    짐작해 컴파일 실패 — 이름은 코드가 만들어 정확히 알므로 Gradle 전에 대조한다."""
+    known = helper_names(helper)
+    out: list[str] = []
+    for f in cases:
+        own = set(_OWN_METHOD.findall(f.content)) | set(_OWN_FIELD.findall(f.content))
+        used = set(_HELPER_CONST.findall(f.content)) | set(_VERB_CALL.findall(f.content))
+        bad = sorted(u for u in used if u not in known and u not in own and u not in _JDK_VERB)
+        if not bad:
+            continue
+        hints = []
+        for b in bad:
+            near = difflib.get_close_matches(b, sorted(known), n=1, cutoff=0.6)
+            family = sorted(k for k in known if k.split("_")[0] == b.split("_")[0] and k.isupper())
+            if near:
+                hints.append(f"{b} (가까운 이름: {near[0]})")
+            elif family and b.isupper():
+                hints.append(f"{b} (있는 이름: {', '.join(family[:6])})")
+            else:
+                hints.append(b)
+        out.append(
+            f"{label} {f.path} 가 도우미에 없는 이름을 씀: {', '.join(hints)} — 도우미 소스에 있는 상수·함수 이름 그대로 쓴다 "
+            "(없는 이름을 짐작하지 않는다)"
+        )
+    return out
+
+
+_STATIC_MEMBER = re.compile(
+    r"(?:public|protected)\s+static\s+(?:(?:final|volatile|synchronized)\s+)*[\w<>\[\],.? ]+?\s+(\w+)\s*[(=;]"
+)
+_NESTED_TYPE = re.compile(
+    r"(?:public|protected)\s+(?:(?:static|final|abstract|sealed)\s+)*(?:record|interface|class|enum)\s+(\w+)"
+)
+
+
+_JAVA_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+
+
+def _strip_comments(src: str) -> str:
+    return _JAVA_COMMENT.sub(" ", src)
+
+
+@functools.lru_cache(maxsize=8)
+def harness_members(harness_dir: Path) -> dict[str, frozenset[str]]:
+    """잠긴 하네스 클래스 → 클래스 이름으로 부를 수 있는 것 (static 메서드·필드, 중첩 타입). 템플릿 소스에서 읽는다."""
+    out: dict[str, frozenset[str]] = {}
+    for f in sorted(harness_dir.glob("*.java")) if harness_dir.is_dir() else []:
+        src = f.read_text(encoding="utf-8")
+        nested = {n for n in _NESTED_TYPE.findall(src) if n != f.stem}
+        out[f.stem] = frozenset(set(_STATIC_MEMBER.findall(src)) | nested | {"class"})
+    return out
+
+
+def unknown_harness_members(
+    cases: Iterable[GeneratedFile], harness_dir: Path, label: str
+) -> list[str]:
+    """케이스가 하네스 클래스에 없는 멤버를 부르면 (`Burst.IntUnaryOperator` 등) 가까운 실제 이름과 함께.
+    2026-11-08 상류 평가: 하네스 문서에 `IntUnaryOperator expectedStatus` 라 적혀 있는데 `Burst.IntUnaryOperator` 로 써 컴파일 실패."""
+    members = harness_members(harness_dir)
+    if not members:
+        return []
+    rx = re.compile(rf"(?<![\w.])({'|'.join(map(re.escape, members))})\.([A-Za-z_]\w*)")
+    out: list[str] = []
+    for f in cases:
+        bad = sorted(
+            {(c, n) for c, n in rx.findall(_strip_comments(f.content)) if n not in members[c]}
+        )
+        if not bad:
+            continue
+        hints = []
+        for c, n in bad:
+            near = difflib.get_close_matches(n, sorted(members[c] - {"class"}), n=1, cutoff=0.6)
+            if near:
+                hints.append(f"{c}.{n} (가까운 이름: {c}.{near[0]})")
+            elif n[:1].isupper():
+                hints.append(f"{c}.{n} ({c} 안의 타입이 아님 — JDK 타입이면 import 해서 그냥 {n})")
+            else:
+                hints.append(f"{c}.{n}")
+        out.append(
+            f"{label} {f.path} 가 하네스에 없는 멤버를 씀: {', '.join(hints)} — 하네스 문서·소스에 있는 이름 그대로 쓴다"
+        )
+    return out
+
+
+_HIDDEN_ONLY = re.compile(r"\b(?:Burst|GraderJdbcHarness|GraderParams)\.|\bpeak\(")
+
+
+def _public_cases(
+    o: Overlay, t: Template, plan: HiddenPlan, contract: TaskContract | None
+) -> list[StaticProblem]:
+    """공개 테스트(gen_public) — 코드가 쓴 도우미·저장 확인은 그대로, 케이스는 PublicCase 상속·계약 API 만·pt 마다 하나·숨은 요구 영역 금지."""
+    m = t.manifest
+    rule = m.public_helper
+    if rule is None or contract is None:
+        return []
+    written = {
+        f.path: f
+        for f in (
+            render_contract_case(contract, plan, m, audience="public"),
+            render_persistence_check(contract, m),
+        )
+        if f is not None
+    }
+    out: list[str] = []
+    cases: list[GeneratedFile] = []
+    for f in o.files:
+        if f.path in written:
+            if f.content != written[f.path].content:
+                out.append(
+                    f"{f.path} 를 손으로 씀 — 이 파일은 계약에서 코드가 쓴다 (공개 테스트에 넣지 않는다)"
+                )
+            continue
+        cases.append(f)
+        if not re.search(rf"\bextends\s+{re.escape(rule.class_name)}\b", f.content):
+            out.append(
+                f"공개 테스트 {f.path} 가 {rule.class_name} 를 상속하지 않음 — {rule.class_name} 의 공개 몫 행 상수·계약 API 함수·Body 함수를 쓴다"
+            )
+        if _HIDDEN_ONLY.search(f.content):
+            out.append(
+                f"공개 테스트 {f.path} 가 동시 요청·오류 주입·조절값을 씀 — 숨은 요구 영역이다. 공개 수용 기준(응답·기록)만 확인한다"
+            )
+    imports = [re.compile(p, re.M) for p in m.hidden_rules.forbidden_imports]
+    for f in cases:
+        bad = [
+            line.strip()
+            for line in f.content.splitlines()
+            if any(rx.search(line) for rx in imports)
+        ]
+        if bad:
+            out.append(
+                f"공개 테스트 {f.path} 가 지원자 구현 내부를 직접 씀: {'; '.join(bad[:3])} — 공개 계약(HTTP)으로만 판정한다"
+            )
+    if m.hidden_rules.http_calls:
+        out += [
+            msg.replace("숨은 테스트", "공개 테스트")
+            for msg in _unknown_calls(cases, contract, m.hidden_rules.http_calls)
+        ]
+    helper = written.get(rule.path)
+    if helper is not None:
+        out += unknown_helper_names(cases, helper, "공개 테스트")
+    out += unknown_harness_members(cases, t.hidden / "harness", "공개 테스트")
+    text = "\n".join(f.content for f in cases)
+    missing = [
+        pt.test_id for pt in contract.public_tests if not re.search(rf"\b{pt.test_id}\b", text)
+    ]
+    if missing:
+        out.append(
+            f"계약의 공개 테스트 {', '.join(missing)} 가 공개 테스트에 없음 — pt 마다 클래스 하나, @DisplayName 에 pt id"
+        )
+    return [StaticProblem("gen_public", msg) for msg in out]
 
 
 def _duplicate_labels(o: Overlay, t: Template) -> list[str]:
@@ -773,7 +993,8 @@ def static_check(
     for o in overlays:
         res.problems += _paths(o, template)
         res.problems += [StaticProblem(o.target, msg) for msg in _hygiene(o, o.files, avoid_terms)]
-        public = o.kind == "starter" or (o.kind == "public_test" and public_tests_visible)
+        # 공개 테스트는 지원자에게 주지 않아도 숨은 요구 낱말이 있으면 안 된다 (게이트 ⑤ 누설 사전 확인)
+        public = o.kind in ("starter", "public_test")
         if public:
             for path, shown in _leaks(o.files, terms):
                 res.problems.append(
@@ -793,6 +1014,8 @@ def static_check(
             res.problems += _starter_new_api_tests(o, template, contract, spec)
             res.problems += _starter_schema(o, template, contract)
             res.review_flags += flags
+        if o.kind == "public_test":
+            res.problems += _public_cases(o, template, plan, contract)
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract)
             res.review_flags += _duplicate_labels(o, template)

@@ -86,10 +86,11 @@ def _short(text: str) -> str:
 
 
 def _owner(path: str, run: TargetRun, overlays: Mapping[str, Overlay]) -> str:
-    """컴파일 오류가 난 파일의 주인 — 숨은 테스트 파일이면 hidden, 아니면 그 대상(참조 구현)."""
-    hidden = overlays.get("hidden")
-    if hidden is not None and any(f.path == path for f in hidden.files):
-        return "hidden"
+    """컴파일 오류가 난 파일의 주인 — 숨은 테스트 파일이면 hidden, 공개 테스트 파일이면 public, 아니면 그 대상(참조 구현)."""
+    for key in ("hidden", "public"):
+        o = overlays.get(key)
+        if o is not None and any(f.path == path for f in o.files):
+            return key
     return run.target
 
 
@@ -146,6 +147,130 @@ def _starter(run: TargetRun) -> list[RepairAction]:
             + lines,
         )
     ]
+
+
+PERSISTENCE = (
+    "PersistenceCheckTest"  # 코드가 쓰는 저장 확인 (hidden_helpers.render_persistence_check)
+)
+_SERVER_SIDE = re.compile(
+    r"ServletException|JpaSystemException|PersistenceException|Hibernate|DataIntegrity|com\.example\.service\.(?!grading|publictests)|status 500|<500>"
+)
+
+
+def _starter_public(
+    run: TargetRun, regen_counts: Mapping[str, int]
+) -> tuple[list[RepairAction], list[str]]:
+    """시작 코드 + 공개 테스트 — 저장 확인은 통과해야 하고, 새 기능 공개 테스트는 실패해야 한다 (지원자 몫).
+    2026-11-08 알파 4케이스: 시작 코드의 새 엔티티에 id 생성 전략이 없어 참조 구현 둘이 같은 오류로 깨졌다 — 저장 확인이 여기서 잡는다."""
+    tests = run.results("public")
+    if not tests:
+        return [], []
+    acts: list[RepairAction] = []
+    flags: list[str] = []
+    check = next((t for t in tests if t.name == PERSISTENCE), None)
+    if check is not None and check.result != "PASS":
+        acts.append(
+            RepairAction(
+                "gen_starter",
+                "",
+                "②",
+                f"시작 코드의 새 엔티티를 저장할 수 없음: {_short(check.message)}",
+                "새로 만드는 엔티티는 앱(지원자 구현)이 행을 만든다 — 저장하면 id 가 생기게 엔티티 매핑을 고친다 "
+                f"(스키마의 id 열과 맞는 생성 전략). 저장 확인 실패: {_short(check.message)}",
+            )
+        )
+    features = [t for t in tests if t.name != PERSISTENCE]
+    passed = [t.name for t in features if t.result == "PASS"]
+    if features and len(passed) == len(features):
+        if regen_counts.get("gen_starter", 0) == 0:
+            acts.append(
+                RepairAction(
+                    "gen_starter",
+                    "",
+                    "②'",
+                    "시작 코드만으로 새 기능 공개 테스트를 모두 통과 — 새 기능이 이미 들어 있음",
+                    f"시작 코드에서 새 기능 공개 테스트({', '.join(passed)})가 모두 통과했다 — 공개 요구가 새로 요구하는 동작은 "
+                    "자리 표시(TODO)로 둔다. 이미 있는 API 는 공개 요구 전의 동작만.",
+                )
+            )
+        else:
+            flags.append(
+                f"다시 만든 시작 코드에서도 새 기능 공개 테스트가 모두 통과: {', '.join(passed)} (사람 확인)"
+            )
+    elif passed:
+        flags.append(
+            f"시작 코드에서 통과하는 공개 테스트: {', '.join(passed)} — 기존 동작을 확인하는 테스트이거나 새 기능이 일부 들어 있음 (사람 확인)"
+        )
+    return acts, flags
+
+
+def _public_refs(
+    runs: Sequence[TargetRun], regen_counts: Mapping[str, int]
+) -> tuple[list[RepairAction], set[str]]:
+    """참조 구현 + 공개 테스트 — 공개 요구는 흔한 구현·허용 구현 모두 지켜야 한다. 구현끼리 비교해 탓을 정한다.
+    - 일부 구현만 실패 → 그 구현. 단 흔한 구현만 실패하고 이미 다시 만들었으면 공개 테스트가 숨은 요구를 시험하는 것(누설, ⑤) → gen_public
+    - 모든 구현이 같은 오류: 서버 쪽 예외면 공유 코드(시작 코드) → gen_starter, 단언 불일치면 테스트 의심 → gen_public
+    - 모든 구현이 서로 다른 오류 → gen_public
+    돌려주는 집합 = 공개 테스트를 모두 통과한 구현 라벨 (숨은 게이트는 이 구현만 믿는다)."""
+    names = sorted({t.name for r in runs for t in r.results("public")})
+    trusted = {r.target for r in runs if all(t.result == "PASS" for t in r.results("public"))}
+    out: list[RepairAction] = []
+    for name in names:
+        res = [(r, next((t for t in r.results("public") if t.name == name), None)) for r in runs]
+        bad = [(r, t) for r, t in res if t is None or t.result != "PASS"]
+        if not bad:
+            continue
+        msgs = {r.target: (t.message if t is not None else "결과 없음") for r, t in bad}
+        if len(bad) < len(runs):
+            for r, _ in bad:
+                if r.kind == "ref_naive" and regen_counts.get(f"gen_naive:{r.target}", 0) >= 1:
+                    out.append(
+                        RepairAction(
+                            "gen_public",
+                            "",
+                            "⑤",
+                            f"흔한 구현만 공개 테스트 {name} 에서 계속 실패 — 누설 의심",
+                            f"흔한 구현({r.target})이 다시 만든 뒤에도 공개 테스트 {name} 에서만 실패한다: {_short(msgs[r.target])} — "
+                            "공개 테스트가 숨은 요구(동시성·저장 실패 처리 등)를 시험하고 있을 수 있다. 공개 수용 기준이 말하는 응답·기록만 확인한다.",
+                        )
+                    )
+                    continue
+                out.append(
+                    RepairAction(
+                        _gen_for(r),
+                        r.target,
+                        "⑤",
+                        f"{r.target} 가 공개 테스트 {name} 실패",
+                        f"공개 테스트 {name} 가 이 구현({r.target})에서만 실패한다 (다른 구현은 통과): {_short(msgs[r.target])} — "
+                        "공개 요구를 계약대로 지킨다.",
+                    )
+                )
+            continue
+        sigs = {_signature(m) for m in msgs.values()}
+        first = next(iter(msgs.values()))
+        if len(sigs) == 1 and _SERVER_SIDE.search(first):
+            out.append(
+                RepairAction(
+                    "gen_starter",
+                    "",
+                    "⑤",
+                    f"모든 구현이 공개 테스트 {name} 에서 같은 서버 오류 — 시작 코드(공유 코드) 의심",
+                    f"참조 구현 {len(runs)}개가 모두 공개 테스트 {name} 에서 같은 서버 쪽 오류로 실패한다: {_short(first)} — "
+                    "참조 구현이 함께 쓰는 시작 코드(엔티티 매핑·스키마·설정)를 고친다.",
+                )
+            )
+        else:
+            out.append(
+                RepairAction(
+                    "gen_public",
+                    "",
+                    "⑤",
+                    f"모든 구현이 공개 테스트 {name} 에서 실패 — 테스트 의심",
+                    f"독립으로 만든 참조 구현 {len(runs)}개가 모두 공개 테스트 {name} 에서 실패한다: {_short(first)} — "
+                    "계약의 응답 모양·상태 코드·규칙 그대로만 확인한다.",
+                )
+            )
+    return out, trusted
 
 
 def _starter_solves(
@@ -218,7 +343,20 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
     out: list[RepairAction] = []
     for owner, errs in by_owner.items():
         text = "\n".join(errs[:12])
-        if owner == "hidden":
+        if owner == "public":
+            out.append(
+                RepairAction(
+                    "gen_public",
+                    "",
+                    "setup",
+                    "공개 테스트 컴파일 오류",
+                    "공개 테스트가 컴파일되지 않는다. 문서와 PublicCase 에 있는 이름·형식만 쓴다:\n"
+                    + text
+                    + SAME_KIND_ALL_FILES,
+                    compile=True,
+                )
+            )
+        elif owner == "hidden":
             out.append(
                 RepairAction(
                     "gen_hidden",
@@ -549,6 +687,13 @@ def assign(
     if acts := _starter(starter):
         res.actions = acts
         return res
+    acts, flags = _starter_public(starter, counts)
+    res.flags += flags
+    if (
+        acts
+    ):  # 시작 코드가 틀리면 참조 구현은 새 시작 코드 위에 다시 쓰이므로 이번 결과는 보지 않는다
+        res.actions = acts
+        return res
     bare = next((r for r in report.runs if r.kind == "starter_hidden"), None)
     if bare is not None:
         acts, flags = _starter_solves(bare, plan, counts)
@@ -570,14 +715,19 @@ def assign(
     res.unresolved += ambiguous
     for run in ready:
         actions += _ref_existing(run, starter, skip)
-    actions += _hidden_broken(ready, plan)
-    for run in ready:
+    public_acts, trusted = _public_refs(ready, counts)
+    actions += public_acts
+    # 숨은 게이트는 공개 테스트를 통과한 구현만 믿는다 — 공개 요구가 깨진 구현의 숨은 결과는 그 결함 탓일 수 있다
+    # (2026-11-08: 시작 코드 결함으로 두 구현이 같은 500 을 내자 흔한 구현이 '의도한 사유'로 실패한 것처럼 보였다)
+    judged = [r for r in ready if r.target in trusted]
+    actions += _hidden_broken(judged, plan)
+    for run in judged:
         if run.kind == "ref_naive":
             actions += _gate3(run, plan, missed_traps.get(run.target, set()), counts)
-    accepted = [r for r in ready if r.kind == "ref_accepted"]
+    accepted = [r for r in judged if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(
-            accepted, plan, counts, [r for r in ready if r.kind == "ref_naive"]
+            accepted, plan, counts, [r for r in judged if r.kind == "ref_naive"]
         )
         actions += acts
         res.unresolved += unresolved

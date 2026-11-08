@@ -399,6 +399,7 @@ class RoutedBackend:
     """프롬프트(생성기)별로 준비한 응답을 차례로 — 병렬 호출 순서와 무관."""
 
     MARKERS = {
+        "gen_public": "**공개 테스트**(기능 테스트)",
         "gen_starter": "**시작 코드**",
         "gen_hidden": "**숨은 테스트**",
         "gen_naive": "흔한 구현",
@@ -427,18 +428,39 @@ class ScriptedVerifier:
         self.seen: list[list[str]] = []
 
     async def verify(
-        self, starter: Overlay, hidden: Overlay, refs: Sequence[Overlay]
+        self,
+        starter: Overlay,
+        hidden: Overlay,
+        refs: Sequence[Overlay],
+        public: Overlay | None = None,
     ) -> VerifyReport:
         self.seen.append([o.label for o in refs])
+        self.public = public
         return self.reports.pop(0) if len(self.reports) > 1 else self.reports[0]
 
 
 SVC = _files((f"{PKG}/order/OrderService.java", SERVICE))
+PUBLIC_TEST = """package com.example.service.publictests;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+@DisplayName("pt1 변경 성공 시 이력 1건 · pt2 조회가 최신순")
+class OrderHistoryPublicTest extends PublicCase {
+    @Test
+    void pt1() throws Exception {
+    }
+}
+"""
+PUBLIC = _files(
+    ("src/test/java/com/example/service/publictests/OrderHistoryPublicTest.java", PUBLIC_TEST)
+)
 HIDDEN = _files((f"{CASES}/OrderStatusBurstTest.java", HC1))
 
 
 def _llm(**over: list[Completion]) -> tuple[LLMClient, RoutedBackend]:
     routes = {
+        "gen_public": [PUBLIC],
         "gen_starter": [_files(*STARTER)],
         "gen_hidden": [HIDDEN],
         "gen_naive": [SVC],
@@ -478,10 +500,26 @@ async def _build(verifier: ScriptedVerifier, llm: LLMClient, designs=(D1,)):  # 
 
 async def test_loop_passes_without_repair() -> None:
     llm, backend = _llm()
-    out = await _build(ScriptedVerifier(_one_case(NAIVE_OK, D1_OK)), llm)
+    verifier = ScriptedVerifier(_one_case(NAIVE_OK, D1_OK))
+    out = await _build(verifier, llm)
     assert out.status == "review" and out.rounds == 0 and not out.repairs
-    assert sorted(backend.calls) == ["gen_accepted", "gen_hidden", "gen_naive", "gen_starter"]
-    assert set(out.overlays) == {"starter", "hidden", "naive-all", "d1"}
+    assert sorted(backend.calls) == [
+        "gen_accepted",
+        "gen_hidden",
+        "gen_naive",
+        "gen_public",
+        "gen_starter",
+    ]
+    assert set(out.overlays) == {"starter", "public", "hidden", "naive-all", "d1"}
+    # 테스트 먼저(TDD): 공개 테스트를 시작 코드보다 먼저 만들고, 검증에 넣는다
+    assert backend.calls.index("gen_public") < backend.calls.index("gen_starter")
+    assert verifier.public is not None and any(
+        f.path.endswith("PersistenceCheckTest.java") for f in verifier.public.files
+    )
+    starter_prompt = next(u for n, u in backend.users if n == "gen_starter")
+    assert (
+        "OrderHistoryPublicTest" not in starter_prompt
+    )  # CURRENT gen_starter v3 는 공개 테스트 칸이 없다
 
 
 async def test_starter_repair_regenerates_refs_too() -> None:

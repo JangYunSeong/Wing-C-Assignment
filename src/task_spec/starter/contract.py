@@ -374,6 +374,52 @@ def contract_text(contract: TaskContract) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def element_refs(contract: TaskContract) -> dict[str, list[str]]:
+    """계약 요소 id → 그 요소가 스스로 적은 refs (요소·필드·화면 요소), 처음 나온 순서."""
+    out: dict[str, list[str]] = {}
+
+    def add(eid: str, refs: Iterable[str]) -> None:
+        got = out.setdefault(eid, [])
+        got += [r for r in refs if r not in got]
+
+    for e in contract.endpoints:
+        add(e.endpoint_id, e.refs)
+        for f in [*e.headers, *e.query, *e.request, *(f for r in e.responses for f in r.body)]:
+            add(e.endpoint_id, f.refs)
+    for m in contract.entities:
+        add(m.entity_id, [r for f in m.fields for r in f.refs])
+    for sc in contract.screens:
+        add(sc.screen_id, [*sc.refs, *(r for el in sc.elements for r in el.refs)])
+        add(sc.screen_id, [r for k in sc.storage for r in k.refs])
+    return out
+
+
+def fit_covers(contract: TaskContract, spec: SpecView) -> tuple[TaskContract, list[str]]:
+    """covers 에 빠진 계약 요소를 그 요소가 스스로 적은 refs 의 공개 요구에 잇는다 — 역색인은 코드가 (기계적 출력).
+
+    2026-11-08 상류 평가: 200 응답 모양으로 만든 엔티티(필드 refs r1·p1)를 covers 에 잇지도 빼지도 않아 재요청 2회 모두 실패.
+    refs 는 공개 id 만 허용되므로 잇는다고 숨은 요구가 계약에 들어오지는 않는다. refs 가 없는 요소는 그대로 문제로 남긴다."""
+    covered = {i for ids in contract.covers.values() for i in ids}
+    covers = {k: list(v) for k, v in contract.covers.items()}
+    notes: list[str] = []
+    for eid, refs in element_refs(contract).items():
+        if eid in covered:
+            continue
+        keys = [r for r in refs if r in spec.req_ids] or [
+            r for r in refs if r in spec.public_ac_ids
+        ]
+        if not keys:
+            continue
+        for k in keys:
+            covers.setdefault(k, []).append(eid)
+        notes.append(
+            f"계약 요소 {eid} 를 covers {', '.join(keys)} 에 이음 (그 요소가 적은 refs 대로)"
+        )
+    if not notes:
+        return contract, []
+    return contract.model_copy(update={"covers": covers}), notes
+
+
 def _dups(label: str, ids: Sequence[str]) -> list[str]:
     dup = sorted(i for i, n in Counter(ids).items() if n > 1)
     return [f"{label} 이 겹침: {', '.join(dup)}"] if dup else []
@@ -768,9 +814,9 @@ def _needs(contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None) -
 
 
 def _internal_expect(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
-    """숨은 케이스 통과 조건(expect)이 조절값 이름을 말하면 표시만 (재요청 아님 — 낱말 판단이라 오탐 위험).
+    """숨은 케이스 통과 조건(expect)이 조절값 이름을 말하면 재요청 — 조절값 이름(식별자)을 정확히 맞추는 판정이라 오탐이 드물다.
     2026-11-07 알파 5회차: "모든 요청이 pool_size(30) 내에서 연결을 점유" 처럼 HTTP 로 관찰할 수 없는 조건이라, 숨은 테스트가 단언으로
-    옮기다 '시간 초과가 일어나야 한다'로 거꾸로 써 올바른 구현까지 떨어뜨렸다."""
+    옮기다 '시간 초과가 일어나야 한다'로 거꾸로 써 올바른 구현까지 떨어뜨렸다. 2026-11-08 상류 기준선: 9회 중 3회 — 표시만으로는 줄지 않아 재요청으로."""
     names = [p.name for p in manifest.harness_params]
     out: list[str] = []
     for c in plan.cases:
@@ -781,8 +827,10 @@ def _internal_expect(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
         ]
         if hit:
             out.append(
-                f"숨은 케이스 {c.case_id} 의 통과 조건이 조절값({', '.join(hit)})을 말함: {c.expect[:120]} — "
-                "HTTP 로 관찰할 수 있는 결과(응답·기록)로 적혀야 숨은 테스트가 단언으로 옮길 수 있다 (사람 확인)"
+                f"숨은 케이스 {c.case_id} 의 통과 조건(expect)이 조절값({', '.join(hit)})을 말함: {c.expect[:120]} — "
+                "통과 조건은 HTTP 로 관찰할 수 있는 결과로만 적는다 (예: '모든 요청이 기대 상태 코드 — 시간 초과·500 없음', "
+                "'요청마다 결과와 맞는 기록 1건', '롤백된 요청에 SUCCESS 기록 없음'). 연결 수·풀 크기 같은 내부 동작은 쓰지 않는다 — "
+                "조절값은 harness 에만"
             )
     return out
 
@@ -824,7 +872,7 @@ def check_contract(
     else:
         problems += _no_seed_rows(contract, plan, manifest)
     problems += _foreign_keys(contract)
-    flags += _internal_expect(plan, manifest)
+    problems += _internal_expect(plan, manifest)
     if manifest.seed_rows:
         entity_problems, entity_flags = _entity_existing(contract, plan)
         problems += entity_problems

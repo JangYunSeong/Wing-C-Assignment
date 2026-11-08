@@ -46,7 +46,7 @@ class OrderStatusBurstTest extends ContractCase {
     void hc1() throws Exception {
         int n = GraderParams.intValue("concurrency", 32);
         var outcomes = Burst.fire(n, i -> 200, i -> 200, REQUEST_TIMEOUT);
-        org.assertj.core.api.Assertions.assertThat(Burst.wrong(outcomes))
+        org.assertj.core.api.Assertions.assertThat(Burst.failures(outcomes))
                 .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();
     }
 }
@@ -286,7 +286,7 @@ def test_duplicate_reason_labels_in_one_case_file() -> None:
     twice = HC1.replace(
         '                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();',
         '                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();\n'
-        "        org.assertj.core.api.Assertions.assertThat(Burst.wrong(outcomes))\n"
+        "        org.assertj.core.api.Assertions.assertThat(Burst.failures(outcomes))\n"
         '                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 2)).isZero();',
     )
     assert twice != HC1
@@ -424,3 +424,124 @@ def test_injection_regex_built_from_helper_table_constants() -> None:
     assert not [m for m in hidden(joined) if "주입 정규식" in m]
     bare = 'Pattern.compile("^\\\\s*update\\\\s+", Pattern.CASE_INSENSITIVE)'
     assert any("넓음" in m for m in hidden(bare))
+
+
+def test_reason_on_counting_all_failures_is_regenerated() -> None:
+    """2026-11-08 숨은 테스트 검토: 14개 케이스 모두 사유를 Burst.wrong(...) 에 붙였다 — 어떤 실패든 그 사유로 보인다."""
+    on_wrong = HC1.replace("Burst.failures(outcomes)", "Burst.wrong(outcomes)")
+    res = _run(
+        _overlays(
+            hidden=[
+                _f(f"{CASES}/OrderStatusBurstTest.java", on_wrong),
+                render_params(PLAN, JAVA.manifest),
+            ]
+        )
+    )
+    assert _has(res.for_target("gen_hidden"), "모든 실패를 세는 단언에 사유", "Burst.failures")
+    # 사유 없는 Burst.wrong 단언은 괜찮다
+    bare = HC1.replace(
+        'assertThat(Burst.failures(outcomes))\n                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();',
+        'assertThat(Burst.failures(outcomes))\n                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();\n'
+        "        org.assertj.core.api.Assertions.assertThat(Burst.wrong(outcomes)).isZero();",
+    )
+    assert bare != HC1
+    res = _run(
+        _overlays(
+            hidden=[
+                _f(f"{CASES}/OrderStatusBurstTest.java", bare),
+                render_params(PLAN, JAVA.manifest),
+            ]
+        )
+    )
+    assert not _has(res.for_target("gen_hidden"), "모든 실패를 세는 단언")
+
+
+ROLLBACK = """package com.example.service.grading.cases;
+
+import com.example.service.grading.GraderJdbcHarness;
+import com.example.service.grading.Reasons;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+class OrderRollbackTest extends ContractCase {
+    @Test
+    @DisplayName("hc1 저장 실패 시 성공 기록 없음")
+    void hc1() throws Exception {
+        INJECT
+        var r = patchOrdersIdStatus(HC1_ORDER_READY_FIRST, java.util.Map.of(), "{\\"status\\":\\"SHIPPED\\"}");
+        org.assertj.core.api.Assertions.assertThat(r.statusCode())
+                .as(Reasons.as("rollback_left_success", "성공 기록 남음")).isNotEqualTo(200);
+    }
+}
+"""
+
+
+def test_reason_requires_what_causes_it() -> None:
+    """2026-11-08 숨은 테스트 검토: rollback_left_success 5건 중 4건이 주입 없이 거절되는 전이를 보내 롤백될 변경이 없었다."""
+    plan = HiddenPlan.model_validate(
+        _plan(
+            harness={"pool_size": 8, "concurrency": 32, "connection_timeout_ms": 5000},
+            cases=[
+                {
+                    **_plan()["cases"][0],
+                    "intended_reason": "rollback_left_success",
+                    "scenario": "저장 실패",
+                }
+            ],
+        )
+    )
+
+    def gen_hidden(case: str) -> list[str]:
+        files = [_f(f"{CASES}/OrderRollbackTest.java", case), render_params(plan, JAVA.manifest)]
+        return _run(_overlays(hidden=files), plan=plan).for_target("gen_hidden")
+
+    no_inject = gen_hidden(ROLLBACK.replace("INJECT", "// 거절되는 전이"))
+    assert _has(no_inject, "hc1", "rollback_left_success", "GraderJdbcHarness 주입")
+    injected = gen_hidden(
+        ROLLBACK.replace(
+            "INJECT",
+            'GraderJdbcHarness.failCommitAfter = java.util.regex.Pattern.compile("(?i)insert");',
+        )
+    )
+    assert not _has(injected, "그 사유를 일으키는 것을 쓰지 않음")
+    # 운영 피크 사유는 동시 요청을 써야 한다
+    single = HC1.replace(
+        "var outcomes = Burst.fire(n, i -> 200, i -> 200, REQUEST_TIMEOUT);",
+        "var outcomes = java.util.List.<Burst.Outcome>of();",
+    )
+    assert single != HC1
+    res = _run(
+        _overlays(
+            hidden=[
+                _f(f"{CASES}/OrderStatusBurstTest.java", single),
+                render_params(PLAN, JAVA.manifest),
+            ]
+        )
+    )
+    assert _has(res.for_target("gen_hidden"), "hc1", "pool_acquire_timeout", "peak(...)")
+    assert not _has(_run().for_target("gen_hidden"), "그 사유를 일으키는 것을 쓰지 않음")
+
+
+def test_unknown_harness_members_are_regenerated() -> None:
+    """2026-11-08 상류 평가: 하네스 문서의 `IntUnaryOperator expectedStatus` 를 `Burst.IntUnaryOperator` 로 써 컴파일 실패."""
+    nested = HC1.replace(
+        "var outcomes = Burst.fire(n, i -> 200, i -> 200, REQUEST_TIMEOUT);",
+        "Burst.IntUnaryOperator exp = i -> 200;\n        var outcomes = Burst.fire(n, exp, i -> 200, REQUEST_TIMEOUT);"
+        "\n        // Burst.notInComments 는 무시\n        long w = Burst.wrongs(outcomes);",
+    )
+    assert nested != HC1
+    res = _run(
+        _overlays(
+            hidden=[
+                _f(f"{CASES}/OrderStatusBurstTest.java", nested),
+                render_params(PLAN, JAVA.manifest),
+            ]
+        )
+    )
+    msgs = res.for_target("gen_hidden")
+    assert _has(
+        msgs, "하네스에 없는 멤버", "Burst.IntUnaryOperator", "import 해서 그냥 IntUnaryOperator"
+    )
+    assert _has(msgs, "Burst.wrongs (가까운 이름: Burst.wrong")
+    assert not _has(msgs, "notInComments")
+    assert not _has(_run().for_target("gen_hidden"), "하네스에 없는 멤버")

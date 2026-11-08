@@ -24,7 +24,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 - `protected <T> T json(String body, TypeReference<T> type)` · `protected Map<String, Object> jsonObject(String body)`
   - 목록 응답: `List<Map<String, Object>> rows = json(resp.body(), new TypeReference<>() { });` (`import com.fasterxml.jackson.core.type.TypeReference;`). 미리 만든 타입 상수는 없다.
 - `protected <T> T await(Callable<T> poll, Predicate<T> done)` — done 이 참이 될 때까지 `AWAIT_TIMEOUT` 동안 다시 부르고 마지막 값을 돌려준다 (비동기 설계를 공정하게)
-- `protected static Instant parseTime(Object value)` · `protected static void diag(String format, Object... args)` (진단 출력 — 판정에 쓰지 않음)
+- `protected static Instant parseTime(Object value)` — 형식이 틀리면 **null** (예외 아님) · `protected static void diag(String format, Object... args)` (진단 출력 — 판정에 쓰지 않음)
 - 상수: `REQUEST_TIMEOUT`·`AWAIT_TIMEOUT` (둘 다 `java.time.Duration`), `JSON`(ObjectMapper)
 
 ## GraderParams — 조절값 (값을 코드에 박지 않는다)
@@ -47,15 +47,21 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 - `List<Burst.Outcome> Burst.fire(int n, IntUnaryOperator expectedStatus, Burst.Call call, Duration wait)`
   - n 건을 한꺼번에 보낸다. `call.send(i)` 는 i 번째 요청을 보내고 HTTP 상태 코드를 돌려준다. 시간 초과·연결 오류는 -1 — `wait` 안에 안 끝난 요청도 예외가 아니라 -1 이다 (테스트에서 `TimeoutException` 을 잡지 않는다).
   - `expectedStatus.applyAsInt(i)` = i 번째 요청의 기대 상태 코드.
-- `Burst.wrong(outcomes)` — 기대와 다른 수 · `Burst.summary(label, n, outcomes)` — 진단 줄
+- `Burst.failures(outcomes)` — **시간 초과(-1)·5xx 수** (연결 고갈·교착 같은 운영 조건 실패) · `Burst.mismatches(outcomes)` — 그 밖의 기대와 다른 상태 수 (규칙·계약 불일치)
+- `Burst.wrong(outcomes)` — 기대와 다른 수 전부 (둘의 합 — 사유를 붙이지 않는다) · `Burst.summary(label, n, outcomes)` — 진단 줄
 - `Burst.Outcome` 는 **record** — 값은 접근자로 읽는다: `o.index()` · `o.expected()` · `o.actual()`(상태 코드, -1 = 시간 초과·연결 오류) · `o.millis()` · `o.error()` · `o.ok()`(actual == expected). 필드 직접 접근(`o.actual`)은 컴파일되지 않는다.
 
 ## 판정 규칙
 
 - **기대 상태 코드는 계약 `responses` 에 있는 것만.** 계약이 정하지 않은 상황(주입한 DB 오류 등)의 응답 코드는 정확한 값을 요구하지 않는다 — `isNotEqualTo(200)` 처럼 계약이 말하는 만큼만.
 - JSON 숫자는 크기에 따라 `Integer`·`Long` 으로 읽힌다 — `((Number) row.get("id")).longValue()` 로 바꿔 비교한다 (`isEqualTo(105L)` 를 `Integer` 와 비교하면 실패).
-- **예외가 나지 않음을 확인할 때는 `assertThatCode(() -> …).doesNotThrowAnyException()`** — `assertThat(() -> …)` 처럼 람다를 `assertThat` 에 넣으면 AssertJ 에서 어느 오버로드인지 모호해 컴파일되지 않는다. 시각 형식 확인은 하네스 `parseTime(값)` (형식이 틀리면 예외) 으로 충분하다.
+- **예외가 나지 않음을 확인할 때는 `assertThatCode(() -> …).doesNotThrowAnyException()`** — `assertThat(() -> …)` 처럼 람다를 `assertThat` 에 넣으면 AssertJ 에서 어느 오버로드인지 모호해 컴파일되지 않는다. 시각 형식 확인은 `assertThat(parseTime(값)).isNotNull()` (형식이 틀리면 null).
 - 기대 결과는 HiddenPlan 케이스의 `expect` 에서만 나온다. `expect` 에 없는 조건(응답 시간·로그 순서 등)을 더 요구하지 않는다.
+- **의도한 사유는 그 실패만 걸리는 단언에 붙인다.** 운영 조건 사유(`pool_acquire_timeout` 등)는 `Burst.failures(...)` 단언에, 기록 사유는 그 기록을 보는
+  단언에. `Burst.wrong(...)` 처럼 모든 실패를 세는 단언에 사유를 붙이지 않는다 — 500·시간 초과·규칙 불일치가 모두 같은 사유로 보인다.
+- **저장 단계 실패(롤백) 사유의 케이스는 `GraderJdbcHarness.failCommitAfter`·`failStatements` 로 실패를 일으킨다.** 규칙상 거절되는 요청(허용되지 않은
+  전이)은 저장 전에 끝나 롤백될 변경이 없다 — 규칙을 통과하는 요청(처음 값에서 허용된 전이)에 주입한다.
+- 기록이 "1건" 이면 `hasSize(1)` (`isNotEmpty()` 는 2건도 통과). 테스트 메서드끼리 서로 독립 — 순서에 기대지 않고 메서드마다 다른 행을 쓴다.
 
 ## Reasons — 의도한 실패 사유
 
@@ -94,9 +100,11 @@ class PeakBurstTest extends ContractCase {
             List<Burst.Outcome> outcomes = peak(i -> 200,
                     i -> patchItemsId(HC1_FIRST + i, Map.of("X-Actor", "grader"), "{\"state\":\"B\"}").statusCode());
             diag("%s", Burst.summary("hc1", 1, outcomes));
-            assertThat(Burst.wrong(outcomes)).as(Reasons.as("pool_acquire_timeout", "기대와 다른 응답 수")).isZero();
+            assertThat(Burst.failures(outcomes)).as(Reasons.as("pool_acquire_timeout", "시간 초과·서버 오류 수")).isZero();
+            assertThat(Burst.mismatches(outcomes)).as("그 밖의 기대와 다른 응답 수").isZero();
             for (Burst.Outcome o : outcomes) {
                 List<Map<String, Object>> rows = getItemsIdHistoryBody(getItemsIdHistory(HC1_FIRST + o.index()));
+                assertThat(rows).as(Reasons.as("record_missing", "기록 1건 %d", o.index())).hasSize(1);
                 assertThat(num(rows.get(0).get("itemId"))).as(Reasons.as("record_mismatch", "기록 대상 %d", o.index())).isEqualTo(HC1_FIRST + o.index());
             }
         } finally {

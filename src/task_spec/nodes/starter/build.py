@@ -22,6 +22,7 @@ from task_spec.nodes.starter.generate import (
     gen_accepted,
     gen_hidden,
     gen_naive,
+    gen_public,
     gen_starter,
 )
 from task_spec.prompting import PromptRegistry
@@ -35,6 +36,7 @@ MAX_ROUNDS = 3  # 빌드 전체 재생성 상한
 PER_ARTIFACT = 1  # 산출물마다 재생성 상한
 COMPILE_BUDGET = 2  # 컴파일 오류만 고칠 때는 2회까지 — 고치기 싸고, 2026-11-07 루프에서 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다
 HIDDEN = "hidden"
+PUBLIC = "public"  # 공개 테스트 오버레이 키 (gen_public — 테스트 먼저, 2026-11-08)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,11 @@ class Verifier(Protocol):
     (kind `starter_hidden`, ②' — 이미 풀려 있으면 안 됨), 참조 구현마다 시작 코드 + 구현 + 숨은 테스트(③~)."""
 
     async def verify(
-        self, starter: Overlay, hidden: Overlay, refs: Sequence[Overlay]
+        self,
+        starter: Overlay,
+        hidden: Overlay,
+        refs: Sequence[Overlay],
+        public: Overlay | None = None,
     ) -> VerifyReport: ...
 
 
@@ -102,7 +108,7 @@ def _static_actions(overlays: dict[str, Overlay], b: BuildInputs) -> RepairPlan:
     for target in res.targets:
         msgs = res.for_target(target)
         note = "정적 검사 문제 — 고쳐서 다시 쓴다:\n" + "\n".join(f"- {m}" for m in msgs)
-        if target in ("gen_starter", "gen_hidden"):
+        if target in ("gen_starter", "gen_hidden", "gen_public"):
             plan.actions.append(RepairAction(target, "", "static", msgs[0][:200], note))  # type: ignore[arg-type]
             continue
         kind = "ref_naive" if target == "gen_naive" else "ref_accepted"
@@ -149,20 +155,33 @@ async def build_and_repair(
         )
         return True
 
-    starter = took(await gen_starter(b, **kw))  # type: ignore[arg-type]
+    # ① 테스트 먼저 (2026-11-08 사용자 결정 — TDD): 공개 테스트·숨은 테스트를 계약에서 따로 (서로 보지 않음)
+    use_public = b.template.manifest.public_helper is not None
+    tests = await asyncio.gather(
+        *([gen_public(b, **kw)] if use_public else []),  # type: ignore[arg-type]
+        gen_hidden(b, **kw),  # type: ignore[arg-type]
+    )
+    public = took(tests[0]) if use_public else None
+    hidden = took(tests[-1])
+    made_tests = {k: o for k, o in ((PUBLIC, public), (HIDDEN, hidden)) if o is not None}
+    if hidden is None or (use_public and public is None):
+        out.overlays = made_tests  # 만든 것은 남긴다 — 평가·사람이 볼 수 있게
+        return out
+    # ② 구현 코드 — 공개 테스트를 보고 맞춘다 (숨은 테스트는 보지 않음)
+    starter = took(await gen_starter(b, public=public, **kw))  # type: ignore[arg-type]
     if starter is None:
+        out.overlays = made_tests
         return out
     first = await asyncio.gather(
-        gen_hidden(b, **kw),  # type: ignore[arg-type]
-        gen_naive(b, starter, **kw),  # type: ignore[arg-type]
-        *(gen_accepted(b, starter, d, **kw) for d in designs),  # type: ignore[arg-type]
+        gen_naive(b, starter, public=public, **kw),  # type: ignore[arg-type]
+        *(gen_accepted(b, starter, d, public=public, **kw) for d in designs),  # type: ignore[arg-type]
     )
-    accepted = list(first[2:])
+    accepted = list(first[1:])
     usable = sum(1 for r in accepted if not _voided(r))
     kept = [r for r in accepted if not drop(r, usable)]
-    made = [took(r) for r in (*first[:2], *kept)]
+    made = [took(r) for r in (first[0], *kept)]
     # 하나라도 실패해도 만든 것은 남긴다 — 평가·사람이 볼 수 있게 (2026-11-08: 숨은 테스트 생성 실패로 시작 코드 파일도 안 남음)
-    out.overlays = {STARTER: starter, **{(o.label or HIDDEN): o for o in made if o is not None}}
+    out.overlays = {STARTER: starter, **made_tests, **{o.label: o for o in made if o is not None}}
     if any(o is None for o in made):
         return out
 
@@ -176,7 +195,8 @@ async def build_and_repair(
             report = await verifier.verify(
                 out.overlays[STARTER],
                 out.overlays[HIDDEN],
-                [o for k, o in out.overlays.items() if k not in (STARTER, HIDDEN)],
+                [o for k, o in out.overlays.items() if k not in (STARTER, HIDDEN, PUBLIC)],
+                **({"public": out.overlays[PUBLIC]} if PUBLIC in out.overlays else {}),
             )
             out.reports.append(report)
             out.snapshots.append(dict(out.overlays))
@@ -230,9 +250,24 @@ async def _regenerate(
     for a in actions:  # 컴파일 수리는 따로 센다 (RepairAction.budget_key)
         out.regen_counts[a.budget_key] = out.regen_counts.get(a.budget_key, 0) + 1
     starter = out.overlays[STARTER]
+    public = out.overlays.get(PUBLIC)
+    if (
+        "gen_public" in notes and public is not None
+    ):  # 테스트가 바뀌면 구현은 다음 검증에서 다시 맞춰 본다
+        new_public = took(
+            await gen_public(b, note=notes["gen_public"], previous=public, **kw)  # type: ignore[arg-type]
+        )
+        out.repairs += [
+            _record(a, "regenerated" if new_public is not None else "failed")
+            for a in actions
+            if a.generator == "gen_public"
+        ]
+        if new_public is None:
+            return False
+        out.overlays[PUBLIC] = public = new_public
     if "gen_starter" in notes:
         new = took(
-            await gen_starter(b, note=notes["gen_starter"], previous=starter, **kw)  # type: ignore[arg-type]
+            await gen_starter(b, note=notes["gen_starter"], previous=starter, public=public, **kw)  # type: ignore[arg-type]
         )
         ok = new is not None
         out.repairs += [
@@ -243,7 +278,7 @@ async def _regenerate(
         if new is None:
             return False
         out.overlays[STARTER] = starter = new
-    refs = [(k, o) for k, o in out.overlays.items() if k not in (STARTER, HIDDEN)]
+    refs = [(k, o) for k, o in out.overlays.items() if k not in (STARTER, HIDDEN, PUBLIC)]
     jobs: list[tuple[str, object]] = []
     if "gen_hidden" in notes:
         hidden_prev = out.overlays[HIDDEN]
@@ -256,7 +291,12 @@ async def _regenerate(
                     o if "gen_starter" not in notes else None
                 )  # 시작 코드가 바뀌면 새 시작 코드 위에 처음부터
                 jobs.append(
-                    (label, gen_naive(b, starter, note=notes.get(key), previous=prev, **kw))
+                    (
+                        label,
+                        gen_naive(
+                            b, starter, note=notes.get(key), previous=prev, public=public, **kw
+                        ),
+                    )
                 )  # type: ignore[arg-type]
         else:
             key = f"gen_accepted:{label}"
@@ -266,7 +306,15 @@ async def _regenerate(
                 jobs.append(
                     (
                         label,
-                        gen_accepted(b, starter, design, note=notes.get(key), previous=prev, **kw),
+                        gen_accepted(
+                            b,
+                            starter,
+                            design,
+                            note=notes.get(key),
+                            previous=prev,
+                            public=public,
+                            **kw,
+                        ),
                     )  # type: ignore[arg-type]
                 )
     results = await asyncio.gather(*(j for _, j in jobs))  # type: ignore[arg-type]
@@ -282,7 +330,7 @@ async def _regenerate(
         else:
             out.overlays[label] = new
     for a in actions:
-        if a.generator == "gen_starter":
+        if a.generator in ("gen_starter", "gen_public"):
             continue
         label = HIDDEN if a.generator == "gen_hidden" else a.label
         ok = label in dict(jobs) and out.overlays.get(label) is not None

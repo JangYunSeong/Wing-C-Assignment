@@ -15,6 +15,7 @@ from task_spec.starter.contract import (
     contract_text,
     evidence_check,
     extract_values,
+    fit_covers,
     hidden_terms,
     spec_missing_params,
 )
@@ -573,14 +574,19 @@ def test_loose_element_message_says_connect_before_dropping() -> None:
     assert "covers 에 잇는다" in msg and "관련 없을 때만 뺀다" in msg
 
 
-def test_expect_naming_harness_params_is_only_flagged() -> None:
-    """2026-11-07 알파 5회차: 통과 조건이 'pool_size(30) 내에서 연결을 점유' 라 숨은 테스트가 단언을 거꾸로 씀 — 표시만 (낱말 판단)."""
+def test_expect_naming_harness_params_is_reasked() -> None:
+    """2026-11-07 알파 5회차: 통과 조건이 'pool_size(30) 내에서 연결을 점유' 라 숨은 테스트가 단언을 거꾸로 씀.
+    2026-11-08 상류 기준선 9회 중 3회 — 표시만으로는 줄지 않아 재요청으로."""
     p = _plan()
     p["cases"][0]["expect"] = "모든 요청이 pool_size(30) 내에서 연결을 점유"
     res = _check(plan=p)
-    assert not _has(res.problems, "조절값")
-    assert any("hc1" in f and "pool_size" in f for f in res.review_flags)
-    assert not [f for f in _check().review_flags if "통과 조건" in f]
+    assert _has(
+        res.problems,
+        "hc1",
+        "통과 조건(expect)이 조절값(pool_size)",
+        "HTTP 로 관찰할 수 있는 결과로만",
+    )
+    assert not [p for p in _check().problems if "통과 조건" in p]
 
 
 def test_seed_declared_contract_needs_are_checked() -> None:
@@ -621,3 +627,27 @@ def test_case_data_must_be_on_existing_entities_once_marked() -> None:
     assert any("새로 만드는 엔티티 OrderHistory 에 시드 120행" in f for f in res.review_flags)
     # 표시가 하나도 없으면(옛 계약) 판단하지 않는다
     assert not _has(_check(_contract(), p).problems, "새로 만드는 엔티티")
+
+
+def test_fit_covers_connects_loose_elements_by_their_own_refs() -> None:
+    """2026-11-08 상류 평가: 응답 모양 엔티티(필드 refs r1·p1)를 covers 에 잇지도 빼지도 않아 재요청 2회 모두 실패 — 역색인은 코드가."""
+    c = _contract()
+    c["covers"] = {"r1": ["e1", "m1", "m2"]}  # e2 (refs r2·p2) 가 빠짐
+    contract = TaskContract.model_validate(c)
+    fitted, notes = fit_covers(contract, _spec())
+    assert fitted.covers["r2"] == ["e2"] and _has(notes, "e2", "covers r2")
+    assert not _has(
+        check_contract(
+            fitted, HiddenPlan.model_validate(_plan()), _spec(), _manifest(), BACKEND_SEED
+        ).problems,
+        "연결되지 않은 계약 요소",
+    )
+    # 이미 다 이어져 있으면 그대로
+    assert fit_covers(TaskContract.model_validate(_contract()), _spec()) == (
+        TaskContract.model_validate(_contract()),
+        [],
+    )
+    # refs 가 공개 수용 기준뿐이면 그 id 에
+    only_ac = _spec(req_ids=("r1",))
+    fitted, _ = fit_covers(contract, only_ac)
+    assert fitted.covers.get("p2") == ["e2"]

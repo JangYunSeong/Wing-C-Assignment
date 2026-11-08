@@ -14,6 +14,7 @@ from task_spec.starter.seed_rows import (
     allocate_rows,
     case_rows_problems,
     fit_seed,
+    public_free,
     seed_markdown,
     seed_problems,
 )
@@ -223,12 +224,38 @@ def test_fit_seed_appends_a_group_for_other_initial_values_and_small_seeds() -> 
     java = load_template(JAVA).manifest
     contract = _with_seed(_seed(4, (1, 4, {"status": "READY"})))
     plan = _cases(("hc1", [_rows(3, status="SHIPPING")]))
-    fitted, fplan, notes = fit_seed(contract, plan, java)
+    no_public = java.model_copy(update={"public_helper": None})
+    fitted, fplan, notes = fit_seed(contract, plan, no_public)
     s = fitted.seed[0]
     # 시드가 지원자 몫보다 작으면 그 위로 — id 5~13 은 SHIPPING (11~13 을 hc1 이 씀)
     assert s.rows == RESERVED_ROWS + 3 and s.groups[-1].values == {"status": "SHIPPING"}
     assert [(r.first, r.last) for r in allocate_rows(fitted, fplan).ranges] == [(11, 13)]
     assert len(notes) == 1
+
+
+def test_fit_seed_leaves_public_rows_per_initial_value() -> None:
+    """2026-11-08 상류 평가: 숨은 케이스가 11~172 를 모두 가져가 공개 몫 상수가 없었고 공개 테스트가 없는 이름을 짐작했다 (2/2)."""
+    java = load_template(JAVA).manifest
+    full = _with_seed(_seed(106, (1, 106, {"status": "READY"})))
+    plan = _cases(("hc1", [_rows(96, burst=True, status="READY")]))
+    assert [ids for _, _, ids in public_free(full, plan)] == [[]]  # 11~106 을 숨은 케이스가 다 씀
+    fitted, fplan, notes = fit_seed(full, plan, java)
+    assert _has(notes, "Order 시드 106 → 109행", "공개 테스트 몫 3행")
+    assert len(fitted.seed[0].groups) == 1  # 끝 범위와 처음 값이 같으면 늘린다
+    free = public_free(fitted, fplan)
+    assert free == [("m1", {"status": "READY"}, [11, 12, 13])]
+    hidden = {i for r in allocate_rows(fitted, fplan).ranges for i in range(r.first, r.last + 1)}
+    assert not hidden & set(free[0][2]) and not seed_problems(fitted)
+    # 처음 값마다 따로 — 작은 시드(1~4 READY)에 다른 값(SHIPPING) 숨은 케이스
+    small = _with_seed(_seed(4, (1, 4, {"status": "READY"})))
+    fitted, fplan, _ = fit_seed(small, _cases(("hc1", [_rows(3, status="SHIPPING")])), java)
+    assert sorted((v["status"], len(ids)) for _, v, ids in public_free(fitted, fplan)) == [
+        ("READY", 3),
+        ("SHIPPING", 3),
+    ]
+    assert not allocate_rows(fitted, fplan).problems and not seed_problems(fitted)
+    # 공개 테스트가 없는 템플릿은 그대로
+    assert fit_seed(full, plan, java.model_copy(update={"public_helper": None}))[2] == []
 
 
 def test_fit_seed_leaves_good_answers_and_unseeded_entities_alone() -> None:

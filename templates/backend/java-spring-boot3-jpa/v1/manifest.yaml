@@ -82,6 +82,12 @@ hidden_helper:
 unavailable_imports:
   - '^\s*import\s+(?:static\s+)?(?:jakarta|javax)\.validation\b'
   - '^\s*import\s+(?:static\s+)?org\.hibernate\.validator\b'
+# 공개 테스트 도우미 — 같은 렌더러로 공개 테스트 몫 행만 (동시 요청·오류 주입 없음). 공개 테스트는 채점용 이미지에만 (지원자에게 주지 않음 —
+# 2026-11-08 기본값, spec-to-code §4.3). 같은 폴더에 코드가 저장 확인 테스트(PersistenceCheckTest)도 쓴다.
+public_helper:
+  path: src/test/java/com/example/service/publictests/PublicCase.java
+  package: com.example.service.publictests
+  class_name: PublicCase
 # 시작 코드의 기존 기능 테스트가 HTTP API 를 부르는 곳 — MockMvc 요청 빌더 (그룹 method, 매치 끝 = 경로 인자). 새 API(계약 existing 아님,
 # 명세에 경로로 나오지 않음)를 부르면 시작 코드가 새 기능을 구현한 것 (static_check._starter_new_api_tests).
 # 2026-11-07 알파 4회차: 배송 감사 시작 코드가 감사 기록 조회 API 와 그 '기존 기능 테스트'까지 써서 시작 코드만으로 hc1 통과.
@@ -138,6 +144,8 @@ hidden_rules:
   # 2026-11-07 알파 테스트: assertThat(log.get("transactionId")).isEqualTo(txId) → Integer 105 ≠ 105L 로 흔한 구현·허용 구현 모두 실패.
   # 변수(+ 인자에 괄호 없는 메서드 호출 사슬) 바로 뒤 .get("필드") 만 — 캐스트한 꼴 `assertThat(((Number)log.get("id")).longValue())` 은 맞지 않는다.
   # (2026-11-07 알파 3회차: 처음 정규식이 공백 없는 캐스트를 잡아 올바른 숨은 테스트를 재요청·실패시킴)
+  # 사유를 붙이면 안 되는 단언 — 모든 실패를 세는 Burst.wrong(...) (운영 조건 사유는 Burst.failures(...) 에)
+  reason_not_on: ['\bBurst\.wrong\(']
   raw_number_asserts:
     - 'assertThat\(\s*\w+(?:\.\w+\([^()"]*\))*\.get\(\s*"(\w+)"\s*\)\s*\)'
 
@@ -235,6 +243,7 @@ failure_reasons:
       - 'HikariPool-\d+ - Connection is not available'
       - 'CannotCreateTransactionException'
       - '\[reason:pool_acquire_timeout\]'
+    requires: ['\bpeak\(', 'Burst\.(?:rounds|fire)\(']  # 운영 피크를 실제로 재현해야 이 사유가 나온다
   - code: request_timeout
     description: 채점 클라이언트 요청이 시간 한도 안에 끝나지 않음
     log_patterns: ['HttpTimeoutException', '\[reason:request_timeout\]']
@@ -244,6 +253,8 @@ failure_reasons:
   - code: rollback_left_success
     description: 롤백된 변경에 성공 기록이 남음
     log_patterns: ['\[reason:rollback_left_success\]']
+    # 규칙을 통과한 변경을 저장 단계에서 실패시켜야 롤백이 생긴다 (거절되는 전이는 롤백될 변경이 없음 — 2026-11-08 검토 4/5)
+    requires: ['GraderJdbcHarness\.fail(?:CommitAfter|Statements)\s*=']
   - code: record_missing
     description: 요청에 대한 기록이 없음
     log_patterns: ['\[reason:record_missing\]']

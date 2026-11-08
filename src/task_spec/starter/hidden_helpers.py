@@ -14,10 +14,11 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from task_spec.schemas.build import Endpoint, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.seed_rows import allocate_rows
+from task_spec.starter.seed_rows import allocate_rows, public_free
 from task_spec.starter.tables import contract_tables, spring_snake
 
 _SEG = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
@@ -63,10 +64,29 @@ def _body_kind(e: Endpoint) -> str | None:
     return "object" if ok.body else None
 
 
+def public_rows(contract: TaskContract, plan: HiddenPlan) -> dict[str, list[int]]:
+    """공개 테스트 몫 행 — 상수 이름(PUBLIC_<엔티티>_<처음 값>) → id 들 (seed_rows.public_free — fit_seed 가 몫을 채운다)."""
+    names = {m.entity_id: m.name for m in contract.entities}
+    out: dict[str, list[int]] = {}
+    for eid, values, ids in public_free(contract, plan):
+        if eid not in names or not ids:
+            continue
+        vals = "_".join(
+            re.sub(r"[^A-Za-z0-9]+", "_", str(v)).strip("_").upper() for v in values.values()
+        )
+        out[f"PUBLIC_{_const(names[eid])}" + (f"_{vals}" if vals else "")] = ids
+    return out
+
+
 def render_contract_case(
-    contract: TaskContract, plan: HiddenPlan, manifest: TemplateManifest
+    contract: TaskContract,
+    plan: HiddenPlan,
+    manifest: TemplateManifest,
+    audience: Literal["hidden", "public"] = "hidden",
 ) -> GeneratedFile | None:
-    rule = manifest.hidden_helper
+    """audience=hidden: 숨은 케이스 도우미(ContractCase — 케이스 범위·테이블·peak). public: 공개 테스트 도우미(PublicCase —
+    공개 테스트 몫 행, 동시 요청·오류 주입 없음 — 공개 테스트는 숨은 요구를 시험하지 않는다)."""
+    rule = manifest.hidden_helper if audience == "hidden" else manifest.public_helper
     if rule is None:
         return None
     names = {m.entity_id: m.name for m in contract.entities}
@@ -83,14 +103,30 @@ def render_contract_case(
         "import java.util.function.IntUnaryOperator;",
         "",
         "/**",
-        " * 이 과제의 공개 계약에서 빌드 파이프라인이 만든 도우미 — 손으로 고치지 않는다. 숨은 케이스는 이 클래스를 상속한다.",
-        " * id·경로·응답 파싱·동시 요청 시간 한도를 직접 쓰지 말고 아래 상수·함수를 쓴다.",
+        f" * 이 과제의 공개 계약에서 빌드 파이프라인이 만든 도우미 — 손으로 고치지 않는다. {'숨은 케이스' if audience == 'hidden' else '공개 테스트'}는 이 클래스를 상속한다.",
+        (
+            " * id·경로·응답 파싱·동시 요청 시간 한도를 직접 쓰지 말고 아래 상수·함수를 쓴다."
+            if audience == "hidden"
+            else " * id·경로·응답 파싱을 직접 쓰지 말고 아래 상수·함수를 쓴다."
+        ),
         " */",
         f"abstract class {rule.class_name} extends GraderSupport {{",
         "",
-        "    // ── 케이스별 데이터 범위: 계약 시드에 반드시 있는 행, 다른 케이스·지원자 테스트(작은 id)와 겹치지 않는다 ──",
     ]
-    ranges = allocate_rows(contract, plan).ranges
+    if audience == "public":
+        lines += [
+            "    // ── 공개 테스트 몫 행: 계약 시드에 반드시 있고 처음 값이 이름대로, 숨은 케이스·지원자 테스트와 겹치지 않는다 ──",
+            "    // 테스트 메서드마다 서로 다른 id 를 쓴다 (테스트끼리 같은 DB 를 함께 쓰고 순서는 정해지지 않음)",
+        ]
+        lines += [
+            f"    protected static final long[] {k} = {{{', '.join(f'{i}L' for i in ids)}}};"
+            for k, ids in public_rows(contract, plan).items()
+        ]
+    else:
+        lines += [
+            "    // ── 케이스별 데이터 범위: 계약 시드에 반드시 있는 행, 다른 케이스·지원자 테스트(작은 id)와 겹치지 않는다 ──"
+        ]
+    ranges = allocate_rows(contract, plan).ranges if audience == "hidden" else []
     per_case: dict[str, list] = {}
     for r in ranges:
         per_case.setdefault(r.case_id, []).append(r)
@@ -111,7 +147,7 @@ def render_contract_case(
                 f"    protected static final long {prefix}_LAST = {r.last}L;",
                 f"    protected static final int {prefix}_ROWS = {r.rows};",
             ]
-    tables = contract_tables(contract, manifest.naming.table)
+    tables = contract_tables(contract, manifest.naming.table) if audience == "hidden" else {}
     if tables:
         lines += ["", "    // ── 계약 테이블 이름 (오류 주입 정규식에는 이 이름을 그대로) ──"]
         lines += [
@@ -161,7 +197,7 @@ def render_contract_case(
                 "        return jsonObject(response.body());",
                 "    }",
             ]
-    burst = manifest.burst_rows
+    burst = manifest.burst_rows if audience == "hidden" else []
     if burst:
         c_name, r_name = burst[0], (burst[1] if len(burst) > 1 else None)
         c_raw = plan.harness.get(c_name, 1)
@@ -189,3 +225,111 @@ def render_contract_case(
         "",
     ]
     return GeneratedFile(path=rule.path, content="\n".join(lines))
+
+
+def render_persistence_check(
+    contract: TaskContract, manifest: TemplateManifest
+) -> GeneratedFile | None:
+    """새로 만드는 엔티티를 앱이 저장할 수 있는가 — 공개 테스트 자리에 코드가 쓰는 저장 확인 (LLM 없음).
+
+    2026-11-08 알파 4케이스: 시작 코드의 새 감사 기록 엔티티에 id 생성 전략이 없어(`@Id` 만) 참조 구현 둘 다 기록을 저장하는 순간
+    'must be manually assigned before persist()' 로 실패했다. 시작 코드는 기록을 쓰지 않으니 자기 테스트로는 드러나지 않는다.
+    JPA 메타모델에서 계약 엔티티 이름으로 클래스를 찾아(클래스 이름을 미리 몰라도 됨) 필수 필드를 채워 저장해 본다.
+    대상: 새로 만드는 엔티티(existing 아님) 중 처음 0행 — 표시가 하나도 없으면(옛 계약) 처음 0행인 엔티티.
+    """
+    rule = manifest.public_helper
+    if rule is None:
+        return None
+    rows = {s.entity_id: s.rows for s in contract.seed}
+    flagged = any(m.existing for m in contract.entities)
+    targets = [
+        m.name
+        for m in contract.entities
+        if rows.get(m.entity_id, 0) == 0 and (not m.existing if flagged else True)
+    ]
+    if not targets:
+        return None
+    path = rule.path.rsplit("/", 1)[0] + "/PersistenceCheckTest.java"
+    names = ", ".join(f'"{t}"' for t in targets)
+    src = f"""package {rule.package};
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.metamodel.EntityType;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+/** 빌드 파이프라인이 계약에서 만든 저장 확인 — 새로 만드는 엔티티는 앱이 저장할 수 있어야 한다 (손으로 고치지 않는다). */
+@DisplayName("저장 확인 — 새로 만드는 엔티티")
+class PersistenceCheckTest extends {rule.class_name} {{
+
+    @PersistenceContext
+    EntityManager em;
+
+    @Autowired
+    PlatformTransactionManager tx;
+
+    @Test
+    void 새로_만드는_엔티티를_저장하면_id_가_생긴다() throws Exception {{
+        for (String name : new String[] {{{names}}}) {{
+            EntityType<?> type = em.getMetamodel().getEntities().stream()
+                    .filter(e -> e.getName().equals(name) || e.getJavaType().getSimpleName().equals(name))
+                    .findFirst()
+                    .orElse(null);
+            assertThat(type).as("계약 엔티티 %s 의 JPA 엔티티 클래스 (클래스 이름은 계약 엔티티 이름)", name).isNotNull();
+            Object row = newRow(type.getJavaType());
+            new TransactionTemplate(tx).executeWithoutResult(status -> em.persist(row));
+            Object id = em.getEntityManagerFactory().getPersistenceUnitUtil().getIdentifier(row);
+            assertThat(id).as("%s 를 저장하면 id 가 생긴다 — 앱이 행을 만드는 엔티티라 id 생성 전략이 필요", name).isNotNull();
+        }}
+    }}
+
+    private static Object newRow(Class<?> type) throws Exception {{
+        var ctor = type.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        Object row = ctor.newInstance();
+        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {{
+            for (Field f : c.getDeclaredFields()) {{
+                if (Modifier.isStatic(f.getModifiers()) || f.isAnnotationPresent(jakarta.persistence.Id.class)) {{
+                    continue;
+                }}
+                Object value = sample(f.getType());
+                if (value != null) {{
+                    f.setAccessible(true);
+                    f.set(row, value);
+                }}
+            }}
+        }}
+        return row;
+    }}
+
+    private static Object sample(Class<?> t) {{
+        if (t == String.class) return "x";
+        if (t == Long.class || t == long.class) return 1L;
+        if (t == Integer.class || t == int.class) return 1;
+        if (t == Short.class || t == short.class) return (short) 1;
+        if (t == Boolean.class || t == boolean.class) return false;
+        if (t == Double.class || t == double.class) return 1.0;
+        if (t == BigDecimal.class) return BigDecimal.ONE;
+        if (t == LocalDateTime.class) return LocalDateTime.now();
+        if (t == Instant.class) return Instant.now();
+        if (t == OffsetDateTime.class) return OffsetDateTime.now();
+        if (t == LocalDate.class) return LocalDate.now();
+        if (t.isEnum() && t.getEnumConstants().length > 0) return t.getEnumConstants()[0];
+        return null;
+    }}
+}}
+"""
+    return GeneratedFile(path=path, content=src)
