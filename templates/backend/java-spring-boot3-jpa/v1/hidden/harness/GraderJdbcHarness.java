@@ -128,6 +128,9 @@ public class GraderJdbcHarness {
                         case "commit":
                             if (commitArmed.getAndSet(false) && failCommitAfter != null) {
                                 INJECTED_FAILURES.incrementAndGet();
+                                // 실제 DB 처럼 실패한 커밋의 트랜잭션은 버린다 — 열어 두면 프레임워크가 정리하며 자동 커밋을 다시 켤 때
+                                // (setAutoCommit(true) — JDBC 규약상 열린 트랜잭션을 커밋) 변경이 남는다 (2026-11-08 알파)
+                                target.rollback();
                                 throw new SQLException("grader: injected commit-time failure");
                             }
                             break;

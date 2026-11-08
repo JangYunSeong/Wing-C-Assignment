@@ -1,6 +1,8 @@
 package com.example.service.grading.selftest;
 
+import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +22,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.sql.DataSource;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -37,6 +41,9 @@ class HarnessSelfTest extends GraderSupport {
 
     @Autowired
     PlatformTransactionManager txManager;
+
+    @Autowired
+    DataSource dataSource;
 
     @AfterEach
     void off() {
@@ -124,6 +131,31 @@ class HarnessSelfTest extends GraderSupport {
                 .hasStackTraceContaining("injected commit-time failure");
         // 맞지 않는 SQL 만 쓴 트랜잭션은 그대로 커밋된다
         tx.executeWithoutResult(s -> jdbc.queryForObject("SELECT 1", Integer.class));
+    }
+
+    /**
+     * 실제 DB 는 커밋이 실패하면 트랜잭션을 버린다. 주입한 커밋 실패도 그래야 한다 — 하네스가 예외만 던지고 트랜잭션을 연결에 열어 두면
+     * 프레임워크가 정리하며 자동 커밋을 다시 켤 때(setAutoCommit(true) — JDBC 규약상 열린 트랜잭션을 커밋) 변경이 남는다.
+     * 2026-11-08 알파: 이 때문에 허용 설계도 '롤백된 변경에 성공 기록' 케이스에서 흔한 구현과 똑같이 실패했다.
+     */
+    @Test
+    void 커밋_오류를_주입하면_변경이_남지_않는다() throws Exception {
+        jdbc.execute("CREATE TABLE IF NOT EXISTS grader_selftest_rollback (id INT PRIMARY KEY)");
+        jdbc.update("DELETE FROM grader_selftest_rollback");
+        GraderJdbcHarness.failCommitAfter = Pattern.compile("(?i)^\\s*insert\\s+into\\s+grader_selftest_rollback\\b");
+        // 프레임워크 경로마다 다르게 정리하므로(롤백을 부르기도, 자동 커밋만 다시 켜기도) JDBC 수준에서 약속 자체를 본다
+        try (Connection c = dataSource.getConnection()) {
+            c.setAutoCommit(false);
+            try (Statement st = c.createStatement()) {
+                st.executeUpdate("INSERT INTO grader_selftest_rollback VALUES (1)");
+            }
+            assertThatThrownBy(c::commit).isInstanceOf(SQLException.class)
+                    .hasMessageContaining("injected commit-time failure");
+            c.setAutoCommit(true);
+        }
+        GraderJdbcHarness.reset();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM grader_selftest_rollback", Integer.class))
+                .as("주입한 커밋 실패 뒤 변경이 남음 — 하네스가 트랜잭션을 버리지 않았다").isZero();
     }
 
     @Test
