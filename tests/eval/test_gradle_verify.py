@@ -163,3 +163,26 @@ def test_public_tests_are_their_own_group(tmp_path: Path) -> None:
         "PersistenceCheckTest": ("public", "PASS"),
         "OrderPublicTest": ("public", "ASSERT"),
     }
+
+
+def test_compile_errors_carry_symbol_and_location(tmp_path: Path) -> None:
+    """2026-11-08: `Burst.IntUnaryOperator` — 재요청에 무엇이 없는지(symbol)와 어디서 찾았는지(location)를 함께 준다."""
+    work = tmp_path / "w"
+    work.mkdir()
+    log = (
+        f"{work.resolve()}/src/test/java/a/Hc1Test.java:51: error: cannot find symbol\n"
+        "            Burst.IntUnaryOperator expectedStatus = i -> 200;\n"
+        "                 ^\n"
+        "  symbol:   class IntUnaryOperator\n"
+        "  location: class Burst\n"
+        f"{work.resolve()}/src/test/java/a/Hc2Test.java:7: error: ';' expected\n"
+    )
+    errs = compile_errors(log, work)
+    assert [(e.path, e.line, e.detail) for e in errs] == [
+        (
+            "src/test/java/a/Hc1Test.java",
+            51,
+            "symbol: class IntUnaryOperator, location: class Burst",
+        ),
+        ("src/test/java/a/Hc2Test.java", 7, ""),
+    ]

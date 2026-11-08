@@ -226,7 +226,8 @@ async def main() -> None:
         llm=llm,
         prompts=prompts,  # type: ignore[arg-type]
         ontology_version=version,
-        verifier=GradleVerifier(template, out / "builds"),
+        verifier=(g := GradleVerifier(template, out / "builds")),
+        compiler=g,  # 채점 코드를 먼저 컴파일 — 오류는 쓴 생성기에 (build.compile_and_fix)
     )
     spent += built_out.cost_usd
     for key, o in built_out.overlays.items():

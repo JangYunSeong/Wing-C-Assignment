@@ -28,14 +28,15 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client
-from eval.starter.gradle_verify import assemble, compile_errors, run_gradle
+from eval.starter.gradle_verify import GradleVerifier
 from eval.starter.gradle_verify import write_overlay as _write
 from eval.starter.run_generate import PinnedVersions
 from eval.starter.run_paper import template_for
+from task_spec.nodes.starter.build import compile_and_fix
 from task_spec.nodes.starter.generate import BuildInputs, GenResult, gen_hidden, gen_public
 from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import TaskItem
+from task_spec.schemas import CompileError, TaskItem
 from task_spec.spec.incidents import load_incidents
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,31 +138,41 @@ async def run_one(
     row["hidden"] = _gen_row(hid)
     if pub is not None:
         row["public"] = _gen_row(pub)
-    overlays = [o for o in (hid.overlay, pub.overlay if pub else None) if o is not None]
-    if overlays and template.project.is_dir():
-        for o in overlays:
-            _write(o, run_dir / ("hidden" if o.kind == "hidden" else "public"))
-        work = run_dir / "compile"
-        assemble(
-            template, work, *overlays
-        )  # 템플릿 project/ + 하네스 + 숨은·공개 테스트 (구현 없음)
-        log = run_dir / "compile.log"
-        code, seconds = await asyncio.to_thread(run_gradle, work, log, 600, "compileTestJava")
-        errors = compile_errors(log.read_text("utf-8", errors="ignore"), work)
-        shutil.rmtree(work, ignore_errors=True)
+    fix_cost = 0.0
+    if hid.overlay is not None and template.project.is_dir():
+        # 빌드와 같은 컴파일 루프 — 템플릿 project/ + 하네스 + 숨은·공개 테스트 (구현 없음), 오류는 쓴 생성기에 돌려준다
+        t1 = time.monotonic()
+        compiler = GradleVerifier(template, run_dir / "compile", timeout=600)
+        fix = await compile_and_fix(b, hid.overlay, pub.overlay if pub else None, compiler, kw)
+        fix_cost = sum(_cost(r.provenance) for r in fix.results)
+        for o in (fix.hidden, fix.public):
+            if o is not None:
+                _write(o, run_dir / ("hidden" if o.kind == "hidden" else "public"))
         row["compile"] = {
-            "ok": code == 0,
-            "seconds": seconds,
-            "errors": [f"{e.path.rsplit('/', 1)[-1]}:{e.line} {e.message}" for e in errors[:8]],
+            "ok": not fix.errors,
+            "first_ok": not fix.first_errors,
+            "compiles": fix.compiles,
+            "repairs": [f"{x.target}: {x.reason} ({x.result})" for x in fix.repairs],
+            "first_errors": [_err(e) for e in fix.first_errors[:8]],
+            "errors": [_err(e) for e in fix.errors[:8]],
+            "cost_usd": round(fix_cost, 4),
+            "seconds": round(time.monotonic() - t1, 1),
         }
     row["seconds"] = round(time.monotonic() - t0, 1)
     row["cost_usd"] = round(
         row["contract"]["cost_usd"]
         + row["hidden"]["cost_usd"]
-        + (row["public"]["cost_usd"] if "public" in row else 0.0),
+        + (row["public"]["cost_usd"] if "public" in row else 0.0)
+        + fix_cost,
         4,
     )
     return row
+
+
+def _err(e: CompileError) -> str:
+    return f"{e.path.rsplit('/', 1)[-1]}:{e.line} {e.message}" + (
+        f" ({e.detail})" if e.detail else ""
+    )
 
 
 def _rate(rows: list[dict[str, Any]], pred: Any) -> str:
@@ -189,8 +200,8 @@ def summary_md(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
         "",
         f"모델 {meta['model']} · 고정 {meta['pins'] or '-'} · 구현 코드 없이 (숨은·공개 테스트는 템플릿·하네스·도우미로만 컴파일)",
         "",
-        "| 케이스 | 회 | 계약 첫 답 | 계약 | 필요 요소 첫 답 빠짐 | 숨은 첫 답 | 숨은 | 공개 첫 답 | 공개 | 컴파일 | 비용 | 초 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| 케이스 | 회 | 계약 첫 답 | 계약 | 필요 요소 첫 답 빠짐 | 숨은 첫 답 | 숨은 | 공개 첫 답 | 공개 | 컴파일 첫 | 컴파일 | 비용 | 초 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         comp = r.get("compile")
@@ -199,6 +210,7 @@ def summary_md(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
             f"{len(c(r, 'needs_first') or []) or '-'} | "
             f"{mark(r, 'hidden', 'first_ok')} | {mark(r, 'hidden', 'ok')} | "
             f"{mark(r, 'public', 'first_ok')} | {mark(r, 'public', 'ok')} | "
+            f"{'-' if comp is None else ('✓' if comp.get('first_ok', comp['ok']) else '✗')} | "
             f"{'-' if comp is None else ('✓' if comp['ok'] else '✗')} | ${r['cost_usd']} | {r['seconds']} |"
         )
     ok_all = [
@@ -214,6 +226,7 @@ def summary_md(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
         f"- 실행 {len(rows)} · 계약 첫 답 {_rate(rows, lambda r: c(r, 'first_ok'))} · 계약 {_rate(rows, lambda r: c(r, 'ok'))}"
         f" · 숨은 첫 답 {_rate(rows, lambda r: h(r, 'first_ok'))} · 숨은 {_rate(rows, lambda r: h(r, 'ok'))}"
         f" · 공개 첫 답 {_rate(rows, lambda r: pb(r, 'first_ok'))} · 공개 {_rate(rows, lambda r: pb(r, 'ok'))}"
+        f" · 컴파일 첫 {_rate(rows, lambda r: (r.get('compile') or {}).get('first_ok'))}"
         f" · 컴파일 {_rate(rows, lambda r: (r.get('compile') or {}).get('ok'))} · **끝까지 {len(ok_all)}/{len(rows)}**",
         f"- 비용 합 ${round(sum(r['cost_usd'] for r in rows), 4)} · 회당 평균 "
         f"${round(sum(r['cost_usd'] for r in rows) / max(len(rows), 1), 4)}",
@@ -225,6 +238,10 @@ def summary_md(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
         kinds.update(f"계약: {_kind(p)}" for p in c(r, "first_problems") or [])
         kinds.update(f"숨은: {_kind(p)}" for p in h(r, "first_problems") or [])
         kinds.update(f"공개: {_kind(p)}" for p in pb(r, "first_problems") or [])
+        kinds.update(
+            f"컴파일: {e.split(' ', 1)[1][:80]}"
+            for e in (r.get("compile") or {}).get("first_errors") or []
+        )
     lines += [f"- {n}× {k}" for k, n in kinds.most_common(15)] or ["- 없음"]
     lines += ["", "## 남은 실패"]
     for r in rows:
