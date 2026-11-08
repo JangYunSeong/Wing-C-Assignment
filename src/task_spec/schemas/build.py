@@ -173,6 +173,9 @@ class Entity(Schema):
         default_factory=list,
         description='DB 외래 키로 둘 관계만 "필드 → 엔티티" (예: "orderId → Order"). 없는 대상의 요청도 기록하는 엔티티의 대상 id 는 넣지 않는다',
     )
+    # 이 과제 전에 이미 있는 엔티티(기존 API 가 다루는 테이블)인가 — false 면 이 과제에서 새로 만드는 것(기록·이력). 숨은 케이스 data 는
+    # 이미 있는 엔티티에만 (2026-11-07 알파 3×3: 계약이 대상 엔티티 대신 감사 기록에 시드 516행을 넣고 숨은 케이스가 그 행을 '바꿈').
+    existing: bool = False
 
     @field_validator("foreign_keys")
     @classmethod

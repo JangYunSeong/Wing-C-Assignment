@@ -109,7 +109,10 @@ def _contract() -> dict[str, Any]:
                         "description": "변경됨",
                         "body": [f("id", "integer", ["r1"]), f("status", "string", ["p1"])],
                     },
-                    {"status": 409, "description": "허용되지 않는 상태 변경"},
+                    {
+                        "status": 409,
+                        "description": "허용되지 않는 상태 변경 — 허용 전이: READY→SHIPPED, SHIPPED→DELIVERED",
+                    },
                 ],
                 "refs": ["r1", "p1"],
             },
@@ -578,3 +581,43 @@ def test_expect_naming_harness_params_is_only_flagged() -> None:
     assert not _has(res.problems, "조절값")
     assert any("hc1" in f and "pool_size" in f for f in res.review_flags)
     assert not [f for f in _check().review_flags if "통과 조건" in f]
+
+
+def test_seed_declared_contract_needs_are_checked() -> None:
+    """2026-11-07~08 알파 평가: 지난 계약 10개 모두 상태 전이 규칙이 없었고, 대상 엔티티 대신 감사 기록에 시드를 둔 계약도 있었다."""
+    assert BACKEND_SEED is not None and BACKEND_SEED.contract_needs
+    assert not _has(_check().problems, "숨은 요구에 필요한 것")
+    # 전이 규칙 없음
+    c = _contract()
+    c["endpoints"][0]["responses"][1]["description"] = "허용되지 않는 상태 변경"
+    assert _has(_check(c).problems, "상태 전이 규칙", "A→B")
+    # 처음 0행인 기록 엔티티 없음 (감사 기록에도 시드)
+    c = _contract()
+    c["seed"][1] = {
+        "entity_id": "m2",
+        "rows": 30,
+        "groups": [{"first": 1, "last": 30, "values": {}}],
+    }
+    assert _has(_check(c).problems, "요청마다 쌓이는 기록 엔티티")
+    # 재료에 선언이 없으면 묻지 않는다
+    c = _contract()
+    c["endpoints"][0]["responses"][1]["description"] = "허용되지 않는 상태 변경"
+    assert not _has(_check(c, seed=None).problems, "숨은 요구에 필요한 것")
+
+
+def test_case_data_must_be_on_existing_entities_once_marked() -> None:
+    c = _contract()
+    c["entities"][0]["existing"] = True  # Order 는 이미 있음, OrderHistory 는 새로 만듦
+    assert not _has(_check(c).problems, "새로 만드는 엔티티")
+    p = _plan()
+    p["cases"][0]["data"] = [{"entity_id": "m2", "rows": 96, "initial": {}, "burst": True}]
+    c["seed"][1] = {
+        "entity_id": "m2",
+        "rows": 120,
+        "groups": [{"first": 1, "last": 120, "values": {}}],
+    }
+    res = _check(c, p)
+    assert _has(res.problems, "숨은 케이스 hc1 의 data 가 새로 만드는 엔티티(OrderHistory)")
+    assert any("새로 만드는 엔티티 OrderHistory 에 시드 120행" in f for f in res.review_flags)
+    # 표시가 하나도 없으면(옛 계약) 판단하지 않는다
+    assert not _has(_check(_contract(), p).problems, "새로 만드는 엔티티")

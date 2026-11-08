@@ -110,7 +110,18 @@ def for_prompt(inp: PlanContractInputV3, model: type[BaseModel]) -> BaseModel:
     return model.model_validate({k: v for k, v in dict(inp).items() if k in model.model_fields})
 
 
-def plan_input(task: TaskItem, template: Template, note: str | None = None) -> PlanContractInputV3:
+def needs_text(seed: FeatureSeed | None) -> str:
+    """재료가 선언한 '숨은 요구에 계약이 꼭 가져야 할 것' — 시드 규칙 칸 뒤에 붙는다 (검사 _needs 와 같은 목록)."""
+    if seed is None or not seed.contract_needs:
+        return ""
+    return "\n- 숨은 요구가 계약에 꼭 필요로 하는 것 (빠지면 다시 요청):\n" + "\n".join(
+        f"  - {n.note or n.kind}" for n in seed.contract_needs
+    )
+
+
+def plan_input(
+    task: TaskItem, template: Template, note: str | None = None, seed: FeatureSeed | None = None
+) -> PlanContractInputV3:
     m = template.manifest
     rx = m.naming
     params = "\n".join(
@@ -145,7 +156,7 @@ def plan_input(task: TaskItem, template: Template, note: str | None = None) -> P
         )
         or NONE,
         revision_note=note or NONE,
-        seed_rules=seed_rules_text(m),
+        seed_rules=seed_rules_text(m) + (needs_text(seed) if m.seed_rows else ""),
     )
 
 
@@ -172,7 +183,7 @@ async def plan_contract(
     for attempt in range(2):
         prompt = assemble(
             prompt_t,
-            for_prompt(plan_input(task, template, note), prompt_t.input_model),
+            for_prompt(plan_input(task, template, note, seed), prompt_t.input_model),
             ontology_version=ontology_version,
         )
         try:

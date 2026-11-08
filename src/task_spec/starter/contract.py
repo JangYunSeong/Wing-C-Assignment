@@ -701,6 +701,72 @@ def _target_rows(contract: TaskContract, plan: HiddenPlan) -> list[str]:
     return out
 
 
+_ARROW = re.compile(r"\w+\s*(?:→|->)\s*\w+")
+
+
+def _entity_existing(contract: TaskContract, plan: HiddenPlan) -> tuple[list[str], list[str]]:
+    """숨은 케이스 data 는 이미 있는 엔티티(existing)에만 — 엔티티에 표시가 하나도 없으면(옛 계약) 판단하지 않는다.
+    새로 만드는 엔티티에 시드 행이 있으면 표시만 (드물게 새 참조 테이블일 수 있음)."""
+    existing = {m.entity_id for m in contract.entities if m.existing}
+    if not existing:
+        return [], []
+    names = {m.entity_id: m.name for m in contract.entities}
+    problems: list[str] = []
+    for c in plan.cases:
+        bad = sorted({d.entity_id for d in c.data if d.entity_id not in existing})
+        if bad:
+            problems.append(
+                f"숨은 케이스 {c.case_id} 의 data 가 새로 만드는 엔티티({', '.join(names.get(b, b) for b in bad)})에 있음 — "
+                "바꿀 행은 이미 있는 엔티티(existing: true, 기존 API 가 다루는 대상)에 둔다. 새 엔티티는 요청으로 쌓이는 것이라 시드 행이 아니다"
+            )
+    flags = [
+        f"새로 만드는 엔티티 {names[s.entity_id]} 에 시드 {s.rows}행 — 이 과제 전에 없던 테이블이면 처음 0행이어야 한다 (사람 확인)"
+        for s in contract.seed
+        if s.rows > 0 and s.entity_id not in existing and s.entity_id in names
+    ]
+    return problems, flags
+
+
+def _needs(contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None) -> list[str]:
+    """재료가 선언한 '숨은 요구에 계약이 꼭 가져야 할 것'(FeatureSeed.contract_needs)을 기계적으로 대조 — 빠진 것을 구체적으로 알려 다시 요청.
+    2026-11-07~08 알파 평가: 대상 엔티티 없음(감사 기록에 시드), 상태 전이 규칙 없음(숨은 테스트·시작 코드가 다른 전이를 짐작)."""
+    if seed is None or not seed.contract_needs:
+        return []
+    need = {n.kind: n.note for n in seed.contract_needs}
+    rows = {s.entity_id: s.rows for s in contract.seed}
+    flagged = any(m.existing for m in contract.entities)
+    in_cases = {d.entity_id for c in plan.cases for d in c.data}
+    targets = [
+        m
+        for m in contract.entities
+        if rows.get(m.entity_id, 0) > 0 and (m.existing or not flagged) and m.entity_id in in_cases
+    ]
+    out: list[str] = []
+    if "stateful_target" in need and not targets:
+        out.append(
+            f"숨은 요구에 필요한 것이 계약에 없음 — 상태를 가진 대상 엔티티: {need['stateful_target']}. "
+            "entities 에 existing: true 로 두고, seed 에 행을 두고, 숨은 케이스 data 를 그 엔티티에 둔다"
+        )
+    if "transition_rules" in need:
+        texts = [f.constraints or "" for m in targets for f in m.fields]
+        for e in contract.endpoints:
+            texts += [f.constraints or "" for f in e.request]
+            texts += [r.description for r in e.responses]
+        if not any(_ARROW.search(t) for t in texts):
+            out.append(
+                f"숨은 요구에 필요한 것이 계약에 없음 — 상태 전이 규칙: {need['transition_rules']}. 상태 필드나 상태를 바꾸는 요청 필드의 "
+                "constraints 에 'A→B' 꼴로 허용 전이를 빠짐없이 적는다 (숨은 테스트와 시작 코드가 같은 규칙을 따르게)"
+            )
+    if "empty_record_entity" in need and not [
+        m for m in contract.entities if rows.get(m.entity_id, 0) == 0 and not m.existing
+    ]:
+        out.append(
+            f"숨은 요구에 필요한 것이 계약에 없음 — 요청마다 쌓이는 기록 엔티티: {need['empty_record_entity']}. "
+            "entities 에 existing: false 로 두고 seed 는 rows 0"
+        )
+    return out
+
+
 def _internal_expect(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
     """숨은 케이스 통과 조건(expect)이 조절값 이름을 말하면 표시만 (재요청 아님 — 낱말 판단이라 오탐 위험).
     2026-11-07 알파 5회차: "모든 요청이 pool_size(30) 내에서 연결을 점유" 처럼 HTTP 로 관찰할 수 없는 조건이라, 숨은 테스트가 단언으로
@@ -759,4 +825,9 @@ def check_contract(
         problems += _no_seed_rows(contract, plan, manifest)
     problems += _foreign_keys(contract)
     flags += _internal_expect(plan, manifest)
+    if manifest.seed_rows:
+        entity_problems, entity_flags = _entity_existing(contract, plan)
+        problems += entity_problems
+        flags += entity_flags
+        problems += _needs(contract, plan, seed)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)

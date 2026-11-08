@@ -36,12 +36,11 @@ HC1 = """package com.example.service.grading.cases;
 
 import com.example.service.grading.Burst;
 import com.example.service.grading.GraderParams;
-import com.example.service.grading.GraderSupport;
 import com.example.service.grading.Reasons;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-class OrderStatusBurstTest extends GraderSupport {
+class OrderStatusBurstTest extends ContractCase {
     @Test
     @DisplayName("hc1 피크와 같은 수의 동시 변경")
     void hc1() throws Exception {
@@ -376,3 +375,15 @@ def test_starter_existing_tests_must_not_call_new_apis() -> None:
     only_existing = (test[0], test[1].split("\n  void b")[0] + " }\n")
     assert not starter_msgs(flagged, only_existing)
     assert not starter_msgs(contract, test)  # 이 명세 글에는 경로가 없고 계약 표시도 없음
+
+
+def test_imports_missing_from_the_template_classpath() -> None:
+    """2026-11-08 재평가: 시작 코드가 jakarta.validation 을 써 컴파일 실패 — 템플릿에 검증 스타터가 없다."""
+    ctl = _f(
+        f"{PKG}/order/OrderController.java",
+        "package com.example.service.order;\nimport jakarta.validation.Valid;\nclass OrderController {}\n",
+    )
+    res = _run(_overlays(starter=[*_overlays()[0].files, ctl]))
+    assert _has(res.for_target("gen_starter"), "템플릿에 없는 라이브러리", "jakarta.validation")
+    naive = _run(_overlays(ref_naive=[ctl]))
+    assert _has(naive.for_target("gen_naive"), "템플릿에 없는 라이브러리")

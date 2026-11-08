@@ -105,7 +105,9 @@ def table_block(sql: str, table: str) -> str | None:
 
 def table_columns(block: str) -> dict[str, str]:
     """열 이름(소문자) → 정의 글. 제약 줄(PRIMARY KEY(…)·CONSTRAINT·FOREIGN KEY…)은 뺀다."""
-    items, depth, cur = [], 0, []
+    items: list[str] = []
+    cur: list[str] = []
+    depth = 0
     for ch in block:
         if ch == "," and depth == 0:
             items.append("".join(cur))
