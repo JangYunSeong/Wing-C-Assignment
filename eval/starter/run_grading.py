@@ -36,7 +36,7 @@ from task_spec.nodes.starter.build import compile_and_fix
 from task_spec.nodes.starter.generate import BuildInputs, GenResult, gen_hidden, gen_public
 from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import CompileError, TaskItem
+from task_spec.schemas import CompileError, HiddenPlan, TaskContract, TaskItem
 from task_spec.spec.incidents import load_incidents
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,8 +74,16 @@ def _gen_row(r: GenResult) -> dict[str, Any]:
 
 
 async def run_one(
-    case: dict[str, Any], n: int, out: Path, kw: dict[str, Any], incidents: dict[str, Any]
+    case: dict[str, Any],
+    n: int,
+    out: Path,
+    kw: dict[str, Any],
+    incidents: dict[str, Any],
+    stop_after: str | None = None,
+    reuse: Path | None = None,
 ) -> dict[str, Any]:
+    """stop_after="contract": 계약만 (계약 프롬프트를 바꿀 때). reuse: 이전 평가 폴더의 같은 케이스·회차 계약을 다시 써서
+    계약 호출을 건너뜀 (숨은·공개 테스트 쪽만 바꿀 때) — 2026-11-08 비용 점검: 계약이 상류 평가 비용의 약 55%."""
     task: TaskItem = case["task"]
     sub = (task.source_incident or "").split(":")[1]
     inc = incidents[sub]
@@ -89,6 +97,21 @@ async def run_one(
         "template": template.manifest.ref,
     }
     t0 = time.monotonic()
+    if reuse is not None:
+        d = json.loads((reuse / f"{case['key']}-{n}" / "contract.json").read_text("utf-8"))
+        contract, plan = (
+            TaskContract.model_validate(d["contract"]),
+            HiddenPlan.model_validate(d["hidden_plan"]),
+        )
+        (run_dir / "contract.json").write_text(json.dumps(d, ensure_ascii=False, indent=1), "utf-8")
+        row["contract"] = {
+            "ok": True,
+            "first_ok": True,
+            "calls": 0,
+            "cost_usd": 0.0,
+            "reused": str(reuse.relative_to(ROOT) if reuse.is_relative_to(ROOT) else reuse),
+        }
+        return await _tests(row, task, contract, plan, template, inc, run_dir, kw, t0, stop_after)
     res = await plan_contract(task, template, seed=inc.feature, **kw)
     row["contract"] = {
         "ok": res.ok,
@@ -121,10 +144,31 @@ async def run_one(
         row["seconds"] = round(time.monotonic() - t0, 1)
         row["cost_usd"] = row["contract"]["cost_usd"]
         return row
+    return await _tests(
+        row, task, res.contract, res.hidden_plan, template, inc, run_dir, kw, t0, stop_after
+    )
+
+
+async def _tests(
+    row: dict[str, Any],
+    task: TaskItem,
+    contract: TaskContract,
+    plan: HiddenPlan,
+    template: Any,
+    inc: Any,
+    run_dir: Path,
+    kw: dict[str, Any],
+    t0: float,
+    stop_after: str | None,
+) -> dict[str, Any]:
+    if stop_after == "contract":
+        row["seconds"] = round(time.monotonic() - t0, 1)
+        row["cost_usd"] = row["contract"]["cost_usd"]
+        return row
     b = BuildInputs(
         task=task,
-        contract=res.contract,
-        plan=res.hidden_plan,
+        contract=contract,
+        plan=plan,
         template=template,
         seed=inc.feature,
         avoid_terms=tuple(inc.avoid_terms),
@@ -221,18 +265,31 @@ def summary_md(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
         and (r.get("public") is None or pb(r, "ok"))
         and (r.get("compile") or {}).get("ok")
     ]
-    lines += [
-        "",
-        f"- 실행 {len(rows)} · 계약 첫 답 {_rate(rows, lambda r: c(r, 'first_ok'))} · 계약 {_rate(rows, lambda r: c(r, 'ok'))}"
-        f" · 숨은 첫 답 {_rate(rows, lambda r: h(r, 'first_ok'))} · 숨은 {_rate(rows, lambda r: h(r, 'ok'))}"
-        f" · 공개 첫 답 {_rate(rows, lambda r: pb(r, 'first_ok'))} · 공개 {_rate(rows, lambda r: pb(r, 'ok'))}"
-        f" · 컴파일 첫 {_rate(rows, lambda r: (r.get('compile') or {}).get('first_ok'))}"
-        f" · 컴파일 {_rate(rows, lambda r: (r.get('compile') or {}).get('ok'))} · **끝까지 {len(ok_all)}/{len(rows)}**",
-        f"- 비용 합 ${round(sum(r['cost_usd'] for r in rows), 4)} · 회당 평균 "
-        f"${round(sum(r['cost_usd'] for r in rows) / max(len(rows), 1), 4)}",
-        "",
-        "## 첫 답 문제 종류 (재요청 사유)",
-    ]
+    if meta.get("stop_after") == "contract":  # 계약만 — 뒤 단계 비율은 의미 없음
+        lines += [
+            "",
+            f"- 실행 {len(rows)} (계약만) · 계약 첫 답 {_rate(rows, lambda r: c(r, 'first_ok'))} · 계약 {_rate(rows, lambda r: c(r, 'ok'))}"
+            f" · 비용 합 ${round(sum(r['cost_usd'] for r in rows), 4)} · 회당 평균 "
+            f"${round(sum(r['cost_usd'] for r in rows) / max(len(rows), 1), 4)}",
+            "",
+            "## 첫 답 문제 종류 (재요청 사유)",
+        ]
+    lines += (
+        []
+        if meta.get("stop_after") == "contract"
+        else [
+            "",
+            f"- 실행 {len(rows)} · 계약 첫 답 {_rate(rows, lambda r: c(r, 'first_ok'))} · 계약 {_rate(rows, lambda r: c(r, 'ok'))}"
+            f" · 숨은 첫 답 {_rate(rows, lambda r: h(r, 'first_ok'))} · 숨은 {_rate(rows, lambda r: h(r, 'ok'))}"
+            f" · 공개 첫 답 {_rate(rows, lambda r: pb(r, 'first_ok'))} · 공개 {_rate(rows, lambda r: pb(r, 'ok'))}"
+            f" · 컴파일 첫 {_rate(rows, lambda r: (r.get('compile') or {}).get('first_ok'))}"
+            f" · 컴파일 {_rate(rows, lambda r: (r.get('compile') or {}).get('ok'))} · **끝까지 {len(ok_all)}/{len(rows)}**",
+            f"- 비용 합 ${round(sum(r['cost_usd'] for r in rows), 4)} · 회당 평균 "
+            f"${round(sum(r['cost_usd'] for r in rows) / max(len(rows), 1), 4)}",
+            "",
+            "## 첫 답 문제 종류 (재요청 사유)",
+        ]
+    )
     kinds: Counter[str] = Counter()
     for r in rows:
         kinds.update(f"계약: {_kind(p)}" for p in c(r, "first_problems") or [])
@@ -266,6 +323,14 @@ async def main() -> None:
     ap.add_argument("--pin", action="append", default=[], help="예: --pin plan_contract=9")
     ap.add_argument("--budget-usd", type=float, default=1.5)
     ap.add_argument("--tag", default="")
+    ap.add_argument(
+        "--stop-after", choices=["contract"], default=None, help="계약만 (계약 프롬프트를 바꿀 때)"
+    )
+    ap.add_argument(
+        "--reuse-contracts",
+        default=None,
+        help="이전 평가 폴더 — 같은 케이스·회차의 contract.json 을 다시 씀 (숨은·공개 테스트만 바꿀 때)",
+    )
     a = ap.parse_args()
 
     cases = []
@@ -282,7 +347,14 @@ async def main() -> None:
     prompts = ModelOverride(PinnedVersions(PromptRegistry(ROOT / "prompts"), pins), a.model)  # type: ignore[arg-type]
     kw = {"llm": make_client(a.openai_key_env), "prompts": prompts, "ontology_version": VERSION}
     incidents = load_incidents(ROOT / "incidents" / "public_v1")
-    meta = {"tag": a.tag, "model": a.model, "pins": a.pin, "cases": [c["src"] for c in cases]}
+    meta = {
+        "tag": a.tag,
+        "model": a.model,
+        "pins": a.pin,
+        "cases": [c["src"] for c in cases],
+        "stop_after": a.stop_after,
+        "reuse_contracts": a.reuse_contracts,
+    }
     rows: list[dict[str, Any]] = []
     spent = worst = 0.0
     for n in range(1, a.runs + 1):  # 케이스를 번갈아 — 예산이 끊겨도 고르게 남게
@@ -290,7 +362,15 @@ async def main() -> None:
             if worst and spent + worst > a.budget_usd:
                 print(f"예산 {a.budget_usd} 때문에 건너뜀: {case['key']} #{n}")
                 continue
-            row = await run_one(case, n, out, kw, incidents)
+            row = await run_one(
+                case,
+                n,
+                out,
+                kw,
+                incidents,
+                a.stop_after,
+                Path(a.reuse_contracts).resolve() if a.reuse_contracts else None,
+            )
             rows.append(row)
             spent += row["cost_usd"]
             worst = max(worst, row["cost_usd"])
