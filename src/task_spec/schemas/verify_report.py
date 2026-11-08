@@ -42,6 +42,9 @@ class TargetRun(Schema):
     kind: TargetKind
     setup: SetupResult = "ok"
     compile_errors: list[CompileError] = Field(default_factory=list)
+    # 기동 실패(boot_error)의 근본 원인 — 실패 스택의 가장 깊은 `Caused by` 문장 (예: H2 "Syntax error in SQL statement … [*]GENERATED").
+    # 2026-11-08 알파 4케이스: 수리 요청에 'boot_error' 한 단어만 가 시작 코드가 같은 스키마 문법 오류를 되풀이했다.
+    setup_detail: str = Field(default="", max_length=400)
     tests: list[TestResult] = Field(default_factory=list)
     seconds: float | None = None
 

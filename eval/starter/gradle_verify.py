@@ -104,6 +104,24 @@ def case_ids(hidden: Overlay | None, pattern: str) -> dict[str, str]:
     return out
 
 
+_CAUSED = re.compile(r"^\s*Caused by:\s*(.+)$", re.M)
+
+
+def boot_cause(results_dir: Path) -> str:
+    """기동 실패 보고서의 실패 스택에서 가장 깊은 `Caused by` 문장 — 앱 컨텍스트를 못 띄운 진짜 이유 (없으면 빈 문자열)."""
+    for xml in sorted(results_dir.glob("TEST-*.xml")):
+        for bad in ET.parse(xml).getroot().iter():
+            if bad.tag not in ("failure", "error"):
+                continue
+            text = bad.text or ""
+            if not any(b in (bad.get("message", "") + text) for b in _BOOT):
+                continue
+            causes = _CAUSED.findall(text)
+            if causes:
+                return " ".join(causes[-1].split())[:400]
+    return ""
+
+
 def junit_results(results_dir: Path, ids: dict[str, str]) -> list[TestResult]:
     """Gradle JUnit XML → 클래스(기존 테스트)·케이스(숨은 테스트)마다 결과 하나. 첫 실패를 대표로."""
     out: list[TestResult] = []
@@ -161,6 +179,7 @@ class GradleVerifier:
         errors = compile_errors(text, dest)
         ids = case_ids(hidden, self.template.manifest.hidden_rules.case_id_pattern)
         tests = junit_results(dest / "build" / "test-results" / "test", ids)
+        cause = boot_cause(dest / "build" / "test-results" / "test")
         shutil.rmtree(dest, ignore_errors=True)
         if code is None:
             setup = "timeout"
@@ -176,6 +195,7 @@ class GradleVerifier:
                 "kind": kind,
                 "setup": setup,
                 "compile_errors": [e.model_dump() for e in errors],
+                "setup_detail": cause if setup == "boot_error" else "",
                 "tests": [t.model_dump() for t in tests],
                 "seconds": seconds,
             }

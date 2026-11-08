@@ -35,7 +35,13 @@ from task_spec.starter.contract import SpecView, contract_fields, existing_endpo
 from task_spec.starter.hidden_helpers import render_contract_case
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
-from task_spec.starter.tables import contract_tables, declared_tables, referenced_tables, same_table
+from task_spec.starter.tables import (
+    contract_tables,
+    declared_tables,
+    referenced_tables,
+    same_table,
+    spring_snake,
+)
 from task_spec.starter.templates import Template, glob_match, slot_allows
 
 KIND_SLOT = {
@@ -545,13 +551,39 @@ def _starter_foreign_keys(
     ]
 
 
+_CONST_JOIN = re.compile(r'"\s*\+\s*(TABLE_[A-Z0-9_]+)\s*\+\s*"')
+_CONST_TAIL = re.compile(r'"\s*\+\s*(TABLE_[A-Z0-9_]+)\b')
+_CONST_HEAD = re.compile(r'\b(TABLE_[A-Z0-9_]+)\s*\+\s*"')
+
+
+def inline_table_constants(content: str, consts: dict[str, str]) -> str:
+    """`"^\\s*update\\s+" + TABLE_ORDER + "\\b"` → `"^\\s*update\\s+orders\\b"` — 계약 도우미의 테이블 상수를 문자열에 끼워 넣어
+    문자열 상수만 보는 검사(오류 주입 정규식의 테이블·넓은 주입)가 이어 붙인 정규식도 읽게 한다.
+    2026-11-08: ContractCase 가 TABLE_ 상수를 주자 숨은 테스트가 그것을 이어 붙였고, 첫 조각만 본 검사가 '넓은 주입'으로 오탐해 생성 실패."""
+    if not consts:
+        return content
+
+    def val(m: re.Match[str]) -> str:
+        return consts.get(m.group(1), m.group(1))
+
+    content = _CONST_JOIN.sub(val, content)
+    content = _CONST_TAIL.sub(lambda m: val(m) + '"', content)
+    return _CONST_HEAD.sub(lambda m: '"' + val(m), content)
+
+
 def _hidden_tables(
     files: Iterable[GeneratedFile], t: Template, contract: TaskContract
 ) -> list[str]:
     naming, rules = t.manifest.naming.table, t.manifest.hidden_rules
     if naming is None or not rules.table_refs:
         return []
-    expected = list(contract_tables(contract, naming).values())
+    tables = contract_tables(contract, naming)
+    names = {m.entity_id: m.name for m in contract.entities}
+    consts = {f"TABLE_{spring_snake(names[e]).upper()}": v for e, v in tables.items()}
+    expected = list(tables.values())
+    files = [
+        GeneratedFile(path=f.path, content=inline_table_constants(f.content, consts)) for f in files
+    ]
     out: list[str] = []
     for f in files:
         bad = [

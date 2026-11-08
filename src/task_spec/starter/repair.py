@@ -124,9 +124,10 @@ def _starter(run: TargetRun) -> list[RepairAction]:
                 "gen_starter",
                 "",
                 "①",
-                f"시작 코드 빌드 실패 ({run.setup})",
+                f"시작 코드 빌드 실패 ({run.setup})"
+                + (f": {_short(run.setup_detail)}" if run.setup_detail else ""),
                 "시작 코드만으로 빌드·기동이 되지 않는다. 이 오류를 고친다:\n"
-                + (errs or run.setup),
+                + (errs or _boot_text(run)),
                 compile=run.setup == "compile_error",
             )
         ]
@@ -201,8 +202,10 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
                 _gen_for(run),
                 run.target,
                 "setup",
-                f"{run.target} 기동 실패",
-                "구현을 넣은 앱이 기동하지 않는다 — 시작 코드의 설정·빈 구성을 깨뜨리지 않는다.",
+                f"{run.target} 기동 실패"
+                + (f": {_short(run.setup_detail)}" if run.setup_detail else ""),
+                "구현을 넣은 앱이 기동하지 않는다 — 시작 코드의 설정·빈 구성을 깨뜨리지 않는다.\n"
+                + _boot_text(run),
             )
         ]
     if run.setup != "compile_error":
@@ -251,6 +254,14 @@ def _ref_setup(run: TargetRun, overlays: Mapping[str, Overlay]) -> list[RepairAc
             )
         )
     return out
+
+
+def _boot_text(run: TargetRun) -> str:
+    """기동 실패의 근본 원인 문장 (검증기가 실패 스택의 가장 깊은 `Caused by` 를 담음) — 없으면 설정 결과만.
+    2026-11-08 알파 4케이스: 'boot_error' 한 단어만 가 시작 코드가 같은 스키마 문법 오류(H2 identity 절 순서)를 되풀이했다."""
+    if run.setup_detail:
+        return f"근본 원인: {run.setup_detail}"
+    return run.setup
 
 
 def _signature(message: str) -> str:

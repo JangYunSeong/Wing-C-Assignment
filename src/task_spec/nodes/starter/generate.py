@@ -88,10 +88,15 @@ def stack_text(m: TemplateManifest) -> str:
     head = f"템플릿 {m.ref} — 인터페이스 {', '.join(m.interfaces)}"
     if s is None:
         return head
-    return (
+    text = (
         f"{head}\n언어 {s.language} {s.language_version} · {s.framework} {s.framework_version} · "
         f"빌드 {s.build_tool} {s.build_tool_version} (새 라이브러리 추가 금지)"
     )
+    if (
+        m.seed_sql is not None and m.seed_sql.id_column
+    ):  # 시드가 id 를 직접 넣는 테이블의 id 열 꼴 (스택 문법 그대로)
+        text += f"\n시드 테이블 id 열: `{m.seed_sql.id_column}` (시드가 id 를 직접 넣는다 — 이 꼴 그대로)"
+    return text
 
 
 def template_files_text(t: Template) -> str:
