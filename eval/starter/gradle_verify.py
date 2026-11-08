@@ -38,18 +38,20 @@ def write_overlay(overlay: Overlay, root: Path) -> None:
 
 
 def assemble(t: Template, work: Path, *overlays: Overlay) -> None:
-    """템플릿 project/ + 오버레이 (+ hidden 이면 잠긴 하네스·자체 점검) — 채점용 이미지 조립과 같은 순서."""
+    """템플릿 project/ + 오버레이 (+ 숨은·공개 테스트가 있으면 잠긴 하네스·자체 점검) — 채점용 이미지 조립과 같은 순서.
+    공개 테스트(PublicCase)도 하네스(GraderSupport)를 상속한다 — 2026-11-08: 숨은 테스트일 때만 하네스를 넣어 시작 코드 + 공개 테스트가
+    컴파일되지 않았다 (실제 Gradle 로 확인)."""
     if work.exists():
         shutil.rmtree(work)
     shutil.copytree(t.project, work)
+    hl = t.manifest.hidden_layout
+    if hl is not None and any(o.kind in ("hidden", "public_test") for o in overlays):
+        for sub, dest in (("hidden/harness", hl.harness), ("hidden/selftest", hl.selftest)):
+            for rel in t.files(sub):
+                target = work / dest / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(t.root / sub / rel, target)
     for o in overlays:
-        if o.kind == "hidden" and t.manifest.hidden_layout is not None:
-            hl = t.manifest.hidden_layout
-            for sub, dest in (("hidden/harness", hl.harness), ("hidden/selftest", hl.selftest)):
-                for rel in t.files(sub):
-                    target = work / dest / rel
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(t.root / sub / rel, target)
         write_overlay(o, work)
 
 
@@ -58,13 +60,15 @@ def gradle_env() -> dict[str, str]:
     return os.environ | {"GRADLE_USER_HOME": home}
 
 
-def run_gradle(work: Path, log: Path, timeout: int = 1200) -> tuple[int | None, float]:
-    """(종료 코드 — 시간 초과면 None, 걸린 초)."""
+def run_gradle(
+    work: Path, log: Path, timeout: int = 1200, task: str = "test"
+) -> tuple[int | None, float]:
+    """(종료 코드 — 시간 초과면 None, 걸린 초). task 는 Gradle 작업 — 상류 평가는 compileTestJava (구현 없이 채점 코드 컴파일만)."""
     t0 = time.monotonic()
     with log.open("w") as fh:
         try:
             proc = subprocess.run(
-                [str(GRADLE), "test", "--console=plain", "--no-daemon", "--continue"],
+                [str(GRADLE), task, "--console=plain", "--no-daemon", "--continue"],
                 cwd=work,
                 env=gradle_env(),
                 stdout=fh,
@@ -139,6 +143,8 @@ def junit_results(results_dir: Path, ids: dict[str, str]) -> list[TestResult]:
         simple = classname.rsplit(".", 1)[-1]
         if ".grading.cases." in classname:
             group, name = "hidden", ids.get(simple, simple)
+        elif ".publictests." in classname:
+            group, name = "public", simple
         elif ".grading." in classname:
             group, name = "selftest", simple
         else:
@@ -202,11 +208,17 @@ class GradleVerifier:
         )
 
     async def verify(
-        self, starter: Overlay, hidden: Overlay, refs: Sequence[Overlay]
+        self,
+        starter: Overlay,
+        hidden: Overlay,
+        refs: Sequence[Overlay],
+        public: Overlay | None = None,
     ) -> VerifyReport:
+        """public 이 있으면 시작 코드 실행에 공개 테스트를 넣고(저장 확인은 통과·새 기능 공개 테스트는 실패해야), 참조 구현 실행에도 넣는다."""
         self.rounds += 1
         self.work.mkdir(parents=True, exist_ok=True)
-        runs = [await asyncio.to_thread(self._target, "starter", "starter", (starter,), None)]
+        pub = (public,) if public is not None else ()
+        runs = [await asyncio.to_thread(self._target, "starter", "starter", (starter, *pub), None)]
         if (
             runs[0].setup == "ok"
         ):  # 시작 코드 그대로 + 숨은 테스트 — 이미 풀려 있으면 안 된다 (repair._starter_solves)
@@ -218,7 +230,7 @@ class GradleVerifier:
         for r in refs:  # 개발 서버 한 대 — 차례로
             runs.append(
                 await asyncio.to_thread(
-                    self._target, r.label or r.kind, r.kind, (starter, r, hidden), hidden
+                    self._target, r.label or r.kind, r.kind, (starter, r, *pub, hidden), hidden
                 )
             )
         return VerifyReport(runs=runs)

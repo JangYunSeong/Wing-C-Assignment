@@ -103,6 +103,19 @@ async def test_verify_runs_bare_starter_with_hidden_tests_only_when_starter_buil
         ("starter+hidden", "starter_hidden", 2),
         ("naive-all", "ref_naive", 3),
     ]
+    # 공개 테스트가 있으면 시작 코드·참조 구현 실행에 넣는다 (테스트 먼저 — 2026-11-08)
+    calls.clear()
+    await v.verify(
+        overlay("starter"),
+        overlay("hidden"),
+        [overlay("ref_naive", "naive-all")],
+        public=overlay("public_test"),
+    )
+    assert calls == [
+        ("starter", "starter", 2),
+        ("starter+hidden", "starter_hidden", 2),
+        ("naive-all", "ref_naive", 4),
+    ]
     assert [r.kind for r in rep.runs] == ["starter", "starter_hidden", "ref_naive"]
     calls.clear()
     v._target = fake("compile_error")  # type: ignore[method-assign]
@@ -136,3 +149,17 @@ def test_boot_cause_is_the_deepest_caused_by(tmp_path: Path) -> None:
         and "[*]GENERATED" in cause
     )
     assert boot_cause(tmp_path / "없음") == ""
+
+
+def test_public_tests_are_their_own_group(tmp_path: Path) -> None:
+    _xml(tmp_path, "com.example.service.publictests.PersistenceCheckTest")
+    _xml(
+        tmp_path,
+        "com.example.service.publictests.OrderPublicTest",
+        ("org.opentest4j.AssertionFailedError", "x"),
+    )
+    got = {t.name: (t.group, t.result) for t in junit_results(tmp_path, {})}
+    assert got == {
+        "PersistenceCheckTest": ("public", "PASS"),
+        "OrderPublicTest": ("public", "ASSERT"),
+    }
