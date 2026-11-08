@@ -12,7 +12,9 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
 3. 참조 구현이 둘 이상이고 모두 같은 기존 테스트를 같은 오류로 깸 → 계약 모호 의심 (다시 만들지 않고 사람 확인).
    참조 구현이 시작 코드에서 통과하던 기존 테스트를 깨뜨림 → 그 참조 구현 (§7 표 ⑤ 는 `gen_starter`(누설)이지만 2026-11-07 스모크에서는
    흔한 구현이 필수 필드를 빠뜨린 결함이었다 — 참조 구현을 먼저 다시 만들고, 그래도 깨면 누설 의심으로 남긴다).
-4. 숨은 케이스 `HARNESS_ERR`(테스트 자체 예외)·결과 없음 → `gen_hidden`.
+4. 숨은 케이스 `HARNESS_ERR`(테스트 자체 예외)·결과 없음 — 구현끼리 비교: 모든 구현에서면 `gen_hidden`, 일부 구현에서만이면 그 구현
+   (2026-11-08: 한 구현만 계약과 다른 응답 모양을 돌려 테스트가 파싱하다 예외인데 숨은 테스트를 고치러 갔다).
+   ③·④ 도 같은 생각 — 흔한 구현이 통과하면 흔한 구현부터, 허용 구현이 흔한 구현과 같은 메시지로 실패하면 허용 구현 탓으로 보지 않음.
 5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다. 통과 → 흔한 구현을 아직 다시 만들지 않았으면 `gen_naive`
    (설명을 안 따랐을 수 있음 — 그 회차에는 그 대상의 다른 ③ 배정을 미룸), 이미 다시 만들었으면 `gen_hidden`(약함). 다른 사유·사유 없음 → `gen_hidden`
    (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`). ③' 지킨 요구의 케이스에서 실패 → `gen_hidden`.
@@ -303,28 +305,58 @@ def _ref_existing(
     ]
 
 
-def _hidden_broken(run: TargetRun, plan: HiddenPlan) -> list[RepairAction]:
+def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAction]:
+    """숨은 케이스가 판정까지 못 감(테스트 자체 예외·결과 없음) — **구현끼리 비교해** 탓을 정한다.
+
+    - 준비된 구현 **모두**에서 그러면 숨은 테스트 탓 → `gen_hidden`.
+    - 일부 구현에서만 그러고 나머지는 판정까지 가면(통과·단언 실패) 그 구현 탓 → `gen_naive`/`gen_accepted`.
+      예: 그 구현만 계약과 다른 응답 모양(목록 대신 `{content: …}` 페이지 객체)을 돌려 숨은 테스트가 파싱하다 예외.
+    준비된 구현이 하나뿐이면 비교할 수 없어 숨은 테스트 탓 (예전과 같음).
+    """
     out: list[RepairAction] = []
     for c in plan.cases:
-        r = run.case(c.case_id)
-        if r is None:
+        bad = [
+            (r, x) for r in runs if (x := r.case(c.case_id)) is None or x.result == "HARNESS_ERR"
+        ]
+        if not bad:
+            continue
+        if len(bad) == len(runs):
+            missing = [r.target for r, x in bad if x is None]
+            errs = [(r.target, x.message) for r, x in bad if x is not None]
+            note = (
+                f"숨은 케이스 {c.case_id} 가 모든 구현에서 판정까지 가지 못했다 — "
+                + (
+                    "실행되지 않았다 (케이스 파일·표시 이름에 케이스 id 를 쓴다). "
+                    if missing and not errs
+                    else ""
+                )
+                + " ".join(f"{t}: 단언이 아닌 예외로 끝났다: {_short(m)}" for t, m in errs[:2])
+            )
             out.append(
                 RepairAction(
                     "gen_hidden",
                     "",
                     "setup",
-                    f"{c.case_id} 결과 없음 ({run.target})",
-                    f"숨은 케이스 {c.case_id} 가 실행되지 않았다 — 케이스 파일·표시 이름에 케이스 id 를 쓴다.",
+                    f"{c.case_id} 테스트 자체 예외·결과 없음 (모든 구현)",
+                    note.strip(),
                 )
             )
-        elif r.result == "HARNESS_ERR":
+            continue
+        fine = ", ".join(r.target for r in runs if all(r is not b for b, _ in bad))
+        for r, x in bad:
+            what = (
+                "실행되지 않았다"
+                if x is None
+                else f"단언이 아닌 예외로 끝났다: {_short(x.message)}"
+            )
             out.append(
                 RepairAction(
-                    "gen_hidden",
-                    "",
+                    _gen_for(r),
+                    r.target,
                     "setup",
-                    f"{c.case_id} 테스트 자체 예외 ({run.target})",
-                    f"숨은 케이스 {c.case_id} 가 단언이 아닌 예외로 끝났다 ({run.target}): {_short(r.message)}",
+                    f"{r.target} 에서만 {c.case_id} 테스트 예외",
+                    f"숨은 케이스 {c.case_id} 가 이 구현({r.target})에서만 {what} — 다른 구현({fine})에서는 판정까지 갔다. "
+                    "계약의 응답 모양(상태 코드·본문 필드 이름·목록/객체)과 시드 데이터를 글자 그대로 지킨다.",
                 )
             )
     return out
@@ -369,8 +401,11 @@ def _gate3(
                         "",
                         "③",
                         f"흔한 구현이 {c.case_id} 통과 ({run.target})",
-                        f"흔한 구현({run.target})이 숨은 케이스 {c.case_id} 를 통과했다 — 숨은 요구 {c.trap_id} 를 어기는 구현이 "
-                        f"의도한 사유({c.intended_reason})로 떨어지게 조건·단언을 고친다.",
+                        f"흔한 구현({run.target})이 숨은 케이스 {c.case_id} 를 통과했다. 통과 조건({c.expect})은 그대로 두고 "
+                        "올바른 구현이 통과하는 단언을 유지한다 — 숨은 요구 "
+                        f"{c.trap_id} 를 어기는 구현이 어기게 되는 관찰 결과(기대와 다른 응답·시간 초과가 없어야 함, 요청마다 결과와 맞는 기록 등)를 "
+                        f"그 조건대로 확인하고, 그 단언에 의도한 사유({c.intended_reason})를 붙인다. 실패나 시간 초과가 **일어나야 한다**고 "
+                        "단언하지 않는다 — 그러면 올바른 구현이 떨어진다 (2026-11-07 알파 5회차).",
                     )
                 )
             elif r.reason != c.intended_reason:
@@ -524,7 +559,7 @@ def assign(
     res.unresolved += ambiguous
     for run in ready:
         actions += _ref_existing(run, starter, skip)
-        actions += _hidden_broken(run, plan)
+    actions += _hidden_broken(ready, plan)
     for run in ready:
         if run.kind == "ref_naive":
             actions += _gate3(run, plan, missed_traps.get(run.target, set()), counts)

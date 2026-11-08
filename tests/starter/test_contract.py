@@ -568,3 +568,13 @@ def test_loose_element_message_says_connect_before_dropping() -> None:
     c["covers"] = {k: [i for i in v if i != "m1"] for k, v in c["covers"].items()}
     msg = next(m for m in _check(c).problems if "연결되지 않은 계약 요소: m1" in m)
     assert "covers 에 잇는다" in msg and "관련 없을 때만 뺀다" in msg
+
+
+def test_expect_naming_harness_params_is_only_flagged() -> None:
+    """2026-11-07 알파 5회차: 통과 조건이 'pool_size(30) 내에서 연결을 점유' 라 숨은 테스트가 단언을 거꾸로 씀 — 표시만 (낱말 판단)."""
+    p = _plan()
+    p["cases"][0]["expect"] = "모든 요청이 pool_size(30) 내에서 연결을 점유"
+    res = _check(plan=p)
+    assert not _has(res.problems, "조절값")
+    assert any("hc1" in f and "pool_size" in f for f in res.review_flags)
+    assert not [f for f in _check().review_flags if "통과 조건" in f]

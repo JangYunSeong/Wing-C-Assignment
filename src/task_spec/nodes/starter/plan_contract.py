@@ -66,6 +66,25 @@ def _range(lo: float | None, hi: float | None) -> str:
     return f", {'' if lo is None else f'{lo:g}'}–{'' if hi is None else f'{hi:g}'}"
 
 
+def fill_hidden_defaults(plan: HiddenPlan, m: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
+    """지원자에게 보이지 않는 조절값이 버스트 행 계산(burst_rows)·필수인데 빠졌으면 manifest 기본값으로 — 재요청하지 않는다.
+    2026-11-07 알파 3×3: bursts 가 빠져 '버스트 행 수를 확인할 조절값이 없음' 이 재요청에도 안 고쳐져 계약 생성 실패.
+    보이는 조절값(자료에 적힌 운영 값)은 채우지 않는다 — 그건 명세에서 와야 한다."""
+    need = list(dict.fromkeys([*m.burst_rows, *(p.name for p in m.harness_params if p.required)]))
+    harness = dict(plan.harness)
+    notes: list[str] = []
+    for name in need:
+        p = m.param(name)
+        if name in harness or p is None or p.visible or p.default is None:
+            continue
+        value = int(p.default) if p.kind == "int" else p.default
+        harness[name] = value
+        notes.append(f"숨은 조절값 {name} 가 없어 템플릿 기본값 {value} 을 넣음")
+    if not notes:
+        return plan, []
+    return plan.model_copy(update={"harness": harness}), notes
+
+
 def seed_rules_text(m: TemplateManifest) -> str:
     """시드 행 수 규칙 — 검사(seed_rows)와 같은 값을 프롬프트에 그대로. DB 행을 바꾸지 않는 템플릿이면 입력 환경 안내."""
     if not m.seed_rows:
@@ -168,10 +187,12 @@ async def plan_contract(
             continue
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
-        notes: list[str] = []
+        filled, notes = fill_hidden_defaults(out.hidden_plan, manifest)
+        out = out.model_copy(update={"hidden_plan": filled})
         if manifest.seed_rows:  # 행 수 맞추기는 DB 행 과제에서만
-            fitted, fitted_plan, notes = fit_seed(out.contract, out.hidden_plan, manifest)
+            fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
             out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
+            notes += seed_notes
         check = check_contract(out.contract, out.hidden_plan, spec, manifest, seed)
         logger.info(
             "%s attempt=%d problems=%d gaps=%d latency_ms=%d",

@@ -52,6 +52,9 @@ class HarnessParam(Schema):
     pick: Literal["unique", "max", "min"] = "unique"
     # 시작 코드 설정 파일에서 이 값을 담는 키 (§6 정적 검사 — 운영 값이 시작 코드에 박혔는지)
     config_keys: list[str] = Field(default_factory=list)
+    # 지원자에게 보이지 않는 조절값이 HiddenPlan 에 빠졌을 때 코드가 넣는 값 (plan_contract.fill_hidden_defaults — 재요청하지 않음).
+    # 2026-11-07 알파 3×3: 버스트 케이스에 bursts 가 빠져 재요청에도 안 고쳐져 계약 생성 실패.
+    default: float | None = None
 
     @field_validator("spec_patterns")
     @classmethod
@@ -182,6 +185,18 @@ class InitScripts(Schema):
     noop: str = Field(min_length=1)  # 붙일 문장 (예: "SELECT 1;")
 
 
+class SeedSql(Schema):
+    """시드 SQL 을 코드가 쓰는 규칙 (starter/seed_sql.py) — 시작 코드 생성기가 쓴 시드 파일은 이 렌더본으로 바뀐다."""
+
+    path: str = Field(min_length=1)  # 시드 파일 (예: src/main/resources/data.sql)
+    schema_path: str = Field(min_length=1)  # 시작 코드 스키마 파일 — 시드 테이블·열 교차 검사
+    column_style: Literal["snake", "as_is"] = (
+        "snake"  # 계약 필드 → 열 이름 (Spring Boot 기본 = snake)
+    )
+    restart: str | None = None  # identity 열이면 시드 뒤에 둘 재설정 문장 ({table}·{next})
+    chunk: int = Field(default=100, ge=1)  # INSERT 한 문장의 행 수
+
+
 class TemplateLimits(Schema):
     max_files: int = Field(ge=1)
     max_file_bytes: int = Field(ge=1)
@@ -267,9 +282,14 @@ class TemplateManifest(Schema):
     # 숨은 테스트가 계약 시드의 DB 행을 바꾸는 과제인가 — 아니면(cli·file·ui) 시드·행 배정 대신 입력 환경(fixtures)과 케이스 setup
     seed_rows: bool = True
     init_scripts: InitScripts | None = None
+    seed_sql: SeedSql | None = None
     # 시작 코드의 기존 기능 테스트가 HTTP API 를 부르는 곳 (정규식, 그룹 method, 매치 끝 = 경로 인자 시작) — 새 API 를 부르면
     # 새 기능을 구현한 것 (static_check._starter_new_api_tests). 2026-11-07 알파 4회차: 배송 감사 시작 코드가 감사 기록 조회 API 와 그 테스트까지 구현.
     starter_test_calls: list[str] = Field(default_factory=list)
+    # 흔한 구현이 재료 설명대로 **실제로 동작하게** 하는 스택 사실 — gen_naive 의 구현 목표 뒤에 붙는다. 깨지는 이유는 쓰지 않는다
+    # (stack_conditions 는 허용 구현용이라 정답 힌트가 섞여 흔한 구현에 줄 수 없다). 2026-11-07 알파 5회차: 흔한 구현이 REQUIRES_NEW
+    # 메서드를 같은 클래스 안에서 불러 전파 옵션이 무시됨 — 커넥션을 하나만 써 숨은 케이스를 두 번 통과.
+    naive_conditions: list[str] = Field(default_factory=list)
 
     @field_validator("starter_test_calls")
     @classmethod

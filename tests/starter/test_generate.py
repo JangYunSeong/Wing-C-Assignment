@@ -85,6 +85,13 @@ STARTER = (
 )
 
 
+SEED_SQL = "src/main/resources/data.sql"  # 시작 코드에는 코드가 렌더한 시드가 늘 들어간다 (starter/seed_sql.py)
+
+
+def _no_seed(files) -> list:  # type: ignore[no-untyped-def]
+    return [f for f in files if f.path != SEED_SQL]
+
+
 def _starter_overlay() -> Overlay:
     from task_spec.schemas import GeneratedFile
 
@@ -108,7 +115,7 @@ async def test_gen_starter_ok_and_reask_on_locked_file() -> None:
     fake = FakeBackend().push(_files(*STARTER))
     res = await _gen(gen_starter, fake, _inputs())
     assert res.ok and res.provenance[0].prompt == "gen_starter@3" and res.overlay is not None
-    assert [f.path for f in res.overlay.files] == [p for p, _ in STARTER]
+    assert [f.path for f in _no_seed(res.overlay.files)] == [p for p, _ in STARTER]
 
     # 수리판(v3~): 재요청엔 첫 답이 이전 출력으로 가고, 고칠 파일만 — 잠긴 파일은 빈 content 로 지운다
     fake = FakeBackend().push(
@@ -343,7 +350,7 @@ async def test_repair_gets_previous_output_and_returns_only_changed_files() -> N
         previous=_starter_overlay(),
     )
     assert res.ok and res.provenance[0].prompt == "gen_starter@3" and res.overlay is not None
-    assert {f.path: f.content for f in res.overlay.files} == {
+    assert {f.path: f.content for f in _no_seed(res.overlay.files)} == {
         f"{PKG}/order/Order.java": fixed,
         "src/main/resources/schema.sql": STARTER[1][1],  # 손대지 않은 파일은 그대로
     }
@@ -366,7 +373,7 @@ async def test_static_reask_fixes_own_first_answer() -> None:
         ontology_version="onto-test",  # type: ignore[arg-type]
     )
     assert res.ok and res.overlay is not None
-    assert sorted(f.path for f in res.overlay.files) == sorted(p for p, _ in STARTER)
+    assert sorted(f.path for f in _no_seed(res.overlay.files)) == sorted(p for p, _ in STARTER)
     assert "(없음)" in cap.users[0].split("이전 출력 (수리일 때만")[1][:80]  # 처음엔 이전 출력 없음
     assert "=== build.gradle ===" in cap.users[1]  # 재요청엔 첫 답을 이전 출력으로
 
@@ -384,16 +391,52 @@ async def test_old_versions_ignore_previous_output() -> None:
     assert "이전 출력" not in cap.users[0]
 
 
-async def test_comment_only_seed_script_is_fixed_by_code_not_reasked() -> None:
-    """2026-11-07 알파 테스트: 시드 0행이라 data.sql 을 주석만 남겨 Spring 부팅 실패 → 코드가 SELECT 1; 을 붙이고 기록."""
-    data = ("src/main/resources/data.sql", "-- 시드 데이터\n-- OrderHistory: 0행\n")
-    fake = FakeBackend().push(_files(*STARTER, data))
+async def test_seed_sql_is_rendered_by_code_from_the_contract() -> None:
+    """2026-11-07 알파 3×3: 시작 코드가 수백 행 시드를 주석으로 생략(3/7) → 생성기가 쓴 data.sql 은 계약 시드 렌더본으로 바뀐다.
+    시드가 모두 0행이면 렌더본은 주석뿐이라 init_scripts 가 SELECT 1; 을 붙인다 (Spring 부팅)."""
+    lazy = (
+        SEED_SQL,
+        "-- 시드 데이터\nINSERT INTO orders (id, status) VALUES (1, 'READY');\n-- 나머지는 같은 방식으로\n",
+    )
+    fake = FakeBackend().push(_files(*STARTER, lazy))
     res = await _gen(gen_starter, fake, _inputs())
     assert res.ok and res.overlay is not None and len(fake.calls) == 1  # 재요청 없음
-    fixed = {f.path: f.content for f in res.overlay.files}["src/main/resources/data.sql"]
-    assert fixed.endswith("SELECT 1;\n")
-    assert len(res.adjustments) == 1 and "data.sql" in res.adjustments[0]
-    # 참조 구현도 같은 파일을 쓸 수 있다
-    fake = FakeBackend().push(_files((f"{PKG}/order/OrderService.java", SERVICE), data))
+    seed = {f.path: f.content for f in res.overlay.files}[SEED_SQL]
+    assert (
+        "INSERT INTO orders (id, status) VALUES" in seed
+        and "(200, " in seed
+        and "같은 방식" not in seed
+    )
+    assert any("data.sql 를 계약 시드로 코드가 씀" in a for a in res.adjustments)
+    # 시드가 모두 0행 → 주석뿐 → SELECT 1;
+    empty = _inputs()
+    empty = BuildInputs(
+        **{
+            **empty.__dict__,
+            "contract": empty.contract.model_copy(
+                update={
+                    "seed": [
+                        s.model_copy(update={"rows": 0, "groups": []}) for s in empty.contract.seed
+                    ]
+                }
+            ),
+        }
+    )
+    fake = FakeBackend().push(_files(*STARTER))
+    res = await _gen(gen_starter, fake, empty)
+    seed = {f.path: f.content for f in res.overlay.files}[SEED_SQL]
+    assert seed.endswith("SELECT 1;\n") and "INSERT" not in seed
+    # 참조 구현이 쓴 data.sql 은 빼고 시작 코드의 시드를 쓴다
+    fake = FakeBackend().push(_files((f"{PKG}/order/OrderService.java", SERVICE), lazy))
     ref = await _gen(gen_naive, fake, _inputs(), _starter_overlay())
-    assert ref.ok and ref.adjustments
+    assert ref.ok and SEED_SQL not in {f.path for f in ref.overlay.files}
+    assert any("data.sql 를 뺌" in a for a in ref.adjustments)
+
+
+def test_naive_goal_gets_the_template_naive_conditions_only() -> None:
+    """2026-11-07 알파 5회차: 흔한 구현이 REQUIRES_NEW 를 같은 클래스 안에서 불러 전파 옵션이 무시됨 — 스택 사실만 붙인다 (정답 힌트인 stack_conditions 는 아님)."""
+    b = _inputs()
+    goal = naive_input(b.task, b.contract, b.template, _starter_overlay(), BACKEND_SEED).goal
+    assert goal.startswith(BACKEND_SEED.naive_impl)
+    assert "다른 빈의 public 메서드" in goal
+    assert not any(c in goal for c in b.template.manifest.stack_conditions)

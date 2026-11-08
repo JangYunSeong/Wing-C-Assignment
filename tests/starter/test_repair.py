@@ -211,16 +211,38 @@ def test_ref_breaking_existing_test_is_the_refs_fault() -> None:
     assert "not-null property" in plan.actions[0].note
 
 
-def test_broken_or_missing_hidden_case() -> None:
-    naive = _run(
-        "naive-all",
-        "ref_naive",
-        _t("hidden", "hc1", "HARNESS_ERR", msg="IllegalStateException: 충분한 id 가 없음"),
-    )  # hc2 결과 없음
+def test_broken_or_missing_hidden_case_is_assigned_by_comparing_implementations() -> None:
+    """2026-11-08: 한 구현만 계약과 다른 응답 모양을 돌려 숨은 테스트가 파싱하다 예외 — 그 구현 탓이지 테스트 탓이 아니다."""
+    err = _t(
+        "hidden",
+        "hc1",
+        "HARNESS_ERR",
+        msg="MismatchedInputException: Cannot deserialize List from Object",
+    )
+    # 흔한 구현에서만 예외(hc1)·결과 없음(hc2), 허용 구현은 판정까지 감 → 흔한 구현을 다시
+    naive = _run("naive-all", "ref_naive", err)
     plan = _assign(_report(naive, _run("d1", "ref_accepted", *GOOD_ACC)))
-    assert _keys(plan) == ["gen_hidden"]
+    assert _keys(plan) == ["gen_naive:naive-all"]
     note = plan.actions[0].note
-    assert "hc1 가 단언이 아닌 예외" in note and "hc2 가 실행되지 않았다" in note
+    assert "hc1 가 이 구현(naive-all)에서만 단언이 아닌 예외" in note and "다른 구현(d1)" in note
+    assert "hc2 가 이 구현(naive-all)에서만 실행되지 않았다" in note
+    # 모든 구현에서 → 숨은 테스트
+    both = _assign(
+        _report(
+            _run("naive-all", "ref_naive", err),
+            _run("d1", "ref_accepted", err),
+        )
+    )
+    assert _keys(both) == ["gen_hidden"]
+    assert "모든 구현에서 판정까지 가지 못했다" in both.actions[0].note
+    # 준비된 구현이 하나뿐이면 비교할 수 없어 숨은 테스트
+    alone = _assign(
+        _report(
+            _run("naive-all", "ref_naive", err, GOOD_NAIVE[1]),
+            _run("d1", "ref_accepted", setup="boot_error"),
+        )
+    )
+    assert "gen_hidden" in _keys(alone)
 
 
 @pytest.mark.parametrize(
@@ -256,6 +278,9 @@ def test_naive_passing_a_case_is_regenerated_before_the_hidden_test() -> None:
     again = _assign(report, **{"gen_naive__naive-all": 1})
     assert _keys(again) == ["gen_hidden"]
     note = again.actions[0].note
+    assert (
+        "일어나야 한다**고 단언하지 않는다" in note and "통과 조건" in note
+    )  # 2026-11-07 알파 5회차: 단언을 거꾸로 씀
     assert (
         "흔한 구현(naive-all)이 숨은 케이스 hc1 를 통과" in note and "hc2 가 흔한 구현에서" in note
     )
