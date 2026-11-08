@@ -32,6 +32,7 @@ from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContra
 from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
+from task_spec.starter.hidden_helpers import render_contract_case
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
 from task_spec.starter.tables import contract_tables, declared_tables, referenced_tables, same_table
@@ -397,6 +398,22 @@ def _endpoint_rx(endpoints: Iterable[Endpoint]) -> list[tuple[str, re.Pattern[st
     ]
 
 
+def _unavailable_imports(o: Overlay, t: Template) -> list[StaticProblem]:
+    """템플릿 클래스패스에 없는 패키지 import — 컴파일이 반드시 실패하므로 Gradle 전에 그 생성기에."""
+    rx = [re.compile(p, re.M) for p in t.manifest.unavailable_imports]
+    out: list[StaticProblem] = []
+    for f in o.files:
+        bad = sorted({m.group(0).strip() for r in rx for m in r.finditer(f.content)})
+        if bad:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{f.path} 가 템플릿에 없는 라이브러리를 씀: {'; '.join(bad)} — 템플릿 의존성만 쓴다 (입력 검증은 직접 확인하고 계약의 오류 응답으로)",
+                )
+            )
+    return out
+
+
 def _starter_schema(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
     """시작 코드 스키마가 코드가 쓸 시드와 맞는가 (starter/seed_sql.schema_problems) — 맞지 않으면 기동이 깨진다."""
     rule = t.manifest.seed_sql
@@ -621,6 +638,8 @@ def _hidden_cases(
     reason_rx = [re.compile(p) for p in rules.reason_patterns]
     case_rx = re.compile(rules.case_id_pattern)
     params_path = m.hidden_layout.params if m.hidden_layout else None
+    helper = render_contract_case(contract, plan, m) if contract is not None else None
+    helper_path = m.hidden_helper.path if m.hidden_helper else None
     seen_ids: Counter[str] = Counter()
     used_codes: set[str] = set()
     for f in o.files:
@@ -630,6 +649,17 @@ def _hidden_cases(
                     f"조절값 파일 {f.path} 를 손으로 씀 — 이 파일은 숨은 테스트에 넣지 않는다 (HiddenPlan 에서 코드가 쓴다)"
                 )
             continue
+        if f.path == helper_path:
+            if helper is not None and f.content != helper.content:
+                out.append(
+                    f"계약 도우미 {f.path} 를 손으로 씀 — 이 파일은 숨은 테스트에 넣지 않는다 (계약에서 코드가 쓴다)"
+                )
+            continue
+        if m.hidden_helper is not None and re.search(r"\bextends\s+GraderSupport\b", f.content):
+            out.append(
+                f"숨은 테스트 {f.path} 가 GraderSupport 를 직접 상속함 — {m.hidden_helper.class_name} 를 상속하고 그 범위 상수·계약 API 함수·"
+                "peak() 를 쓴다 (id·경로·응답 파싱·시간 한도를 직접 쓰지 않는다)"
+            )
         lines = f.content.splitlines()
         bad = [line.strip() for line in lines if any(rx.search(line) for rx in imports)]
         if bad:
@@ -639,16 +669,13 @@ def _hidden_cases(
         for rx in reason_rx:
             used_codes |= {mt.group(1) for mt in rx.finditer(f.content)}
         seen_ids.update(set(case_rx.findall(f.content)))
+    cases = [f for f in o.files if f.path not in (params_path, helper_path)]
     if contract is not None and rules.http_calls:
-        out += _unknown_calls(
-            [f for f in o.files if f.path != params_path], contract, rules.http_calls
-        )
+        out += _unknown_calls(cases, contract, rules.http_calls)
     if contract is not None:
-        out += _hidden_tables([f for f in o.files if f.path != params_path], t, contract)
+        out += _hidden_tables(cases, t, contract)
     if contract is not None and rules.raw_number_asserts:
-        out += _raw_number_asserts(
-            [f for f in o.files if f.path != params_path], rules.raw_number_asserts, contract
-        )
+        out += _raw_number_asserts(cases, rules.raw_number_asserts, contract)
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
         out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
@@ -724,6 +751,8 @@ def static_check(
                         "— 코드·주석·이름에 쓰지 않는다 (미끼 코드 포함)",
                     )
                 )
+        if o.kind in ("starter", "ref_naive", "ref_accepted"):
+            res.problems += _unavailable_imports(o, template)
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems

@@ -197,6 +197,16 @@ class SeedSql(Schema):
     chunk: int = Field(default=100, ge=1)  # INSERT 한 문장의 행 수
 
 
+class HiddenHelper(Schema):
+    """숨은 테스트 도우미를 코드가 계약에서 만드는 규칙 (starter/hidden_helpers.py) — 숨은 케이스가 상속하는 추상 클래스."""
+
+    path: str = Field(
+        min_length=1
+    )  # 예: src/test/java/com/example/service/grading/cases/ContractCase.java
+    package: str = Field(min_length=1)
+    class_name: str = Field(default="ContractCase", pattern=r"^[A-Z][A-Za-z0-9]*$")
+
+
 class TemplateLimits(Schema):
     max_files: int = Field(ge=1)
     max_file_bytes: int = Field(ge=1)
@@ -283,15 +293,19 @@ class TemplateManifest(Schema):
     seed_rows: bool = True
     init_scripts: InitScripts | None = None
     seed_sql: SeedSql | None = None
+    hidden_helper: HiddenHelper | None = None
     # 시작 코드의 기존 기능 테스트가 HTTP API 를 부르는 곳 (정규식, 그룹 method, 매치 끝 = 경로 인자 시작) — 새 API 를 부르면
     # 새 기능을 구현한 것 (static_check._starter_new_api_tests). 2026-11-07 알파 4회차: 배송 감사 시작 코드가 감사 기록 조회 API 와 그 테스트까지 구현.
     starter_test_calls: list[str] = Field(default_factory=list)
+    # 템플릿 클래스패스에 없는 패키지를 import 하는 줄 (정규식, 줄 단위) — 시작 코드·참조 구현이 쓰면 컴파일 전에 재요청.
+    # 2026-11-08 재평가: 시작 코드가 검증 애노테이션(jakarta.validation)을 써 컴파일 실패 — 템플릿에 spring-boot-starter-validation 이 없다.
+    unavailable_imports: list[str] = Field(default_factory=list)
     # 흔한 구현이 재료 설명대로 **실제로 동작하게** 하는 스택 사실 — gen_naive 의 구현 목표 뒤에 붙는다. 깨지는 이유는 쓰지 않는다
     # (stack_conditions 는 허용 구현용이라 정답 힌트가 섞여 흔한 구현에 줄 수 없다). 2026-11-07 알파 5회차: 흔한 구현이 REQUIRES_NEW
     # 메서드를 같은 클래스 안에서 불러 전파 옵션이 무시됨 — 커넥션을 하나만 써 숨은 케이스를 두 번 통과.
     naive_conditions: list[str] = Field(default_factory=list)
 
-    @field_validator("starter_test_calls")
+    @field_validator("starter_test_calls", "unavailable_imports")
     @classmethod
     def _starter_rx(cls, v: list[str]) -> list[str]:
         return _compiles(v)

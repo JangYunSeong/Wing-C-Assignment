@@ -249,3 +249,18 @@ def test_v7_prompt_covers_ui_cli_fixtures_and_evidence() -> None:
         "그 값이 적힌 자료·답 문장을 그대로",
     ):
         assert needle in system, needle
+
+
+def test_seed_needs_go_into_the_prompt_seed_rules() -> None:
+    from task_spec.nodes.starter.plan_contract import plan_input
+    from task_spec.starter.templates import load_template
+    from tests.starter.test_contract import BACKEND_SEED
+
+    inp = plan_input(_task(), load_template("backend/java-spring-boot3-jpa"), seed=BACKEND_SEED)
+    assert (
+        "숨은 요구가 계약에 꼭 필요로 하는 것" in inp.seed_rules and "허용 전이" in inp.seed_rules
+    )
+    assert (
+        "숨은 요구가 계약에"
+        not in plan_input(_task(), load_template("backend/java-spring-boot3-jpa")).seed_rules
+    )

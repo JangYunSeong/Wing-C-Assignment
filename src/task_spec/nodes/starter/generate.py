@@ -44,6 +44,7 @@ from task_spec.schemas import (
 from task_spec.schemas.build import FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.starter.contract import SpecView, existing_endpoints
+from task_spec.starter.hidden_helpers import render_contract_case
 from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
 from task_spec.starter.seed_rows import RowRange, allocate_rows
@@ -189,9 +190,18 @@ def hidden_input(
 ) -> GenHiddenInput:
     m = template.manifest
     harness = template.hidden / "HARNESS.md"
+    api = harness.read_text("utf-8") if harness.is_file() else NONE
+    helper = render_contract_case(contract, plan, m)
+    if (
+        helper is not None
+    ):  # 이 과제의 계약 도우미 — 숨은 케이스가 상속한다 (starter/hidden_helpers.py)
+        api += (
+            f"\n\n## {m.hidden_helper.class_name if m.hidden_helper else ''} — 이 과제의 계약 도우미 "
+            f"(`{helper.path}`, 빌드 파이프라인이 만든다 — 쓰지 않는다)\n\n```java\n{helper.content}```\n"
+        )
     return GenHiddenInputV2(
         stack=stack_text(m),
-        harness_api=harness.read_text("utf-8") if harness.is_file() else NONE,
+        harness_api=api,
         slots=slots_text(m, "hidden"),
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
         hidden_plan=plan_text(plan, contract),
@@ -467,10 +477,13 @@ async def gen_hidden(
     previous: Overlay | None = None,
 ) -> GenResult:
     params = render_params(b.plan, b.template.manifest)
+    helper = render_contract_case(b.contract, b.plan, b.template.manifest)
+    code_written = [params, *([helper] if helper is not None else [])]
 
     def with_params(files: list[GeneratedFile]) -> Overlay:
-        kept = [f for f in files if f.path != params.path]  # 조절값 파일은 코드가 쓴다
-        return Overlay(kind="hidden", files=(*kept, params))
+        # 조절값 파일·계약 도우미는 코드가 쓴다 — 생성기가 같은 경로를 쓰면 버린다
+        kept = [f for f in files if f.path not in {c.path for c in code_written}]
+        return Overlay(kind="hidden", files=(*kept, *code_written))
 
     return await _generate(
         "gen_hidden",

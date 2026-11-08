@@ -8,6 +8,22 @@ from pydantic import Field
 
 from task_spec.schemas.base import Schema
 
+NeedKind = Literal["stateful_target", "transition_rules", "empty_record_entity"]
+
+
+class ContractNeed(Schema):
+    """이 숨은 요구를 시험하려면 공개 계약에 꼭 있어야 하는 요소 — 계약을 기계적으로 대조한다 (starter/contract._needs).
+
+    2026-11-07~08 알파 평가: 계약이 숨은 요구에 필요한 것을 빠뜨렸다 — 상태를 바꿀 대상 엔티티가 없고(감사 기록에 시드), 상태 전이 규칙이
+    없어 숨은 테스트와 시작 코드가 서로 다른 전이를 짐작. 숨은 요구는 재료마다 다르므로 템플릿이 아니라 재료에 선언한다.
+    - stateful_target: 상태를 가진 대상 엔티티 — 이미 있음(existing), 시드 행이 있고, 숨은 케이스 data 가 그 엔티티
+    - transition_rules: 그 대상의 상태 필드(또는 상태를 바꾸는 요청 필드)에 허용 전이 규칙(A→B)이 적혀 있음
+    - empty_record_entity: 요청마다 쌓이는 기록 엔티티 — 새로 만듦(existing 아님), 처음 0행
+    """
+
+    kind: NeedKind
+    note: str = ""  # 프롬프트·재요청에 붙는 설명 (재료의 말로)
+
 
 class FeatureSeed(Schema):
     """공개 사례 → 기능 개발형(1단계 구현 → 2단계 디버깅) 공통 과제 재료 [2026-11-06 사용자 결정].
@@ -42,6 +58,7 @@ class FeatureSeed(Schema):
     task_shape: Literal["code", "analysis"] = "code"
     starter: str | None = None  # 검증된 시작 코드 예제 (data/feature_starters/<id>) — 없으면 명세만
     reviewed: bool = False  # 사람이 검토했는지 — false 면 명세 review_flags 에 남긴다
+    contract_needs: list[ContractNeed] = Field(default_factory=list)  # 계약에 꼭 있어야 할 요소
 
 
 class PublicIncident(Schema):
