@@ -35,6 +35,7 @@ from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
+from task_spec.starter.header_values import header_values
 from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
@@ -704,6 +705,30 @@ def _reason_rules(
     return out
 
 
+def _literal_headers(
+    cases: Sequence[GeneratedFile], contract: TaskContract, label: str
+) -> list[str]:
+    """도우미에 헤더 값 상수가 있는데 테스트가 계약에 없는 값을 직접 씀 (`"X-Requester-Id", "grader"`) — 통과하는 값도
+    거절되는 값도 아니면 그 요청의 결과를 계약이 정하지 않는다 (2026-11-08 알파: 지어낸 값으로 모든 요청이 403).
+    거절 값 상수가 없으면 통과 값이 아닌 값은 거절 시험일 수 있어 둔다. 계약 값 그대로면 글자로 써도 막지 않는다."""
+    out: list[str] = []
+    for h in header_values(contract):
+        if h.ok is None or h.denied is None:
+            continue
+        key = re.sub(r"[^A-Za-z0-9]+", "_", h.name).strip("_").upper()
+        rx = re.compile(r'"' + re.escape(h.name) + r'"\s*,\s*"([^"]*)"', re.I)
+        for f in cases:
+            for mt in rx.finditer(f.content):
+                v = mt.group(1)
+                if v in (h.ok, h.denied):
+                    continue
+                out.append(
+                    f'{label} {f.path} 가 헤더 {h.name} 값을 직접 씀 ("{v}") — 도우미의 HEADER_{key}_OK'
+                    + f"·HEADER_{key}_DENIED 상수나 okHeaders() 를 쓴다 (계약이 정한 값)"
+                )
+    return out
+
+
 def _hidden_cases(
     o: Overlay, t: Template, plan: HiddenPlan, contract: TaskContract | None = None
 ) -> list[StaticProblem]:
@@ -754,6 +779,7 @@ def _hidden_cases(
         out += _unknown_calls(cases, contract, rules.http_calls)
     if contract is not None:
         out += _hidden_tables(cases, t, contract)
+        out += _literal_headers(cases, contract, "숨은 테스트")
     if contract is not None and rules.raw_number_asserts:
         out += _raw_number_asserts(cases, rules.raw_number_asserts, contract)
     bad_codes = sorted(used_codes - m.reason_codes)
@@ -915,6 +941,7 @@ def _public_cases(
             out.append(
                 f"공개 테스트 {f.path} 가 동시 요청·오류 주입·조절값을 씀 — 숨은 요구 영역이다. 공개 수용 기준(응답·기록)만 확인한다"
             )
+    out += _literal_headers(cases, contract, "공개 테스트")
     imports = [re.compile(p, re.M) for p in m.hidden_rules.forbidden_imports]
     for f in cases:
         bad = [
