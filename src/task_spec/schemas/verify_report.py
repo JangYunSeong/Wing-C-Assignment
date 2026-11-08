@@ -33,6 +33,7 @@ class CompileError(Schema):
     path: str = Field(min_length=1)  # 프로젝트 기준 경로
     line: int = Field(ge=0)
     message: str = Field(min_length=1, max_length=300)
+    detail: str = Field(default="", max_length=300)  # javac 의 symbol·location 줄 (없는 이름일 때)
 
 
 class TargetRun(Schema):

@@ -164,6 +164,40 @@ class Screen(Schema):
         return _check_refs(v)
 
 
+class StateRule(Schema):
+    """상태를 가진 엔티티의 상태 규칙 — 허용 값·허용 전이·거절 코드. 코드가 상태 필드 constraints 문장과 테스트 도우미 상수
+    (NEXT_OK_·NEXT_BAD_)를 만든다 (starter/state_rule.py). 2026-11-08 상류 평가: 계약 첫 답 9개 중 5개가 전이를 빠뜨렸고
+    ("허용 상태 값 중 하나"), 자유 글의 'A→B' 를 정규식으로 찾던 재요청은 2회에도 같은 답이 남았다 — 정해진 칸으로 받는다."""
+
+    field: str = Field(
+        min_length=1, max_length=60, description="상태 필드 이름 — 이 엔티티 fields 에 있어야 함"
+    )
+    values: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(
+        min_length=2, max_length=20, description="상태 값 전부 (시드·숨은 케이스의 처음 값 포함)"
+    )
+    transitions: list[str] = Field(
+        min_length=1,
+        max_length=40,
+        description='허용 전이만 "A→B" 꼴로 빠짐없이 (예: ["READY→SHIPPED", "SHIPPED→DELIVERED"]) — 나머지 전이는 거절',
+    )
+    rejected_status: int = Field(
+        ge=400,
+        le=499,
+        description="허용되지 않은 전이 요청의 응답 코드 — 계약 responses 에 있어야 함",
+    )
+
+    @field_validator("transitions")
+    @classmethod
+    def _arrows(cls, v: list[str]) -> list[str]:
+        bad = [x for x in v if not re.match(r"^\s*[\w-]+\s*(?:→|->)\s*[\w-]+\s*$", x)]
+        if bad:
+            raise ValueError(f"transitions 는 'A→B' 꼴: {bad}")
+        return v
+
+    def pairs(self) -> list[tuple[str, str]]:
+        return [tuple(x.strip() for x in re.split(r"→|->", t)) for t in self.transitions]  # type: ignore[misc]
+
+
 class Entity(Schema):
     entity_id: str = Field(pattern=r"^m\d{1,2}$")
     name: str = Field(min_length=1, max_length=60)
@@ -178,6 +212,11 @@ class Entity(Schema):
     # 이 과제 전에 이미 있는 엔티티(기존 API 가 다루는 테이블)인가 — false 면 이 과제에서 새로 만드는 것(기록·이력). 숨은 케이스 data 는
     # 이미 있는 엔티티에만 (2026-11-07 알파 3×3: 계약이 대상 엔티티 대신 감사 기록에 시드 516행을 넣고 숨은 케이스가 그 행을 '바꿈').
     existing: bool = False
+    # 상태를 바꾸는 요청이 있는 엔티티만 — 없으면 null (StateRule)
+    state: StateRule | None = Field(
+        default=None,
+        description="상태를 바꾸는 요청이 있는 엔티티만: 상태 값 전부·허용 전이·거절 코드. 그 밖의 엔티티는 null",
+    )
 
     @field_validator("foreign_keys")
     @classmethod

@@ -166,6 +166,9 @@ class TemplateCommands(Schema):
     test: str = Field(min_length=1)
     hidden_test: str = Field(min_length=1)
     run: str | None = None
+    # 채점 코드(숨은·공개 테스트)만 구현 없이 컴파일 — 생성 직후 오류를 그 생성기에 돌려준다 (build.compile_and_fix).
+    # 2026-11-08 Gradle 로그 314개: 숨은 테스트 컴파일 오류 141줄 중 '없는 이름'은 일부, 나머지는 타입·람다·예외·import — 이름 검사로는 못 막는다.
+    test_compile: str | None = None
 
 
 class HiddenLayout(Schema):
@@ -310,7 +313,7 @@ class TemplateManifest(Schema):
     # 새 기능을 구현한 것 (static_check._starter_new_api_tests). 2026-11-07 알파 4회차: 배송 감사 시작 코드가 감사 기록 조회 API 와 그 테스트까지 구현.
     starter_test_calls: list[str] = Field(default_factory=list)
     # 템플릿 클래스패스에 없는 패키지를 import 하는 줄 (정규식, 줄 단위) — 시작 코드·참조 구현이 쓰면 컴파일 전에 재요청.
-    # 2026-11-08 재평가: 시작 코드가 검증 애노테이션(jakarta.validation)을 써 컴파일 실패 — 템플릿에 spring-boot-starter-validation 이 없다.
+    # 2026-11-08 재평가: 시작 코드가 검증 애노테이션(jakarta.validation)을 써 컴파일 실패 (그 뒤 템플릿에 검증 스타터를 넣음 — 지금 목록은 Lombok 등).
     unavailable_imports: list[str] = Field(default_factory=list)
     # 흔한 구현이 재료 설명대로 **실제로 동작하게** 하는 스택 사실 — gen_naive 의 구현 목표 뒤에 붙는다. 깨지는 이유는 쓰지 않는다
     # (stack_conditions 는 허용 구현용이라 정답 힌트가 섞여 흔한 구현에 줄 수 없다). 2026-11-07 알파 5회차: 흔한 구현이 REQUIRES_NEW

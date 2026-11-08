@@ -29,6 +29,7 @@ from task_spec.schemas import (
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.contract import SpecView, check_contract, fit_covers
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
+from task_spec.starter.state_rule import fit_state
 from task_spec.starter.templates import Template
 
 TASK = "plan_contract"
@@ -210,6 +211,9 @@ async def plan_contract(
             fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
             out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
             notes += seed_notes
+        stated, state_notes = fit_state(out.contract)
+        out = out.model_copy(update={"contract": stated})
+        notes += state_notes
         covered, cover_notes = fit_covers(out.contract, spec)
         out = out.model_copy(update={"contract": covered})
         notes += cover_notes

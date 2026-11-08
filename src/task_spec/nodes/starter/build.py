@@ -13,6 +13,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Literal, Protocol
 
 from task_spec.llm import LLMClient
@@ -26,15 +27,18 @@ from task_spec.nodes.starter.generate import (
     gen_starter,
 )
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import AcceptedDesign, Provenance, VerifyReport
+from task_spec.schemas import AcceptedDesign, CompileError, Provenance, VerifyReport
 from task_spec.schemas.build import RepairRecord
 from task_spec.starter.contract import SpecView
+from task_spec.starter.hidden_helpers import render_persistence_check
+from task_spec.starter.render import render_params
 from task_spec.starter.repair import STARTER, RepairAction, RepairPlan, assign
 from task_spec.starter.static_check import HARNESS_OVERRIDE, Overlay, static_check
 
 MAX_ROUNDS = 3  # 빌드 전체 재생성 상한
 PER_ARTIFACT = 1  # 산출물마다 재생성 상한
 COMPILE_BUDGET = 2  # 컴파일 오류만 고칠 때는 2회까지 — 고치기 싸고, 2026-11-07 루프에서 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다
+COMPILE_TEST_ATTEMPTS = 2  # 채점 코드 컴파일 오류 재요청 상한 (구현 만들기 전, compile_and_fix)
 HIDDEN = "hidden"
 PUBLIC = "public"  # 공개 테스트 오버레이 키 (gen_public — 테스트 먼저, 2026-11-08)
 
@@ -52,6 +56,118 @@ class Verifier(Protocol):
         refs: Sequence[Overlay],
         public: Overlay | None = None,
     ) -> VerifyReport: ...
+
+
+class TestCompiler(Protocol):
+    """채점 코드(숨은·공개 테스트 + 하네스 + 코드가 쓴 도우미)만 구현 없이 컴파일 — 템플릿 commands.test_compile."""
+
+    async def compile_tests(
+        self, hidden: Overlay, public: Overlay | None
+    ) -> list[CompileError]: ...
+
+
+@dataclass
+class CompileFix:
+    """compile_and_fix 결과 — 고친 테스트 오버레이, 컴파일 횟수, 첫·마지막 오류, 수리 이력, 재요청 결과."""
+
+    hidden: Overlay
+    public: Overlay | None
+    compiles: int = 0
+    first_errors: list[CompileError] = field(default_factory=list)
+    errors: list[CompileError] = field(default_factory=list)  # 마지막 컴파일에 남은 오류
+    repairs: list[RepairRecord] = field(default_factory=list)
+    results: list[GenResult] = field(default_factory=list)
+
+
+def _code_written(b: BuildInputs) -> set[str]:
+    """코드가 쓴 테스트 파일 — 생성기를 다시 불러도 바뀌지 않는다 (조절값 파일·도우미·저장 확인)."""
+    m = b.template.manifest
+    paths = {render_params(b.plan, m).path}
+    paths |= {h.path for h in (m.hidden_helper, m.public_helper) if h is not None}
+    check = render_persistence_check(b.contract, m)
+    return paths | ({check.path} if check is not None else set())
+
+
+def compile_note(errors: Sequence[CompileError], overlay: Overlay) -> str:
+    """재요청 사유 — javac 오류마다 위치·메시지·symbol/location, 그리고 그 줄의 코드."""
+    files = {f.path: f.content.splitlines() for f in overlay.files}
+    lines = [
+        "채점 코드 컴파일 오류 (javac — 구현 없이 테스트·하네스·도우미만 컴파일) — 고쳐서 다시 쓴다. "
+        "하네스·도우미에 없는 이름은 문서·소스에 있는 이름으로, JDK 타입은 import 해서:"
+    ]
+    for e in errors[:10]:
+        src = files.get(e.path, [])
+        lines.append(f"- {e.path}:{e.line} {e.message}" + (f" ({e.detail})" if e.detail else ""))
+        if 0 < e.line <= len(src):
+            lines.append(f"  코드: {src[e.line - 1].strip()[:200]}")
+    return "\n".join(lines)
+
+
+async def compile_and_fix(
+    b: BuildInputs,
+    hidden: Overlay,
+    public: Overlay | None,
+    compiler: TestCompiler,
+    kw: dict[str, object],
+    attempts: int = COMPILE_TEST_ATTEMPTS,
+) -> CompileFix:
+    """테스트 먼저 — 구현을 만들기 전에 채점 코드를 컴파일하고, 오류가 난 파일을 쓴 생성기(gen_hidden·gen_public)에 javac 오류를
+    붙여 다시 요청한다 (최대 attempts 회). 코드가 쓴 파일·Gradle 자체 오류는 생성기로 못 고치므로 거기서 멈춘다.
+
+    2026-11-08 Gradle 로그 314개: 숨은 테스트 컴파일 오류 141줄 — Duration·람다·검사 예외·import·없는 이름(`Burst.IntUnaryOperator`) 등
+    종류가 많아 이름 검사만으로는 못 막는다. 상류 평가(구현 없이 compileTestJava)로 컴파일할 수 있음을 확인했다."""
+    fix = CompileFix(hidden=hidden, public=public)
+    fixed = _code_written(b)
+    for attempt in range(attempts + 1):
+        errors = await compiler.compile_tests(fix.hidden, fix.public)
+        fix.compiles += 1
+        if attempt == 0:
+            fix.first_errors = list(errors)
+        fix.errors = list(errors)
+        if not errors or attempt == attempts:
+            break
+        owners = {
+            name: o
+            for name, o in (("gen_hidden", fix.hidden), ("gen_public", fix.public))
+            if o is not None
+        }
+        mine = {
+            name: [e for e in errors if e.path in {f.path for f in o.files} - fixed]
+            for name, o in owners.items()
+        }
+        if not any(mine.values()):
+            break
+        jobs = [
+            (
+                name,
+                (gen_hidden if name == "gen_hidden" else gen_public)(
+                    b,
+                    note=compile_note(errs, owners[name]),
+                    previous=owners[name],
+                    **kw,  # type: ignore[arg-type]
+                ),
+            )
+            for name, errs in mine.items()
+            if errs
+        ]
+        results = await asyncio.gather(*(j for _, j in jobs))
+        for (name, _), r in zip(jobs, results, strict=True):
+            fix.results.append(r)
+            e = mine[name][0]
+            ok = r.overlay is not None and r.ok
+            fix.repairs.append(
+                RepairRecord(
+                    gate="compile",
+                    target=name,  # type: ignore[arg-type]
+                    reason=f"{PurePosixPath(e.path).name}:{e.line} {e.message}"[:300],
+                    result="regenerated" if ok else "failed",
+                )
+            )
+            if ok and name == "gen_hidden":
+                fix.hidden = r.overlay  # type: ignore[assignment]
+            elif ok:
+                fix.public = r.overlay
+    return fix
 
 
 @dataclass
@@ -128,6 +244,7 @@ async def build_and_repair(
     ontology_version: str,
     verifier: Verifier,
     max_rounds: int = MAX_ROUNDS,
+    compiler: TestCompiler | None = None,
 ) -> BuildOutcome:
     kw = {"llm": llm, "prompts": prompts, "ontology_version": ontology_version}
     out = BuildOutcome(status="failed")
@@ -167,6 +284,24 @@ async def build_and_repair(
     if hidden is None or (use_public and public is None):
         out.overlays = made_tests  # 만든 것은 남긴다 — 평가·사람이 볼 수 있게
         return out
+    if (
+        compiler is not None
+    ):  # 채점 코드가 컴파일되어야 구현을 만든다 (공개 테스트를 보고 맞추는 전제)
+        fix = await compile_and_fix(b, hidden, public, compiler, kw)
+        for r in fix.results:
+            out.provenance += r.provenance
+            out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
+        out.repairs += fix.repairs
+        hidden, public = fix.hidden, fix.public
+        made_tests = {k: o for k, o in ((PUBLIC, public), (HIDDEN, hidden)) if o is not None}
+        if fix.errors:
+            e = fix.errors[0]
+            out.review_flags.append(
+                f"채점 코드 컴파일 실패 (재요청 {len(fix.repairs)}회 뒤, 오류 {len(fix.errors)}건): "
+                f"{e.path}:{e.line} {e.message} {e.detail}".strip()[:300]
+            )
+            out.overlays = made_tests
+            return out
     # ② 구현 코드 — 공개 테스트를 보고 맞춘다 (숨은 테스트는 보지 않음)
     starter = took(await gen_starter(b, public=public, **kw))  # type: ignore[arg-type]
     if starter is None:

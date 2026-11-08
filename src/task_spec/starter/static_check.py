@@ -775,7 +775,7 @@ def _hidden_cases(
 
 
 _HELPER_CONST = re.compile(
-    r"\b(HC\d+(?:_[A-Z0-9]+)*_(?:FIRST|LAST|ROWS)|PUBLIC_[A-Z0-9_]+|TABLE_[A-Z0-9_]+)\b"
+    r"\b(HC\d+(?:_[A-Z0-9]+)*_(?:FIRST|LAST|ROWS)|PUBLIC_[A-Z0-9_]+|TABLE_[A-Z0-9_]+|NEXT_(?:OK|BAD)_[A-Z0-9_]+)\b"
 )
 _VERB_CALL = re.compile(r"(?<![\w.])((?:get|post|put|patch|delete)[A-Z]\w*)\s*\(")
 _OWN_METHOD = re.compile(r"[\w>\]]\s+(\w+)\s*\([^;{}]*\)\s*(?:throws\s+[\w., ]+)?\s*\{")

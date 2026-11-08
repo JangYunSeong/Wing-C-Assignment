@@ -17,6 +17,7 @@ commands:
   test: ./gradlew --offline test
   hidden_test: ./gradlew --offline test --tests 'com.example.service.grading.*'
   run: ./gradlew --offline bootRun
+  test_compile: ./gradlew --offline -q compileTestJava
 
 naming:
   # 경로 변수는 camelCase 허용 ({robotId}) — 2026-11-07 종이 단계: {id} 만 맞던 규칙이 다른 백엔드 명세의 {robotId} 를 거부
@@ -80,7 +81,7 @@ hidden_helper:
   class_name: ContractCase
 # 템플릿 클래스패스에 없는 패키지 (build.gradle 은 starter-web·data-jpa·test 뿐) — 시작 코드·참조 구현이 import 하면 재요청.
 unavailable_imports:
-  - '^\s*import\s+(?:static\s+)?(?:jakarta|javax)\.validation\b'
+  - '^\s*import\s+(?:static\s+)?lombok\b'  # Lombok 은 템플릿에 없다 (검증 스타터는 2026-11-08 템플릿에 넣음)
   - '^\s*import\s+(?:static\s+)?org\.hibernate\.validator\b'
 # 공개 테스트 도우미 — 같은 렌더러로 공개 테스트 몫 행만 (동시 요청·오류 주입 없음). 공개 테스트는 채점용 이미지에만 (지원자에게 주지 않음 —
 # 2026-11-08 기본값, spec-to-code §4.3). 같은 폴더에 코드가 저장 확인 테스트(PersistenceCheckTest)도 쓴다.

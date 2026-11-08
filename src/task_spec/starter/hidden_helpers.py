@@ -19,6 +19,7 @@ from typing import Literal
 from task_spec.schemas.build import Endpoint, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.seed_rows import allocate_rows, public_free
+from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
 
 _SEG = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
@@ -76,6 +77,31 @@ def public_rows(contract: TaskContract, plan: HiddenPlan) -> dict[str, list[int]
         )
         out[f"PUBLIC_{_const(names[eid])}" + (f"_{vals}" if vals else "")] = ids
     return out
+
+
+def _value_const(v: object) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(v)).strip("_").upper()
+
+
+def _state_lines(contract: TaskContract) -> list[str]:
+    """처음 값별 다음 상태 — 계약 state 칸에서 (state_rule.next_states). 테스트가 전이를 짐작하지 않게."""
+    steps = list(next_states(contract))
+    if not steps:
+        return []
+    lines = [
+        "",
+        "    // ── 상태 전이 (계약 state 칸): 처음 값별로 허용되는 다음 값(NEXT_OK_)과 거절되는 다음 값(NEXT_BAD_) ──",
+    ]
+    for m in contract.entities:
+        if m.state is not None:
+            lines.append(f"    // {m.name}.{m.state.field} — {sentence(m.state)}")
+    for name, v, ok, bad in steps:
+        key = f"{_const(name)}_{_value_const(v)}"
+        if ok is not None:
+            lines.append(f'    protected static final String NEXT_OK_{key} = "{ok}";')
+        if bad is not None:
+            lines.append(f'    protected static final String NEXT_BAD_{key} = "{bad}";')
+    return lines
 
 
 def render_contract_case(
@@ -147,6 +173,7 @@ def render_contract_case(
                 f"    protected static final long {prefix}_LAST = {r.last}L;",
                 f"    protected static final int {prefix}_ROWS = {r.rows};",
             ]
+    lines += _state_lines(contract)
     tables = contract_tables(contract, manifest.naming.table) if audience == "hidden" else {}
     if tables:
         lines += ["", "    // ── 계약 테이블 이름 (오류 주입 정규식에는 이 이름을 그대로) ──"]
