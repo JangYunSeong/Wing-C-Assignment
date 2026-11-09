@@ -33,6 +33,8 @@ P1 내부 문서다 (`gen_hidden` 입력에 들어감). 채점용 이미지에�
 
 **실패 사유 — `reason(code, description)`**: `expect(값, reason('stale_response_shown', '입력은 "노트" 인데 목록이 바뀜')).toEqual(…)`.
 코드는 아래 숨은 테스트 입력의 "실패 사유 코드" 목록 안의 것만.
+사유는 **기본 매처**(`toBe`·`toEqual`·`toHaveLength`·`toContain`·`toBeGreaterThan`)에 붙인다 — jest-dom 매처(`toBeInTheDocument`·`toHaveTextContent` …)는
+메시지를 버려 사유가 사라진다. 값을 꺼내 단언한다: `expect(screen.queryByRole('alert'), reason(…)).toBe(null)`.
 
 **조절값 — `params.int(name, fallback)` · `params.str` · `params.list`** (숨은 테스트 계획의 조절값).
 

@@ -280,6 +280,9 @@ class HiddenRules(Schema):
     # 의도한 사유를 붙이면 안 되는 단언 (정규식, 한 문장 안) — 모든 실패를 세는 단언에 붙이면 어떤 실패든 그 사유로 보인다.
     # 2026-11-08 숨은 테스트 검토: 14개 케이스 모두 사유를 Burst.wrong(...) 에 붙였다.
     reason_not_on: list[str] = Field(default_factory=list)
+    # 위 단언에 사유를 붙였을 때 수정 요청에 붙일 안내 (스택마다 다름) — 비면 Java 버스트 안내.
+    # 2026-11-09 React 템플릿: jest-dom 매처(toBeInTheDocument 등)는 expect 의 메시지를 버려 사유가 사라진다 (실제 vitest 로 확인)
+    reason_not_on_note: str = ""
 
     @field_validator(
         "forbidden_imports",

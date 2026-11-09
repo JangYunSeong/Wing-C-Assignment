@@ -46,7 +46,7 @@ from task_spec.starter.tables import (
     same_table,
     spring_snake,
 )
-from task_spec.starter.templates import Template, glob_match, slot_allows
+from task_spec.starter.templates import Template, glob_match, is_java, slot_allows
 
 KIND_SLOT = {
     "starter": "starter",
@@ -685,7 +685,12 @@ def _reason_rules(
                 if any(rx.search(stmt) for rx in reason_rx)
                 and any(rx.search(stmt) for rx in bad_on)
             ]
-            if hits:
+            if hits and m.hidden_rules.reason_not_on_note:
+                out.append(
+                    f"숨은 테스트 {f.path} 가 사유를 붙이면 안 되는 단언에 사유를 붙임: {hits[0]} — "
+                    + m.hidden_rules.reason_not_on_note
+                )
+            elif hits:
                 out.append(
                     f"숨은 테스트 {f.path} 가 모든 실패를 세는 단언에 사유를 붙임: {hits[0]} — 어떤 실패든 그 사유로 보인다. "
                     "운영 조건 사유는 Burst.failures(...) 에, 그 밖의 불일치는 Burst.mismatches(...) 로 따로 (사유 없이 또는 기록 사유)"
@@ -933,6 +938,9 @@ def _public_cases(
                 )
             continue
         cases.append(f)
+        # 상속·숨은 전용 이름 검사는 Java 하네스 기준 — TypeScript 는 tsc 컴파일 루프와 import 규칙으로
+        if not is_java(m):
+            continue
         if not re.search(rf"\bextends\s+{re.escape(rule.class_name)}\b", f.content):
             out.append(
                 f"공개 테스트 {f.path} 가 {rule.class_name} 를 상속하지 않음 — {rule.class_name} 의 공개 몫 행 상수·계약 API 함수·Body 함수를 쓴다"

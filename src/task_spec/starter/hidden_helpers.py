@@ -23,6 +23,7 @@ from task_spec.starter.header_values import header_values
 from task_spec.starter.seed_rows import allocate_rows, public_free
 from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
+from task_spec.starter.templates import is_java
 
 _SEG = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
 
@@ -169,6 +170,10 @@ def render_contract_case(
 ) -> GeneratedFile | None:
     """audience=hidden: 숨은 케이스 도우미(ContractCase — 케이스 범위·테이블·peak). public: 공개 테스트 도우미(PublicCase —
     공개 테스트 몫 행, 동시 요청·오류 주입 없음 — 공개 테스트는 숨은 요구를 시험하지 않는다)."""
+    if not is_java(manifest):  # TypeScript 템플릿 — contract.ts (starter/ts_helpers.py)
+        from task_spec.starter.ts_helpers import render_ts_contract
+
+        return render_ts_contract(contract, manifest, audience)
     rule = manifest.hidden_helper if audience == "hidden" else manifest.public_helper
     if rule is None:
         return None
@@ -333,7 +338,7 @@ def render_persistence_check(
     대상: 새로 만드는 엔티티(existing 아님) 중 처음 0행 — 표시가 하나도 없으면(옛 계약) 처음 0행인 엔티티.
     """
     rule = manifest.public_helper
-    if rule is None:
+    if rule is None or not is_java(manifest):  # JPA 메타모델로 저장해 보는 Java 전용 확인
         return None
     rows = {s.entity_id: s.rows for s in contract.seed}
     flagged = any(m.existing for m in contract.entities)

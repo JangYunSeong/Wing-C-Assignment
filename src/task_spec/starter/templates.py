@@ -92,6 +92,24 @@ def available(root: Path = TEMPLATES_ROOT) -> list[str]:
     return sorted(p.parent.relative_to(root).as_posix() for p in root.glob("*/*/CURRENT"))
 
 
+# 직군(sub) → 첫 템플릿 (starter-templates §2). spec-to-code ② ① select_template — 결정적. 없는 직군은 None (문서 과제).
+TEMPLATE_FOR_SUB: dict[str, str] = {
+    "sw.backend": "backend/java-spring-boot3-jpa",
+    "sw.frontend": "frontend/react-vite-ts",
+}
+
+
+def select_template(sub: str, root: Path = TEMPLATES_ROOT) -> Template | None:
+    """직군에 맞는 템플릿 (CURRENT 판). 템플릿이 없는 직군이면 None."""
+    template_id = TEMPLATE_FOR_SUB.get(sub)
+    return load_template(template_id, root=root) if template_id else None
+
+
+def is_java(m: TemplateManifest) -> bool:
+    """Java 전용 산출물·검사(JPA 저장 확인, 클래스 상속 검사 등)를 쓸 템플릿인가."""
+    return m.stack is not None and m.stack.language.lower() == "java"
+
+
 def load_template(
     template_id: str, version: int | None = None, root: Path = TEMPLATES_ROOT
 ) -> Template:
