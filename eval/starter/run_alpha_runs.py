@@ -56,6 +56,12 @@ async def main() -> None:
     )
     ap.add_argument("--designs", type=int, default=1, help="루프에서 만들 허용 설계 수")
     ap.add_argument("--pin", action="append", default=[], help="예: --pin gen_starter=2")
+    ap.add_argument(
+        "--model-for",
+        action="append",
+        default=[],
+        help="단계별 모델 (--model 보다 우선) — 예: --model-for gen_hidden=opencode:glm-5.3",
+    )
     ap.add_argument("--budget-usd", type=float, default=1.0)
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
@@ -72,7 +78,12 @@ async def main() -> None:
 
     llm = make_client(a.openai_key_env)
     pins = {k: int(v) for k, _, v in (x.partition("=") for x in a.pin)}
-    prompts = ModelOverride(PinnedVersions(PromptRegistry(ROOT / "prompts"), pins), a.model)  # type: ignore[arg-type]
+    per_task = dict(x.split("=", 1) for x in a.model_for)
+    prompts = ModelOverride(
+        PinnedVersions(PromptRegistry(ROOT / "prompts"), pins),  # type: ignore[arg-type]
+        a.model,
+        per_task=per_task,
+    )
     kw = {"llm": llm, "prompts": prompts, "ontology_version": VERSION}
     print(
         f"{src['run_id'][:8]} · {sub} · 템플릿 {template.manifest.ref} · 허용 설계 {len(task.accepted_designs)}"
@@ -85,6 +96,7 @@ async def main() -> None:
         "template": template.manifest.ref,
         "model": a.model,
         "pins": a.pin,
+        "models": a.model_for,
         "contracts": [],
         "loops": [],
     }
