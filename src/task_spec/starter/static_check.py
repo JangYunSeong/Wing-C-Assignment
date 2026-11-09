@@ -743,7 +743,10 @@ def _reason_rules(
     return out
 
 
-_STATUS_ASSERT = re.compile(r"assertThat\(\s*[\w.()]*\bstatusCode\(\)\s*\)")
+# 상태를 바꾸는 요청(계약 API 함수 patch…·post…·put…·delete…)의 응답 — 그 응답을 담은 변수, 또는 그 호출 그대로
+_MUTATING_VAR = re.compile(r"\b(\w+)\s*=\s*(?:patch|post|put|delete)[A-Z]\w*\s*\(")
+_MUTATING_INLINE = re.compile(r"assertThat\(\s*(?:patch|post|put|delete)[A-Z]\w*\s*\(")
+_RESET = re.compile(r"GraderJdbcHarness\.reset\(\)")
 # 응답이 그 값(들)이어야 한다는 단언 — '성공 아님'(isNotEqualTo·isGreaterThanOrEqualTo…)은 그대로 둔다
 _STATUS_UPPER = re.compile(r"\.(?:isLessThan|isLessThanOrEqualTo|isBetween|isStrictlyBetween)\(")
 _STATUS_IS = re.compile(r"\.(?:isEqualTo|isIn|isOneOf)\(([^()]*)\)")
@@ -766,10 +769,22 @@ def _injected_status_asserts(
     declared = {r.status for e in contract.endpoints for r in e.responses if r.status >= 500}
     out: list[str] = []
     for f in cases:
-        if not any(rx.search(f.content) for rx in inject):
+        start = min((mt.start() for rx in inject if (mt := rx.search(f.content))), default=None)
+        if start is None:
             continue
-        for stmt in f.content.split(";"):
-            if not _STATUS_ASSERT.search(stmt):
+        # 주입부터 reset 까지 보낸 상태 변경 요청만 — 그 뒤 기록을 읽는 GET 의 200 단언은 맞다
+        # (2026-11-09 알파 재실행: 처음 검사가 주입 뒤 감사 조회 `auditResp.statusCode()).isEqualTo(200)` 까지 잡아 숨은 테스트 생성 실패)
+        end = r.start() if (r := _RESET.search(f.content, start)) else len(f.content)
+        window = f.content[start:end]
+        injected = {mt.group(1) for mt in _MUTATING_VAR.finditer(window)}
+        for stmt in window.split(";"):
+            if "statusCode()" not in stmt or not (
+                _MUTATING_INLINE.search(stmt)
+                or any(
+                    re.search(rf"assertThat\(\s*{re.escape(v)}\.statusCode\(\)\s*\)", stmt)
+                    for v in injected
+                )
+            ):
                 continue
             pinned = _STATUS_UPPER.search(stmt) or any(
                 {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))} - declared

@@ -599,3 +599,15 @@ def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
     for loose in (".isNotEqualTo(200)", ".isGreaterThanOrEqualTo(400)"):
         assert not _has(msgs(inject, loose), "응답 코드를 단정"), loose
     assert not _has(msgs("", ".isEqualTo(200)"), "응답 코드를 단정")
+    # 주입 뒤 기록을 읽는 GET 의 200 은 맞다 (2026-11-09 재실행: 처음 검사가 감사 조회 단언까지 잡아 숨은 테스트 생성 실패)
+    read = (
+        "\n        var audit = getOrders(java.util.Map.of());\n"
+        "        org.assertj.core.api.Assertions.assertThat(audit.statusCode()).isEqualTo(200)"
+    )
+    assert not _has(msgs(inject, ".isNotEqualTo(200);" + read), "응답 코드를 단정")
+    # reset 뒤에 보낸 상태 변경 요청도 주입 밖이다
+    after = (
+        '\n        GraderJdbcHarness.reset();\n        var again = patchOrdersIdStatus(1L, java.util.Map.of(), "{}");\n'
+        + ("        org.assertj.core.api.Assertions.assertThat(again.statusCode()).isEqualTo(200)")
+    )
+    assert not _has(msgs(inject, ".isNotEqualTo(200);" + after), "응답 코드를 단정")
