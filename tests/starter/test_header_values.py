@@ -65,6 +65,16 @@ def test_no_example_means_no_invented_value_unless_any_value_is_accepted() -> No
     )
 
 
+def test_reask_names_placeholders_and_asks_for_real_values() -> None:
+    # 재요청 문구가 `<통과하는 값>` 꼴이면 답도 자리표시자로 온다 (alpha-cap2)
+    c = _with_header(f"{HEADER}=<MASTER 등급 멤버의 memberId>로 PATCH /orders/1/status → 200")
+    [msg] = header_problems(c)
+    assert f"`{HEADER}=1 → 200`" in msg and "<통과하는 값>" not in msg and "시드 groups" in msg
+    assert "pt1 의 <MASTER 등급 멤버의 memberId>" in msg
+    [plain] = header_problems(_with_header("권한 없는 요청자로 PATCH 시 403"))
+    assert "자리표시자" not in plain
+
+
 def test_helpers_carry_the_constants() -> None:
     plan = HiddenPlan.model_validate(_plan())
     for audience in ("hidden", "public"):
