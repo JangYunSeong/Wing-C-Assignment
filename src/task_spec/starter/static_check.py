@@ -323,7 +323,44 @@ def _harness_overrides(
                 StaticProblem(
                     o.target,
                     f"{o.name} 설정 {f.path} 의 {key}={cfg[key]} 는 {HARNESS_OVERRIDE}다 — "
-                    "이 값을 바꿔 숨은 요구를 피하는 설계는 채점에서 효과가 없다, 설계를 코드로 구현한다",
+                    "이 값을 바꿔 숨은 요구를 피하는 설계는 채점에서 효과가 없다. 운영 값은 코드로도 바꾸지 않는다 — "
+                    "숨은 요구는 연결을 쓰는 방식(트랜잭션 경계·기록 시점)으로 푼다",
+                )
+            )
+    return out
+
+
+# 코드로 연결 풀·데이터소스·요청 스레드를 만들거나 바꾸는 것 — 하네스가 넣는 운영 값(@DynamicPropertySource)을 우회한다.
+# 2026-11-09 v19-loop1·fixmt-be: 허용 설계 '풀 크기 산정'(d3)을 설정으로 못 하자 구현이 DataSource 빈을 새로 만들거나
+# BeanPostProcessor 로 만들어진 풀을 80 으로 바꿔 통과했다 (채점 조건 우회 — 지원자도 같은 길로 함정을 피할 수 있다).
+_CODE_OVERRIDES = (
+    ("DataSourceBuilder", re.compile(r"\bDataSourceBuilder\b")),
+    ("new HikariDataSource/HikariConfig", re.compile(r"\bnew\s+Hikari(?:DataSource|Config)\s*\(")),
+    (
+        "풀 크기·대기 시간 변경",
+        re.compile(r"\.set(?:MaximumPoolSize|MinimumIdle|ConnectionTimeout)\s*\("),
+    ),
+    ("DataSource 빈", re.compile(r"@Bean\b[^{;]*?\bDataSource\s+\w+\s*\(", re.S)),
+    ("요청 스레드 수 변경", re.compile(r"\.set(?:MaxThreads|MinSpareThreads)\s*\(")),
+)
+
+
+def _code_overrides(o: Overlay, t: Template) -> list[StaticProblem]:
+    """구현이 코드로 운영 값(연결 풀·데이터소스·요청 스레드)을 만들거나 바꿈 — 설정 키를 바꾸는 것(_harness_overrides)과 같은 우회."""
+    if not is_java(t.manifest):
+        return []
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if not f.path.endswith(".java"):
+            continue
+        body = _strip_comments(f.content)
+        hits = [name for name, rx in _CODE_OVERRIDES if rx.search(body)]
+        if hits:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{o.name} {f.path} 가 코드로 운영 값을 만들거나 바꿈 ({', '.join(hits)}) — {HARNESS_OVERRIDE}(연결 풀·대기 시간·"
+                    "요청 스레드)를 코드로 우회하는 것이다. 운영 값은 채점 환경이 정한다 — 숨은 요구는 연결을 쓰는 방식으로 푼다",
                 )
             )
     return out
@@ -1224,6 +1261,7 @@ def static_check(
         if o.kind in ("starter", "ref_naive", "ref_accepted"):
             res.problems += _unavailable_imports(o, template)
             res.problems += _test_folder_imports(o, template)
+            res.problems += _code_overrides(o, template)
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
