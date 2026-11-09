@@ -99,6 +99,7 @@ def make_client(key_env: str | None) -> LLMClient:
                 api_key=st.opencode_api_key,
                 base_url=st.opencode_base_url,
                 timeout=st.llm_timeout_seconds,
+                max_tokens_field=True,  # 추론 예산이 듣게 (openai_compat 머리말)
             ),
         }
     )
