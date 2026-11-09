@@ -791,6 +791,28 @@ def _gate4(
     return actions, unresolved
 
 
+# 채점 환경에 없는 브라우저 기능 — 컴파일(tsc)은 타입 선언으로 통과하고 실행 때만 없다 (jsdom 미구현).
+# 2026-11-10 v20-fe: React 템플릿 v2 하네스에 IndexedDB 가 없어 허용 구현까지 모두 같은 예외 → 수리가 공개 테스트를
+# '테스트 의심' 으로 다시 만들다 예산을 다 썼다 (원인이 테스트가 아니라 고쳐지지 않는다, 이슈 #83).
+_ENV_MISSING = re.compile(r"ReferenceError: (\w+) is not defined|Not implemented: ([\w.]+)")
+
+
+def _missing_env(runs: Sequence[TargetRun]) -> list[str]:
+    """준비된 구현 **모두**(2개 이상)의 테스트에서 나온, 채점 환경에 없는 기능 이름 — 구현·테스트를 다시 만들어도 안 고쳐진다."""
+    if len(runs) < 2:
+        return []
+    seen: list[set[str]] = []
+    for r in runs:
+        names = {
+            a or b
+            for x in r.tests
+            if x.result == "HARNESS_ERR"
+            for a, b in _ENV_MISSING.findall(x.message or "")
+        }
+        seen.append(names)
+    return sorted(set.intersection(*seen))
+
+
 def assign(
     report: VerifyReport,
     plan: HiddenPlan,
@@ -841,6 +863,13 @@ def assign(
             actions += _ref_setup(run, overlays, boot_note, terms)
             continue
         ready.append(run)
+    if missing := _missing_env(ready):
+        # 생성기를 다시 부르지 않고 사람에게 — 템플릿 하네스를 고칠 일
+        res.unresolved.append(
+            f"채점 환경 확인 필요: 모든 구현({', '.join(r.target for r in ready)})의 테스트가 채점 환경에 없는 기능 "
+            f"{', '.join(missing)} 에서 멈춤 — 템플릿 하네스가 이 과제가 쓰는 브라우저 기능을 지원하는지 확인한다 (생성물 재생성 안 함)"
+        )
+        return res
     shared = _shared_note(ready, overlays, shared_paths)
     ambiguous, skip = _contract_ambiguity(ready, starter, shared)
     res.unresolved += ambiguous

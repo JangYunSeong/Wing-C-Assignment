@@ -886,3 +886,20 @@ def test_python_job_crash_blames_that_implementation_not_the_public_test() -> No
     ]
     acts, _ = _public_refs(same, {}, "", terms)
     assert [a.generator for a in acts] == ["gen_public"]
+
+
+def test_every_implementation_hitting_a_missing_browser_api_goes_to_a_person() -> None:
+    """2026-11-10 v20-fe: React 하네스에 IndexedDB 가 없어 허용 구현까지 같은 예외 — 공개 테스트를 '테스트 의심'으로
+    다시 만들다 예산을 다 썼다 (이슈 #83). 생성기를 부르지 않고 채점 환경 확인으로 올린다."""
+    env = _t("hidden", "hc2", "HARNESS_ERR", msg="ReferenceError: indexedDB is not defined")
+    stuck = _t("public", "Pt1Test", "HARNESS_ERR", msg="Unable to find an element")
+    plan = _assign(
+        _report(_run("naive-all", "ref_naive", env, stuck), _run("d1", "ref_accepted", env, stuck))
+    )
+    assert not plan.actions and not plan.passed
+    assert "채점 환경 확인 필요" in plan.unresolved[0] and "indexedDB" in plan.unresolved[0]
+    # 한 구현에서만이면 그 구현 탓일 수 있다 — 예전 규칙 그대로
+    one = _assign(
+        _report(_run("naive-all", "ref_naive", env, stuck), _run("d1", "ref_accepted", *GOOD_ACC))
+    )
+    assert one.actions and not any("채점 환경" in u for u in one.unresolved)
