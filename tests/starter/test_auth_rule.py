@@ -116,6 +116,16 @@ def test_auth_is_required_by_denial_not_by_header() -> None:
     # 403 대신 사유 코드로만 말해도 권한 실패
     c["endpoints"][0]["responses"][1]["description"] = "권한 없음 — 기록에 PERMISSION_DENIED"
     assert any("auth 칸이 없음" in p for p in auth_problems(TaskContract.model_validate(c)))
+    # 명령·파일 인터페이스는 헤더가 없어 칸을 채울 수 없다 — 사유 코드가 있어도 보지 않는다
+    cli = _contract()
+    cli["interface_kind"] = "cli"
+    for e in cli["endpoints"]:
+        e["method"] = None
+        e["responses"] = [
+            {"status": 0, "description": "성공"},
+            {"status": 1, "description": "권한 없는 경로 — PERMISSION_DENIED"},
+        ]
+    assert not auth_problems(TaskContract.model_validate(cli))
 
 
 def test_role_rule_problems() -> None:
