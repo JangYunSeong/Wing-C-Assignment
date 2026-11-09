@@ -17,6 +17,7 @@ def build_llm_client(settings: Settings) -> LLMClient:
                 api_key=settings.opencode_api_key,
                 base_url=settings.opencode_base_url,
                 timeout=settings.llm_timeout_seconds,
+                max_tokens_field=True,  # 추론 예산이 듣게 (openai_compat 머리말)
             ),
         }
     )

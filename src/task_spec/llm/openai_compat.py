@@ -2,6 +2,10 @@
 
 - SDK 자체 재시도는 끈다(max_retries=0). 재시도 정책은 client 한 곳.
 - 키는 SecretStr 로 받아 여기서만 꺼낸다. 로그에 키·메시지 본문을 남기지 않는다.
+- 출력 상한 이름: langchain-openai 는 max_tokens 를 max_completion_tokens 로 바꿔 보낸다. OpenCode 는 그 이름이면
+  reasoning_effort 의 추론 예산을 적용하지 않는다 (2026-11-09 측정, qwen3.8-flash·같은 프롬프트: max_tokens 면 추론이
+  늘 4096 에서 끊기고, max_completion_tokens 면 5.8k~8k 로 늘어나 상한에 닿으면 빈 응답) → `max_tokens_field=True` 면
+  요청 본문에 max_tokens 그대로 넣는다 (OpenCode 백엔드만).
 """
 
 from __future__ import annotations
@@ -43,11 +47,24 @@ def _usage(msg: AIMessage) -> Usage:
 
 class OpenAICompatBackend:
     def __init__(
-        self, *, api_key: SecretStr, base_url: str | None = None, timeout: float = 300.0
+        self,
+        *,
+        api_key: SecretStr,
+        base_url: str | None = None,
+        timeout: float = 300.0,
+        max_tokens_field: bool = False,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url or None
         self._timeout = timeout
+        self._max_tokens_field = max_tokens_field
+
+    def _kwargs(self, params: dict[str, Any]) -> dict[str, Any]:
+        """ChatOpenAI 인자 — max_tokens_field 면 상한을 max_completion_tokens 가 아니라 max_tokens 로 보낸다."""
+        if not self._max_tokens_field or "max_tokens" not in params:
+            return dict(params)
+        rest = {k: v for k, v in params.items() if k != "max_tokens"}
+        return {**rest, "extra_body": {"max_tokens": params["max_tokens"]}}
 
     async def complete(
         self, model: str, messages: list[Message], params: dict[str, Any]
@@ -58,7 +75,7 @@ class OpenAICompatBackend:
             base_url=self._base_url,
             timeout=self._timeout,
             max_retries=0,
-            **params,
+            **self._kwargs(params),
         )
         try:
             msg = await chat.ainvoke(_to_lc(messages))
