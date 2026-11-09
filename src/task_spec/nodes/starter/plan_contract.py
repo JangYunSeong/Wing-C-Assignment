@@ -28,6 +28,7 @@ from task_spec.schemas import (
     TaskItem,
 )
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.auth_rule import fit_auth
 from task_spec.starter.contract import ROW_NEEDS, SpecView, check_contract, fit_covers
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
@@ -225,10 +226,17 @@ async def plan_contract(
         stated, state_notes = fit_state(out.contract)
         out = out.model_copy(update={"contract": stated})
         notes += state_notes
+        authed, auth_notes = fit_auth(
+            out.contract, manifest.seed_rows
+        )  # 요청자 행은 행 수 맞춘 뒤 시드 끝에
+        out = out.model_copy(update={"contract": authed})
+        notes += auth_notes
         covered, cover_notes = fit_covers(out.contract, spec)
         out = out.model_copy(update={"contract": covered})
         notes += cover_notes
-        check = check_contract(out.contract, out.hidden_plan, spec, manifest, seed)
+        check = check_contract(
+            out.contract, out.hidden_plan, spec, manifest, seed, first_answer=attempt == 0
+        )
         logger.info(
             "%s attempt=%d problems=%d gaps=%d latency_ms=%d",
             TASK,

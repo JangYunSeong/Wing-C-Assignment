@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.auth_rule import requester_rows
 
 PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 행 수 — 숨은 범위·작은 id 밖
 RESERVED_ROWS = 10  # 작은 id 쪽 — 숨은 케이스에 나눠 주지 않는다 (지원자 테스트·공개 테스트·시작 코드 테스트 몫)
@@ -177,6 +178,7 @@ def allocate_rows(
     """케이스 순서대로, 처음 값이 맞는 그룹의 큰 id 부터 이어진 범위를 나눈다. id 1~reserved 는 나눠 주지 않는다."""
     seeds: dict[str, SeedRule] = {s.entity_id: s for s in contract.seed}
     names = {m.entity_id: m.name for m in contract.entities}
+    asked = requester_rows(contract)  # 권한 칸의 요청자 행 — 바꾸지 않는다 (auth_rule)
     # 그룹마다 아직 안 나눈 가장 큰 id
     tops: dict[tuple[str, int], int] = {
         (s.entity_id, i): g.last for s in contract.seed for i, g in enumerate(s.groups)
@@ -195,7 +197,12 @@ def allocate_rows(
                 )
                 continue
             groups = sorted(
-                ((i, g) for i, g in enumerate(seed.groups) if _matches(g.values, d.initial)),
+                (
+                    (i, g)
+                    for i, g in enumerate(seed.groups)
+                    if _matches(g.values, d.initial)
+                    and not set(range(g.first, g.last + 1)) <= asked.get(d.entity_id, set())
+                ),
                 key=lambda ig: -ig[1].last,
             )
             for i, g in groups:
@@ -234,16 +241,19 @@ def public_free(
         for r in allocate_rows(contract, plan, reserved).ranges
         for i in range(r.first, r.last + 1)
     }
+    asked = requester_rows(contract)
     out: dict[tuple[str, tuple[tuple[str, SeedScalar], ...]], list[int]] = {}
     for s in contract.seed:
         if s.rows <= 0:
             continue
         for g in sorted(s.groups, key=lambda x: x.first):
+            if set(range(g.first, g.last + 1)) <= asked.get(s.entity_id, set()):
+                continue  # 요청자 행만 있는 그룹
             ids = out.setdefault((s.entity_id, tuple(g.values.items())), [])
             for i in range(max(g.first, reserved + 1), g.last + 1):
                 if len(ids) >= PUBLIC_PER_GROUP:
                     break
-                if i not in used:
+                if i not in used and i not in asked.get(s.entity_id, set()):
                     ids.append(i)
     return [(eid, dict(vals), ids) for (eid, vals), ids in out.items()]
 

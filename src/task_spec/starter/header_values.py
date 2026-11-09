@@ -27,7 +27,7 @@ class HeaderValues:
     name: str
     ok: str | None
     denied: str | None
-    source: str  # "예시" · "아무 값" — 도우미 주석에
+    source: str  # "예시" · "아무 값" · "권한 규칙" — 도우미 주석에
 
 
 def _statuses(contract: TaskContract, header: str) -> set[int]:
@@ -42,8 +42,18 @@ def _statuses(contract: TaskContract, header: str) -> set[int]:
 def header_values(contract: TaskContract) -> list[HeaderValues]:
     """계약 헤더마다 (통과하는 값, 거절되는 값). 정할 수 없으면 None — 지어내지 않는다."""
     names = sorted({h.name for e in contract.endpoints for h in e.headers})
+    ruled = {
+        e.auth.header: e.auth
+        for e in contract.endpoints
+        if e.auth is not None and e.auth.ok_value is not None
+    }
     out: list[HeaderValues] = []
     for name in names:
+        if (
+            rule := ruled.get(name)
+        ) is not None:  # 권한 칸에서 코드가 정한 요청자 행의 값 (auth_rule.fit_auth)
+            out.append(HeaderValues(name, rule.ok_value, rule.denied_value, "권한 규칙"))
+            continue
         declared = _statuses(contract, name)
         value_rx = re.compile(
             r"(?<![\w-])" + re.escape(name) + r"\s*[=:]\s*[\"'`]?([A-Za-z0-9_.@-]+)", re.I
@@ -88,9 +98,12 @@ def header_problems(contract: TaskContract) -> list[str]:
     2026-11-09 알파(cap2): 재요청 문구가 `<통과하는 값>` 꼴이라 답이 `<MASTER 등급 멤버의 memberId>` 로 돌아왔고, 그 권한을
     통과하는 행이 시드에 없었다 — 문구는 실제 값 예시와 시드 행을 함께 말한다."""
     out: list[str] = []
+    ruled = {
+        e.auth.header for e in contract.endpoints if e.auth is not None and e.auth.kind != "other"
+    }
     for h in header_values(contract):
-        if h.ok is not None or not _statuses(contract, h.name) & set(DENIED):
-            continue
+        if h.ok is not None or h.name in ruled or not _statuses(contract, h.name) & set(DENIED):
+            continue  # 권한 칸(role·fixed)이 있으면 그쪽 검사가 말한다 (auth_rule.auth_problems)
         msg = (
             f"헤더 {h.name} 를 받는 엔드포인트가 권한 거절({'·'.join(map(str, DENIED))})을 내는데 통과하는 값의 예시가 없음 — "
             f"공개 테스트 checks 에 `{h.name}=1 → 200`, `{h.name}=7 → 403` 처럼 실제 값과 결과를 함께 적는다. "

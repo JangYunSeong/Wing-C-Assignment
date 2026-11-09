@@ -35,6 +35,7 @@ from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import find_terms
+from task_spec.starter.auth_rule import auth_flags, auth_problems
 from task_spec.starter.header_values import header_problems
 from task_spec.starter.seed_rows import case_rows_problems, seed_problems
 from task_spec.starter.state_rule import legacy_rule, state_problems
@@ -906,14 +907,59 @@ def _ui_actions(contract: TaskContract) -> list[str]:
     ]
 
 
+_ENUM_SQL = re.compile(r"\bENUM\s*\(([^)]*)\)", re.I)
+_ENUM_BLOCK = re.compile(r"\benum\s+\w+\s*\{([^}]*)\}")
+_PIPES = re.compile(r"""(?:["']?[A-Za-z][\w-]*["']?\s*\|\s*)+["']?[A-Za-z][\w-]*["']?""")
+_TOKEN = re.compile(r"[A-Za-z][\w-]*")
+_UPPER = re.compile(r"^[A-Z][A-Z0-9_]*$")
+FLAG_MATERIAL = "계약 상태 값이 자료와 다름 (재요청 후에도 — 요구가 새 상태를 더하는지 확인): "
+
+
+def material_enums(texts: Iterable[str]) -> list[list[str]]:
+    """1단계 자료가 적은 값 목록 — SQL ENUM(…), enum X { … }, A|B|C (따옴표 없는 것은 대문자 값만)."""
+    out: list[list[str]] = []
+    for text in texts:
+        for m in _ENUM_SQL.finditer(text):
+            out.append(re.findall(r"""["']([^"']+)["']""", m.group(1)))
+        for m in _ENUM_BLOCK.finditer(text):
+            out.append([x for x in _TOKEN.findall(m.group(1)) if _UPPER.match(x)])
+        for m in _PIPES.finditer(text):
+            quoted = "'" in m.group(0) or '"' in m.group(0)
+            vals = [x for x in _TOKEN.findall(m.group(0)) if quoted or _UPPER.match(x)]
+            out.append(vals)
+    return [list(dict.fromkeys(v)) for v in out if len(set(v)) >= 2]
+
+
+def material_state_problems(contract: TaskContract, spec: SpecView) -> list[str]:
+    """state 칸 값이 자료의 값 목록과 대부분 겹치는데 자료 밖 값이 있음 — 기존 API 자료가 MEMBER 인데 계약이 GENERAL 처럼.
+    2026-11-09 smilegate_2026#002 계약 14개 중 8개가 자료 밖 상태 값(GENERAL·NORMAL·SUB_MASTER, 값이 아닌 RANK 까지)을 지어냈다."""
+    enums = material_enums(spec.visible_texts)
+    out: list[str] = []
+    for m in contract.entities:
+        if m.state is None or not enums:
+            continue
+        values = set(m.state.values)
+        best = max(enums, key=lambda e: len(values & set(e)))
+        common = values & set(best)
+        outside = sorted(values - set(best))
+        if outside and len(common) >= max(2, (len(values) + 1) // 2):
+            out.append(
+                f"{m.name}.state values 의 {', '.join(outside)} 가 1단계 자료의 값({', '.join(best)})에 없음 — "
+                "자료가 쓰는 값 그대로 쓴다 (요구가 새 상태를 더하는 것이면 그대로 둔다)"
+            )
+    return out
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
     spec: SpecView,
     manifest: TemplateManifest,
     seed: FeatureSeed | None = None,
+    first_answer: bool = True,
 ) -> ContractCheck:
-    """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유."""
+    """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유.
+    first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다)."""
     problems = _ids(contract, plan)
     problems += _coverage(contract, plan, spec)
     problems += _naming(contract, manifest)
@@ -938,5 +984,12 @@ def check_contract(
     # 재료가 선언한 필요 요소는 행 시드가 없는 템플릿(프론트엔드)에서도 — 2026-11-09 팩트 체크: 행 시드 템플릿에서만 돌아 프론트 재료의 선언이 무시됐다
     problems += _needs(contract, plan, seed, manifest.seed_rows)
     problems += state_problems(contract, plan)
+    materials = material_state_problems(contract, spec)
+    if first_answer:
+        problems += materials
+    else:
+        flags += [FLAG_MATERIAL + p for p in materials]
+    problems += auth_problems(contract, manifest.seed_rows)
+    flags += auth_flags(contract)
     problems += header_problems(contract)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)
