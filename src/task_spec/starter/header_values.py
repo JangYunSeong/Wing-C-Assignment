@@ -101,6 +101,9 @@ def header_problems(contract: TaskContract) -> list[str]:
     ruled = {
         e.auth.header for e in contract.endpoints if e.auth is not None and e.auth.kind != "other"
     }
+    other = {
+        e.auth.header for e in contract.endpoints if e.auth is not None and e.auth.kind == "other"
+    }
     for h in header_values(contract):
         if h.ok is not None or h.name in ruled or not _statuses(contract, h.name) & set(DENIED):
             continue  # 권한 칸(role·fixed)이 있으면 그쪽 검사가 말한다 (auth_rule.auth_problems)
@@ -109,6 +112,13 @@ def header_problems(contract: TaskContract) -> list[str]:
             f"공개 테스트 checks 에 `{h.name}=1 → 200`, `{h.name}=7 → 403` 처럼 실제 값과 결과를 함께 적는다. "
             "권한이 요청자의 데이터(등급·소유 등)에 달렸으면 조건을 만족하는 행과 만족하지 않는 행을 시드 groups 에 두고 그 행의 값을 쓴다"
         )
+        if h.name in other:
+            # 2026-11-09 fixmt-be2: auth=other 인데 '공개 테스트에 요청자 값을 쓰지 않는다'는 지시(role·fixed 용)를 따라 값 없이
+            # 3번 답해 계약이 거절됐다 — other 는 코드가 값을 정하지 않으니 이때만은 실제 값을 적어야 한다고 짚는다
+            msg = (
+                "auth 가 other 라 코드가 요청자 값을 정하지 않음 — 이때는 '통과하는 요청자로' 같은 말 대신 "
+                + msg
+            )
         if ph := _placeholders(contract, h.name):
             msg += f" (값 자리에 자리표시자를 씀: {'; '.join(ph[:3])} — 값으로 읽지 못함)"
         out.append(msg)
