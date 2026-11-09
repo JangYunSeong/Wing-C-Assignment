@@ -71,12 +71,22 @@ def replay(path: Path) -> dict[str, Any]:
             continue
         missing += [f"{audience}:{k}Of" for k in keys if f"{k}Of(" not in helper.content]
     tests: list[str] = []
+    m = template.manifest
+    written = {  # 코드가 쓰는 도우미·저장 확인 — 생성기 몫이 아니라 검사하지 않는다 (파이프라인 정적 검사와 같게)
+        p
+        for p in (
+            m.hidden_helper.path if m.hidden_helper else None,
+            m.public_helper.path if m.public_helper else None,
+        )
+        if p
+    }
     for kind, label in (("hidden", "숨은 테스트"), ("public", "공개 테스트")):
         d = path.parent / "loop-1" / "overlays" / kind
         if d.is_dir():
             files = [
                 GeneratedFile(path=str(p.relative_to(d)), content=p.read_text("utf-8"))
                 for p in sorted(d.rglob("*.java"))
+                if str(p.relative_to(d)) not in written
             ]
             tests += _hand_built_keys(files, contract, label) + _literal_headers(
                 files, contract, label
