@@ -501,6 +501,22 @@ class PlanContractInputV3(PlanContractInput):
     seed_rules: str = Field(min_length=1)
 
 
+class PlanContractInputV4(PlanContractInput):
+    """plan_contract v17~ — 시드 행 수 계산식 대신 '코드가 맞춘다' 는 짧은 행 규칙(row_rules), 템플릿 인터페이스에 해당하는
+    안내만(interface_rules). 2026-11-09 점검: v16 은 백엔드 계약에도 ui·cli·입력 환경 안내가 다 들어갔고(약 2KB), 행 수는
+    fit_seed 가 맞추는데도 계산식을 줘 추론 토큰을 썼다."""
+
+    row_rules: str = Field(min_length=1)
+    interface_rules: str = Field(min_length=1)
+
+
+class PlanContractInputAll(PlanContractInputV3):
+    """plan_input 이 만드는 전체 — 버전마다 선언한 입력 모델로 걸러 넣는다 (plan_contract.for_prompt)."""
+
+    row_rules: str = Field(min_length=1)
+    interface_rules: str = Field(min_length=1)
+
+
 class PlanContractOutput(Schema):
     """plan_contract 출력 — 공개 계약과 숨은 테스트 계획을 한 번에."""
 

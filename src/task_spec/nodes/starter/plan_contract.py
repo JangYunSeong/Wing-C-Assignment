@@ -21,6 +21,7 @@ from task_spec.schemas import (
     FeatureSeed,
     HiddenPlan,
     NodeError,
+    PlanContractInputAll,
     PlanContractInputV3,
     PlanContractOutput,
     Provenance,
@@ -114,6 +115,55 @@ def seed_rules_text(m: TemplateManifest) -> str:
     return "\n".join(lines)
 
 
+def row_rules_text(m: TemplateManifest, seed: FeatureSeed | None = None) -> str:
+    """v17~ 행 규칙 — 행 수 계산식 대신 무엇을 적으면 코드가 맞추는지만. 행 시드를 쓰지 않는 템플릿은 입력 환경 안내."""
+    if not m.seed_rows:
+        return seed_rules_text(m) + needs_text(seed, m.seed_rows)
+    lines = [
+        "- 숨은 케이스 data 에는 바꿀 행의 엔티티·행 수·처음 값만 적는다. 시드 rows·groups 의 행 수는 어림해도 된다 — "
+        "숨은 케이스 몫·공개 테스트 몫·작은 id 지원자 몫이 모자라면 코드가 그 처음 값의 범위를 시드 끝에 덧붙인다.",
+    ]
+    if m.burst_rows:
+        lines.append(
+            f"- 동시 요청마다 다른 행을 쓰는 케이스는 data.burst=true — 행 수는 코드가 {' × '.join(m.burst_rows)} 로 맞춘다."
+        )
+    return "\n".join(lines) + needs_text(seed, m.seed_rows)
+
+
+_UI_RULES = (
+    "- `ui`: `screens` 에 화면마다 경로·요약·요소(`test_id`·역할·설명·조작)·브라우저 저장소(이름·종류·모양)를 적고, 화면이 부르는 서버 API 는 "
+    "`endpoints` 에 (메서드·경로). covers 에 화면 id(s1…)도 넣는다. test id 는 이름 규칙을 따르고 숨은 요구·운영 조건을 드러내는 이름·설명을 쓰지 않는다.\n"
+    "  - 조작하는 요소(버튼·입력·선택)마다 `action`: 무엇을 하면 무엇이 일어나고 **서버 요청이 언제 나가는지** 한 줄 "
+    "(예: '클릭하면 수량 1 증가 — 바로 저장 요청', '값을 바꾸고 포커스를 옮기면 저장 요청').\n"
+    "  - 화면마다 `on_load`: 들어올 때 무엇을 읽고 어떤 서버 요청이 나가는지 한 줄 (없으면 '서버 요청 없음', "
+    "예: '로컬 IndexedDB 의 초안을 읽어 보여 줌 — 서버 요청 없음').\n"
+    "  - 계약 `background`: 화면 조작 없이 나가는 서버 요청과 그 시점 (예: '브라우저 online 이벤트가 오면 대기열 요청을 순서대로 보냄', 없으면 '없음'). "
+    "공개 수용 기준의 '서버에 반영됨'은 서버 상태로 확인할 일이지 앱이 조회 요청을 보낸다는 뜻이 아니다 — 앱이 실제로 보내는 요청만 적는다."
+)
+_FIXTURE_RULES = (
+    "- 입력 환경: `seed`·케이스 `data` 는 비우고, 시작 코드가 깔아 줄 입력 환경(DB 배치·입력 파일·외부 서비스 응답·브라우저 상태)을 "
+    "`contract.fixtures` 에 (공개), 숨은 케이스에서 하네스가 그 환경을 바꾸는 단계를 `hidden_plan.cases.setup` 에 (숨김) 적는다. "
+    "숨은 요구·운영 조건은 fixtures 에 쓰지 않고 setup 에만."
+)
+
+
+def interface_rules_text(m: TemplateManifest) -> str:
+    """v17~ 템플릿이 지원하는 인터페이스의 안내만 — v16 은 백엔드 계약에도 ui·cli·입력 환경 안내가 다 들어갔다."""
+    lines: list[str] = []
+    if "http" in m.interfaces:
+        lines.append("- `http`: 엔드포인트마다 메서드·경로, 응답은 HTTP 상태 코드.")
+    if {"cli", "file"} & set(m.interfaces):
+        lines.append(
+            "- `cli`·`file`: 엔드포인트는 명령·입출력 파일(메서드 없음, `path` 에 명령 이름이나 파일 경로), 응답 `status` 는 "
+            "**종료 코드 0~255** (예: 0 성공, 1 검증 실패)."
+        )
+    if "ui" in m.interfaces:
+        lines.append(_UI_RULES)
+    if not m.seed_rows:
+        lines.append(_FIXTURE_RULES)
+    return "\n".join(lines) or "- 템플릿 인터페이스 그대로."
+
+
 def for_prompt(inp: PlanContractInputV3, model: type[BaseModel]) -> BaseModel:
     """프롬프트 버전이 선언한 입력 모델로 — v1·v2 는 seed_rules 자리가 없다 (Schema 는 모르는 필드를 거부)."""
     return model.model_validate({k: v for k, v in dict(inp).items() if k in model.model_fields})
@@ -149,7 +199,7 @@ def plan_input(
     reasons = "\n".join(
         reason_line(r) for r in m.failure_reasons if allowed is None or r.code in allowed
     )
-    return PlanContractInputV3(
+    return PlanContractInputAll(
         template=(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"
             f"이름 규칙: 경로 {rx.path} · 헤더 {rx.header} · 엔티티 {rx.entity} · 필드 {rx.field}"
@@ -176,6 +226,8 @@ def plan_input(
         revision_note=note or NONE,
         seed_rules=seed_rules_text(m)
         + needs_text(seed, m.seed_rows),  # 프론트 종류는 행 시드가 없는 템플릿에도
+        row_rules=row_rules_text(m, seed),
+        interface_rules=interface_rules_text(m),
     )
 
 
