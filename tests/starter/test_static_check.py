@@ -569,3 +569,33 @@ def test_injection_helper_counts_as_what_causes_a_rollback() -> None:
         _run(_overlays(hidden=files), plan=plan).for_target("gen_hidden"),
         "그 사유를 일으키는 것을 쓰지 않음",
     )
+
+
+def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
+    """2026-11-09 알파: hc2 가 커밋 실패 주입 뒤 `statusCode() < 500` 을 단언해 실패를 알린(500) 구현이 모두 떨어졌다."""
+    plan = HiddenPlan.model_validate(
+        _plan(
+            harness={"pool_size": 8, "concurrency": 32, "connection_timeout_ms": 5000},
+            cases=[{**_plan()["cases"][0], "intended_reason": "rollback_left_success"}],
+        )
+    )
+
+    def msgs(inject: str, check: str) -> list[str]:
+        case = ROLLBACK.replace("INJECT", inject).replace(".isNotEqualTo(200)", check)
+        files = [_f(f"{CASES}/OrderRollbackTest.java", case), render_params(plan, JAVA.manifest)]
+        return static_check(
+            _overlays(hidden=files),
+            template=JAVA,
+            plan=plan,
+            spec=SpecView.from_task(_task()),
+            contract=_contract_with_list(),
+            seed=BACKEND_SEED,
+        ).for_target("gen_hidden")
+
+    inject = 'injectCommitFailure("update", TABLE_ORDER);'
+    for pinned in (".isLessThan(500)", ".isEqualTo(200)", ".isEqualTo(500)", ".isIn(200, 409)"):
+        assert _has(msgs(inject, pinned), "주입한 요청의 응답 코드를 단정"), pinned
+    # '성공 아님'만 보는 단언은 그대로, 주입이 없는 케이스의 상태 단언도 그대로
+    for loose in (".isNotEqualTo(200)", ".isGreaterThanOrEqualTo(400)"):
+        assert not _has(msgs(inject, loose), "응답 코드를 단정"), loose
+    assert not _has(msgs("", ".isEqualTo(200)"), "응답 코드를 단정")

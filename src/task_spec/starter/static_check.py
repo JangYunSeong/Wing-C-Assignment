@@ -705,6 +705,48 @@ def _reason_rules(
     return out
 
 
+_STATUS_ASSERT = re.compile(r"assertThat\(\s*[\w.()]*\bstatusCode\(\)\s*\)")
+# 응답이 그 값(들)이어야 한다는 단언 — '성공 아님'(isNotEqualTo·isGreaterThanOrEqualTo…)은 그대로 둔다
+_STATUS_UPPER = re.compile(r"\.(?:isLessThan|isLessThanOrEqualTo|isBetween|isStrictlyBetween)\(")
+_STATUS_IS = re.compile(r"\.(?:isEqualTo|isIn|isOneOf)\(([^()]*)\)")
+
+
+def _injected_status_asserts(
+    cases: Iterable[GeneratedFile], m: TemplateManifest, contract: TaskContract
+) -> list[str]:
+    """저장 실패를 주입한 케이스가 응답 코드를 특정 값·범위로 단정함 — 계약은 저장 실패 때의 응답을 정하지 않는다.
+    2026-11-09 알파 (2df170e2): hc2 가 커밋 실패 주입 뒤 `statusCode() < 500` 을 rollback_left_success 사유로 단언해,
+    실패를 그대로 알린(500) 흔한 구현·허용 구현 모두 같은 줄에서 떨어졌다 (두 회차). 계약이 선언한 5xx 와 같다고 보는 것은 둔다."""
+    inject = [
+        re.compile(p)
+        for r in m.failure_reasons
+        if "GraderJdbcHarness" in "".join(r.requires)
+        for p in r.requires
+    ]
+    if not inject:
+        return []
+    declared = {r.status for e in contract.endpoints for r in e.responses if r.status >= 500}
+    out: list[str] = []
+    for f in cases:
+        if not any(rx.search(f.content) for rx in inject):
+            continue
+        for stmt in f.content.split(";"):
+            if not _STATUS_ASSERT.search(stmt):
+                continue
+            pinned = _STATUS_UPPER.search(stmt) or any(
+                {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))} - declared
+                for mt in _STATUS_IS.finditer(stmt)
+            )
+            if pinned:
+                out.append(
+                    f"숨은 테스트 {f.path} 가 저장 실패를 주입한 요청의 응답 코드를 단정함: {' '.join(stmt.split())[:120]} — "
+                    "계약은 저장 실패 때의 응답을 정하지 않아, 실패를 그대로 알린(5xx) 올바른 구현도 떨어진다. "
+                    "응답은 보지 않거나 '성공이 아님'(isGreaterThanOrEqualTo(400))만 보고, 사유는 기록 단언에 붙인다"
+                )
+                break
+    return out
+
+
 def _literal_headers(
     cases: Sequence[GeneratedFile], contract: TaskContract, label: str
 ) -> list[str]:
@@ -780,6 +822,7 @@ def _hidden_cases(
     if contract is not None:
         out += _hidden_tables(cases, t, contract)
         out += _literal_headers(cases, contract, "숨은 테스트")
+        out += _injected_status_asserts(cases, m, contract)
     if contract is not None and rules.raw_number_asserts:
         out += _raw_number_asserts(cases, rules.raw_number_asserts, contract)
     bad_codes = sorted(used_codes - m.reason_codes)
