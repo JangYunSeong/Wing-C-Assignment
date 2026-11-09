@@ -98,6 +98,15 @@ def _parse_json(content: str) -> Any:
     return json.loads(_FENCE.sub("", content.strip()))
 
 
+def _violation_kinds(exc: Exception) -> str:
+    """로그용 — 어느 칸이 어떤 종류로 깨졌는지만 (위치·오류 종류). 메시지·값은 넣지 않는다 (원문이 섞일 수 있음)."""
+    if isinstance(exc, ValidationError):
+        return ";".join(
+            f"{'.'.join(map(str, e['loc'])) or '(root)'}:{e['type']}" for e in exc.errors()[:5]
+        )
+    return "json_parse"
+
+
 def _validation_summary(exc: Exception) -> str:
     if isinstance(exc, ValidationError):
         return "; ".join(
@@ -289,9 +298,10 @@ class LLMClient:
                 schema_retry_used = True
                 retries.append("schema_violation")
                 logger.warning(
-                    "llm retry prompt=%s model=%s reason=schema_violation elapsed_ms=%d",
+                    "llm retry prompt=%s model=%s reason=schema_violation where=%s elapsed_ms=%d",
                     prompt.template.ref,
                     prompt.model,
+                    _violation_kinds(exc),
                     int((time.monotonic() - started) * 1000),
                 )
                 messages = [

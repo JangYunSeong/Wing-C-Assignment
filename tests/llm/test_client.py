@@ -98,6 +98,20 @@ async def test_schema_violation_reasks_once() -> None:
     assert len(fake.calls) == 2
 
 
+async def test_schema_violation_log_names_where_without_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 어디가 깨졌는지 로그로 보이게 — 칸 위치·오류 종류만, 값·메시지는 남기지 않는다 (2026-11-09)
+    fake = FakeBackend().push(
+        Completion('{"claims": [{"quote": "가상 원문 조각"}]}'), Completion(GOOD)
+    )
+    with caplog.at_level("WARNING"):
+        await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    line = next(r.getMessage() for r in caplog.records if "schema_violation" in r.getMessage())
+    assert "where=claims.0." in line and ":missing" in line
+    assert "가상 원문" not in line
+
+
 async def test_schema_violation_twice_raises_without_leaking_content() -> None:
     fake = FakeBackend().push(Completion("not json 가상 원문"), Completion('{"claims": "x"}'))
     with pytest.raises(SchemaViolation) as ei:
