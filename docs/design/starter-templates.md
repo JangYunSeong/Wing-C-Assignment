@@ -226,7 +226,13 @@ templates/<직군>/<스택>/CURRENT
 3. 프론트엔드 React + TS. — 진행 중 (2026-11-09, `frontend/react-vite-ts` v1): 템플릿·하네스(요청을 붙잡았다 테스트가 정한 순서로 응답)·자체 점검,
    파이프라인 연결(직군 → 템플릿 선택 · 계약 도우미 `contract.ts` · Node 검증기 = tsc 타입 검사 + vitest, 손 예시 판정 재현).
    jest-dom 매처는 `expect` 메시지를 버려 실패 사유가 사라지므로 사유는 기본 매처에만 (manifest `reason_not_on`).
-   남은 것: 프론트엔드용 생성기 프롬프트 · 수리 안내 문구의 Java 이름 · 소재 시드 · 상류 평가·알파 · Node 기반 응시용·채점용 이미지.
+   3단계(2026-11-09): 템플릿이 생성기 프롬프트를 고른다(manifest `prompt_tasks` → `prompts/gen_*_react/`, Java 프롬프트는 그대로) ·
+   수리 문구의 스택 이름(manifest `repair_terms`) · 기능형 재료 `sw.frontend.stale-response`(react.dev 문서, 사례 2건 허용 + 템플릿별 선택) ·
+   재료가 숨은 요구의 실패 사유를 선언(`feature.reasons`) · `contract.ts` 에 계약의 응답 타입(모양이 다르면 tsc 가 잡음).
+   상류 평가 3공고 끝까지 3/3. 알파 3공고(KB·네이버·현대오토에버) 모두 빌드 review — 흔한 구현 3케이스가 의도한 사유로 실패,
+   허용 구현 숨은·공개 전부 통과, 시작 코드는 숨은 케이스 0개 통과 (회당 $0.15~0.17). 고친 것: 응답 타입(tsc)·test id 로만 찾기·
+   구현이 테스트 폴더를 import 금지·사유별 작성법 — 알파 실패 원인에서 하나씩.
+   남은 것: Node 기반 응시용·채점용 이미지 · 다른 프론트 함정(중복 요청·낙관적 갱신) 재료 · 실제 브라우저(Playwright) 층.
 4. 백엔드 TypeScript Next.js — Route Handler·Server Action + Prisma (+ 프론트와 공유할 Node 빌드 이미지). NestJS 는 필요할 때.
 5. AI 엔지니어 Python 서빙.
 6. 데이터 엔지니어 PySpark/SQL.

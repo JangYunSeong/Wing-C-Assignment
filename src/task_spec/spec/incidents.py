@@ -1,26 +1,61 @@
-"""공개 사례 읽기 (incidents/public_v1). 직군마다 1건 — 부서 결정적 사건이 생기면 그쪽이 우선한다."""
+"""공개 사례 읽기 (incidents/public_v1). 직군마다 기본 사례 1건(`<직군>.json`) — 부서 결정적 사건이 생기면 그쪽이 우선한다.
+
+기능형 과제용 사례를 더 둘 수 있다 (`<직군>.<이름>.json`, `templates` 에 그 재료를 시험할 수 있는 템플릿) — 기능형 과제는
+`feature_incident` 로 직군 템플릿이 시험할 수 있는 사례를 고른다 [2026-11-09 사용자 결정: 2건 허용 + 템플릿별 선택].
+"""
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from pathlib import Path
 
 from task_spec.schemas import PublicIncident
+from task_spec.starter.templates import TEMPLATE_FOR_SUB
 
 NONE = "(없음)"
 
 
-def load_incidents(root: Path) -> dict[str, PublicIncident]:
-    """직군 → 사례. 폴더가 없으면 빈 dict (사례 없이 v1 처럼 생성)."""
+class IncidentCatalog(dict[str, PublicIncident]):
+    """직군 → 기본 사례 (dict 그대로 쓴다). `alternates` 는 직군 → 기능형 과제용 추가 사례 (feature_incident 가 고른다)."""
+
+    def __init__(self, alternates: Mapping[str, list[PublicIncident]] | None = None) -> None:
+        super().__init__()
+        self.alternates: dict[str, list[PublicIncident]] = dict(alternates or {})
+
+
+def load_incidents(root: Path) -> IncidentCatalog:
+    """직군 → 기본 사례(`<직군>.json`). 그 밖의 파일은 기능형 과제용 추가 사례 — `templates` 가 비면 거부.
+    폴더가 없으면 빈 카탈로그 (사례 없이 v1 처럼 생성)."""
+    out = IncidentCatalog()
     if not root.is_dir():
-        return {}
-    out: dict[str, PublicIncident] = {}
+        return out
     for f in sorted(root.glob("*.json")):
         inc = PublicIncident.model_validate_json(f.read_text("utf-8"))
+        if f.stem != inc.sub:
+            if not inc.templates:
+                raise ValueError(
+                    f"직군 {inc.sub} 의 추가 사례 {f.name} 에 templates 가 없습니다 — 기본 사례는 {inc.sub}.json"
+                )
+            out.alternates.setdefault(inc.sub, []).append(inc)
+            continue
         if inc.sub in out:
             raise ValueError(f"직군 {inc.sub} 사례가 둘 이상입니다: {f.name}")
         out[inc.sub] = inc
     return out
+
+
+def feature_incident(
+    incidents: Mapping[str, PublicIncident] | None, sub: str
+) -> PublicIncident | None:
+    """기능형 과제의 사례 — 직군 템플릿(TEMPLATE_FOR_SUB)이 시험할 수 있는 추가 사례가 있으면 그것, 없으면 기본 사례."""
+    if not incidents:
+        return None
+    template = TEMPLATE_FOR_SUB.get(sub)
+    for inc in getattr(incidents, "alternates", {}).get(sub, []):
+        if template is not None and template in inc.templates and inc.feature is not None:
+            return inc
+    return incidents.get(sub)
 
 
 def incident_block(inc: PublicIncident | None) -> str:

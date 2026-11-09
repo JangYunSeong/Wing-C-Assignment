@@ -59,6 +59,10 @@ class FeatureSeed(Schema):
     starter: str | None = None  # 검증된 시작 코드 예제 (data/feature_starters/<id>) — 없으면 명세만
     reviewed: bool = False  # 사람이 검토했는지 — false 면 명세 review_flags 에 남긴다
     contract_needs: list[ContractNeed] = Field(default_factory=list)  # 계약에 꼭 있어야 할 요소
+    # 이 숨은 요구를 어긴 흔한 구현이 실패할 때의 사유 코드 (템플릿 failure_reasons 중) — 비면 템플릿 목록 전체.
+    # 2026-11-09 React 상류 평가: 계약 계획이 템플릿 사유 목록에서 숨은 요구(응답 경쟁)와 무관한 duplicate_request 를 골라
+    # 올바른 구현도 떨어지는 케이스(같은 검색어를 두 번 입력하면 요청 1번)를 만들었다. 숨은 요구는 재료마다 다르므로 재료에 선언한다.
+    reasons: list[str] = Field(default_factory=list)
 
 
 class PublicIncident(Schema):
@@ -95,6 +99,10 @@ class PublicIncident(Schema):
         default_factory=list
     )  # 원문의 오류 문구·지표 값 — 생성 입력에 넣지 않고, 과제에 2개 이상 함께 나오면 복사로 본다
     task_pattern: Literal["qa_mutation"] | None = None
+    # 이 사례의 기능형 재료(feature)를 숨은 테스트로 시험할 수 있는 템플릿 (templates/<id>). 직군 기본 사례(<직군>.json)가 아닌 사례는 적어야 한다.
+    # 2026-11-09 사용자 결정: 직군마다 여러 건 허용 — 기능형 과제는 직군 템플릿이 시험할 수 있는 사례를, 디버깅형은 기본 사례를 쓴다
+    # (프론트엔드 기본 사례 '여러 탭이 같은 로컬 DB 에 씀'은 실제 브라우저가 필요해 jsdom 템플릿으로 시험할 수 없다).
+    templates: list[str] = Field(default_factory=list)
     feature: FeatureSeed | None = (
         None  # 기능 개발형 재료 (없으면 그 직군은 기능형 기본값 대상이 아님)
     )

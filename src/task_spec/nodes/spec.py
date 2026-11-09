@@ -35,7 +35,7 @@ from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
 from task_spec.spec.feature import TASK as FEATURE_TASK
 from task_spec.spec.feature import apply_feature, draft_feature_task, uses_seed
-from task_spec.spec.incidents import feature_ref, incident_ref
+from task_spec.spec.incidents import feature_incident, feature_ref, incident_ref
 from task_spec.spec.kind import choose_task_kind
 from task_spec.spec.questions import TASK as Q_TASK
 from task_spec.spec.questions import build_slot_verifications
@@ -144,7 +144,7 @@ def make_draft_spec(
             )
             redo_common = revise is not None and revise.revise_target != "verification"
             # v2 기능형은 그 직군 공개 사례에 기능형 재료(feature)가 있어야 한다 — 없으면 기본값 규칙에서 뺀다
-            seed_ok = bool(incidents and (inc0 := incidents.get(p.sub or "")) and inc0.feature)
+            seed_ok = bool((inc0 := feature_incident(incidents, p.sub or "")) and inc0.feature)
             seed_needed = feature_ready and prompts is not None and uses_seed(prompts)
             kind, kind_flags = await choose_kind(
                 p,

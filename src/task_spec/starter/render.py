@@ -106,7 +106,9 @@ def contract_markdown(
         if m.foreign_keys:
             out += ["", "외래 키: " + " · ".join(f"`{a}` → `{b}`" for a, b in m.fk_pairs())]
         out.append("")
-    if tables is not None:
+    if (
+        tables is not None and tables.style != "none"
+    ):  # DB 테이블이 없는 템플릿(프론트엔드)에는 외래 키가 없다
         out += ["외래 키는 위 엔티티에 적힌 것만 둔다 (적힌 것이 없으면 두지 않는다).", ""]
     if contract.fixtures:
         out += ["### 입력 환경", ""]

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 from task_spec.schemas import HiddenPlan, TargetRun, TestResult, VerifyReport
 from task_spec.schemas.build import GeneratorName
+from task_spec.schemas.template import RepairTerms
 from task_spec.starter.static_check import Overlay
 
 MAX_MESSAGE = 220
@@ -296,6 +297,7 @@ def _starter_solves(
     plan: HiddenPlan,
     regen_counts: Mapping[str, int],
     starter: TargetRun | None = None,
+    terms: RepairTerms | None = None,
 ) -> tuple[list[RepairAction], list[str]]:
     """시작 코드 그대로(지원자가 아무것도 안 함)로 숨은 케이스를 **하나라도** 통과 → 새 기능이 시작 코드에 들어 있다 → `gen_starter`.
     이미 다시 만든 시작 코드가 또 통과하면 막지 않고 표시만 — 그 케이스가 지원자의 작업을 재지 않을 수 있다 (사람 확인).
@@ -334,9 +336,7 @@ def _starter_solves(
                 "②'",
                 f"기능 없는 시작 코드가 숨은 케이스 {ids} 통과 — 숨은 테스트가 기능 단계에 닿지 않음",
                 f"시작 코드 그대로(새 기능 없음 — 공개 테스트 {', '.join(missing)} 실패)로 숨은 케이스 {ids} 를 통과했다 — 이 케이스는 "
-                "아무것도 구현하지 않아도 통과한다. 요청이 기능 단계(저장·기록)에 닿았는지 먼저 확인한다: 규칙·권한을 통과하는 "
-                "값(ContractCase 의 NEXT_OK_…·HEADER_…_OK·okHeaders())으로 요청하고, 응답 상태를 단언한 뒤, '없다'만이 아니라 "
-                "있어야 할 결과(실패 기록 등)도 확인한다.",
+                "아무것도 구현하지 않아도 통과한다. " + (terms or RepairTerms()).feature_first,
             )
         ], []
     if regen_counts.get("gen_starter", 0) >= 1:
@@ -358,7 +358,10 @@ def _starter_solves(
 
 
 def _ref_setup(
-    run: TargetRun, overlays: Mapping[str, Overlay], shared: str = ""
+    run: TargetRun,
+    overlays: Mapping[str, Overlay],
+    shared: str = "",
+    terms: RepairTerms | None = None,
 ) -> list[RepairAction]:
     if run.setup == "timeout":
         return [
@@ -401,7 +404,7 @@ def _ref_setup(
                     "",
                     "setup",
                     "공개 테스트 컴파일 오류",
-                    "공개 테스트가 컴파일되지 않는다. 문서와 PublicCase 에 있는 이름·형식만 쓴다:\n"
+                    f"공개 테스트가 컴파일되지 않는다. 문서와 {(terms or RepairTerms()).public_helper} 에 있는 이름·형식만 쓴다:\n"
                     + text
                     + SAME_KIND_ALL_FILES,
                     compile=True,
@@ -563,7 +566,11 @@ def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAc
 
 
 def _gate3(
-    run: TargetRun, plan: HiddenPlan, missed: set[str], regen_counts: Mapping[str, int]
+    run: TargetRun,
+    plan: HiddenPlan,
+    missed: set[str],
+    regen_counts: Mapping[str, int],
+    terms: RepairTerms | None = None,
 ) -> list[RepairAction]:
     passed = [
         c
@@ -617,7 +624,7 @@ def _gate3(
                         "③",
                         f"{c.case_id} 사유 {got} ≠ 의도 {c.intended_reason} ({run.target})",
                         f"숨은 케이스 {c.case_id} 가 흔한 구현에서 의도한 사유({c.intended_reason}) 대신 {got} 로 실패했다: "
-                        f"{_short(r.message)} — 의도한 실패를 가장 먼저 확인하는 단언 순서로, 사유는 Reasons.as 로 붙인다.",
+                        f"{_short(r.message)} — 의도한 실패를 가장 먼저 확인하는 단언 순서로, 사유는 {(terms or RepairTerms()).reason_call} 로 붙인다.",
                     )
                 )
         elif r.result != "PASS":  # ③' 지킨 숨은 요구의 케이스는 통과해야 한다
@@ -727,6 +734,7 @@ def assign(
     missed_traps: Mapping[str, set[str]],
     regen_counts: Mapping[str, int] | None = None,
     shared_paths: Collection[str] = (),
+    terms: RepairTerms | None = None,
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
@@ -749,7 +757,7 @@ def assign(
         return res
     bare = next((r for r in report.runs if r.kind == "starter_hidden"), None)
     if bare is not None:
-        acts, flags = _starter_solves(bare, plan, counts, starter)
+        acts, flags = _starter_solves(bare, plan, counts, starter, terms)
         res.flags += flags
         if acts:  # 참조 구현은 새 시작 코드 위에 처음부터 다시 쓰이므로 이번 결과는 보지 않는다
             res.actions = acts
@@ -766,7 +774,7 @@ def assign(
     )
     for run in refs:
         if run.setup != "ok":
-            actions += _ref_setup(run, overlays, boot_note)
+            actions += _ref_setup(run, overlays, boot_note, terms)
             continue
         ready.append(run)
     shared = _shared_note(ready, overlays, shared_paths)
@@ -782,7 +790,7 @@ def assign(
     actions += _hidden_broken(judged, plan)
     for run in judged:
         if run.kind == "ref_naive":
-            actions += _gate3(run, plan, missed_traps.get(run.target, set()), counts)
+            actions += _gate3(run, plan, missed_traps.get(run.target, set()), counts, terms)
     accepted = [r for r in judged if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(

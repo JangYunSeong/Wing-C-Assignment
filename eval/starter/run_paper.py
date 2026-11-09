@@ -28,7 +28,7 @@ from task_spec.nodes.starter.plan_contract import PlanResult, plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
 from task_spec.schemas.template import TemplateManifest
-from task_spec.spec.incidents import load_incidents
+from task_spec.spec.incidents import feature_incident, load_incidents
 from task_spec.starter.seed_rows import allocate_rows, seed_markdown
 from task_spec.starter.tables import contract_tables
 from task_spec.starter.templates import Template, select_template
@@ -194,7 +194,7 @@ async def main() -> None:
             llm=llm,
             prompts=prompts,
             ontology_version="paper",
-            seed=incidents[sub].feature,
+            seed=inc.feature if (inc := feature_incident(incidents, sub)) else None,
         )
         row = summarize(sub, template, task, res)
         rows.append(row)

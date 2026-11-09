@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel
@@ -43,7 +44,7 @@ from task_spec.schemas import (
     TaskItem,
 )
 from task_spec.schemas.build import FileKind
-from task_spec.schemas.template import FailureReason, SlotKind, TemplateManifest
+from task_spec.schemas.template import FailureReason, HiddenHelper, SlotKind, TemplateManifest
 from task_spec.starter.config_merge import merge_config
 from task_spec.starter.contract import SpecView, existing_endpoints
 from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
@@ -52,7 +53,8 @@ from task_spec.starter.render import contract_markdown, public_scenario, render_
 from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
-from task_spec.starter.templates import Template
+from task_spec.starter.templates import Template, is_java
+from task_spec.starter.ts_helpers import ensure_vitest_imports
 
 NONE = "(없음)"
 FLAG_FAILED = "시작 코드 생성 실패 (LLM 응답 없음·형식 오류): "
@@ -185,6 +187,27 @@ def _lines(items: Sequence[str]) -> str:
     return "\n".join(items) or NONE
 
 
+def helper_block(
+    m: TemplateManifest, helper: GeneratedFile, rule: HiddenHelper | None, what: str
+) -> str:
+    """하네스 문서 끝에 붙이는 이 과제의 도우미 소스 — Java 는 클래스 이름·```java, TypeScript 는 파일 이름·```ts."""
+    if is_java(m):
+        name, lang = (rule.class_name if rule else ""), "java"
+    else:
+        name, lang = PurePosixPath(helper.path).name, "ts"
+    return (
+        f"\n\n## {name} — 이 과제의 {what} "
+        f"(`{helper.path}`, 빌드 파이프라인이 만든다 — 쓰지 않는다)\n\n```{lang}\n{helper.content}```\n"
+    )
+
+
+def test_import_fix(
+    m: TemplateManifest,
+) -> Callable[[list[GeneratedFile]], tuple[list[GeneratedFile], list[str]]] | None:
+    """TypeScript 템플릿의 숨은·공개 테스트 — 빠진 vitest import 를 코드가 채운다 (Java 는 없음)."""
+    return None if is_java(m) else ensure_vitest_imports
+
+
 def public_text(public: Overlay | None) -> str:
     """생성기 입력의 공개 테스트 — 테스트 먼저(TDD): 시작 코드·참조 구현이 이것을 보고 맞춘다 (숨은 테스트는 보지 않음)."""
     return files_text(public.files) if public is not None else NONE
@@ -227,10 +250,7 @@ def public_input(
     api = doc.read_text("utf-8") if doc.is_file() else NONE
     helper = render_contract_case(contract, plan, m, audience="public")
     if helper is not None:
-        api += (
-            f"\n\n## {m.public_helper.class_name if m.public_helper else ''} — 이 과제의 공개 테스트 도우미 "
-            f"(`{helper.path}`, 빌드 파이프라인이 만든다 — 쓰지 않는다)\n\n```java\n{helper.content}```\n"
-        )
+        api += helper_block(m, helper, m.public_helper, "공개 테스트 도우미")
     return GenPublicInput(
         stack=stack_text(m),
         harness_api=api,
@@ -256,11 +276,8 @@ def hidden_input(
     helper = render_contract_case(contract, plan, m)
     if (
         helper is not None
-    ):  # 이 과제의 계약 도우미 — 숨은 케이스가 상속한다 (starter/hidden_helpers.py)
-        api += (
-            f"\n\n## {m.hidden_helper.class_name if m.hidden_helper else ''} — 이 과제의 계약 도우미 "
-            f"(`{helper.path}`, 빌드 파이프라인이 만든다 — 쓰지 않는다)\n\n```java\n{helper.content}```\n"
-        )
+    ):  # 이 과제의 계약 도우미 — 숨은 케이스가 상속(Java)·import(TypeScript)한다 (starter/hidden_helpers.py)
+        api += helper_block(m, helper, m.hidden_helper, "계약 도우미")
     return GenHiddenInputV2(
         stack=stack_text(m),
         harness_api=api,
@@ -406,11 +423,13 @@ async def _generate(
     note: str | None = None,
     previous: Overlay | None = None,
     fix: Callable[[list[GeneratedFile]], tuple[list[GeneratedFile], list[str]]] | None = None,
+    prompt_name: str | None = None,
 ) -> GenResult:
     """생성 → (fix: 코드가 고칠 수 있는 것은 고침) → 정적 검사 → 1회 재요청. 프롬프트가 previous_files 를 받으면(수리판) 이전 출력을 주고 고칠 파일만 받아 합친다 —
     밖에서 준 이전 출력(수리 루프)이든 이 함수 안의 첫 답(정적 검사 재요청)이든 같다."""
     res = GenResult(task=task_name)
-    prompt_t = prompts.get(task_name)
+    # 템플릿이 정한 프롬프트 (manifest prompt_tasks) — 없으면 생성기 이름 그대로
+    prompt_t = prompts.get(prompt_name or task_name)
     repairable = "previous_files" in prompt_t.input_model.model_fields
     prev = previous if repairable else None
     best: tuple[Overlay, list[str], list[str]] | None = None
@@ -533,6 +552,10 @@ class BuildInputs:
                 notes.append(f"{rule.path} 를 뺌 — 시드는 시작 코드의 계약 시드를 쓴다")
                 files = rest
         files, fixed = ensure_statements(files, m)
+        # 기존 기능 테스트의 빠진 vitest import (starter/ts_helpers.ensure_vitest_imports)
+        if not is_java(m):
+            files, more = ensure_vitest_imports(files)
+            fixed += more
         return files, notes + fixed
 
 
@@ -561,6 +584,7 @@ async def gen_starter(
         note=note,
         previous=previous,
         fix=b.fix_starter,
+        prompt_name=b.template.manifest.prompt_tasks.get("gen_starter"),
     )
 
 
@@ -599,6 +623,8 @@ async def gen_public(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
+        prompt_name=b.template.manifest.prompt_tasks.get("gen_public"),
+        fix=test_import_fix(m),
     )
 
 
@@ -630,6 +656,8 @@ async def gen_hidden(
         ontology_version=ontology_version,
         note=note,
         previous=previous,
+        prompt_name=b.template.manifest.prompt_tasks.get("gen_hidden"),
+        fix=test_import_fix(b.template.manifest),
     )
 
 
@@ -665,6 +693,7 @@ async def gen_naive(
         note=note,
         previous=previous,
         fix=lambda fs: b.fix(fs, starter),
+        prompt_name=b.template.manifest.prompt_tasks.get("gen_naive"),
     )
 
 
@@ -691,4 +720,5 @@ async def gen_accepted(
         note=note,
         previous=previous,
         fix=lambda fs: b.fix(fs, starter),
+        prompt_name=b.template.manifest.prompt_tasks.get("gen_accepted"),
     )

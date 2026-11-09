@@ -2,4 +2,4 @@
 export { api, flush, type Call, type CallHandle, type Method, type Reply } from './grader-api';
 export { params } from './grader-params';
 export { reason, tag } from './grader-reasons';
-export { byTestId, renderApp, textOf, textsByRole } from './grader-ui';
+export { byTestId, openRoute, renderApp, textOf, textsByRole } from './grader-ui';

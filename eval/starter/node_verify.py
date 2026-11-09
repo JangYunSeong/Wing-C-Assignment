@@ -314,7 +314,12 @@ class NodeVerifier:
                 if report is None:  # vitest 자체가 못 떴다 (설정·의존성) — 앱 기동 실패와 같은 자리
                     setup, detail = "boot_error", _log_tail(log)
                     break
-                tests += vitest_results(report, dest, self.template, hidden)
+                got = vitest_results(report, dest, self.template, hidden)
+                tests += got
+                with log.open("a", encoding="utf-8") as fh:  # 실패 메시지 — 보고서 요약에는 결과만 남는다
+                    for t in got:
+                        if t.result != "PASS":
+                            fh.write(f"## {t.group} {t.name} {t.result} [{t.reason or '-'}] {t.message}\n")
         shutil.rmtree(dest, ignore_errors=True)
         return TargetRun.model_validate(
             {
