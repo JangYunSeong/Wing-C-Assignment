@@ -73,12 +73,30 @@ def header_values(contract: TaskContract) -> list[HeaderValues]:
     return out
 
 
+def _placeholders(contract: TaskContract, header: str) -> list[str]:
+    """값 자리에 실제 값 대신 쓴 자리표시자·설명 (`X-Requester-Id=<MASTER 등급 멤버의 id>`)."""
+    rx = re.compile(r"(?<![\w-])" + re.escape(header) + r"\s*[=:]\s*(<[^>]{1,60}>)", re.I)
+    return [
+        f"{t.test_id} 의 {m.group(1)}" for t in contract.public_tests for m in rx.finditer(t.checks)
+    ]
+
+
 def header_problems(contract: TaskContract) -> list[str]:
     """권한 거절(401·403)을 선언한 엔드포인트의 헤더인데 통과하는 값 예시가 없음 → 재요청 사유 (계약 검사 §3.3).
-    값이 없으면 숨은·공개 테스트가 요청자를 지어내 요청이 거절에서 끝난다 (2026-11-08 알파: 계약 5개 중 2개가 '권한 없는 요청자'만 글로)."""
-    return [
-        f"헤더 {h.name} 를 받는 엔드포인트가 권한 거절({'·'.join(map(str, DENIED))})을 내는데 통과하는 값의 예시가 없음 — "
-        f"공개 테스트 checks 에 `{h.name}=<통과하는 값> → 200` 과 `{h.name}=<거절되는 값> → 403` 처럼 값과 결과를 함께 적는다"
-        for h in header_values(contract)
-        if h.ok is None and _statuses(contract, h.name) & set(DENIED)
-    ]
+    값이 없으면 숨은·공개 테스트가 요청자를 지어내 요청이 거절에서 끝난다 (2026-11-08 알파: 계약 5개 중 2개가 '권한 없는 요청자'만 글로).
+
+    2026-11-09 알파(cap2): 재요청 문구가 `<통과하는 값>` 꼴이라 답이 `<MASTER 등급 멤버의 memberId>` 로 돌아왔고, 그 권한을
+    통과하는 행이 시드에 없었다 — 문구는 실제 값 예시와 시드 행을 함께 말한다."""
+    out: list[str] = []
+    for h in header_values(contract):
+        if h.ok is not None or not _statuses(contract, h.name) & set(DENIED):
+            continue
+        msg = (
+            f"헤더 {h.name} 를 받는 엔드포인트가 권한 거절({'·'.join(map(str, DENIED))})을 내는데 통과하는 값의 예시가 없음 — "
+            f"공개 테스트 checks 에 `{h.name}=1 → 200`, `{h.name}=7 → 403` 처럼 실제 값과 결과를 함께 적는다. "
+            "권한이 요청자의 데이터(등급·소유 등)에 달렸으면 조건을 만족하는 행과 만족하지 않는 행을 시드 groups 에 두고 그 행의 값을 쓴다"
+        )
+        if ph := _placeholders(contract, h.name):
+            msg += f" (값 자리에 자리표시자를 씀: {'; '.join(ph[:3])} — 값으로 읽지 못함)"
+        out.append(msg)
+    return out
