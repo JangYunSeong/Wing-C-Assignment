@@ -31,7 +31,7 @@ from typing import Any
 from eval.spec.run_feature import ModelOverride, make_client, run_one, sample_md
 from eval.starter.gradle_verify import assemble
 from eval.starter.gradle_verify import write_overlay as _write
-from eval.starter.run_generate import PinnedVersions, _run_row
+from eval.starter.run_generate import PinnedVersions, _run_row, usage_by_prompt
 from eval.starter.run_plan_contract import JAVA
 from eval.starter.verifiers import verifier_for
 from task_spec.config import Settings
@@ -254,6 +254,7 @@ async def main() -> None:
         "regen_counts": built_out.regen_counts,
         "repairs": [r.model_dump() for r in built_out.repairs],
         "review_flags": built_out.review_flags,
+        "usage": usage_by_prompt(built_out.provenance),
         "adjustments": built_out.adjustments,
         "verify": [[_run_row(r) for r in rep.runs] for rep in built_out.reports],
     }

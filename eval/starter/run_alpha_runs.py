@@ -26,7 +26,7 @@ from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client
 from eval.starter.gradle_verify import write_overlay as _write
-from eval.starter.run_generate import PinnedVersions, _run_row
+from eval.starter.run_generate import PinnedVersions, _run_row, usage_by_prompt
 from eval.starter.run_paper import template_for
 from eval.starter.verifiers import verifier_for
 from task_spec.nodes.starter.build import build_and_repair
@@ -114,6 +114,7 @@ async def main() -> None:
                 "cost_usd": cost,
                 "seconds": round(time.monotonic() - t0, 1),
                 "model": res.provenance[0].model if res.provenance else None,
+                "usage": usage_by_prompt(res.provenance),
                 "first_problems": res.first_problems,
                 "problems": res.problems,
                 "spec_gaps": res.spec_gaps,
@@ -185,6 +186,7 @@ async def main() -> None:
                 "regen_counts": res.regen_counts,
                 "repairs": [r.model_dump() for r in res.repairs],
                 "review_flags": res.review_flags,
+                "usage": usage_by_prompt(res.provenance),
                 "verify": [[_run_row(r) for r in rep.runs] for rep in res.reports],
             }
             (lo / "report.json").write_text(json.dumps(row, ensure_ascii=False, indent=1), "utf-8")
@@ -193,6 +195,10 @@ async def main() -> None:
                 f"  루프 {n}: {res.status} · 회차 {res.rounds} · 호출 {len(res.provenance)} · ${res.cost_usd} · {seconds}s",
                 flush=True,
             )
+            for name, u in row["usage"].items():
+                print(
+                    f"    토큰 {name}: 호출 {u['calls']} · 재시도 {u['retries']} · 출력 {u['out']}(추론 {u['reasoning']}) · 최대 {u['max_out']}"
+                )
             for rep in res.reports[-1:]:
                 for r in rep.runs:
                     print(f"    {r.target} {r.setup} {_run_row(r)['tests']}")

@@ -53,6 +53,33 @@ OUT = ROOT / "data" / "eval" / "build"
 VERSION = "smoke"
 
 
+def usage_by_prompt(provenance: list[Any]) -> dict[str, dict[str, Any]]:
+    """프롬프트별 호출·재시도·토큰(입력·출력·그중 추론)·비용 — 출력 상한에 어디서 걸리는지 리포트에서 바로 보게 (2026-11-09:
+    빈 응답이 본문이 아니라 추론 토큰 폭주였음을 따로 재야 알았다). 실패한 호출도 provenance 가 있으면 들어간다."""
+    out: dict[str, dict[str, Any]] = {}
+    for p in provenance:
+        row = out.setdefault(
+            f"{p.prompt} {p.model}",
+            {
+                "calls": 0,
+                "retries": 0,
+                "in": 0,
+                "out": 0,
+                "reasoning": 0,
+                "max_out": 0,
+                "cost_usd": 0.0,
+            },
+        )
+        row["calls"] += 1
+        row["retries"] += p.retries
+        row["in"] += p.tokens.in_
+        row["out"] += p.tokens.out
+        row["reasoning"] += p.tokens.reasoning
+        row["max_out"] = max(row["max_out"], p.tokens.out)
+        row["cost_usd"] = round(row["cost_usd"] + (p.cost_usd or 0.0), 4)
+    return out
+
+
 class PinnedVersions:
     """지정한 프롬프트만 버전 고정 (CURRENT 는 평가 뒤에 바꾼다)."""
 
