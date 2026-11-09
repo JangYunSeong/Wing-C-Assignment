@@ -125,6 +125,29 @@ def test_seed_values_respect_enumerated_fields() -> None:
     assert not seed_problems(TaskContract.model_validate(c))
 
 
+def test_lookup_key_fixed_for_many_rows() -> None:
+    # 경로 변수로 한 행을 찾는데 그룹이 그 필드를 모든 행에 같은 값으로 — 여러 건 조회 오류 (alpha-cap1)
+    c = _contract()
+    c["entities"][0]["fields"] += [
+        {"name": "shopId", "type": "integer", "refs": ["r1"]},
+        {"name": "orderNo", "type": "integer", "refs": ["r1"]},
+    ]
+    c["endpoints"][0]["path"] = "/shops/{shopId}/orders/{orderNo}/status"
+    c["seed"] = [_seed(200, (1, 200, {"status": "READY", "shopId": 7, "orderNo": 1}))]
+    got = seed_problems(TaskContract.model_validate(c))
+    assert _has(got, "범위 1~200", "shopId, orderNo", "orderNo 는 values 에서 뺀다"), got
+    # 하나라도 행마다 다르면(코드 기본값), 한 행 그룹이면, id 로 찾으면 괜찮다
+    for seed in (
+        _seed(200, (1, 200, {"status": "READY", "shopId": 7})),
+        _seed(1, (1, 1, {"shopId": 7, "orderNo": 1})),
+    ):
+        c["seed"] = [seed]
+        assert not seed_problems(TaskContract.model_validate(c))
+    c["endpoints"][0]["path"] = "/shops/{shopId}/orders/{id}/status"
+    c["seed"] = [_seed(200, (1, 200, {"shopId": 7, "orderNo": 1}))]
+    assert not seed_problems(TaskContract.model_validate(c))
+
+
 def test_two_rules_for_one_entity() -> None:
     assert _has(seed_problems(_with_seed(TWO_GROUPS, TWO_GROUPS)), "둘 이상")
 
