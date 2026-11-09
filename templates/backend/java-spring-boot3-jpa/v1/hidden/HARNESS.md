@@ -12,8 +12,12 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
   도우미로 이 문서 끝에 소스가 붙어 있다 — 케이스별 id 범위 상수(`HC1_FIRST` …), 계약 테이블 이름(`TABLE_…`), 처음 값별 다음 상태
   (`NEXT_OK_<엔티티>_<처음 값>` 허용되는 값 · `NEXT_BAD_…` 거절되는 값 — 계약 state 칸에서), 계약 API 호출 함수와 200 본문을 계약 모양
   (목록/객체)대로 읽는 `…Body` 함수, 운영 피크 `peak(…)`, 오류 주입 `injectCommitFailure(verb, TABLE_…)`·`injectStatementFailure(verb, TABLE_…)`,
-  숫자 비교 `num(…)`. **id·경로·응답 파싱·상태 전이·동시 요청 시간 한도를
-  손으로 쓰지 말고 이것들을 쓴다** — 계약과 어긋날 수 없게. `ContractCase.java` 와 조절값 파일(`grader-params.properties`)은 쓰지 않는다
+  숫자 비교 `num(…)`, 요청 헤더 값(`HEADER_<헤더>_OK` 규칙·권한을 통과하는 값 · `HEADER_<헤더>_DENIED` 권한이 거절되는 값 —
+  계약 공개 테스트 예시에서)과 통과 값 묶음 `okHeaders()`. **id·경로·응답 파싱·상태 전이·동시 요청 시간 한도·요청 헤더 값을
+  손으로 쓰지 말고 이것들을 쓴다** — 계약과 어긋날 수 없게.
+- **요청 헤더 값(요청자 등)을 지어내지 않는다.** 기능 단계(저장·기록)에 닿아야 하는 요청은 `okHeaders()`, 권한 거절을 시험하는
+  요청만 `HEADER_<헤더>_DENIED` 를 쓴다. 지어낸 값은 권한에서 거절돼 요청이 기능에 닿지 못하고, 기능 없는 시작 코드도 케이스를 통과한다.
+  도우미에 헤더 상수가 없으면(계약에 헤더가 없는 엔드포인트) 헤더 자리에 `Map.of()` 를 넘긴다. `ContractCase.java` 와 조절값 파일(`grader-params.properties`)은 쓰지 않는다
   (빌드 파이프라인이 쓴다).
 - 지원자 구현(`com.example.service.*` 중 `grading` 밖)을 import 하지 않는다 — 공개 계약(HTTP)으로만 판정.
 
@@ -102,7 +106,7 @@ class PeakBurstTest extends ContractCase {
         GraderJdbcHarness.queryDelayMs = GraderParams.longValue("query_delay_ms", 20);
         try {
             List<Burst.Outcome> outcomes = peak(i -> 200,
-                    i -> patchItemsId(HC1_FIRST + i, Map.of("X-Actor", "grader"), "{\"state\":\"" + NEXT_OK_ITEM_A + "\"}").statusCode());
+                    i -> patchItemsId(HC1_FIRST + i, okHeaders(), "{\"state\":\"" + NEXT_OK_ITEM_A + "\"}").statusCode());
             diag("%s", Burst.summary("hc1", 1, outcomes));
             assertThat(Burst.failures(outcomes)).as(Reasons.as("pool_acquire_timeout", "시간 초과·서버 오류 수")).isZero();
             assertThat(Burst.mismatches(outcomes)).as("그 밖의 기대와 다른 응답 수").isZero();
