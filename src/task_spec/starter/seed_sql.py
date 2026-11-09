@@ -127,6 +127,14 @@ def table_columns(block: str) -> dict[str, str]:
     return out
 
 
+def declared_name(cols: dict[str, str], name: str) -> str:
+    """스키마가 그 열을 따옴표로 선언했으면 그 표기 그대로 (`"rank"`), 아니면 이름 그대로.
+    2026-11-09 알파 (2df170e2): 시작 코드가 `"rank"` 로 선언(엔티티도 같은 표기)했는데 시드가 따옴표 없이 넣어 H2 가 대문자 RANK 를
+    찾아 기동 실패 — 시작 코드를 다시 만들어도 시드는 코드가 쓰므로 같은 오류가 되풀이됐다."""
+    first = cols.get(name.lower(), "").split()
+    return first[0] if first and first[0][0] in '`"' else name
+
+
 def _seeded(
     contract: TaskContract, manifest: TemplateManifest
 ) -> Iterator[tuple[Entity, SeedRule, str]]:
@@ -154,7 +162,12 @@ def render_seed_sql(
             continue
         fields = _insert_fields(m, s)
         fk_rows = {fk: rows_of.get(by_name.get(target, ""), 0) for fk, target in m.fk_pairs()}
-        cols = ["id", *(column(f.name, rule.column_style) for f in fields)]
+        block = table_block(schema_sql or "", table)
+        declared = table_columns(block) if block else {}
+        cols = [
+            declared_name(declared, c)
+            for c in ["id", *(column(f.name, rule.column_style) for f in fields)]
+        ]
         groups = sorted(s.groups, key=lambda g: g.first)
         values: list[str] = []
         for row in range(1, s.rows + 1):
@@ -164,8 +177,7 @@ def render_seed_sql(
         out.append(f"-- {m.name}: {s.rows}행 (id 1~{s.rows})")
         for part in _chunks(values, rule.chunk):
             out.append(f"INSERT INTO {table} ({', '.join(cols)}) VALUES\n" + ",\n".join(part) + ";")
-        block = table_block(schema_sql or "", table)
-        id_def = table_columns(block).get("id", "") if block else ""
+        id_def = declared.get("id", "")
         if rule.restart and re.search(r"identity|auto_increment", id_def, re.I):
             out.append(rule.restart.format(table=table, next=s.rows + 1))
     return GeneratedFile(path=rule.path, content="\n".join(out) + "\n")
