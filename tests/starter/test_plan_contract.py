@@ -204,7 +204,8 @@ def test_v3_prompt_states_seed_rules_from_code() -> None:
     assert (
         f"작은 id {RESERVED_ROWS}행" in inp.seed_rules and "concurrency × bursts" in inp.seed_rules
     )
-    v3 = assemble(PROMPTS.get("plan_contract", 3), inp, ontology_version="v")
+    t3 = PROMPTS.get("plan_contract", 3)
+    v3 = assemble(t3, for_prompt(inp, t3.input_model), ontology_version="v")
     system, user = v3.messages[0].content, v3.messages[-1].content
     assert "groups?: [{" in system and "burst?: 참/거짓" in system  # 출력 스키마에 새 필드
     assert "id 범위는 적지 않습니다" in system
@@ -284,3 +285,25 @@ async def test_second_reask_carries_only_the_latest_problems() -> None:
     assert len(cap.users) == 3 and res.ok
     assert "이전 답의 문제" not in cap.users[0]
     assert cap.users[2].count("이전 답의 문제") == 1 and "connection pool" in cap.users[2]
+
+
+def test_v17_gets_only_the_template_interface_rules() -> None:
+    """v17 (2026-11-09 점검): 인터페이스 안내는 템플릿에 맞는 것만, 행 규칙은 계산식 대신 '코드가 맞춘다'."""
+    from task_spec.starter.templates import load_template
+
+    t17 = PROMPTS.get("plan_contract", 17)
+    java = load_template("backend/java-spring-boot3-jpa")
+    be = assemble(t17, for_prompt(plan_input(_task(), java), t17.input_model), ontology_version="v")
+    system, user = be.messages[0].content, be.messages[-1].content
+    # 출력 스키마에는 screens·fixtures 칸 이름이 남지만, 안내 문단은 이 템플릿 것만
+    assert "`http`: 엔드포인트마다" in system
+    assert "화면마다 `on_load`" not in system and "- 입력 환경:" not in system
+    assert "코드가 그 처음 값의 범위를 시드 끝에 덧붙인다" in user and "rows ≥" not in user
+    react = load_template("frontend/react-vite-ts")
+    fe = assemble(
+        t17, for_prompt(plan_input(_task(), react), t17.input_model), ontology_version="v"
+    )
+    assert (
+        "화면마다 `on_load`" in fe.messages[0].content
+        and "`http`: 엔드포인트마다" not in fe.messages[0].content
+    )
