@@ -121,10 +121,27 @@ def seed_problems(contract: TaskContract) -> list[str]:
             out.append(f"{label}: 범위가 rows={s.rows} 를 넘음 (id {expected - 1} 까지)")
         elif expected - 1 < s.rows:
             out.append(f"{label}: id {expected}~{s.rows} 이 어느 범위에도 없음")
-    return out + _lookup_key_problems(contract)
+    return out + _lookup_key_problems(contract) + _scope_gap_problems(contract)
 
 
 _PATH_PARAM = re.compile(r"\{(\w+)\}")
+
+
+def _scope_gap_problems(contract: TaskContract) -> list[str]:
+    """경로 변수인 필드를 어떤 그룹은 정하고 어떤 그룹은 비움 — 빈 그룹 행은 행마다 다른 기본값이 돼 경로로 보낸 값과 안 맞는다
+    (v16-be1: guildId=1 그룹 사이에 guildId 없는 그룹 → 그 행의 guild_id 가 행 번호)."""
+    params = {p for e in contract.endpoints for p in _PATH_PARAM.findall(e.path)}
+    out: list[str] = []
+    for s in contract.seed:
+        fixed = {k for g in s.groups for k in g.values} & params
+        for k in sorted(fixed):
+            gaps = [f"{g.first}~{g.last}" for g in s.groups if k not in g.values]
+            if gaps:
+                out.append(
+                    f"시드 {s.entity_id}: 경로 변수 {k} 를 어떤 범위는 정하고 {', '.join(gaps)} 는 비움 — 빈 범위 행은 행마다 다른 값이 돼 "
+                    f"경로로 보낸 {k} 와 안 맞는다. 모든 범위의 values 에 {k} 를 적는다"
+                )
+    return out
 
 
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
@@ -166,6 +183,22 @@ def burst_rows_needed(plan: HiddenPlan, manifest: TemplateManifest) -> tuple[int
     if missing:
         return None, missing
     return math.prod(int(plan.harness[n]) for n in manifest.burst_rows), []  # type: ignore[arg-type]
+
+
+def common_values(seed: SeedRule) -> dict[str, SeedScalar]:
+    """모든 그룹이 같은 값으로 정한 필드 (예: 한 길드 guildId=1) — 코드가 덧붙이는 그룹도 이어받는다.
+
+    2026-11-09 v16-be1: 숨은·공개 몫으로 덧붙인 그룹이 케이스 처음 값(rank)만 가져 guildId 가 빠졌고, values 에 없는 필드는
+    행마다 다른 기본값이라 그 행들의 guild_id 가 행 번호(251~497)가 됐다 — 숨은 테스트가 guildId=1 로 보내 모두 대상 없음(404)이라
+    롤백 케이스가 주입 단계에 닿지 않고 흔한 구현까지 통과했다."""
+    if not seed.groups:
+        return {}
+    head, *rest = seed.groups
+    return {
+        k: v
+        for k, v in head.values.items()
+        if all(k in g.values and str(g.values[k]) == str(v) for g in rest)
+    }
 
 
 def _matches(group_values: Mapping[str, SeedScalar], initial: Mapping[str, SeedScalar]) -> bool:
@@ -331,7 +364,8 @@ def fit_seed(
         seed = seeds[d.entity_id]
         first = seed.rows + 1
         tail = max(seed.groups, key=lambda g: g.last) if seed.groups else None
-        if tail is not None and tail.last == seed.rows and dict(tail.values) == dict(d.initial):
+        values = {**common_values(seed), **d.initial}
+        if tail is not None and tail.last == seed.rows and dict(tail.values) == values:
             # 끝 범위와 처음 값이 같으면 모자란 만큼만 그 범위를 늘린다 (README 에 같은 값 범위가 이어 붙지 않게)
             taken = sum(
                 r.rows
@@ -345,10 +379,10 @@ def fit_seed(
             ]
         else:
             last = max(seed.rows, reserved) + d.rows
-            groups = [*seed.groups, SeedGroup(first=first, last=last, values=dict(d.initial))]
+            groups = [*seed.groups, SeedGroup(first=first, last=last, values=values)]
         grown = seed.model_copy(update={"rows": last, "groups": groups})
         notes.append(
-            f"{names.get(d.entity_id, d.entity_id)} 시드 {seed.rows} → {last}행: id {first}~{last} ({_cond(d.initial)}) 덧붙임 "
+            f"{names.get(d.entity_id, d.entity_id)} 시드 {seed.rows} → {last}행: id {first}~{last} ({_cond(values)}) 덧붙임 "
             f"— 숨은 케이스 {cid} {d.rows}행을 작은 id {reserved}행 위에서 나누려고"
         )
         seeds[d.entity_id] = grown
@@ -381,8 +415,9 @@ def _fit_public(
         short = [x for x in short if x[2] > 0]
         if not short:
             break
-        eid, values, deficit = short[0]
+        eid, found, deficit = short[0]
         seed = seeds[eid]
+        values = {**common_values(seed), **found}
         first = seed.rows + 1
         last = max(seed.rows, reserved) + deficit
         tail = max(seed.groups, key=lambda g: g.last) if seed.groups else None
