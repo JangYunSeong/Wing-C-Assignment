@@ -950,6 +950,27 @@ def material_state_problems(contract: TaskContract, spec: SpecView) -> list[str]
     return out
 
 
+def _ui_load_and_background(contract: TaskContract) -> list[str]:
+    """ui 계약: 화면마다 진입 때 요청(on_load), 화면 조작 없이 나가는 요청(background)을 정한다 — 없으면 테스트와 구현이
+    서로 다르게 짐작한다. 2026-11-09 React 알파: 공개 테스트는 '목록에 들어오면 GET', 구현 4개는 로컬 저장소만 읽어 모두
+    '요청이 오지 않음'. 서버 요청이 없는 화면은 '서버 요청 없음', 없는 배경 요청은 '없음' 이라고 적으면 된다."""
+    if contract.interface_kind != "ui":
+        return []
+    out: list[str] = []
+    missing = [sc.route for sc in contract.screens if not (sc.on_load or "").strip()]
+    if missing:
+        out.append(
+            f"화면에 들어올 때 동작(on_load)이 없음: {', '.join(missing)} — 무엇을 읽고(로컬 저장소·서버) 어떤 서버 요청이 "
+            "나가는지 한 줄로 (서버 요청이 없으면 '서버 요청 없음', 예: '로컬 IndexedDB 의 초안을 읽어 보여 줌 — 서버 요청 없음')"
+        )
+    if not (contract.background or "").strip():
+        out.append(
+            "화면 조작 없이 나가는 서버 요청(background)이 없음 — 동기화·재시도처럼 버튼 없이 나가는 요청과 그 시점을 한 줄로 "
+            "(예: '브라우저 online 이벤트가 오면 대기열 요청을 순서대로 보냄'). 없으면 '없음'"
+        )
+    return out
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -966,6 +987,7 @@ def check_contract(
     problems += _api_refs(contract, plan, spec)
     problems += _leaks(contract, spec, seed)
     problems += _ui_actions(contract)
+    problems += _ui_load_and_background(contract)
     harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest, seed)
