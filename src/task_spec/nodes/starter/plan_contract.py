@@ -206,7 +206,11 @@ async def plan_contract(
             ontology_version=ontology_version,
         )
         try:
-            r = await llm.call(prompt, prompt_t.output_model)  # type: ignore[arg-type]
+            r = await llm.call(  # 마지막 재시도는 추론 없이 — 출력은 검사·수리 루프가 다시 본다
+                prompt,
+                prompt_t.output_model,  # type: ignore[arg-type]
+                reasoning_off_last=True,
+            )
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
             res.errors.append(
                 NodeError(node=TASK, code=type(exc).__name__, message="공개 계약 생성 실패")
