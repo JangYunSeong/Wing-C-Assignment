@@ -694,10 +694,18 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
                 stray.setdefault(f"{m.upper()} {p}", []).append(where)
     if stray:
         have = ", ".join(f"{e.method} {e.path}" for e in contract.endpoints if e.method)
+        # 화면 과제의 테스트는 서버를 직접 부르지 않고 목 서버 상태를 읽는다 — 'GET … 응답 확인' 이라 쓰면 모델이 조회 API 를 짓는다.
+        # 2026-11-09 v19-fe: pt4 'GET /drafts/{draftId} 응답에 최신 내용' 이 위 문구로 재요청 2번에도 그대로 남았다
+        fix = (
+            " — 화면 과제의 테스트는 API 를 부르지 않고 서버 상태로 확인한다: 'GET …' 대신 서버에 무엇이 있는지로 쓴다 "
+            "(예: '서버의 초안 목록에 최신 내용이 있음'). 화면이 실제로 그 API 를 부를 때만 endpoints 에 더한다"
+            if contract.interface_kind == "ui"
+            else f" — 계약에 있는 API({have})로 확인하거나, 꼭 필요하면 그 API 를 endpoints 에 더한다"
+        )
         problems.append(
             "공개 테스트·숨은 케이스가 계약에 없는 API 를 씀: "
             + "; ".join(f"{api} ({', '.join(dict.fromkeys(ws))})" for api, ws in stray.items())
-            + f" — 계약에 있는 API({have})로 확인하거나, 꼭 필요하면 그 API 를 endpoints 에 더한다"
+            + fix
         )
     entity_ids = {m.entity_id for m in contract.entities}
     bad = sorted(

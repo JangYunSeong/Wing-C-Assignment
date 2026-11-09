@@ -262,3 +262,17 @@ def test_field_description_moves_to_constraints_or_is_dropped() -> None:
         }
     )
     assert kept.constraints == "등급 값"
+
+
+def test_ui_tests_that_call_a_missing_api_are_told_to_check_server_state() -> None:
+    # 2026-11-09 v19-fe: pt4 'GET /drafts/{draftId} 응답에 최신 내용' — API 를 더하라는 문구로는 재요청 2번에도 남았다
+    m = _manifest(interfaces=["ui"], seed_rows=False)
+    c = _ui_contract()
+    c["public_tests"][0]["checks"] = "저장 → 재연결 → GET /drafts/{draftId} 응답에 최신 내용"
+    [p] = [p for p in _check(c, _ui_plan(), manifest=m).problems if "계약에 없는 API" in p]
+    assert "서버 상태로 확인" in p and "GET /drafts/{draftId}" in p
+    # 백엔드는 예전 문구 그대로 (계약 API 목록)
+    b = _contract()
+    b["public_tests"][0]["checks"] = "GET /drafts/{draftId} 응답에 최신 내용"
+    [p] = [p for p in _check(b, _plan()).problems if "계약에 없는 API" in p]
+    assert "계약에 있는 API(" in p and "서버 상태로" not in p
