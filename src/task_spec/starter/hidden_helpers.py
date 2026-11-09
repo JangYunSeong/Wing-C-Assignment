@@ -21,6 +21,7 @@ from task_spec.schemas.build import Endpoint, GeneratedFile, HiddenPlan, TaskCon
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.header_values import header_values
 from task_spec.starter.seed_rows import allocate_rows, public_free
+from task_spec.starter.seed_sql import default_value
 from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
 from task_spec.starter.templates import is_java
@@ -107,6 +108,54 @@ def _state_lines(contract: TaskContract) -> list[str]:
     return lines
 
 
+_PATH_PARAM = re.compile(r"\{(\w+)\}")
+
+
+def key_fields(contract: TaskContract) -> list[tuple[str, str, bool]]:
+    """경로로 한 행을 가리키는데 시드가 값을 정하지 않아 코드 기본값(행 번호에서)이 들어가는 필드 — (필드, 앞붙이, 숫자인가).
+    숫자면 그 행 번호, 글자면 `필드이름-행번호`(20자까지) — seed_sql.default_value 와 같다.
+
+    2026-11-09 v16-be2: 시드는 memberId='memberId-191' 인데 숨은·공개 테스트가 "member-" + HC2_FIRST 로 짐작해 모두 대상 없음.
+    테스트는 행 번호만 받았다 — 키 값을 만드는 함수를 도우미가 준다 (헤더 상수와 같은 방식)."""
+    params = {p for e in contract.endpoints for p in _PATH_PARAM.findall(e.path)} - {"id"}
+    seeded = {s.entity_id: s for s in contract.seed if s.rows > 0}
+    out: list[tuple[str, str, bool]] = []
+    for m in contract.entities:
+        s = seeded.get(m.entity_id)
+        if s is None:
+            continue
+        for f in m.fields:
+            if f.name not in params or any(f.name in g.values for g in s.groups):
+                continue
+            a, b = default_value(f, 7), default_value(f, 8)
+            if isinstance(a, int) and not isinstance(a, bool) and (a, b) == (7, 8):
+                out.append((f.name, "", True))
+            elif a == f"{f.name}-7"[:20] and b == f"{f.name}-8"[:20]:
+                out.append((f.name, f"{f.name}-", False))
+    return list(dict.fromkeys(out))
+
+
+def _key_lines(contract: TaskContract) -> list[str]:
+    keys = key_fields(contract)
+    if not keys:
+        return []
+    lines = [
+        "",
+        "    // ── 경로 키 값: 시드 행 번호(HC…_FIRST·PUBLIC_…) → 그 행의 경로 값. 키 값을 직접 만들지 않는다 ──",
+    ]
+    for name, prefix, numeric in keys:
+        if numeric:
+            lines.append(f"    protected static long {name}Of(long row) {{ return row; }}")
+        else:
+            lines += [
+                f"    protected static String {name}Of(long row) {{",
+                f'        String v = "{prefix}" + row;',
+                "        return v.length() > 20 ? v.substring(0, 20) : v;",
+                "    }",
+            ]
+    return lines
+
+
 def _header_lines(contract: TaskContract) -> list[str]:
     """요청 헤더 값 — 테스트가 요청자 등을 지어내지 않게 (2026-11-08 알파: 지어낸 `grader` 로 모든 요청이 403).
     값을 정할 수 없는 헤더는 상수를 두지 않는다 (지어내지 않는다)."""
@@ -119,7 +168,10 @@ def _header_lines(contract: TaskContract) -> list[str]:
     ]
     for h in values:
         key = _value_const(h.name)
-        src = "계약 공개 테스트 예시" if h.source == "예시" else "계약상 아무 값이나 받음"
+        src = {
+            "예시": "계약 공개 테스트 예시",
+            "권한 규칙": "계약 권한 규칙의 요청자 행",
+        }.get(h.source, "계약상 아무 값이나 받음")
         if h.ok is not None:
             lines.append(f'    protected static final String HEADER_{key}_OK = "{h.ok}"; // {src}')
         if h.denied is not None:
@@ -245,6 +297,7 @@ def render_contract_case(
             ]
     lines += _state_lines(contract)
     lines += _header_lines(contract)
+    lines += _key_lines(contract)
     tables = contract_tables(contract, manifest.naming.table) if audience == "hidden" else {}
     if tables:
         lines += ["", "    // ── 계약 테이블 이름 (오류 주입 정규식에는 이 이름을 그대로) ──"]

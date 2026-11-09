@@ -37,7 +37,11 @@ from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.header_values import header_values
-from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
+from task_spec.starter.hidden_helpers import (
+    key_fields,
+    render_contract_case,
+    render_persistence_check,
+)
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
 from task_spec.starter.tables import (
@@ -800,6 +804,26 @@ def _injected_status_asserts(
     return out
 
 
+def _hand_built_keys(
+    cases: Sequence[GeneratedFile], contract: TaskContract, label: str
+) -> list[str]:
+    """도우미가 경로 키 값 함수(<필드>Of)를 주는데 테스트가 `"member-" + 행번호` 처럼 키 값을 직접 만듦 — 시드 값 형식을 짐작한다.
+    2026-11-09 v16-be2: 시드 'memberId-191', 테스트 "member-" + HC2_FIRST → 모든 구현에서 대상 없음."""
+    keys = [name for name, _, numeric in key_fields(contract) if not numeric]
+    if not keys:
+        return []
+    rx = re.compile(r'"([A-Za-z][\w]*-)"\s*\+')
+    out: list[str] = []
+    for f in cases:
+        built = sorted({m.group(1) for m in rx.finditer(f.content)})
+        if built:
+            out.append(
+                f"{label} {f.path} 가 경로 키 값을 직접 만듦 ({', '.join(chr(34) + b + chr(34) + ' + …' for b in built)}) — "
+                f"도우미의 {', '.join(k + 'Of(행 번호)' for k in keys)} 를 쓴다 (시드 값 형식을 짐작하지 않는다)"
+            )
+    return out
+
+
 def _literal_headers(
     cases: Sequence[GeneratedFile], contract: TaskContract, label: str
 ) -> list[str]:
@@ -889,6 +913,7 @@ def _hidden_cases(
     if contract is not None:
         out += _hidden_tables(cases, t, contract)
         out += _literal_headers(cases, contract, "숨은 테스트")
+        out += _hand_built_keys(cases, contract, "숨은 테스트")
         out += _injected_status_asserts(cases, m, contract)
     if contract is not None and rules.raw_number_asserts:
         out += _raw_number_asserts(cases, rules.raw_number_asserts, contract)
@@ -1104,6 +1129,7 @@ def _public_cases(
                 f"공개 테스트 {f.path} 가 동시 요청·오류 주입·조절값을 씀 — 숨은 요구 영역이다. 공개 수용 기준(응답·기록)만 확인한다"
             )
     out += _literal_headers(cases, contract, "공개 테스트")
+    out += _hand_built_keys(cases, contract, "공개 테스트")
     imports = [re.compile(p, re.M) for p in m.hidden_rules.forbidden_imports]
     for f in cases:
         bad = [
