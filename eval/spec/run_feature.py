@@ -54,15 +54,28 @@ PARAMS: dict[str, dict[str, Any]] = {
 class ModelOverride:
     """프롬프트 본문·버전은 그대로 두고 모델·설정만 바꾼 레지스트리."""
 
-    def __init__(self, base: PromptRegistry, model: str | None, version: int | None = None) -> None:
+    def __init__(
+        self,
+        base: PromptRegistry,
+        model: str | None,
+        version: int | None = None,
+        per_task: dict[str, str] | None = None,
+    ) -> None:
         self.base, self.model, self.version = base, model, version
+        self.per_task = (
+            per_task or {}
+        )  # 단계별 모델 (예: gen_hidden → opencode:glm-5.3) — model 보다 우선
 
     def get(self, task: str, version: int | None = None) -> PromptTemplate:
         t = self.base.get(task, version or (self.version if task == "draft_feature_task" else None))
-        if not self.model:
+        # 템플릿별 프롬프트(gen_hidden_react 등)는 기본 이름(gen_hidden)의 지정을 따른다
+        model = (
+            self.per_task.get(task) or self.per_task.get(task.removesuffix("_react")) or self.model
+        )
+        if not model:
             return t
-        params = PARAMS.get(self.model, t.meta.params)
-        meta = t.meta.model_copy(update={"model": self.model, "params": params})
+        params = PARAMS.get(model, t.meta.params)
+        meta = t.meta.model_copy(update={"model": model, "params": params})
         return t.model_copy(update={"meta": meta})
 
 
