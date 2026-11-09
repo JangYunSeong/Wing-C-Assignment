@@ -3,7 +3,7 @@
 재시도 정책 (이 한 곳에만 있다)
 | 증상                               | 처리                                         |
 | 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회                   |
-| 빈 응답 + 잘림, 추론 설정이 이미 low | 같은 설정으로 최대 MAX_RESAMPLES 회 다시 (추론 폭주는 가끔이라 대개 살아난다) — 잘리지 않은 빈 응답은 예외 그대로 |
+| 빈 응답 + 잘림, 추론 설정이 이미 low | 최대 MAX_RESAMPLES 회 다시 — 앞은 같은 설정, 마지막은 추론 끔(NO_REASONING, 확인한 프로바이더만) — 잘리지 않은 빈 응답은 예외 그대로 |
 | TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
 | 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
@@ -56,6 +56,9 @@ MAX_TRANSIENT_RETRIES = 3
 # 정확히 4096 토큰에서 끊기고 본문은 ~2k 토큰 — 빈 응답은 그 예산이 듣지 않는 가끔의 폭주라, 상한을 낮춰 빨리 실패시키고 여러 번 다시 부른다
 MAX_RESAMPLES = 3
 # 입력을 나눌 수 있는 호출(split_on_truncation — 주장 추출)은 1회 뒤 바로 돌려준다 (나눠 다시 부르는 편이 빠르다)
+# 마지막 재시도에서 추론을 끄는 값 (프로바이더별 — 확인한 곳만). 2026-11-09 확인: OpenCode qwen3.8-flash 는
+# reasoning_effort=none 이면 추론 0 으로 바로 답한다 (minimal 은 low 와 같음). 모르는 프로바이더는 low 로 다시 부른다
+NO_REASONING: dict[str, str] = {"opencode": "none"}
 MAX_SPLIT_RESAMPLES = 1
 # 시간 초과는 1번만 다시 시도한다 — 출력이 길어 생긴 초과는 같은 요청을 반복해도 대개 다시 넘는다
 # (2026-11-03 운영: 120초 × 4회 × 호출 여러 번으로 draft_spec 이 수십 분 멈춤)
@@ -231,15 +234,27 @@ class LLMClient:
                     and resamples < MAX_RESAMPLES
                 ):  # 추론이 상한을 다 씀 — 추론 길이는 호출마다 달라 같은 설정으로 다시 부르면 대개 산다
                     resamples += 1
-                    retries.append("empty_truncated->resample")
+                    # 마지막 한 번은 추론을 끈다 — 폭주가 이어져도 빈 응답으로 끝나지 않게 (품질은 정적 검사·수리 루프가 본다)
+                    off = NO_REASONING.get(provider) if resamples == MAX_RESAMPLES else None
+                    retries.append(
+                        f"empty_truncated->reasoning_effort={off}"
+                        if off
+                        else "empty_truncated->resample"
+                    )
                     logger.warning(
-                        "llm retry prompt=%s model=%s reason=empty_truncated elapsed_ms=%d",
+                        "llm retry prompt=%s model=%s reason=empty_truncated%s elapsed_ms=%d",
                         prompt.template.ref,
                         prompt.model,
+                        f" next=reasoning_effort={off}" if off else "",
                         int((time.monotonic() - started) * 1000),
                     )
+                    if off:
+                        params = {**params, "reasoning_effort": off}
                     continue
-                if empty_retry_used or params.get("reasoning_effort") == "low":
+                if empty_retry_used or params.get("reasoning_effort") in (
+                    "low",
+                    *NO_REASONING.values(),
+                ):
                     empty = EmptyResponse(f"{prompt.template.ref}: 빈 응답")
                     empty.provenance = record()
                     raise empty
