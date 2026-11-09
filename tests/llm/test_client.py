@@ -13,7 +13,7 @@ from task_spec.llm import (
     TransientLLMError,
     Usage,
 )
-from task_spec.llm.client import EmptyResponse, OutputTruncated
+from task_spec.llm.client import MAX_RESAMPLES, EmptyResponse, OutputTruncated
 from task_spec.nodes.pseudonymize import mint_pseudonymized
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import ClaimExtractionInput, ClaimExtractionOutput
@@ -187,7 +187,7 @@ async def test_default_path_raises_same_exception_types_as_before() -> None:
     with pytest.raises(SchemaViolation) as ei:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert type(ei.value) is SchemaViolation
-    fake = FakeBackend().push(TRUNC_EMPTY, TRUNC_EMPTY)  # 같은 설정 재시도 뒤에도 빔
+    fake = FakeBackend().push(*[TRUNC_EMPTY] * (MAX_RESAMPLES + 1))  # 같은 설정 재시도 뒤에도 빔
     with pytest.raises(EmptyResponse) as ee:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert type(ee.value) is EmptyResponse  # OutputTruncated 가 아니다
@@ -250,14 +250,24 @@ async def test_default_path_empty_truncated_resamples_and_succeeds() -> None:
     assert (r.provenance.tokens.in_, r.provenance.tokens.out) == (1000, 4096 + 900)
 
 
-async def test_default_path_empty_truncated_twice_raises_with_both_costs() -> None:
-    fake = FakeBackend().push(TRUNC_EMPTY, TRUNC_EMPTY)
+async def test_default_path_empty_truncated_resamples_up_to_the_limit_then_raises() -> None:
+    # 추론 폭주는 가끔이라 같은 설정으로 MAX_RESAMPLES 회까지 다시 부른다 (2026-11-09: 1회로는 rep2·rep3 이 4번 연속 빈 응답에 멈춤)
+    fake = FakeBackend().push(*[TRUNC_EMPTY] * (MAX_RESAMPLES + 1))
     with pytest.raises(EmptyResponse) as ei:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert type(ei.value) is EmptyResponse
-    assert len(fake.calls) == 2
+    assert len(fake.calls) == MAX_RESAMPLES + 1
     prov = ei.value.provenance
-    assert prov is not None and prov.retries == 1 and prov.tokens.out == 2 * 4096
+    assert prov is not None and prov.retries == MAX_RESAMPLES
+    assert prov.tokens.out == (MAX_RESAMPLES + 1) * 4096  # 버려진 호출 비용도 모두 남긴다
+
+
+async def test_default_path_last_resample_can_succeed() -> None:
+    fake = FakeBackend().push(
+        *[TRUNC_EMPTY] * MAX_RESAMPLES, Completion(GOOD, Usage(500, 900, 600))
+    )
+    r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert len(r.parsed.claims) == 1 and r.provenance.retries == MAX_RESAMPLES
 
 
 async def test_empty_without_truncation_keeps_old_behavior() -> None:

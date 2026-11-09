@@ -3,11 +3,11 @@
 재시도 정책 (이 한 곳에만 있다)
 | 증상                               | 처리                                         |
 | 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회                   |
-| 빈 응답 + 잘림, 추론 설정이 이미 low | 같은 설정으로 1회 다시 (추론 길이가 호출마다 달라 대개 살아난다) — 잘리지 않은 빈 응답은 예외 그대로 |
+| 빈 응답 + 잘림, 추론 설정이 이미 low | 같은 설정으로 최대 MAX_RESAMPLES 회 다시 (추론 폭주는 가끔이라 대개 살아난다) — 잘리지 않은 빈 응답은 예외 그대로 |
 | TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
 | 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
-| 출력 잘림 (finish_reason=length)     | 호출자가 split_on_truncation=True 일 때만: (추론 설정이 low 가 아니면 low 로 1회 · 빈 응답이면 같은 설정으로 1회) → OutputTruncated, 형식 재요청 없음 — 호출자가 입력을 나눈다. 기본(False)은 위 규칙 그대로 |
+| 출력 잘림 (finish_reason=length)     | 호출자가 split_on_truncation=True 일 때만: (추론 설정이 low 가 아니면 low 로 1회 · 빈 응답이면 같은 설정으로 1회 — MAX_SPLIT_RESAMPLES) → OutputTruncated, 형식 재요청 없음 — 호출자가 입력을 나눈다. 기본(False)은 위 규칙 그대로 |
 
 재시도·포기는 WARNING/ERROR 로그(프롬프트 ref·모델·사유·경과 ms)로 남긴다.
 메시지 본문·키 값은 로그·provenance·예외 메시지에 넣지 않는다.
@@ -52,6 +52,11 @@ ALLOWED_PARAMS: dict[str, frozenset[str]] = {
 }
 
 MAX_TRANSIENT_RETRIES = 3
+# 빈 응답 + 잘림(추론이 상한을 다 씀)을 같은 설정으로 다시 부르는 횟수. 2026-11-09 측정: qwen3.8-flash 는 low 에서 추론이
+# 정확히 4096 토큰에서 끊기고 본문은 ~2k 토큰 — 빈 응답은 그 예산이 듣지 않는 가끔의 폭주라, 상한을 낮춰 빨리 실패시키고 여러 번 다시 부른다
+MAX_RESAMPLES = 3
+# 입력을 나눌 수 있는 호출(split_on_truncation — 주장 추출)은 1회 뒤 바로 돌려준다 (나눠 다시 부르는 편이 빠르다)
+MAX_SPLIT_RESAMPLES = 1
 # 시간 초과는 1번만 다시 시도한다 — 출력이 길어 생긴 초과는 같은 요청을 반복해도 대개 다시 넘는다
 # (2026-11-03 운영: 120초 × 4회 × 호출 여러 번으로 draft_spec 이 수십 분 멈춤)
 MAX_TIMEOUT_RETRIES = 1
@@ -143,7 +148,7 @@ class LLMClient:
         started = time.monotonic()
         schema_retry_used = False
         empty_retry_used = False
-        resample_used = False  # 빈 응답 + 잘림 (이미 low) → 같은 설정으로 1회
+        resamples = 0  # 빈 응답 + 잘림 (이미 low) → 같은 설정으로 MAX_RESAMPLES 회까지
 
         def record() -> Provenance:
             latency_ms = int((time.monotonic() - started) * 1000)
@@ -187,9 +192,9 @@ class LLMClient:
                 if (
                     not completion.content.strip()
                     and params.get("reasoning_effort") == "low"
-                    and not resample_used
+                    and resamples < MAX_SPLIT_RESAMPLES
                 ):
-                    resample_used = True
+                    resamples += 1
                     retries.append("empty_truncated->resample")
                     logger.warning(
                         "llm retry prompt=%s model=%s reason=empty_truncated elapsed_ms=%d",
@@ -223,9 +228,9 @@ class LLMClient:
                 if (
                     completion.finish_reason == "length"
                     and params.get("reasoning_effort") == "low"
-                    and not resample_used
+                    and resamples < MAX_RESAMPLES
                 ):  # 추론이 상한을 다 씀 — 추론 길이는 호출마다 달라 같은 설정으로 다시 부르면 대개 산다
-                    resample_used = True
+                    resamples += 1
                     retries.append("empty_truncated->resample")
                     logger.warning(
                         "llm retry prompt=%s model=%s reason=empty_truncated elapsed_ms=%d",
