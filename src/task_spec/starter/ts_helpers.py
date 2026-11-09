@@ -23,6 +23,23 @@ def msw_path(path: str) -> str:
     return _SEG.sub(r":\1", path)
 
 
+_ROUTE_VAR = re.compile(r":([A-Za-z][A-Za-z0-9]*)|\{([A-Za-z][A-Za-z0-9]*)\}")
+
+
+def screen_route(route: str) -> str:
+    """화면 경로 → TS 값. 경로 변수(`:id`·`{id}`)가 있으면 그 값을 받는 함수 — 변수를 채우지 않고 열면 tsc 가 잡는다.
+    2026-11-09 React 알파(중복 제출): 공개 테스트가 '/products/:productId' 를 그대로 열어 요청 본문에 ':productId' 가 들어갔다."""
+    names = list(dict.fromkeys(a or b for a, b in _ROUTE_VAR.findall(route)))
+    if not names:
+        return _ts(route)
+    body = _ROUTE_VAR.sub(
+        lambda m: "${encodeURIComponent(p." + (m.group(1) or m.group(2)) + ")}",
+        route.replace("`", ""),
+    )
+    params = "; ".join(f"{n}: string" for n in names)
+    return f"(p: {{ {params} }}) => `{body}`"
+
+
 def _const(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").upper() or "X"
 
@@ -46,19 +63,28 @@ def render_ts_contract(
         "",
     ]
     tids: dict[str, str] = {}
+    actions: dict[str, str] = {}
     for sc in contract.screens:
         for el in sc.elements:
             tids.setdefault(_const(el.test_id), el.test_id)
+            if el.action:
+                actions.setdefault(_const(el.test_id), el.action)
     lines.append(
         "/** 화면 요소 test id (계약 screens) — screen.getByTestId(TID.X) 또는 byTestId(TID.X) */"
     )
     lines.append("export const TID = {")
-    lines += [f"  {k}: {_ts(v)}," for k, v in tids.items()]
+    lines += [
+        f"  {k}: {_ts(v)}," + (f" // 조작: {actions[k]}" if k in actions else "")
+        for k, v in tids.items()
+    ]
     lines += ["} as const;", ""]
-    lines.append("/** 화면 경로 (계약 screens) */")
+    lines.append(
+        "/** 화면 경로 (계약 screens) — renderApp(SCREEN.S1). 경로 변수가 있는 화면은 함수: SCREEN.S2({ id: '1' }) */"
+    )
     lines.append("export const SCREEN = {")
     lines += [
-        f"  {_const(sc.screen_id)}: {_ts(sc.route)}, // {sc.summary}" for sc in contract.screens
+        f"  {_const(sc.screen_id)}: {screen_route(sc.route)}, // {sc.summary}"
+        for sc in contract.screens
     ]
     lines += ["} as const;", ""]
     endpoints = [e for e in contract.endpoints if e.method]
@@ -91,14 +117,37 @@ def render_ts_contract(
         ok = next((r for r in e.responses if 200 <= r.status < 300), None)
         errs = [r for r in e.responses if r.status >= 400 and (r.body or r.returns)]
         err_types = list(dict.fromkeys(_body_type(r, names, by_name) for r in errs))
+        req_body = (
+            "{ "
+            + "; ".join(
+                f"{_prop(f.name)}{'' if f.required else '?'}: {ts_type(f.type, by_name)}"
+                for f in e.request
+            )
+            + " }"
+            if e.request
+            else "unknown"
+        )
+        path_vars = list(dict.fromkeys(a or b for a, b in _ROUTE_VAR.findall(e.path)))
+        req_params = (
+            "{ " + "; ".join(f"{v}: string" for v in path_vars) + " }"
+            if path_vars
+            else "Record<string, string>"
+        )
         lines += [
             "",
             f"/** {e.endpoint_id} {e.method} {e.path} 성공 응답 본문 ({ok.status if ok else '-'}) */",
             f"export type {base}Ok = {_body_type(ok, names, by_name) if ok else 'unknown'};",
             f"/** {e.endpoint_id} 오류 응답 본문 ({', '.join(str(r.status) for r in errs) or '-'}) */",
             f"export type {base}Error = {' | '.join(err_types) or 'unknown'};",
+            f"/** {e.endpoint_id} 요청 기록 — 본문·경로 변수는 계약의 모양 (match 조건에서 call.body.<필드>·call.params.<변수> 로 바로 읽는다) */",
+            f"export interface {base}Request extends Omit<Call, 'body' | 'params'> {{",
+            f"  body: {req_body};",
+            f"  params: {req_params};",
+            "}",
             f"/** {e.endpoint_id} 의 붙잡힌 요청 — 응답 본문은 계약의 모양 그대로 (다르면 tsc 가 잡는다) */",
-            f"export interface {base}Call extends Omit<CallHandle, 'respond' | 'fail'> {{",
+            f"export interface {base}Call extends Omit<CallHandle, 'respond' | 'fail' | 'body' | 'params'> {{",
+            f"  body: {req_body};",
+            f"  params: {req_params};",
             f"  respond(json: {base}Ok, status?: number): Promise<void>;",
             f"  respond(status: number, json: {base}Ok | {base}Error): Promise<void>;",
             f"  fail(status?: number, json?: {base}Error): Promise<void>;",
@@ -107,8 +156,8 @@ def render_ts_contract(
             f"/** {e.endpoint_id} {e.method} {e.path} — {e.summary}"
             + (f" (쿼리: {q})" if q else "")
             + " */",
-            f"export function waitFor{base}(match?: (call: Call) => boolean): Promise<{base}Call> {{",
-            f"  return api.waitForCall({_ts(e.method or '')}, {_ts(msw_path(e.path))}, match) as Promise<{base}Call>;",
+            f"export function waitFor{base}(match?: (call: {base}Request) => boolean): Promise<{base}Call> {{",
+            f"  return api.waitForCall({_ts(e.method or '')}, {_ts(msw_path(e.path))}, match as ((call: Call) => boolean) | undefined) as unknown as Promise<{base}Call>;",
             "}",
         ]
     return GeneratedFile(path=rule.path, content="\n".join(lines) + "\n")

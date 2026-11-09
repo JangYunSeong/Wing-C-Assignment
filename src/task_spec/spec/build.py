@@ -92,7 +92,7 @@ async def build_common(
             language_labels=await language_labels(ontology),
             # 기능형은 직군 템플릿이 시험할 수 있는 사례 (spec/incidents.feature_incident), 그 밖은 직군 기본 사례
             incident=(
-                feature_incident(incidents, profile.sub or "")
+                feature_incident(incidents, profile.sub or "", profile.posting_id)
                 if task_kind == "feature"
                 else (incidents or {}).get(profile.sub or "")
             ),

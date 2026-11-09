@@ -80,10 +80,13 @@ def contract_markdown(
             "",
             sc.summary,
             "",
-            "| test id | 역할 | 설명 |",
-            "|---|---|---|",
+            "| test id | 역할 | 설명 | 조작 |",
+            "|---|---|---|---|",
         ]
-        out += [f"| `{el.test_id}` | {el.role} | {el.description} |" for el in sc.elements]
+        out += [
+            f"| `{el.test_id}` | {el.role} | {el.description} | {el.action or ''} |"
+            for el in sc.elements
+        ]
         if sc.storage:
             out += [
                 "",

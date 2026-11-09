@@ -37,7 +37,7 @@ from task_spec.nodes.starter.generate import BuildInputs, GenResult, gen_hidden,
 from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import CompileError, HiddenPlan, TaskContract, TaskItem
-from task_spec.spec.incidents import feature_incident, load_incidents
+from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "eval" / "build"
@@ -86,7 +86,8 @@ async def run_one(
     계약 호출을 건너뜀 (숨은·공개 테스트 쪽만 바꿀 때) — 2026-11-08 비용 점검: 계약이 상류 평가 비용의 약 55%."""
     task: TaskItem = case["task"]
     sub = (task.source_incident or "").split(":")[1]
-    inc = feature_incident(incidents, sub)  # 직군 템플릿이 시험할 수 있는 사례
+    # 명세가 쓴 재료 그대로 (없으면 직군 템플릿이 시험할 수 있는 사례)
+    inc = incident_by_id(incidents, task.source_incident) or feature_incident(incidents, sub)
     assert inc is not None, sub
     template = template_for(sub)
     run_dir = out / f"{case['key']}-{n}"

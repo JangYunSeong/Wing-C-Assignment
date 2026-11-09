@@ -157,6 +157,14 @@ class UiElement(Schema):
         "region",
     ]
     description: str = Field(min_length=1, max_length=200)
+    # 조작 방법 — 지원자가 이 요소를 어떻게 다루면 무엇이 일어나는지, 서버 요청이 나가는 시점까지 (2026-11-09 React 알파: 수량 입력의
+    # 저장 시점(입력마다·포커스 이동·Enter)이 계약에 없어 테스트와 구현이 서로 다르게 짐작 — 모든 구현에서 '요청이 오지 않음')
+    action: str | None = Field(
+        default=None,
+        max_length=200,
+        description="조작하는 요소(버튼·입력 등)는 필수 — 무엇을 하면 무엇이 일어나고 서버 요청이 언제 나가는지 한 줄 "
+        "(예: '클릭하면 수량 1 증가 — 바로 저장 요청', '값을 바꾸고 포커스를 옮기면 저장 요청')",
+    )
     refs: list[str] = Field(min_length=1)
 
     @field_validator("refs")

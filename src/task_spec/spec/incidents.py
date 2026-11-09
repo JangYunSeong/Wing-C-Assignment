@@ -46,16 +46,40 @@ def load_incidents(root: Path) -> IncidentCatalog:
 
 
 def feature_incident(
-    incidents: Mapping[str, PublicIncident] | None, sub: str
+    incidents: Mapping[str, PublicIncident] | None, sub: str, posting_id: str = ""
 ) -> PublicIncident | None:
-    """기능형 과제의 사례 — 직군 템플릿(TEMPLATE_FOR_SUB)이 시험할 수 있는 추가 사례가 있으면 그것, 없으면 기본 사례."""
+    """기능형 과제의 사례 — 직군 템플릿(TEMPLATE_FOR_SUB)이 시험할 수 있는 추가 사례가 있으면 그것, 없으면 기본 사례.
+    그런 추가 사례가 여럿이면 공고 id 해시로 고정 배정한다 — 같은 공고는 늘 같은 재료 (2026-11-09 사용자 결정, 명세 source_incident 로
+    승인자가 본다). 사례를 더하면 일부 공고의 배정이 바뀐다 (재료가 바뀌면 기능형 판 지문도 바뀌어 새 판)."""
     if not incidents:
         return None
     template = TEMPLATE_FOR_SUB.get(sub)
-    for inc in getattr(incidents, "alternates", {}).get(sub, []):
-        if template is not None and template in inc.templates and inc.feature is not None:
-            return inc
-    return incidents.get(sub)
+    cands = sorted(
+        (
+            inc
+            for inc in getattr(incidents, "alternates", {}).get(sub, [])
+            if template is not None and template in inc.templates and inc.feature is not None
+        ),
+        key=lambda inc: inc.incident_id,
+    )
+    if not cands:
+        return incidents.get(sub)
+    if len(cands) == 1 or not posting_id:
+        return cands[0]
+    return cands[int(hashlib.sha256(posting_id.encode("utf-8")).hexdigest(), 16) % len(cands)]
+
+
+def incident_by_id(
+    incidents: Mapping[str, PublicIncident] | None, incident_id: str | None
+) -> PublicIncident | None:
+    """명세에 적힌 사례(TaskItem.source_incident)를 찾는다 — 기본·추가 사례 모두. 이미 만든 명세로 다시 돌릴 때 같은 재료를 쓴다."""
+    if not incidents or not incident_id:
+        return None
+    pool = [
+        *incidents.values(),
+        *(i for v in getattr(incidents, "alternates", {}).values() for i in v),
+    ]
+    return next((i for i in pool if i.incident_id == incident_id), None)
 
 
 def incident_block(inc: PublicIncident | None) -> str:

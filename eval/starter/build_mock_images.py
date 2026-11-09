@@ -3,9 +3,10 @@
     uv run python -m eval.starter.build_mock_images            # 기본 3과제
     uv run python -m eval.starter.build_mock_images --run data/eval/build/<빌드 폴더> ...
 
-층: 런타임(JDK 17) → 템플릿 층(템플릿 project/ + 오프라인 Gradle 캐시 — 하네스·manifest 없음) → 과제 층.
+층: 런타임(Java: JDK 17 / Node: node 22 bookworm-slim) → 템플릿 층(템플릿 project/ + 오프라인 의존성 — Gradle 캐시 또는 node_modules,
+하네스·manifest 없음) → 과제 층. 빌드 폴더의 직군(report.json sub)으로 템플릿을 고른다 (select_template — 2026-11-09 React 템플릿).
   응시용 = 템플릿 층 + 시작 코드 + README (숨은 테스트 없음)
-  채점용 = 템플릿 층 + python3 + grade(eval/starter/image_grade.py) + 숨은 테스트·하네스·조절값 + config.json
+  채점용 = 템플릿 층 + python3 + grade(Java: eval/starter/image_grade.py · Node: image_grade_node.py) + 숨은 테스트·하네스·조절값 + config.json
 참조 구현(ref_*)은 어느 이미지에도 넣지 않는다 — 검증 때 제출물로만 쓴다.
 
 검증 (모두 --network none): 응시용에서 기존 테스트가 오프라인으로 통과, 채점용으로 시작 코드만·허용 구현·흔한 구현 제출물을 채점.
@@ -21,29 +22,94 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
 import time
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from eval.starter.gradle_verify import case_ids, write_overlay
+from eval.starter.node_verify import layout_of
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.starter.render import render_readme
 from task_spec.starter.static_check import Overlay
-from task_spec.starter.templates import Template, candidate_layer_rules, forbidden_in, load_template
+from task_spec.starter.templates import (
+    Template,
+    candidate_layer_rules,
+    forbidden_in,
+    is_java,
+    load_template,
+    select_template,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILDS = ROOT / "data" / "eval" / "build"
-BASE = "docker.io/library/eclipse-temurin:17-jdk-jammy"
 DEFAULT_RUNS = [  # 과제별 최신 성공 빌드 (status=review — 2026-11-08 사용자 선택 "과제별 최신 1개씩")
     "2026-11-08-alpha-full-sg004",  # 테스트 먼저 흐름 (공개 테스트 있음)
     "2026-11-08-alpha-full-ae023",  # 테스트 먼저 흐름 (공개 테스트 있음)
     "2026-11-07-alpha-kakaobank005-r2",  # 같은 날 전체 알파는 하네스 버그로 failed — 성공 판정 받은 빌드만
     "2026-11-07-loop-delivery-r5",
+    # 프론트엔드 React (2026-11-09 알파 3공고 — 전부 review)
+    "2026-11-09-alpha-fe-kb007-r4",
+    "2026-11-09-alpha-fe-naver003",
+    "2026-11-09-alpha-fe-autoever048-r2",
 ]
+JAVA_TEMPLATE = "backend/java-spring-boot3-jpa"
+PYTHON3 = "RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*"
+
+
+@dataclass(frozen=True)
+class Stack:
+    """스택마다 다른 것 — 런타임 이미지·의존성 설치·grade 스크립트·응시용 오프라인 확인 명령. 층 구조·검증 순서는 같다."""
+
+    base: str
+    install: tuple[str, ...]  # 템플릿 층 — WORKDIR(작업 경로)에 project/ 를 복사한 뒤
+    grade_script: Path
+    candidate_check: tuple[
+        str, ...
+    ]  # 응시용 이미지에서 네트워크 없이 — 의존성이 이미지 안에 다 있는가
+    scan_skip: tuple[str, ...]  # 레이어 검사에서 뺄 런타임 경로 (작업 경로가 아닌 곳)
+
+
+JAVA = Stack(
+    base="docker.io/library/eclipse-temurin:17-jdk-jammy",
+    install=(
+        "ENV GRADLE_USER_HOME=/opt/gradle-home",
+        # 뼈대를 한 번 빌드·테스트해 Gradle 배포판·의존성(테스트 런타임 포함)을 캐시에 — 채점·응시 컨테이너는 네트워크 없음
+        "RUN chmod +x gradlew && ./gradlew --no-daemon --console=plain build && rm -rf build .gradle",
+    ),
+    grade_script=ROOT / "eval" / "starter" / "image_grade.py",
+    candidate_check=("./gradlew", "--offline", "--no-daemon", "-q", "test"),
+    scan_skip=("usr/", "opt/java/", "etc/", "var/", "lib/"),
+)
+# Debian 12(bookworm) — Playwright 공식 지원 배포판이라 실제 브라우저 층도 같은 계열로 (alpine/musl 은 미지원, 2026-11-09 문서 확인)
+NODE = Stack(
+    base="docker.io/library/node:22-bookworm-slim",
+    install=(
+        # lock 그대로 설치하고 뼈대의 타입 검사·테스트를 한 번 — 응시·채점 컨테이너는 네트워크 없음
+        "RUN npm ci --no-audit --no-fund && npx tsc --noEmit && npx vitest run && rm -rf node_modules/.vite node_modules/.vitest",
+    ),
+    grade_script=ROOT / "eval" / "starter" / "image_grade_node.py",
+    candidate_check=("sh", "-c", "npx tsc --noEmit && npm test"),
+    scan_skip=("usr/", "opt/", "etc/", "var/", "lib/"),
+)
+
+
+def stack_for(t: Template) -> Stack:
+    return JAVA if is_java(t.manifest) else NODE
+
+
+def template_of(run: Path) -> Template:
+    """빌드 폴더의 직군 → 템플릿 (직군이 없는 손 예시 루프는 Java)."""
+    report = json.loads((run / "report.json").read_text("utf-8"))
+    sub = report.get("sub")
+    return (select_template(sub) if sub else None) or load_template(JAVA_TEMPLATE)
+
+
 PUBLIC_ID = r"\bpt\d{1,2}\b"  # 공개 테스트 클래스의 @DisplayName 에 적힌 공개 테스트 id
 TIMEOUT_S = 1200
 TEST_COMMAND = ["./gradlew", "--offline", "--no-daemon", "--console=plain", "--continue", "test"]
@@ -158,7 +224,8 @@ def candidate_tree(t: Template, item: dict[str, Any], dest: Path) -> None:
     shutil.copytree(t.project, dest)
     write_overlay(item["starter"], dest)
     (dest / "README.md").write_text(item["readme"], "utf-8")
-    (dest / "gradlew").chmod(0o755)
+    if (dest / "gradlew").is_file():
+        (dest / "gradlew").chmod(0o755)
 
 
 def grader_overlay(t: Template, item: dict[str, Any], dest: Path) -> dict[str, Any]:
@@ -176,6 +243,8 @@ def grader_overlay(t: Template, item: dict[str, Any], dest: Path) -> dict[str, A
     if item["public"] is not None:
         write_overlay(item["public"], dest)
     m = t.manifest
+    if not is_java(m):
+        return node_config(t, item)
     classes = case_ids(item["hidden"], m.hidden_rules.case_id_pattern)
     cases = [
         {
@@ -209,6 +278,39 @@ def grader_overlay(t: Template, item: dict[str, Any], dest: Path) -> dict[str, A
     }
 
 
+def node_config(t: Template, item: dict[str, Any]) -> dict[str, Any]:
+    """Node grade 설정 (image_grade_node) — 케이스 id 는 describe 제목(숨은: hc*, 공개: pt*)으로 판정이 찾는다."""
+    m = t.manifest
+    cmds = m.commands
+    assert cmds is not None and cmds.test_compile and cmds.hidden_test
+    cases: list[dict[str, Any]] = [
+        {
+            "id": c.case_id,
+            "trap_id": c.trap_id,
+            "intended_reason": c.intended_reason,
+            "kind": "hidden",
+        }
+        for c in item["plan"].cases
+    ]
+    if item["public"] is not None:
+        cases += [{"id": pt.test_id, "kind": "public"} for pt in item["contract"].public_tests]
+    return {
+        "common_id": item["common_id"],
+        "revision": item["revision"],
+        "template_ref": m.ref,
+        "template_dir": m.workspace,
+        "locked": list(m.locked),
+        "reserved": list(m.reserved),
+        "compile_command": shlex.split(cmds.test_compile),
+        "existing_command": ["npx", "vitest", "run"],
+        "grading_command": shlex.split(cmds.hidden_test),
+        "layout": layout_of(t),
+        "case_id_pattern": m.hidden_rules.case_id_pattern,
+        "timeout_s": TIMEOUT_S,
+        "cases": cases,
+    }
+
+
 def containerfile(base: str, body: list[str]) -> str:
     return "\n".join([f"FROM {base}", *body, ""])
 
@@ -217,9 +319,10 @@ def labels(d: dict[str, Any]) -> list[str]:
     return [f"LABEL {k}={json.dumps(str(v), ensure_ascii=False)}" for k, v in d.items()]
 
 
-def scan_candidates(archive: Path, names: list[str], t: Template) -> dict[str, list[str]]:
-    """저장한 묶음에서 응시용 이미지의 레이어마다 파일 이름을 꺼내 금지 경로를 찾는다 (위 레이어에서 지워도 아래에 남으므로 레이어 단위)."""
-    rules = candidate_layer_rules(t)
+def scan_candidates(archive: Path, targets: dict[str, Template]) -> dict[str, list[str]]:
+    """저장한 묶음에서 응시용 이미지의 레이어마다 파일 이름을 꺼내 금지 경로를 찾는다 (위 레이어에서 지워도 아래에 남으므로 레이어 단위).
+    targets: 응시용 이미지 이름 → 그 과제의 템플릿 (금지 경로는 템플릿 manifest 에서)."""
+    names = list(targets)
     out: dict[str, list[str]] = {}
     with tarfile.open(archive) as tar:
         manifest = json.loads(tar.extractfile("manifest.json").read())  # type: ignore[union-attr]
@@ -228,18 +331,12 @@ def scan_candidates(archive: Path, names: list[str], t: Template) -> dict[str, l
             name = next((n for n in names if any(tag.startswith(n) for tag in tags)), None)
             if name is None:
                 continue
+            rules, skip = candidate_layer_rules(targets[name]), stack_for(targets[name]).scan_skip
             bad: list[str] = []
             for layer in entry["Layers"]:
                 with tarfile.open(fileobj=tar.extractfile(layer)) as lt:  # type: ignore[arg-type]
                     paths = [m.name for m in lt.getmembers() if m.isfile()]
-                bad += forbidden_in(
-                    [
-                        p
-                        for p in paths
-                        if not p.startswith(("usr/", "opt/java/", "etc/", "var/", "lib/"))
-                    ],
-                    rules,
-                )
+                bad += forbidden_in([p for p in paths if not p.startswith(skip)], rules)
             out[name] = sorted(set(bad))
     return out
 
@@ -253,59 +350,66 @@ def main() -> None:
     ap.add_argument("--store", default=None, help="podman 저장소 경로 (기본: 시스템 저장소)")
     ap.add_argument("--skip-verify", action="store_true")
     a = ap.parse_args()
-    t = load_template("backend/java-spring-boot3-jpa")
     runs = [Path(r) if "/" in r else BUILDS / r for r in (a.run or DEFAULT_RUNS)]
-    out = Path(a.out)
+    run_templates = [(run, template_of(run)) for run in runs]
+    out = Path(
+        a.out
+    ).resolve()  # podman -v 는 상대 경로를 이름 있는 볼륨으로 본다 (2026-11-09: 채점 결과가 비었다)
     # 빌드 작업 폴더(참조 구현·숨은 테스트 평문 포함)와 로그는 전달 폴더 밖에 — 전달물에 섞이지 않게
     ctx = ROOT / "data" / "mock_images" / "build-context" / out.name
     out.mkdir(parents=True, exist_ok=True)
     ctx.mkdir(parents=True, exist_ok=True)
     log = ctx / "build.log"
     pm = Podman(ROOT / "data" / "mock_images" / "tmp", Path(a.store) if a.store else None)
-    stem = t.manifest.ref.replace("@", "-").replace("/", "-")  # backend-java-spring-boot3-jpa-v1
-    template_img = f"localhost/task-template/{stem}"
-    grader_base = f"localhost/task-grader-base/{stem}"
 
     t0 = time.monotonic()
-    print("① 템플릿 층 (project/ + 오프라인 Gradle 캐시)", flush=True)
-    tdir = ctx / "template"
-    if tdir.exists():
-        shutil.rmtree(tdir)
-    shutil.copytree(t.project, tdir / "project")
-    (tdir / "Containerfile").write_text(
-        containerfile(
-            BASE,
-            [
-                "ENV GRADLE_USER_HOME=/opt/gradle-home",
-                f"WORKDIR {t.manifest.workspace}",
-                f"COPY project/ {t.manifest.workspace}/",
-                # 뼈대를 한 번 빌드·테스트해 Gradle 배포판·의존성(테스트 런타임 포함)을 캐시에 — 채점·응시 컨테이너는 네트워크 없음
-                "RUN chmod +x gradlew && ./gradlew --no-daemon --console=plain build && rm -rf build .gradle",
-                *labels({"template_ref": t.manifest.ref}),
-            ],
-        ),
-        "utf-8",
-    )
-    pm("build", "-t", template_img, str(tdir), log=log)
-    print("② 채점 기반 층 (python3 + grade)", flush=True)
-    gdir = ctx / "grader-base"
-    gdir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "eval" / "starter" / "image_grade.py", gdir / "grade.py")
-    (gdir / "Containerfile").write_text(
-        containerfile(
-            template_img,
-            [
-                "RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*",
-                "COPY grade.py /grader/grade.py",
-                "RUN printf '#!/bin/sh\\nexec python3 /grader/grade.py \"$@\"\\n' > /usr/local/bin/grade && chmod +x /usr/local/bin/grade",
-            ],
-        ),
-        "utf-8",
-    )
-    pm("build", "-t", grader_base, str(gdir), log=log)
+    layers: dict[str, tuple[str, str]] = {}  # 템플릿 ref → (템플릿 층 이미지, 채점 기반 이미지)
+    for t in {t.manifest.ref: t for _, t in run_templates}.values():
+        st = stack_for(t)
+        stem = t.manifest.ref.replace("@", "-").replace(
+            "/", "-"
+        )  # backend-java-spring-boot3-jpa-v1
+        template_img = f"localhost/task-template/{stem}"
+        grader_base = f"localhost/task-grader-base/{stem}"
+        print(f"① 템플릿 층 {t.manifest.ref} (project/ + 오프라인 의존성, {st.base})", flush=True)
+        tdir = ctx / "template" / stem
+        if tdir.exists():
+            shutil.rmtree(tdir)
+        shutil.copytree(t.project, tdir / "project")
+        (tdir / "Containerfile").write_text(
+            containerfile(
+                st.base,
+                [
+                    f"WORKDIR {t.manifest.workspace}",
+                    f"COPY project/ {t.manifest.workspace}/",
+                    *st.install,
+                    *labels({"template_ref": t.manifest.ref}),
+                ],
+            ),
+            "utf-8",
+        )
+        pm("build", "-t", template_img, str(tdir), log=log)
+        print(f"② 채점 기반 층 {t.manifest.ref} (python3 + grade)", flush=True)
+        gdir = ctx / "grader-base" / stem
+        gdir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(st.grade_script, gdir / "grade.py")
+        (gdir / "Containerfile").write_text(
+            containerfile(
+                template_img,
+                [
+                    PYTHON3,
+                    "COPY grade.py /grader/grade.py",
+                    "RUN printf '#!/bin/sh\\nexec python3 /grader/grade.py \"$@\"\\n' > /usr/local/bin/grade && chmod +x /usr/local/bin/grade",
+                ],
+            ),
+            "utf-8",
+        )
+        pm("build", "-t", grader_base, str(gdir), log=log)
+        layers[t.manifest.ref] = (template_img, grader_base)
 
     tasks: list[dict[str, Any]] = []
-    for run in runs:
+    for run, t in run_templates:
+        template_img, grader_base = layers[t.manifest.ref]
         item = load_run(run, t)
         cid, rev = item["common_id"], item["revision"]
         print(f"③ {cid} ({run.name})", flush=True)
@@ -377,6 +481,7 @@ def main() -> None:
                 "tree": tree,
                 "cdir": cdir,
                 "config": config,
+                "template": t,
             }
         )
 
@@ -397,11 +502,7 @@ def main() -> None:
                     "--network",
                     "none",
                     x["candidate"],
-                    "./gradlew",
-                    "--offline",
-                    "--no-daemon",
-                    "-q",
-                    "test",
+                    *stack_for(x["template"]).candidate_check,
                 ],
                 env=pm.env,
                 capture_output=True,
@@ -431,7 +532,7 @@ def main() -> None:
                     shutil.rmtree(res_dir)
                 res_dir.mkdir(parents=True)
                 g0 = time.monotonic()
-                subprocess.run(
+                proc = subprocess.run(
                     [
                         "podman",
                         *pm.flags,
@@ -456,6 +557,11 @@ def main() -> None:
                     if (res_dir / "result.json").is_file()
                     else None
                 )
+                if result is None:  # 채점 컨테이너가 결과를 못 냄 — 출력을 남긴다
+                    (sdir / f"grade-{name}.err").write_text(
+                        f"exit {proc.returncode}\n{proc.stdout[-4000:]}\n{proc.stderr[-4000:]}",
+                        "utf-8",
+                    )
                 x["grades"][name] = {"seconds": round(time.monotonic() - g0, 1), "result": result}
                 print(
                     f"   {name}: {json.dumps((result or {}).get('summary'), ensure_ascii=False)} setup={(result or {}).get('setup')}",
@@ -477,12 +583,12 @@ def main() -> None:
         *names,
         log=log,
     )
-    leaks = scan_candidates(archive, [x["candidate"] for x in tasks], t)
+    leaks = scan_candidates(archive, {x["candidate"]: x["template"] for x in tasks})
     print(f"   응시용 레이어 금지 경로: {leaks}", flush=True)
 
     entries = []
     for x in tasks:
-        item = x["item"]
+        item, t = x["item"], x["template"]
         info = {}
         for role in ("candidate", "grader"):
             insp = json.loads(pm("image", "inspect", x[role]))[0]
@@ -499,6 +605,7 @@ def main() -> None:
                 "title": item["task"].title,
                 "source_build": item["run"],
                 "template_ref": t.manifest.ref,
+                "base_image": stack_for(t).base,
                 "candidate": {
                     **info["candidate"],
                     "workspace": t.manifest.workspace,
@@ -529,7 +636,7 @@ def main() -> None:
                 "created": str(date.today()),
                 "archive": "images.tar",
                 "archive_format": "docker-archive (podman save --multi-image-archive) — podman load -i images.tar",
-                "base_image": BASE,
+                "base_images": {t.manifest.ref: stack_for(t).base for _, t in run_templates},
                 "tasks": entries,
             },
             ensure_ascii=False,

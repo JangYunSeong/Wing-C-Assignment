@@ -28,7 +28,7 @@ from task_spec.schemas import (
     TaskItem,
 )
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.contract import SpecView, check_contract, fit_covers
+from task_spec.starter.contract import ROW_NEEDS, SpecView, check_contract, fit_covers
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
 from task_spec.starter.templates import Template
@@ -117,12 +117,17 @@ def for_prompt(inp: PlanContractInputV3, model: type[BaseModel]) -> BaseModel:
     return model.model_validate({k: v for k, v in dict(inp).items() if k in model.model_fields})
 
 
-def needs_text(seed: FeatureSeed | None) -> str:
-    """재료가 선언한 '숨은 요구에 계약이 꼭 가져야 할 것' — 시드 규칙 칸 뒤에 붙는다 (검사 _needs 와 같은 목록)."""
-    if seed is None or not seed.contract_needs:
+def needs_text(seed: FeatureSeed | None, row_seeds: bool = True) -> str:
+    """재료가 선언한 '숨은 요구에 계약이 꼭 가져야 할 것' — 시드 규칙 칸 뒤에 붙는다 (검사 _needs 와 같은 목록 — 행 기반 종류는 행 시드 템플릿만)."""
+    needs = [
+        n
+        for n in (seed.contract_needs if seed is not None else [])
+        if row_seeds or n.kind not in ROW_NEEDS
+    ]
+    if not needs:
         return ""
     return "\n- 숨은 요구가 계약에 꼭 필요로 하는 것 (빠지면 다시 요청):\n" + "\n".join(
-        f"  - {n.note or n.kind}" for n in seed.contract_needs
+        f"  - {n.note or n.kind}" for n in needs
     )
 
 
@@ -167,7 +172,8 @@ def plan_input(
         )
         or NONE,
         revision_note=note or NONE,
-        seed_rules=seed_rules_text(m) + (needs_text(seed) if m.seed_rows else ""),
+        seed_rules=seed_rules_text(m)
+        + needs_text(seed, m.seed_rows),  # 프론트 종류는 행 시드가 없는 템플릿에도
     )
 
 

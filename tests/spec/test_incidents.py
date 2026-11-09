@@ -184,8 +184,8 @@ def test_feature_tasks_pick_the_incident_the_sub_template_can_test(tmp_path: Pat
         incs["sw.frontend"].incident_id == "pub:sw.frontend:multi-writer-local-db"
     )  # 기본(디버깅형)
     fe = feature_incident(incs, "sw.frontend")
-    assert fe is not None and fe.incident_id == "pub:sw.frontend:stale-search-response"
-    assert fe.feature is not None and "frontend/react-vite-ts" in fe.templates
+    assert fe is not None and fe.feature is not None and "frontend/react-vite-ts" in fe.templates
+    assert fe.incident_id in {i.incident_id for i in incs.alternates["sw.frontend"]}
     assert feature_incident(incs, "sw.backend") is incs["sw.backend"]  # 추가 사례가 없으면 기본
     assert feature_incident(None, "sw.backend") is None
     # 추가 사례는 templates 가 있어야 한다 (없으면 어느 과제에서도 쓰이지 않는다)
@@ -194,3 +194,49 @@ def test_feature_tasks_pick_the_incident_the_sub_template_can_test(tmp_path: Pat
     (tmp_path / "sw.frontend.extra.json").write_text(json.dumps(raw, ensure_ascii=False), "utf-8")
     with pytest.raises(ValueError, match="templates"):
         load_incidents(tmp_path)
+
+
+def test_several_frontend_materials_are_assigned_by_posting_id_hash() -> None:
+    """2026-11-09 사용자 결정: 템플릿이 시험할 수 있는 추가 사례가 여럿이면 공고 id 해시로 고정 배정 (같은 공고 = 같은 재료)."""
+    from task_spec.spec.incidents import feature_incident, incident_by_id
+
+    incs = load_incidents(ROOT)
+    ids = {i.incident_id for i in incs.alternates["sw.frontend"]}
+    assert {
+        "pub:sw.frontend:stale-search-response",
+        "pub:sw.frontend:duplicate-submit",
+        "pub:sw.frontend:optimistic-not-rolled-back",
+    } <= ids
+    picked = {
+        pid: feature_incident(incs, "sw.frontend", pid).incident_id  # type: ignore[union-attr]
+        for pid in (f"posting#{n:03d}" for n in range(40))
+    }
+    assert set(picked.values()) == ids  # 공고가 많으면 재료가 고루 쓰인다
+    assert all(
+        feature_incident(incs, "sw.frontend", pid).incident_id == v for pid, v in picked.items()
+    )  # type: ignore[union-attr]
+    # 이미 만든 명세로 다시 돌릴 때는 명세에 적힌 재료 그대로 (기본·추가 사례 모두에서 찾음)
+    assert (
+        incident_by_id(incs, "pub:sw.frontend:duplicate-submit").incident_id
+        == "pub:sw.frontend:duplicate-submit"
+    )  # type: ignore[union-attr]
+    assert incident_by_id(incs, incs["sw.backend"].incident_id) is incs["sw.backend"]
+    assert incident_by_id(incs, "pub:없음:x") is None and incident_by_id(incs, None) is None
+
+
+def test_alternate_feature_seeds_are_well_formed() -> None:
+    """추가 사례(기능형)도 기본 사례와 같은 검사 — 허용 설계 2개 이상, 보이는 글에 누설 말 없음, 실패 사유는 템플릿 코드."""
+    from task_spec.starter.templates import load_template
+
+    for alts in load_incidents(ROOT).alternates.values():
+        for inc in alts:
+            f = inc.feature
+            assert f is not None and len(f.accepted_designs) >= 2, inc.incident_id
+            visible = (f.business_need + f.stage2_symptom).lower()
+            assert not [
+                t for t in [*f.leak_terms, *f.stage2_cause_terms] if t.lower() in visible
+            ], inc.incident_id
+            assert not set(f.leak_terms) & set(f.trigger_terms), inc.incident_id
+            for ref in inc.templates:
+                codes = set(load_template(ref).manifest.reason_codes)
+                assert set(f.reasons) <= codes, (inc.incident_id, f.reasons)
