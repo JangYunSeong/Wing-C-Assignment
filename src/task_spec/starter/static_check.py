@@ -841,6 +841,7 @@ def _hidden_cases(
     params_path = m.hidden_layout.params if m.hidden_layout else None
     helper = render_contract_case(contract, plan, m) if contract is not None else None
     helper_path = m.hidden_helper.path if m.hidden_helper else None
+    plan_ids = {c.case_id for c in plan.cases}
     seen_ids: Counter[str] = Counter()
     used_codes: set[str] = set()
     for f in o.files:
@@ -869,7 +870,13 @@ def _hidden_cases(
             )
         for rx in reason_rx:
             used_codes |= {mt.group(1) for mt in rx.finditer(f.content)}
-        seen_ids.update(set(case_rx.findall(f.content)))
+        ids = set(case_rx.findall(f.content))
+        seen_ids.update(ids)
+        if only is not None and (others := sorted(ids & plan_ids - set(only))):
+            out.append(
+                f"숨은 테스트 {f.path} 에 다른 케이스 id 가 나옴: {', '.join(others)} — 이 파일은 {', '.join(sorted(only))} 만 다룬다"
+                " (다른 케이스 id 는 주석·이름에도 쓰지 않는다 — 합치면 한 케이스가 여러 파일에 나온다)"
+            )
     cases = [f for f in o.files if f.path not in (params_path, helper_path)]
     if helper is not None:
         out += unknown_helper_names(cases, helper, "숨은 테스트")
@@ -888,9 +895,9 @@ def _hidden_cases(
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
         out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
-    planned = {c.case_id for c in plan.cases if only is None or c.case_id in only}
+    planned = {i for i in plan_ids if only is None or i in only}
     missing = sorted(planned - set(seen_ids))
-    extra = sorted(set(seen_ids) - {c.case_id for c in plan.cases})
+    extra = sorted(set(seen_ids) - plan_ids)
     twice = sorted(i for i, n in seen_ids.items() if n > 1 and i in planned)
     if missing:
         out.append(f"HiddenPlan 케이스가 숨은 테스트에 없음: {', '.join(missing)}")

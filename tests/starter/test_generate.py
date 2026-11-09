@@ -509,6 +509,20 @@ async def test_hidden_cases_are_generated_one_call_each_and_merged() -> None:
     assert "- hc2 " in one and "- hc1 " not in one
 
 
+async def test_hidden_case_mentioning_another_case_is_reasked() -> None:
+    # 케이스별 검사가 다른 케이스 id 를 못 보면 합친 뒤에야 '여러 파일에 나옴'으로 루프가 멈춘다 (alpha-rep1)
+    b = _two_cases()
+    mentions = HC2 + "\n// hc1 과 달리 두 번째 요청\n"
+    fake = FakeBackend().push(
+        _files((HC1_PATH, HC1)), _files((HC2_PATH, mentions)), _files((HC2_PATH, HC2))
+    )
+    res = await _gen(gen_hidden, fake, b)
+    assert res.ok and len(fake.calls) == 3, res.problems
+    files = {f.path: f.content for f in res.overlay.files}  # type: ignore[union-attr]
+    assert files[HC2_PATH] == HC2
+    assert any("다른 케이스 id 가 나옴: hc1" in p for p in res.first_problems)
+
+
 async def test_hidden_repair_regenerates_only_the_named_case() -> None:
     b = _two_cases()
     from task_spec.schemas import GeneratedFile
