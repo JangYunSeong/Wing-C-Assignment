@@ -611,3 +611,31 @@ def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
         + ("        org.assertj.core.api.Assertions.assertThat(again.statusCode()).isEqualTo(200)")
     )
     assert not _has(msgs(inject, ".isNotEqualTo(200);" + after), "응답 코드를 단정")
+
+
+def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:
+    # 2026-11-09: 허용 구현 d1·d2·d3 가 DataSource 빈·BeanPostProcessor 로 풀을 80 으로 바꿔 하네스가 넣는 운영 값을 우회했다
+    # ("so the grading harness's property override does not reduce it" 라는 주석까지) — 지원자도 같은 길로 함정을 피할 수 있다
+    from task_spec.starter.static_check import HARNESS_OVERRIDE, _code_overrides
+
+    t = JAVA
+    bean = (
+        "@Configuration class C {\n  @Bean @Primary\n  public DataSource dataSource(DataSourceProperties p) {\n"
+        "    HikariDataSource ds = p.initializeDataSourceBuilder().type(HikariDataSource.class).build();\n"
+        "    ds.setMaximumPoolSize(80); return ds; } }"
+    )
+    post = (
+        "@Component class P implements BeanPostProcessor { public Object postProcessAfterInitialization(Object b, String n) {\n"
+        "  if (b instanceof HikariDataSource ds) { ds.setMaximumPoolSize(80); } return b; } }"
+    )
+    plain = "@Service class S { @Transactional public void change() { repo.save(x); } }"
+    for content, bad in ((bean, True), (post, True), (plain, False)):
+        o = Overlay(
+            kind="ref_accepted",
+            files=(GeneratedFile(path="src/main/java/x/C.java", content=content),),
+            label="d3",
+        )
+        got = _code_overrides(o, t)
+        assert bool(got) is bad, (content, got)
+        # 허용 구현이 이것만으로 재요청에도 못 고치면 그 설계를 빼는 기존 장치(build._voided)가 알아보게 같은 말
+        assert all(HARNESS_OVERRIDE in p.message for p in got)
