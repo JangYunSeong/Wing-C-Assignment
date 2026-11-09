@@ -3,7 +3,7 @@
 재시도 정책 (이 한 곳에만 있다)
 | 증상                               | 처리                                         |
 | 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회                   |
-| 빈 응답 + 잘림, 추론 설정이 이미 low | 최대 MAX_RESAMPLES 회 다시 — 앞은 같은 설정, 마지막은 추론 끔(NO_REASONING, 확인한 프로바이더만) — 잘리지 않은 빈 응답은 예외 그대로 |
+| 빈 응답 + 잘림, 추론 설정이 이미 low | 최대 MAX_RESAMPLES 회 다시 — 같은 설정, reasoning_off_last 호출(빌드 생성기)만 마지막은 추론 끔(NO_REASONING, 확인한 프로바이더만) — 잘리지 않은 빈 응답은 예외 그대로 |
 | TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
 | 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
@@ -127,9 +127,13 @@ class LLMClient:
         output: type[T] | None = None,
         *,
         split_on_truncation: bool = False,
+        reasoning_off_last: bool = False,
     ) -> LLMResult[T]:
         """split_on_truncation=True: 잘린 응답(finish_reason=length)을 형식 재요청 없이 OutputTruncated 로
-        돌려준다 (추론 설정이 low 가 아니면 low 로 1회 먼저). 입력을 나눠 다시 부를 수 있는 호출자만 켠다."""
+        돌려준다 (추론 설정이 low 가 아니면 low 로 1회 먼저). 입력을 나눠 다시 부를 수 있는 호출자만 켠다.
+        reasoning_off_last=True: 빈 응답+잘림 재시도의 마지막 한 번을 추론 없이 (NO_REASONING). 출력을 정적 검사·수리 루프가
+        다시 보는 빌드 생성기(계약·시작 코드·테스트·참조 구현)만 켠다 — 판정·선택·겹침 확인 같은 판단 호출은 끄고 둔다
+        (추론 없는 판단이 지원자 결과에 섞이지 않게, 2026-11-09 사용자 결정)."""
         out_model: type[T] = output or prompt.output_model  # type: ignore[assignment]
         provider, _, model = prompt.model.partition(":")
         backend = self._backends.get(provider)
@@ -235,7 +239,11 @@ class LLMClient:
                 ):  # 추론이 상한을 다 씀 — 추론 길이는 호출마다 달라 같은 설정으로 다시 부르면 대개 산다
                     resamples += 1
                     # 마지막 한 번은 추론을 끈다 — 폭주가 이어져도 빈 응답으로 끝나지 않게 (품질은 정적 검사·수리 루프가 본다)
-                    off = NO_REASONING.get(provider) if resamples == MAX_RESAMPLES else None
+                    off = (
+                        NO_REASONING.get(provider)
+                        if reasoning_off_last and resamples == MAX_RESAMPLES
+                        else None
+                    )
                     retries.append(
                         f"empty_truncated->reasoning_effort={off}"
                         if off
