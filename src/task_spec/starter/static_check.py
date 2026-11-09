@@ -24,7 +24,7 @@ import functools
 import posixpath
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -825,8 +825,13 @@ def _literal_headers(
 
 
 def _hidden_cases(
-    o: Overlay, t: Template, plan: HiddenPlan, contract: TaskContract | None = None
+    o: Overlay,
+    t: Template,
+    plan: HiddenPlan,
+    contract: TaskContract | None = None,
+    only: Collection[str] | None = None,
 ) -> list[StaticProblem]:
+    """only: 케이스별 생성(generate.gen_hidden)에서 그 케이스만 — 계획의 다른 케이스가 없다고 하지 않는다."""
     m = t.manifest
     rules = m.hidden_rules
     out: list[str] = []
@@ -882,9 +887,9 @@ def _hidden_cases(
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
         out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
-    planned = {c.case_id for c in plan.cases}
+    planned = {c.case_id for c in plan.cases if only is None or c.case_id in only}
     missing = sorted(planned - set(seen_ids))
-    extra = sorted(set(seen_ids) - planned)
+    extra = sorted(set(seen_ids) - {c.case_id for c in plan.cases})
     twice = sorted(i for i, n in seen_ids.items() if n > 1 and i in planned)
     if missing:
         out.append(f"HiddenPlan 케이스가 숨은 테스트에 없음: {', '.join(missing)}")
@@ -1130,6 +1135,7 @@ def static_check(
     readme: GeneratedFile | None = None,
     avoid_terms: Sequence[str] = (),
     public_tests_visible: bool = False,
+    hidden_cases_only: Collection[str] | None = None,
 ) -> StaticResult:
     """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게."""
     res = StaticResult()
@@ -1172,7 +1178,7 @@ def static_check(
         if o.kind == "public_test":
             res.problems += _public_cases(o, template, plan, contract)
         if o.kind == "hidden":
-            res.problems += _hidden_cases(o, template, plan, contract)
+            res.problems += _hidden_cases(o, template, plan, contract, hidden_cases_only)
             res.review_flags += _duplicate_labels(o, template)
         if o.kind == "ref_accepted":
             starter = next((x for x in overlays if x.kind == "starter"), None)

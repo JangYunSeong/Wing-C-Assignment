@@ -1,4 +1,5 @@
 """시작 코드 생성기 4종 (docs/design/spec-to-code.md §4) — 생성 → 그 오버레이 정적 검사 → 1회 재요청.
+숨은 테스트는 케이스마다 따로 부르고(gen_hidden), 수리 때는 사유가 가리키는 케이스만 다시 만든다.
 
 | 생성기 | 보는 것 | 보지 않는 것 | 산출 kind |
 |---|---|---|---|
@@ -14,8 +15,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+import re
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
@@ -151,6 +154,7 @@ def plan_text(
     plan: HiddenPlan,
     contract: TaskContract | None = None,
     how: Mapping[str, str] | None = None,
+    only: Collection[str] | None = None,
 ) -> str:
     """HiddenPlan → 숨은 테스트 생성기 입력. 계약을 주면 케이스마다 코드가 나눈 시드 id 범위를 붙인다 (seed_rows).
     how(사유 → 일으키는 법)를 주면 케이스마다 그 사유를 일으키는 법을 붙인다 — 시나리오가 사유와 어긋나도(예: 롤백 사유인데
@@ -161,6 +165,10 @@ def plan_text(
     lines += [f"- {k} = {v}" for k, v in plan.harness.items()] or ["- (없음)"]
     lines.append("케이스:")
     for c in plan.cases:
+        if (
+            only is not None and c.case_id not in only
+        ):  # 케이스별 생성 — 행 배정은 계획 전체로 (도우미 상수와 같은 값)
+            continue
         lines.append(
             f"- {c.case_id} ({c.ac_id}, 숨은 요구 {c.trap_id}, 실패 사유 {c.intended_reason}): {c.scenario} → 통과 조건: {c.expect}"
         )
@@ -269,7 +277,9 @@ def hidden_input(
     plan: HiddenPlan,
     template: Template,
     note: str | None = None,
+    only: Collection[str] | None = None,
 ) -> GenHiddenInput:
+    """only: 이 케이스들만 계획에 보인다 (케이스별 생성). 도우미·조절값은 계획 전체로 — 합친 숨은 테스트와 같은 상수."""
     m = template.manifest
     harness = template.hidden / "HARNESS.md"
     api = harness.read_text("utf-8") if harness.is_file() else NONE
@@ -283,7 +293,9 @@ def hidden_input(
         harness_api=api,
         slots=slots_text(m, "hidden"),
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
-        hidden_plan=plan_text(plan, contract, {r.code: r.how for r in m.failure_reasons if r.how}),
+        hidden_plan=plan_text(
+            plan, contract, {r.code: r.how for r in m.failure_reasons if r.how}, only
+        ),
         traps=_lines([f"{t.trap_id} {t.description}" for t in task.traps]),
         acceptance_hidden=_lines(
             [f"{h.ac_id} ({h.trap_id}) {h.text}" for h in task.acceptance_hidden]
@@ -505,8 +517,14 @@ class BuildInputs:
     seed: FeatureSeed | None = None
     avoid_terms: tuple[str, ...] = ()
 
-    def check(self, overlay: Overlay, starter: Overlay | None = None) -> list[str]:
-        """그 오버레이만 정적 검사. 참조 구현은 시작 코드를 같이 줘 시작 코드 설정 값과 비교한다 (하네스 설정 검사)."""
+    def check(
+        self,
+        overlay: Overlay,
+        starter: Overlay | None = None,
+        cases: Collection[str] | None = None,
+    ) -> list[str]:
+        """그 오버레이만 정적 검사. 참조 구현은 시작 코드를 같이 줘 시작 코드 설정 값과 비교한다 (하네스 설정 검사).
+        cases: 숨은 테스트를 케이스별로 만들 때 그 케이스만 있는지 본다."""
         res = static_check(
             [overlay] if starter is None else [starter, overlay],
             template=self.template,
@@ -515,6 +533,7 @@ class BuildInputs:
             contract=self.contract,
             seed=self.seed,
             avoid_terms=self.avoid_terms,
+            hidden_cases_only=cases,
         )
         return res.for_target(KIND_TARGET[overlay.kind])
 
@@ -628,6 +647,23 @@ async def gen_public(
     )
 
 
+def case_owner(f: GeneratedFile, rx: re.Pattern[str], ids: Collection[str]) -> str | None:
+    """숨은 테스트 파일의 케이스 — 계획의 케이스 id 가 하나만 나오면 그 케이스, 아니면 None (공용 파일)."""
+    found = {i for i in rx.findall(f.content) if i in ids}
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def repair_targets(
+    note: str | None, files: Sequence[GeneratedFile], rx: re.Pattern[str], ids: Sequence[str]
+) -> list[str]:
+    """수리 사유가 가리키는 케이스 — 사유에 나온 케이스 id, 또는 사유에 경로가 나온 파일(컴파일 오류)의 케이스.
+    못 가리면 모든 케이스 (사유가 숨은 테스트 전체에 대한 것)."""
+    text = note or ""
+    named = {i for i in rx.findall(text) if i in ids}
+    named |= {o for f in files if f.path in text and (o := case_owner(f, rx, ids)) is not None}
+    return [i for i in ids if i in named] or list(ids)
+
+
 async def gen_hidden(
     b: BuildInputs,
     *,
@@ -637,28 +673,65 @@ async def gen_hidden(
     note: str | None = None,
     previous: Overlay | None = None,
 ) -> GenResult:
-    params = render_params(b.plan, b.template.manifest)
-    helper = render_contract_case(b.contract, b.plan, b.template.manifest)
+    """숨은 테스트 — 케이스마다 따로 (동시에) 부르고 합친다. 입력 계획에는 그 케이스만 보이고, 도우미·조절값은 계획 전체로 코드가 쓴다.
+    수리(previous)는 사유가 가리키는 케이스만 그 케이스의 이전 파일로 다시 만들고, 다른 케이스 파일은 그대로 둔다.
+    2026-11-09 (사용자 결정): 한 번에 모든 케이스를 쓰면 한 케이스의 문제로 숨은 테스트 전체를 다시 만들어, 맞던 케이스도 바뀔 수 있다."""
+    m = b.template.manifest
+    params = render_params(b.plan, m)
+    helper = render_contract_case(b.contract, b.plan, m)
     code_written = [params, *([helper] if helper is not None else [])]
+    written = {c.path for c in code_written}
+    rx = re.compile(m.hidden_rules.case_id_pattern)
+    ids = [c.case_id for c in b.plan.cases]
+    before = [f for f in (previous.files if previous is not None else ()) if f.path not in written]
+    targets = repair_targets(note, before, rx, ids) if previous is not None else ids
 
-    def with_params(files: list[GeneratedFile]) -> Overlay:
+    def mine(files: list[GeneratedFile]) -> Overlay:
         # 조절값 파일·계약 도우미는 코드가 쓴다 — 생성기가 같은 경로를 쓰면 버린다
-        kept = [f for f in files if f.path not in {c.path for c in code_written}]
-        return Overlay(kind="hidden", files=(*kept, *code_written))
+        return Overlay(kind="hidden", files=tuple(f for f in files if f.path not in written))
 
-    return await _generate(
-        "gen_hidden",
-        lambda n: hidden_input(b.task, b.contract, b.plan, b.template, n),
-        with_params,
-        b.check,
-        llm=llm,
-        prompts=prompts,
-        ontology_version=ontology_version,
-        note=note,
-        previous=previous,
-        prompt_name=b.template.manifest.prompt_tasks.get("gen_hidden"),
-        fix=test_import_fix(b.template.manifest),
+    def one(cid: str) -> Any:
+        prev = [f for f in before if case_owner(f, rx, ids) == cid]
+        return _generate(
+            "gen_hidden",
+            lambda n: hidden_input(b.task, b.contract, b.plan, b.template, n, only={cid}),
+            mine,
+            lambda o: b.check(o, cases={cid}),
+            llm=llm,
+            prompts=prompts,
+            ontology_version=ontology_version,
+            note=note,
+            previous=Overlay(kind="hidden", files=tuple(prev)) if prev else None,
+            prompt_name=m.prompt_tasks.get("gen_hidden"),
+            fix=test_import_fix(m),
+        )
+
+    parts: list[GenResult] = list(await asyncio.gather(*(one(c) for c in targets)))
+    res = GenResult(task="gen_hidden")
+    for r in parts:
+        res.provenance += r.provenance
+        res.errors += r.errors
+        res.fail_reasons += r.fail_reasons
+        res.first_problems += r.first_problems
+        res.flags += [f for f in r.flags if f.startswith(FLAG_FAILED)]
+    if any(r.overlay is None for r in parts):
+        return res
+    kept = [f for f in before if case_owner(f, rx, ids) not in targets]
+    files = {f.path: f for f in kept}
+    for r in parts:
+        files |= {f.path: f for f in r.overlay.files}  # type: ignore[union-attr]
+    res.overlay = Overlay(kind="hidden", files=(*files.values(), *code_written))
+    res.problems = b.check(res.overlay)  # 합친 뒤 계획 전체로 (케이스 누락·두 파일에 같은 케이스)
+    if res.problems:
+        res.flags.append(FLAG_INVALID + "gen_hidden: " + "; ".join(res.problems))
+    logger.info(
+        "gen_hidden cases=%d regenerated=%d kept_files=%d problems=%d",
+        len(ids),
+        len(targets),
+        len(kept),
+        len(res.problems),
     )
+    return res
 
 
 async def gen_naive(

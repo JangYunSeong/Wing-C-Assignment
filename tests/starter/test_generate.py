@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from task_spec.nodes.starter.generate import (
     gen_starter,
     hidden_input,
     naive_input,
+    repair_targets,
     starter_input,
 )
 from task_spec.prompting import PromptRegistry, assemble
@@ -478,3 +480,55 @@ def test_ref_input_shows_the_config_in_effect() -> None:
     b = _inputs()
     text = accepted_input(b.task, b.contract, b.template, _starter_overlay(), D1).starter_files
     assert "=== src/main/resources/application.yml ===" in text and "ddl-auto: none" in text
+
+
+# ── 숨은 테스트 케이스별 생성 (2026-11-09) ──
+def _two_cases() -> BuildInputs:
+    from task_spec.schemas import HiddenPlan
+    from tests.starter.test_contract import _plan
+
+    base = _plan(harness={"pool_size": 8, "concurrency": 32, "connection_timeout_ms": 5000})
+    hc2 = {**base["cases"][0], "case_id": "hc2", "scenario": "두 번째 케이스"}
+    return _inputs(plan=HiddenPlan.model_validate({**base, "cases": [base["cases"][0], hc2]}))
+
+
+HC2 = HC1.replace("hc1", "hc2").replace("OrderStatusBurstTest", "OrderStatusSecondTest")
+HC1_PATH, HC2_PATH = f"{CASES}/OrderStatusBurstTest.java", f"{CASES}/OrderStatusSecondTest.java"
+
+
+async def test_hidden_cases_are_generated_one_call_each_and_merged() -> None:
+    b = _two_cases()
+    fake = FakeBackend().push(_files((HC1_PATH, HC1)), _files((HC2_PATH, HC2)))
+    res = await _gen(gen_hidden, fake, b)
+    assert res.ok and len(fake.calls) == 2 and len(res.provenance) == 2, res.problems
+    paths = [f.path for f in res.overlay.files]  # type: ignore[union-attr]
+    assert HC1_PATH in paths and HC2_PATH in paths
+    assert sum(p.endswith("grader-params.properties") for p in paths) == 1  # 조절값은 한 번
+    # 입력 계획엔 그 케이스만
+    one = hidden_input(b.task, b.contract, b.plan, b.template, only={"hc2"}).hidden_plan
+    assert "- hc2 " in one and "- hc1 " not in one
+
+
+async def test_hidden_repair_regenerates_only_the_named_case() -> None:
+    b = _two_cases()
+    from task_spec.schemas import GeneratedFile
+
+    prev = Overlay(
+        kind="hidden",
+        files=(
+            GeneratedFile(path=HC1_PATH, content=HC1),
+            GeneratedFile(path=HC2_PATH, content=HC2),
+        ),
+    )
+    fixed = HC2.replace("버스트 %d", "고친 버스트 %d")
+    fake = FakeBackend().push(_files((HC2_PATH, fixed)))
+    res = await _gen(gen_hidden, fake, b, note="흔한 구현이 hc2 통과", previous=prev)
+    assert res.ok and len(fake.calls) == 1
+    files = {f.path: f.content for f in res.overlay.files}  # type: ignore[union-attr]
+    assert files[HC1_PATH] == HC1 and files[HC2_PATH] == fixed  # hc1 은 그대로
+    # 컴파일 오류처럼 경로만 나오면 그 파일의 케이스, 아무것도 못 가리면 모든 케이스
+    rx = re.compile(r"\bhc\d{1,2}\b")
+    assert repair_targets(
+        f"- {HC1_PATH}:12 cannot find symbol", prev.files, rx, ["hc1", "hc2"]
+    ) == ["hc1"]
+    assert repair_targets("단언 순서를 바꾼다", prev.files, rx, ["hc1", "hc2"]) == ["hc1", "hc2"]
