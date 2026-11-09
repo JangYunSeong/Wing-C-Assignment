@@ -518,8 +518,8 @@ async def test_loop_passes_without_repair() -> None:
     )
     starter_prompt = next(u for n, u in backend.users if n == "gen_starter")
     assert (
-        "OrderHistoryPublicTest" not in starter_prompt
-    )  # CURRENT gen_starter v3 는 공개 테스트 칸이 없다
+        "OrderHistoryPublicTest" in starter_prompt
+    )  # 테스트 먼저 — CURRENT gen_starter(v7~)는 공개 테스트를 보고 맞춘다 (2026-11-09 CURRENT 를 최신으로)
 
 
 async def test_starter_repair_regenerates_refs_too() -> None:
