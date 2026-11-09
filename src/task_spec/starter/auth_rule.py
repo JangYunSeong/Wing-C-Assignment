@@ -31,7 +31,11 @@ FLAG_OTHER = "권한 규칙 자동 보장 안 됨 (kind=other — 사람 확인)
 
 
 def auth_required(e: Endpoint) -> bool:
-    """권한 실패를 내는 엔드포인트 — 401·403 응답, 또는 응답·필드 글에 권한 사유 코드."""
+    """권한 실패를 내는 HTTP 엔드포인트 — 401·403 응답, 또는 응답·필드 글에 권한 사유 코드.
+    명령·파일 인터페이스(method 없음)는 요청 헤더가 없어 칸을 채울 수 없다 — 권한 사유 코드가 있어도 보지 않는다
+    (예: 데이터 직군 권한 산출물 과제의 종료 코드 설명에 PERMISSION_DENIED)."""
+    if e.method is None:
+        return False
     if any(r.status in DENIED for r in e.responses):
         return True
     texts = [r.description for r in e.responses]

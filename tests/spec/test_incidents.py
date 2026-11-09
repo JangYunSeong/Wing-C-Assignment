@@ -112,7 +112,9 @@ def test_check_flags_copied_incident_text_and_numbers() -> None:
     problems = "\n".join(check(copied, ctx))
     assert "원 사례 문구·수치를 그대로 씀" in problems and "total=10" in problems
     # 재요청이 고칠 곳을 알게 — 숫자와 그 숫자를 정하는 설정 (2026-11-09 kakao_2026#007: "새로 만들 것"만으로는 같은 값이 남음)
-    assert "숫자 10, 30000 가 원 사례와 같음" in problems and "운영 설정부터" in problems
+    assert (
+        "숫자 10, 30000 가 원 사례와 같음" in problems and "조건(설정·규모·기간 등)부터" in problems
+    )
     changed = _out(
         scenario="정산 작업에서 '대기 시간 초과' 가 난다. 풀 지표는 사용 8/8, 대기 12 이다."
     )
