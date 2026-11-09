@@ -44,6 +44,19 @@ class ContractField(Schema):
     constraints: str | None = Field(default=None, max_length=200)
     refs: list[str] = Field(min_length=1)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _description(cls, data: Any) -> Any:
+        """필드에 붙인 description — 응답(responses)에 있는 칸이라 모델이 필드에도 붙인다 (2026-11-09 측정: plan_contract v16
+        6번 중 1번이 이것 하나로 스키마 위반, 재요청마다 계약 전체를 다시 써 1분 반~2분). 제약이 비면 그 자리로, 있으면 버린다."""
+        if isinstance(data, dict) and "description" in data:
+            rest = {k: v for k, v in data.items() if k != "description"}
+            text = data["description"]
+            if not rest.get("constraints") and isinstance(text, str) and text.strip():
+                rest["constraints"] = text[:200]
+            return rest
+        return data
+
     @field_validator("refs")
     @classmethod
     def _refs(cls, v: list[str]) -> list[str]:

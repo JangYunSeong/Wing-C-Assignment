@@ -242,3 +242,23 @@ def test_lenient_rules_from_the_v7_paper_run() -> None:
         "화면 s1 의 test id" in p and "겹침" in p
         for p in _check(_ui_contract(screens=[twice]), _ui_plan(), manifest=mu).problems
     )
+
+
+def test_field_description_moves_to_constraints_or_is_dropped() -> None:
+    # 2026-11-09: 모델이 필드에 응답의 description 을 따라 붙여 스키마 위반 — 재요청 대신 코드가 받는다
+    from task_spec.schemas.build import ContractField
+
+    moved = ContractField.model_validate(
+        {"name": "rank", "type": "string", "description": "바뀐 등급", "refs": ["r1"]}
+    )
+    assert moved.constraints == "바뀐 등급"
+    kept = ContractField.model_validate(
+        {
+            "name": "rank",
+            "type": "string",
+            "constraints": "등급 값",
+            "description": "x",
+            "refs": ["r1"],
+        }
+    )
+    assert kept.constraints == "등급 값"
