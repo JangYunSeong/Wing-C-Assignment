@@ -1,0 +1,116 @@
+# 템플릿 frontend/react-vite-ts v1 — 프론트엔드 기능 과제 (starter-templates §2 [제안] React + TypeScript + Vite + Vitest·Testing Library + MSW).
+# 실제 브라우저 없이 jsdom 에서 돈다. 숨은 테스트는 하네스(hidden/harness — 서버 API 를 붙잡았다 테스트가 정한 순서로 응답)로
+# 응답 순서·실패·연결 끊김을 만들고, 화면은 역할·이름·test id(공개 계약)로만 조작·판정한다.
+# 여러 탭·IndexedDB·서비스 워커처럼 실제 브라우저가 필요한 함정은 이 템플릿 밖 (Playwright 층 — 다음 단계).
+template_id: frontend/react-vite-ts
+version: 1
+stack:
+  language: TypeScript
+  language_version: "5.8"
+  framework: React 18 + Vite 6 (React Router 6 · TanStack Query 5 · Zustand 5 · MSW 2), Vitest 3 + Testing Library
+  framework_version: "18.3"
+  build_tool: npm
+  build_tool_version: "11"
+interfaces: [ui]
+workspace: /workspace
+commands:
+  build: npm run build
+  test: npm test
+  hidden_test: npx vitest run --config src/__grading__/harness/vitest.grading.config.ts
+  run: npm run dev
+  test_compile: npx tsc --noEmit
+naming:
+  path: '^/[a-z0-9/\-]*(?:(?::[A-Za-z][A-Za-z0-9]*|\{[A-Za-z][A-Za-z0-9]*\})[a-z0-9/\-]*)*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][A-Za-z0-9]*$'
+  test_id: '^[a-z][a-z0-9-]*$'
+  table:
+    style: none
+# DB 행을 바꾸는 과제가 아님 — 시드·행 배정 대신 입력 환경(fixtures: 서버 API 응답 모양)과 숨은 케이스 setup
+seed_rows: false
+fill_slots:
+  starter:
+    - src/**/*.ts
+    - src/**/*.tsx
+    - src/**/*.css
+    - docs/**
+  public_test:
+    - src/__public__/**/*.test.ts
+    - src/__public__/**/*.test.tsx
+    - src/__public__/**/*.ts
+  hidden:
+    - src/__grading__/cases/**/*.test.ts
+    - src/__grading__/cases/**/*.test.tsx
+    - src/__grading__/cases/**/*.ts
+    - src/__grading__/grader-params.json
+  ref:
+    - src/**/*.ts
+    - src/**/*.tsx
+    - src/**/*.css
+# 어느 오버레이도 덮어쓸 수 없다 — 의존성은 템플릿이 정한 것만 (React Router·TanStack Query·Zustand 포함)
+locked:
+  - package.json
+  - package-lock.json
+  - vite.config.ts
+  - tsconfig.json
+  - index.html
+  - src/main.tsx
+  - public/mockServiceWorker.js
+# hidden 외의 오버레이는 쓸 수 없다 (채점 하네스·케이스 자리)
+reserved:
+  - src/__grading__/**
+hidden_layout:
+  harness: src/__grading__/harness
+  selftest: src/__grading__/selftest
+  cases: src/__grading__/cases
+  params: src/__grading__/grader-params.json
+limits:
+  max_files: 60
+  max_file_bytes: 100000
+  max_total_bytes: 600000
+  allow_dependency_changes: false
+image:
+  template_layer: [project/]
+  grader_only: [hidden/, manifest.yaml, README.tpl.md]
+  grader_only_dependencies: []   # 하네스는 MSW·Testing Library 등 응시용 의존성과 같은 것만 쓴다
+hidden_rules:
+  # 숨은 테스트는 하네스(../harness)와 테스트 도구만 — 지원자 구현 내부(src/...)를 import 하지 않는다 (공개 계약인 화면으로만 판정)
+  forbidden_imports:
+    - '^\s*import\s+[^;]*from\s+[''"]\.\./\.\./'
+  reason_patterns:
+    - '\breason\(\s*[''"]([a-z0-9_]+)[''"]'
+  case_id_pattern: '\bhc\d{1,2}\b'
+# 템플릿에 없는 라이브러리 import — 의존성은 바꿀 수 없으므로 생성기가 쓰면 컴파일 전에 재요청
+unavailable_imports:
+  - '^\s*import\s+[^;]*from\s+[''"](?:axios|lodash|lodash-es|swr|redux|@reduxjs/toolkit|react-redux|jotai|recoil|mobx|styled-components|@emotion/[a-z-]+)[''"/]'
+harness_params: []
+failure_reasons:
+  - code: stale_response_shown
+    description: 먼저 보낸 요청의 응답이 늦게 와 최신 입력의 화면을 덮음
+    log_patterns: ['\[reason:stale_response_shown\]']
+    how: 같은 API 를 두 번 이상 부르게 조작하고 api.waitForCall 로 둘 다 붙잡은 뒤 나중 요청부터 respond, 먼저 요청을 나중에 respond. 사유는 "최신 입력의 화면이 그대로인지" 단언에
+  - code: stale_error_shown
+    description: 대체된(이미 지난) 요청의 실패가 최신 화면에 오류로 보임
+    log_patterns: ['\[reason:stale_error_shown\]']
+    how: 나중 요청을 respond 한 뒤 먼저 요청을 fail(500) 또는 networkError. 사유는 "오류 알림이 없는지" 단언에
+  - code: cleared_result_reappears
+    description: 입력을 지우거나 닫은 뒤 늦게 온 응답이 결과를 다시 띄움
+    log_patterns: ['\[reason:cleared_result_reappears\]']
+    how: 요청을 붙잡아 둔 채 입력을 지우거나 닫고, 그 뒤 respond. 사유는 "결과가 다시 보이지 않는지" 단언에
+  - code: duplicate_request
+    description: 한 번의 조작(제출·클릭)에 같은 요청이 두 번 이상 나감
+    log_patterns: ['\[reason:duplicate_request\]']
+    how: 요청을 붙잡아 둔 채 같은 조작을 빠르게 반복(더블 클릭 등)하고 api.calls 로 수를 센다. 사유는 "요청 수" 단언에
+  - code: optimistic_not_rolled_back
+    description: 서버 실패 뒤 화면에 먼저 반영한 변경이 되돌려지지 않음
+    log_patterns: ['\[reason:optimistic_not_rolled_back\]']
+    how: 변경 요청을 붙잡아 화면이 먼저 바뀌는지 보고 fail(500). 사유는 "실패 뒤 화면이 원래대로인지" 단언에
+  - code: contract_mismatch
+    description: 요청 형식(메서드·경로·쿼리·본문)이 계약과 다름
+    log_patterns: ['\[reason:contract_mismatch\]']
+    how: api.waitForCall 의 call.query·call.body 를 계약과 비교. 사유는 그 비교 단언에
+# 허용 설계가 이 스택에서 성립하는 조건 (spec-to-code §4.2) — 손 예시 search-autocomplete-react REPORT §6.3 실험에서.
+stack_conditions:
+  - 효과 정리 함수에서 AbortController.abort() 로 이전 요청을 끊으면, 끊긴 요청의 AbortError 는 오류로 보여 주지 않는다 (사용자 조작으로 끊은 것이지 실패가 아니다).
+  - 새 요청을 보낼 때만 이전 요청을 끊는 구현은 입력을 지우거나 닫을 때 남은 요청을 놓친다 — 지움·닫힘·화면을 떠날 때도 진행 중인 요청을 무효로 한다.
+  - 응답을 반영하기 전에 그 응답이 지금 입력(검색어·선택)에 대한 것인지 대조하면 순서와 무관하게 맞다 (요청 번호·현재 값 ref).
