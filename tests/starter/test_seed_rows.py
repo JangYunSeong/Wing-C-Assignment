@@ -304,3 +304,48 @@ def test_zero_row_data_is_dropped_not_rejected() -> None:
     assert _has(notes, "hc1", "rows 0 을 뺌") and [d.entity_id for d in fplan.cases[0].data] == [
         "m1"
     ]
+
+
+def _scoped(groups: list[tuple[int, int, dict[str, Any]]], rows: int) -> TaskContract:
+    """한 매장(shopId=7) 주문을 경로 /shops/{shopId}/orders/{orderNo} 로 찾는 계약 — orderNo 는 글자, 시드가 정하지 않음."""
+    c = _contract()
+    c["entities"][0]["fields"] += [
+        {"name": "shopId", "type": "integer", "refs": ["r1"]},
+        {"name": "orderNo", "type": "string", "refs": ["r1"]},
+    ]
+    c["endpoints"][0]["path"] = "/shops/{shopId}/orders/{orderNo}/status"
+    c["seed"] = [_seed(rows, *groups)]
+    return TaskContract.model_validate(c)
+
+
+def test_appended_groups_keep_the_scope_every_group_fixes() -> None:
+    # 2026-11-09 v16-be1: 덧붙인 그룹에 guildId 가 빠져 그 행들의 guild_id 가 행 번호 → 숨은 테스트 요청이 모두 대상 없음
+    java = load_template(JAVA).manifest.model_copy(update={"public_helper": None})
+    contract = _scoped([(1, 20, {"shopId": 7, "status": "READY"})], 20)
+    plan = _cases(("hc1", [_rows(30, status="READY")]))
+    fitted, fplan, _ = fit_seed(contract, plan, java)
+    assert all(g.values.get("shopId") == 7 for g in fitted.seed[0].groups)
+    assert not seed_problems(fitted)
+    # 모델이 쓴 그룹 사이에 범위 값이 빈 그룹이 있으면 재요청
+    gap = _scoped([(1, 10, {"shopId": 7, "status": "READY"}), (11, 20, {"status": "READY"})], 20)
+    assert _has(seed_problems(gap), "경로 변수 shopId", "11~20 는 비움")
+
+
+def test_helpers_give_path_key_values_and_hand_built_keys_are_flagged() -> None:
+    # 2026-11-09 v16-be2: 시드 'memberId-191', 테스트 "member-" + HC2_FIRST → 모든 구현에서 대상 없음
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.hidden_helpers import key_fields, render_contract_case
+    from task_spec.starter.static_check import _hand_built_keys
+
+    java = load_template(JAVA).manifest
+    contract = _scoped([(1, 200, {"shopId": 7, "status": "READY"})], 200)
+    plan = _cases(("hc1", [_rows(20, status="READY")]))
+    assert key_fields(contract) == [("orderNo", "orderNo-", False)]
+    helper = render_contract_case(contract, plan, java)
+    assert helper is not None and "protected static String orderNoOf(long row)" in helper.content
+    assert '"orderNo-" + row' in helper.content  # seed_sql.default_value 와 같은 형식
+    built = GeneratedFile(path="src/test/java/X.java", content='String no = "order-" + HC1_FIRST;')
+    used = GeneratedFile(path="src/test/java/Y.java", content="String no = orderNoOf(HC1_FIRST);")
+    assert _hand_built_keys([built], contract, "숨은 테스트") and not _hand_built_keys(
+        [used], contract, "숨은 테스트"
+    )
