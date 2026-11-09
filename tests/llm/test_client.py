@@ -262,6 +262,22 @@ async def test_default_path_empty_truncated_resamples_up_to_the_limit_then_raise
     assert prov.tokens.out == (MAX_RESAMPLES + 1) * 4096  # 버려진 호출 비용도 모두 남긴다
 
 
+async def test_last_resample_turns_reasoning_off_for_known_providers() -> None:
+    # 추론 폭주가 이어지면 마지막 한 번은 추론을 끈다 — 빈 응답으로 루프가 멈추지 않게 (2026-11-09)
+    prompt = _prompt()  # opencode:qwen3.8-flash
+    fake = FakeBackend().push(*[TRUNC_EMPTY] * MAX_RESAMPLES, Completion(GOOD, Usage(500, 300, 0)))
+    r = await _client(fake).call(prompt, ClaimExtractionOutput)
+    assert len(r.parsed.claims) == 1
+    efforts = [c[1].get("reasoning_effort") for c in fake.calls]
+    assert efforts == ["low"] * MAX_RESAMPLES + ["none"]
+    assert r.provenance.params["reasoning_effort"] == "none"  # 어느 설정으로 살았는지 남는다
+    # 추론을 끈 답도 비면 다시 low 로 돌아가지 않고 끝낸다
+    fake = FakeBackend().push(*[TRUNC_EMPTY] * (MAX_RESAMPLES + 1))
+    with pytest.raises(EmptyResponse):
+        await _client(fake).call(prompt, ClaimExtractionOutput)
+    assert len(fake.calls) == MAX_RESAMPLES + 1
+
+
 async def test_default_path_last_resample_can_succeed() -> None:
     fake = FakeBackend().push(
         *[TRUNC_EMPTY] * MAX_RESAMPLES, Completion(GOOD, Usage(500, 900, 600))
