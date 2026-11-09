@@ -80,6 +80,7 @@ def contract_markdown(
             "",
             sc.summary,
             "",
+            *([f"화면에 들어오면: {sc.on_load}", ""] if sc.on_load else []),
             "| test id | 역할 | 설명 | 조작 |",
             "|---|---|---|---|",
         ]
@@ -94,6 +95,8 @@ def contract_markdown(
                 + " · ".join(f"`{k.name}` ({k.kind}) — {k.shape}" for k in sc.storage),
             ]
         out.append("")
+    if contract.background:
+        out += ["### 화면 조작 없이 나가는 요청", "", contract.background, ""]
     out += ["### 데이터", ""]
     for m in contract.entities:
         head = f"#### `{m.name}`"

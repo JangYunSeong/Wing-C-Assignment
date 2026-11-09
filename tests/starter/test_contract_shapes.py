@@ -129,6 +129,7 @@ SCREEN = {
             "refs": ["r2"],
         },
     ],
+    "on_load": "GET /orders/{id}/history 로 이력을 읽어 보여 줌",
     "storage": [
         {"name": "drafts", "kind": "indexeddb", "shape": "{id, status, updatedAt}", "refs": ["r1"]}
     ],
@@ -142,6 +143,7 @@ def _ui_contract(**over: Any) -> dict[str, Any]:
     c["seed"] = []
     c["screens"] = [SCREEN]
     c["covers"] = {"r1": ["e1", "m1", "m2", "s1"], "r2": ["e2", "m2", "s1"]}
+    c["background"] = "없음"
     c.update(over)
     return c
 
@@ -191,6 +193,17 @@ def test_ui_contract_checks() -> None:
     assert any("test id" in p and "겹침" in p for p in res.problems)
     assert any("요소 Status_Select 의 refs 에 명세에 없는 id: r9" in p for p in res.problems)
     assert any("숨은 요구" in p and "풀" in p for p in res.problems)  # 화면 문구도 누출 검사
+    # 화면 진입·배경 요청을 정하지 않으면 재요청 — 2026-11-09 React 알파: 테스트는 '들어오면 GET', 구현은 로컬만 읽음
+    vague = _check(
+        _ui_contract(
+            screens=[{k: v for k, v in SCREEN.items() if k != "on_load"}], background=None
+        ),
+        _ui_plan(),
+        manifest=m,
+    )
+    assert any("on_load)이 없음: /orders" in p for p in vague.problems)
+    assert any("background)이 없음" in p for p in vague.problems)
+    assert not [p for p in ok.problems if "on_load" in p or "background" in p]
     loose = _check(
         _ui_contract(covers={"r1": ["e1", "m1", "m2"], "r2": ["e2", "m2"]}), _ui_plan(), manifest=m
     )
@@ -201,6 +214,8 @@ def test_ui_contract_markdown() -> None:
     md = contract_markdown(TaskContract.model_validate(_ui_contract()))
     assert "### 화면 `/orders`" in md and "| `status-select` | input | 바꿀 상태 |" in md
     assert "브라우저 저장소: `drafts` (indexeddb)" in md
+    assert "화면에 들어오면: GET /orders/{id}/history" in md
+    assert "### 화면 조작 없이 나가는 요청\n\n없음" in md
 
 
 def test_lenient_rules_from_the_v7_paper_run() -> None:

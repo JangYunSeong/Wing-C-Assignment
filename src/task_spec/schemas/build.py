@@ -253,6 +253,13 @@ class Screen(Schema):
     summary: str = Field(min_length=1, max_length=200)
     elements: list[UiElement] = Field(min_length=1, max_length=30)
     storage: list[StorageKey] = Field(default_factory=list, max_length=8)
+    # 2026-11-09 React 알파(naver_2026#003): 목록 화면이 서버를 부르는지 계약에 없어 공개 테스트는 '들어오면 GET',
+    # 오프라인 우선 구현 4개는 모두 로컬 저장소만 읽어 '요청이 오지 않음'(HARNESS_ERR)으로 함께 떨어졌다
+    on_load: str | None = Field(
+        default=None,
+        max_length=300,
+        description="화면에 들어올 때 무엇을 읽고(로컬 저장소·서버) 어떤 서버 요청이 나가는지 한 줄. 서버 요청이 없으면 '서버 요청 없음'",
+    )
     refs: list[str] = Field(min_length=1)
 
     @field_validator("refs")
@@ -374,6 +381,12 @@ class TaskContract(Schema):
     seed: list[SeedRule] = Field(default_factory=list)  # DB 행을 바꾸는 과제만 (템플릿 seed_rows)
     fixtures: list[Fixture] = Field(default_factory=list, max_length=8)  # 그 밖의 입력 환경
     screens: list[Screen] = Field(default_factory=list, max_length=8)  # interface_kind ui 일 때만
+    # 같은 알파: 동기화가 언제 나가는지(online 이벤트·주기·다음 저장) 없어 숨은 케이스가 POST 를 기다리다 끝났다
+    background: str | None = Field(
+        default=None,
+        max_length=300,
+        description="ui 만: 화면 조작 없이 나가는 서버 요청과 그 시점 (예: '브라우저 online 이벤트가 오면 대기열 요청을 순서대로 보냄'). 없으면 '없음'",
+    )
     public_tests: list[PublicTest] = Field(min_length=1)
     covers: dict[str, list[str]] = Field(
         min_length=1,
