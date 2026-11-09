@@ -275,7 +275,8 @@ def test_naive_passing_a_case_is_regenerated_before_the_hidden_test() -> None:
     first = _assign(report)
     assert _keys(first) == ["gen_naive:naive-all"] and first.actions[0].gate == "③"
     assert "hc1" in first.actions[0].note and "구조 그대로" in first.actions[0].note
-    again = _assign(report, **{"gen_naive__naive-all": 1})
+    assert first.actions[0].budget_key == "gen_naive:naive-all#trap"
+    again = _assign(report, **{"gen_naive__naive-all#trap": 1})
     assert _keys(again) == ["gen_hidden"]
     note = again.actions[0].note
     assert (
@@ -284,8 +285,19 @@ def test_naive_passing_a_case_is_regenerated_before_the_hidden_test() -> None:
     assert (
         "흔한 구현(naive-all)이 숨은 케이스 hc1 를 통과" in note and "hc2 가 흔한 구현에서" in note
     )
-    # 컴파일 수리로 다시 만든 것은 세지 않는다 (예산 키가 따로)
-    assert _keys(_assign(report, **{"gen_naive__naive-all#compile": 1})) == ["gen_naive:naive-all"]
+    # 컴파일 수리·다른 게이트로 다시 만든 것은 세지 않는다 (예산 키가 따로).
+    # 2026-11-09 알파: 2회차 ⑤(기존 테스트 깨짐) 재생성 뒤 3회차 흔한 구현이 구조를 버리고 통과했는데 숨은 테스트로 갔다
+    for other in ("gen_naive__naive-all#compile", "gen_naive__naive-all"):
+        assert _keys(_assign(report, **{other: 1})) == ["gen_naive:naive-all"], other
+
+
+def test_naive_regenerated_for_another_failure_keeps_its_structure() -> None:
+    """다른 사유(공개 테스트 실패)로 흔한 구현을 다시 만들 때 설명의 구조를 '더 안전하게' 바꾸지 말라고 붙인다 — ③ 수리 요청엔 이미 있다."""
+    naive = _run("naive-all", "ref_naive", _t("public", "Pt1Test", "ASSERT", None, "기록 없음"))
+    d1 = _run("d1", "ref_accepted", *GOOD_ACC, _t("public", "Pt1Test"))
+    plan = _assign(_report(naive, d1))
+    [a] = [a for a in plan.actions if a.generator == "gen_naive"]
+    assert a.gate == "⑤" and "지적된 실패만 고친다" in a.note and a.budget == ""
 
 
 def test_starter_that_already_passes_a_hidden_case_is_regenerated() -> None:

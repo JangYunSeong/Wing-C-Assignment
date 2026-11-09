@@ -15,7 +15,7 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
 4. 숨은 케이스 `HARNESS_ERR`(테스트 자체 예외)·결과 없음 — 구현끼리 비교: 모든 구현에서면 `gen_hidden`, 일부 구현에서만이면 그 구현
    (2026-11-08: 한 구현만 계약과 다른 응답 모양을 돌려 테스트가 파싱하다 예외인데 숨은 테스트를 고치러 갔다).
    ③·④ 도 같은 생각 — 흔한 구현이 통과하면 흔한 구현부터, 허용 구현이 흔한 구현과 같은 메시지로 실패하면 허용 구현 탓으로 보지 않음.
-5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다. 통과 → 흔한 구현을 아직 다시 만들지 않았으면 `gen_naive`
+5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다. 통과 → 흔한 구현을 ③ 으로 아직 다시 만들지 않았으면(다른 게이트의 재생성과 따로 셈) `gen_naive`
    (설명을 안 따랐을 수 있음 — 그 회차에는 그 대상의 다른 ③ 배정을 미룸), 이미 다시 만들었으면 `gen_hidden`(약함). 다른 사유·사유 없음 → `gen_hidden`
    (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`). ③' 지킨 요구의 케이스에서 실패 → `gen_hidden`.
 6. ④ 허용 구현: 허용 구현이 둘 이상이고 모두 같은 케이스에서 실패 → `gen_hidden`(너무 엄격). 일부만 실패, 또는 허용 구현이 하나뿐이면
@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from task_spec.schemas import HiddenPlan, TargetRun, TestResult, VerifyReport
 from task_spec.schemas.build import GeneratorName
@@ -37,6 +37,15 @@ from task_spec.starter.static_check import Overlay
 MAX_MESSAGE = 220
 STARTER = "starter"
 COMPILE_SUFFIX = "#compile"  # regen_counts 에서 컴파일 수리 횟수 키 (일반 수리와 따로)
+# 흔한 구현이 숨은 케이스를 통과해 다시 만든 횟수 키 (③) — 다른 게이트의 재생성과 따로 센다.
+# 2026-11-09 알파 (2df170e2): 2회차에 흔한 구현을 기존 테스트 깨짐(⑤)으로 다시 만들어 예산을 쓰자, 3회차에 다시 만든 흔한 구현이
+# 설명의 구조(상태 변경 트랜잭션 안에서 별도 트랜잭션 기록)를 버리고 hc1·hc2 를 통과했는데 ③ 이 흔한 구현 대신 숨은 테스트를 배정했다.
+TRAP_SUFFIX = "#trap"
+# 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
+KEEP_NAIVE = (
+    "\n지적된 실패만 고친다 — 입력의 흔한 구현 설명이 말하는 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)는 "
+    "그대로 둔다. 더 안전한 방식으로 바꾸지 않는다."
+)
 # 컴파일 오류 수리 요청 끝에 붙인다. 2026-11-07 알파 4회차: 수리마다 지적된 파일만 고쳐, 다음 빌드에서 다른 케이스 파일의 같은 종류
 # 오류(람다 안 지역 변수·검사 예외 미선언)가 이어서 드러나 컴파일 예산 2회를 다 썼다 — 컴파일러가 한 번에 일부 파일의 오류만 보여 줄 수 있다.
 SAME_KIND_ALL_FILES = (
@@ -55,6 +64,7 @@ class RepairAction:
     compile: bool = (
         False  # 컴파일 오류 — 고치기 싸서 예산을 더 준다 (nodes/starter/build.py COMPILE_BUDGET)
     )
+    budget: str = ""  # 예산을 따로 세는 키 접미사 (TRAP_SUFFIX)
 
     @property
     def key(self) -> str:
@@ -64,7 +74,7 @@ class RepairAction:
     def budget_key(self) -> str:
         """재생성 예산을 세는 키 — 컴파일 수리는 따로 센다. 2026-11-07 배송 감사 재실행: 숨은 테스트 컴파일 수리가
         일반 재생성 예산까지 써서, 컴파일이 고쳐진 뒤 드러난 실패를 고칠 기회가 없었다."""
-        return f"{self.key}{COMPILE_SUFFIX}" if self.compile else self.key
+        return f"{self.key}{COMPILE_SUFFIX}" if self.compile else f"{self.key}{self.budget}"
 
 
 @dataclass
@@ -131,6 +141,7 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
                 _short(f"{prev.reason}; {a.reason}"),
                 f"{prev.note}\n{a.note}",
                 compile=prev.compile and a.compile,
+                budget=prev.budget or a.budget,
             )
     return list(out.values())
 
@@ -570,7 +581,7 @@ def _gate3(
         for c in plan.cases
         if c.trap_id in missed and (r := run.case(c.case_id)) is not None and r.result == "PASS"
     ]
-    if passed and regen_counts.get(f"gen_naive:{run.target}", 0) == 0:
+    if passed and regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0:
         # 흔한 구현이 숨은 케이스를 통과 — 테스트가 약한지보다 흔한 구현이 설명을 안 따랐는지를 먼저 본다.
         # 2026-11-07 배송 감사 재실행: 흔한 구현이 REQUIRES_NEW 를 상태 변경 트랜잭션이 끝난 뒤 불러 커넥션을 하나씩만 썼다.
         # 숨은 테스트는 맞았다 (진짜 흔한 구현으로 바꾸자 hc1·hc2 모두 의도한 사유로 실패). 이 회차에는 이 대상의 다른 ③ 배정을 미룬다 —
@@ -586,6 +597,7 @@ def _gate3(
                 f"이 흔한 구현은 숨은 요구 {traps} 를 어기는 구현이어야 하는데 숨은 케이스 {ids} 를 통과했다 — 입력의 흔한 구현 설명을 "
                 "구조 그대로 따르지 않았다. 설명이 말하는 그 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)를 그대로 쓰고, "
                 "더 안전한 방식으로 바꾸지 않는다.",
+                budget=TRAP_SUFFIX,
             )
         ]
     out: list[RepairAction] = []
@@ -790,5 +802,8 @@ def assign(
         )
         actions += acts
         res.unresolved += unresolved
-    res.actions = _merge(actions)
+    res.actions = [
+        replace(a, note=a.note + KEEP_NAIVE) if a.generator == "gen_naive" and not a.budget else a
+        for a in _merge(actions)
+    ]
     return res
