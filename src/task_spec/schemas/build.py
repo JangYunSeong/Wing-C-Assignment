@@ -106,6 +106,16 @@ class AuthRule(Schema):
         max_length=20,
         description="role: 통과하는 attribute 값 · fixed: 통과하는 헤더 값",
     )
+    order: list[Annotated[str, Field(min_length=1, max_length=60)]] = Field(
+        default_factory=list,
+        max_length=20,
+        description="role 등급 비교: attribute 값의 순서 (낮은 것 → 높은 것). above 를 쓸 때만",
+    )
+    above: Literal["requested", "target"] | None = Field(
+        default=None,
+        description="role 등급 비교: 요청자 attribute 가 order 에서 이것보다 높아야 통과 — requested(요청한 새 값)·target(대상 행의 지금 값)",
+    )
+    or_equal: bool = Field(default=False, description="role 등급 비교: 같은 등급도 통과면 true")
     same_as_path: list[Annotated[str, Field(min_length=1, max_length=60)]] = Field(
         default_factory=list,
         max_length=4,
