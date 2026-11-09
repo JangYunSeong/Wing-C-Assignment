@@ -169,12 +169,20 @@ async def main() -> None:
     ap.add_argument("--budget-usd", type=float, default=0.5)
     ap.add_argument("--subs", nargs="*", default=SUBS)
     ap.add_argument("--tag", default="")
+    ap.add_argument(
+        "--drafts",
+        nargs="*",
+        default=[str(DRAFTS)],
+        help="기능형 명세 drafts.jsonl (여러 개면 앞 것부터, 직군이 겹치면 앞 것) — run_feature 출력",
+    )
     a = ap.parse_args()
 
-    drafts = {
-        json.loads(line)["sub"].split(":")[0]: json.loads(line)
-        for line in DRAFTS.read_text("utf-8").splitlines()
-    }
+    drafts: dict[str, Any] = {}
+    for path in a.drafts:
+        for line in Path(path).read_text("utf-8").splitlines():
+            rec = json.loads(line)
+            if rec.get("task"):
+                drafts.setdefault(rec["sub"].split(":")[0], rec)
     incidents = load_incidents(ROOT / "incidents" / "public_v1")
     llm = make_client(a.openai_key_env)
     prompts = ModelOverride(
