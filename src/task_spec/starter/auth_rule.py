@@ -93,6 +93,14 @@ def sentence(rule: AuthRule, contract: TaskContract) -> str:
         m = _entity(contract, rule.entity)
         name = m.name if m is not None else rule.entity
         scope = "".join(f", {f} 가 경로의 {f} 와 같고" for f in rule.same_as_path)
+        if rule.above:
+            what = "요청한 새 값" if rule.above == "requested" else "대상의 지금 값"
+            cmp = "보다 높거나 같으면" if rule.or_equal else "보다 높으면"
+            only = f"{'·'.join(rule.allowed)} 이고 " if rule.allowed else ""
+            return (
+                f"요청자 {name}.{rule.identifies}{scope} {rule.attribute} 가 {only}{what}{cmp} 통과"
+                f" (순서 {'<'.join(rule.order)})" + tail
+            )[:200]
         return (
             f"요청자 {name}.{rule.identifies}{scope} {rule.attribute} 가 {'·'.join(rule.allowed)} 이면 통과"
             + tail
@@ -107,6 +115,9 @@ def _key(rule: AuthRule) -> tuple[object, ...]:
         rule.identifies,
         rule.attribute,
         tuple(rule.allowed),
+        tuple(rule.order),
+        rule.above,
+        rule.or_equal,
         tuple(rule.same_as_path),
     )
 
@@ -154,9 +165,24 @@ def _add_requesters(
     """시드 끝에 요청자 행 두 개 (통과용·거절용). 값을 정할 수 없으면 칸을 그대로 두고 auth_problems 가 말한다."""
     m = _entity(contract, rule.entity)
     seed = seeds.get(rule.entity or "")
-    if m is None or seed is None or not rule.allowed or not rule.attribute or not rule.identifies:
+    if m is None or seed is None or not rule.attribute or not rule.identifies:
         return rule
-    bad = next((v for v in _choices(contract, m, rule.attribute) if v not in rule.allowed), None)
+    if rule.above:
+        # 등급 비교: 맨 위 등급은 어떤 대상·요청보다 높고(통과), 맨 아래는 어떤 것보다도 높지 않다(거절). allowed 가 있으면 그 안에서
+        if not rule.order:
+            return rule
+        tops = [v for v in rule.order if not rule.allowed or v in rule.allowed]
+        good = tops[-1] if tops else None
+        bad = rule.order[0] if tops and rule.order[0] != good else None
+    else:
+        if not rule.allowed:
+            return rule
+        good = rule.allowed[0]
+        bad = next(
+            (v for v in _choices(contract, m, rule.attribute) if v not in rule.allowed), None
+        )
+    if good is None:
+        return rule
     scope: dict[str, SeedScalar] = {}
     for f in rule.same_as_path:
         v = _scope_value(contract, m.entity_id, f)
@@ -169,13 +195,13 @@ def _add_requesters(
     ok_row, bad_row = rows + 1, rows + 2
     groups = [
         *seed.groups,
-        SeedGroup(first=ok_row, last=ok_row, values={**scope, rule.attribute: rule.allowed[0]}),
+        SeedGroup(first=ok_row, last=ok_row, values={**scope, rule.attribute: good}),
         SeedGroup(first=bad_row, last=bad_row, values={**scope, rule.attribute: bad}),
     ]
     seeds[m.entity_id] = seed.model_copy(update={"rows": bad_row, "groups": groups})
     ok_v, bad_v = _identity(m, rule.identifies, ok_row), _identity(m, rule.identifies, bad_row)
     notes.append(
-        f"{m.name} 시드에 요청자 행 덧붙임: id {ok_row} ({rule.attribute}={rule.allowed[0]} — 통과, {rule.header}={ok_v}), "
+        f"{m.name} 시드에 요청자 행 덧붙임: id {ok_row} ({rule.attribute}={good} — 통과, {rule.header}={ok_v}), "
         f"id {bad_row} ({rule.attribute}={bad} — 거절, {rule.header}={bad_v}) — 숨은 케이스·공개 몫 배정에서 뺌"
     )
     return rule.model_copy(
@@ -228,9 +254,13 @@ def _role_problems(
             out.append(
                 f"{label}: {what} {v} 가 {m.name} 필드에 없음 (있는 필드: {', '.join(names)})"
             )
-    if not rule.allowed:
-        out.append(f"{label}: role 인데 allowed(통과하는 {rule.attribute} 값)가 비었음")
-    elif rule.attribute and (choices := _choices(contract, m, rule.attribute)):
+    if rule.above or rule.order:
+        out += _order_problems(contract, m, rule, label)
+    elif not rule.allowed:
+        out.append(
+            f"{label}: role 인데 allowed(통과하는 {rule.attribute} 값)가 비었음 — 등급 비교 규칙이면 order·above 를 쓴다"
+        )
+    if rule.allowed and rule.attribute and (choices := _choices(contract, m, rule.attribute)):
         unknown = [v for v in rule.allowed if v not in choices]
         if unknown and m.state is not None and m.state.field == rule.attribute:
             out.append(f"{label}: allowed {', '.join(unknown)} 가 {m.name}.state values 에 없음")
@@ -259,6 +289,27 @@ def _role_problems(
             f"{label}: 거절용 요청자 행을 만들 수 없음 — {rule.attribute} 의 allowed 밖 값이 없음 "
             "(state values·시드 값·enum 중 하나는 allowed 밖이어야 한다)"
         )
+    return out
+
+
+def _order_problems(contract: TaskContract, m: Entity, rule: AuthRule, label: str) -> list[str]:
+    """등급 비교 role — order 는 attribute 의 값들(낮은 것 → 높은 것), above 는 requested·target 중 하나.
+    2026-11-09 fixmt-be2: '요청자 등급이 바꾸려는 등급보다 높아야' 를 칸으로 못 적어 other 로 빠졌다."""
+    out: list[str] = []
+    if not rule.above:
+        out.append(f"{label}: order 를 썼으면 above(requested·target)도 적는다")
+    if len(rule.order) < 2 or len(set(rule.order)) != len(rule.order):
+        out.append(f"{label}: order 는 서로 다른 값 2개 이상 (낮은 것 → 높은 것)")
+    choices = _choices(contract, m, rule.attribute) if rule.attribute else []
+    unknown = [v for v in rule.order if choices and v not in choices]
+    if unknown:
+        out.append(f"{label}: order 의 {', '.join(unknown)} 가 {m.name}.{rule.attribute} 값에 없음")
+    if m.state is not None and m.state.field == rule.attribute:
+        missing = [v for v in m.state.values if v not in rule.order]
+        if missing:
+            out.append(
+                f"{label}: order 에 {m.name}.state 값 {', '.join(missing)} 이 빠짐 — 모든 값을 순서대로"
+            )
     return out
 
 

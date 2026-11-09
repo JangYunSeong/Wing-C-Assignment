@@ -188,3 +188,40 @@ def test_state_values_follow_the_materials() -> None:
     c["entities"][0]["state"]["values"] = ["READY", "SHIPPED", "OFFICER"]
     c["entities"][0]["state"]["transitions"] = ["READY→SHIPPED"]
     assert not material_state_problems(TaskContract.model_validate(c), spec)
+
+
+def test_rank_order_role_variant() -> None:
+    # '요청자 등급이 요청한 등급보다 높아야' — 칸으로 못 적어 other 로 빠지던 규칙 (2026-11-09 fixmt-be2)
+    c = _shop(
+        {
+            **ROLE,
+            "allowed": [],
+            "order": ["CLERK", "MANAGER", "ADMIN"],
+            "above": "requested",
+        }
+    )
+    c["entities"][-1]["fields"][3]["type"] = "enum(ADMIN|MANAGER|CLERK)"
+    fitted = _fit(c)
+    rule = fitted.endpoints[0].auth
+    assert rule is not None and not auth_problems(fitted), auth_problems(fitted)
+    staff = next(s for s in fitted.seed if s.entity_id == "m3")
+    # 맨 위 등급은 어떤 요청보다 높아 통과, 맨 아래는 어떤 것보다도 높지 않아 거절
+    assert [g.values["role"] for g in staff.groups[-2:]] == ["ADMIN", "CLERK"]
+    text = fitted.endpoints[0].headers[0].constraints or ""
+    assert "요청한 새 값보다 높으면 통과" in text and "CLERK<MANAGER<ADMIN" in text
+    # above 없이 order 만, 값 목록 밖 등급은 재요청
+    bad = _fit(
+        {
+            **c,
+            "endpoints": [
+                dict(
+                    c["endpoints"][0],
+                    auth={**c["endpoints"][0]["auth"], "above": None, "order": ["CLERK", "BOSS"]},
+                ),
+                c["endpoints"][1],
+            ],
+        }
+    )
+    probs = auth_problems(bad)
+    assert any("above(requested·target)도 적는다" in p for p in probs)
+    assert any("order 의 BOSS" in p for p in probs)
