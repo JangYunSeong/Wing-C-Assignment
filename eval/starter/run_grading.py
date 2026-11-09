@@ -28,10 +28,10 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client
-from eval.starter.gradle_verify import GradleVerifier
 from eval.starter.gradle_verify import write_overlay as _write
 from eval.starter.run_generate import PinnedVersions
 from eval.starter.run_paper import template_for
+from eval.starter.verifiers import verifier_for
 from task_spec.nodes.starter.build import compile_and_fix
 from task_spec.nodes.starter.generate import BuildInputs, GenResult, gen_hidden, gen_public
 from task_spec.nodes.starter.plan_contract import plan_contract
@@ -186,7 +186,7 @@ async def _tests(
     if hid.overlay is not None and template.project.is_dir():
         # 빌드와 같은 컴파일 루프 — 템플릿 project/ + 하네스 + 숨은·공개 테스트 (구현 없음), 오류는 쓴 생성기에 돌려준다
         t1 = time.monotonic()
-        compiler = GradleVerifier(template, run_dir / "compile", timeout=600)
+        compiler = verifier_for(template, run_dir / "compile", timeout=600)
         fix = await compile_and_fix(b, hid.overlay, pub.overlay if pub else None, compiler, kw)
         fix_cost = sum(_cost(r.provenance) for r in fix.results)
         for o in (fix.hidden, fix.public):

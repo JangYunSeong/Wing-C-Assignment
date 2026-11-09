@@ -23,7 +23,7 @@ from typing import Any
 import yaml
 
 from eval.spec.run_feature import ModelOverride, make_client
-from eval.starter.run_plan_contract import JAVA, PinnedPrompts
+from eval.starter.run_plan_contract import PinnedPrompts
 from task_spec.nodes.starter.plan_contract import PlanResult, plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
@@ -31,7 +31,7 @@ from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.incidents import load_incidents
 from task_spec.starter.seed_rows import allocate_rows, seed_markdown
 from task_spec.starter.tables import contract_tables
-from task_spec.starter.templates import Template, load_template
+from task_spec.starter.templates import Template, select_template
 
 ROOT = Path(__file__).resolve().parents[2]
 DRAFTS = ROOT / "data" / "eval" / "spec" / "2026-11-06-feature-subs-gpt41-v6" / "drafts.jsonl"
@@ -42,8 +42,10 @@ _RULE = re.compile(r"[A-Za-z_]+\s*(?:→|->)\s*[A-Za-z_]+")
 
 
 def template_for(sub: str) -> Template:
-    if sub == "sw.backend":
-        return load_template(JAVA)
+    """실제 템플릿이 있는 직군은 그것(select_template), 없으면 종이 단계 manifest 초안."""
+    real = select_template(sub)
+    if real is not None:
+        return real
     manifest = TemplateManifest.model_validate(
         yaml.safe_load((PAPER / f"{sub}.yaml").read_text("utf-8"))
     )

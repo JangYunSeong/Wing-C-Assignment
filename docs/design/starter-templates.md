@@ -223,7 +223,10 @@ templates/<직군>/<스택>/CURRENT
 
 1. **백엔드 Java/Spring 템플릿 v1** — 지금 만든 배송 감사 예시(`data/feature_starters/delivery-audit/`, git 밖)에서 출발. 빌드 이미지·검증 실행기(Java) 함께.
 2. 백엔드 Python FastAPI (+ AI 엔지니어 서빙과 공유할 Python 빌드 이미지).
-3. 프론트엔드 React + TS.
+3. 프론트엔드 React + TS. — 진행 중 (2026-11-09, `frontend/react-vite-ts` v1): 템플릿·하네스(요청을 붙잡았다 테스트가 정한 순서로 응답)·자체 점검,
+   파이프라인 연결(직군 → 템플릿 선택 · 계약 도우미 `contract.ts` · Node 검증기 = tsc 타입 검사 + vitest, 손 예시 판정 재현).
+   jest-dom 매처는 `expect` 메시지를 버려 실패 사유가 사라지므로 사유는 기본 매처에만 (manifest `reason_not_on`).
+   남은 것: 프론트엔드용 생성기 프롬프트 · 수리 안내 문구의 Java 이름 · 소재 시드 · 상류 평가·알파 · Node 기반 응시용·채점용 이미지.
 4. 백엔드 TypeScript Next.js — Route Handler·Server Action + Prisma (+ 프론트와 공유할 Node 빌드 이미지). NestJS 는 필요할 때.
 5. AI 엔지니어 Python 서빙.
 6. 데이터 엔지니어 PySpark/SQL.

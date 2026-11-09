@@ -29,10 +29,11 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client, run_one, sample_md
-from eval.starter.gradle_verify import GradleVerifier, assemble
+from eval.starter.gradle_verify import assemble
 from eval.starter.gradle_verify import write_overlay as _write
 from eval.starter.run_generate import PinnedVersions, _run_row
 from eval.starter.run_plan_contract import JAVA
+from eval.starter.verifiers import verifier_for
 from task_spec.config import Settings
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.nodes.starter.generate import BuildInputs, plan_text
@@ -46,7 +47,7 @@ from task_spec.schemas import TaskItem
 from task_spec.spec.build import build_common
 from task_spec.spec.incidents import load_incidents
 from task_spec.starter.render import render_readme
-from task_spec.starter.templates import load_template
+from task_spec.starter.templates import load_template, select_template
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "eval" / "build"
@@ -163,7 +164,8 @@ async def main() -> None:
 
     # ② 명세 → 공개 계약 + 숨은 테스트 계획
     inc = incidents[p.sub]
-    template = load_template(JAVA)
+    # 직군 → 템플릿 (없는 직군은 Java 로 — 종이 단계 밖)
+    template = select_template(p.sub) or load_template(JAVA)
     res = await plan_contract(
         task,
         template,
@@ -226,7 +228,7 @@ async def main() -> None:
         llm=llm,
         prompts=prompts,  # type: ignore[arg-type]
         ontology_version=version,
-        verifier=(g := GradleVerifier(template, out / "builds")),
+        verifier=(g := verifier_for(template, out / "builds")),
         compiler=g,  # 채점 코드를 먼저 컴파일 — 오류는 쓴 생성기에 (build.compile_and_fix)
     )
     spent += built_out.cost_usd

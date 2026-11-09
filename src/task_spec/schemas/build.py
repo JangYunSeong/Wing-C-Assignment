@@ -123,7 +123,39 @@ class UiElement(Schema):
     """화면 요소 — 숨은 테스트·공개 테스트가 test id 로 찾는다."""
 
     test_id: str = Field(min_length=1, max_length=60)
-    role: Literal["button", "input", "list", "item", "text", "status", "link", "form"]
+    # 처음 8개는 종이 단계의 추상 역할, 뒤는 테스트가 요소를 찾는 ARIA 역할 (Testing Library getByRole) — 2026-11-09 React 템플릿:
+    # 손 예시 숨은 테스트가 combobox·option·alert 로 판정하는데 계약에 적을 수 없었다.
+    role: Literal[
+        "button",
+        "input",
+        "list",
+        "item",
+        "text",
+        "status",
+        "link",
+        "form",
+        "textbox",
+        "searchbox",
+        "combobox",
+        "listbox",
+        "option",
+        "checkbox",
+        "radio",
+        "switch",
+        "tab",
+        "tabpanel",
+        "dialog",
+        "alert",
+        "table",
+        "row",
+        "cell",
+        "heading",
+        "progressbar",
+        "menu",
+        "menuitem",
+        "navigation",
+        "region",
+    ]
     description: str = Field(min_length=1, max_length=200)
     refs: list[str] = Field(min_length=1)
 

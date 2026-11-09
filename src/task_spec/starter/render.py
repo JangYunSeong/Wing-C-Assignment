@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from task_spec.schemas import ContractField, GeneratedFile, HiddenPlan, TaskContract, TaskItem
@@ -173,6 +174,13 @@ def render_params(plan: HiddenPlan, manifest: TemplateManifest) -> GeneratedFile
     unknown = sorted(k for k in plan.harness if k not in known)
     if unknown:
         raise RenderError(f"템플릿에 없는 조절값: {', '.join(unknown)}")
+    path = manifest.hidden_layout.params
+    # 프론트엔드 템플릿 — 하네스가 JSON 으로 읽는다 (frontend/react-vite-ts grader-params.ts)
+    if path.endswith(".json"):
+        values = {name: plan.harness[name] for name in known if name in plan.harness}
+        return GeneratedFile(
+            path=path, content=json.dumps(values, ensure_ascii=False, indent=2) + "\n"
+        )
     lines = ["# HiddenPlan.harness — 빌드 파이프라인이 쓴다 (손으로 고치지 않음)"]
     for name in known:
         if name in plan.harness:
