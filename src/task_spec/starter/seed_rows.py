@@ -120,6 +120,40 @@ def seed_problems(contract: TaskContract) -> list[str]:
             out.append(f"{label}: 범위가 rows={s.rows} 를 넘음 (id {expected - 1} 까지)")
         elif expected - 1 < s.rows:
             out.append(f"{label}: id {expected}~{s.rows} 이 어느 범위에도 없음")
+    return out + _lookup_key_problems(contract)
+
+
+_PATH_PARAM = re.compile(r"\{(\w+)\}")
+
+
+def _lookup_key_problems(contract: TaskContract) -> list[str]:
+    """경로 변수로 한 행을 찾는데 여러 행 그룹이 그 필드를 모두 같은 값으로 고정 — 조회가 여러 건이 된다.
+
+    2026-11-09 알파(cap1): 시드 규칙 글은 "memberId 는 id 와 같다"인데 groups 가 254행 모두 memberId=1 로 고정해
+    `findByGuildIdAndMemberId` 가 여러 건 오류 — 시작 코드·흔한 구현·허용 구현이 모두 같은 500 으로 떨어졌다.
+    """
+    entities = {m.entity_id: m for m in contract.entities}
+    out: list[str] = []
+    for e in contract.endpoints:
+        params = _PATH_PARAM.findall(e.path)
+        if any(p in _ID_FIELDS for p in params):
+            continue  # id 로 찾으면 행마다 다르다
+        for s in contract.seed:
+            m = entities.get(s.entity_id)
+            if m is None:
+                continue
+            keys = params if set(params) <= {f.name for f in m.fields} else []
+            for (
+                g
+            ) in s.groups:  # 필드가 아닌 경로 변수({memberId} → id 등)가 있으면 그게 행마다 다르다
+                if keys and g.last > g.first and all(k in g.values for k in keys):
+                    msg = (
+                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.path} 로 한 행을 찾는 "
+                        f"{', '.join(keys)} 가 모든 행에서 같음 — 여러 건 조회 오류. "
+                        f"{keys[-1]} 는 values 에서 뺀다 (코드가 행마다 다른 값을 넣는다)"
+                    )
+                    if msg not in out:
+                        out.append(msg)
     return out
 
 
