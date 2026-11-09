@@ -205,6 +205,12 @@ def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
         )
         == []
     )
+    # 1단계 단서에 더 가까운 제목은 그 자료다 (2026-11-09 kakaobank_2026#005: 단서에서 '평시'만 뺀 제목이 걸림)
+    be = BACKEND.feature
+    assert be is not None
+    assert stage2_kinds_in_stage1(
+        ["DB 연결 사용량 대시보드", "DB 연결 상태 로그"], be.stage2_evidence, be.discoverable_by
+    ) == ["DB 연결 상태 로그"]
     d = _v2draft()
     d["artifacts"][1]["title"] = (
         "DB 연결 상태 로그"  # 백엔드 핵심 증거와 같은 종류 (1단계 단서엔 '평시 DB 연결 사용량 대시보드')

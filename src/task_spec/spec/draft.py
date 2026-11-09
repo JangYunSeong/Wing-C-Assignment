@@ -263,7 +263,16 @@ def incident_copied(text: str, inc: PublicIncident) -> list[str]:
     marks |= {_norm(x) for x in inc.source_literals}
     hits = sorted(m for m in marks if m in flat)
     if len(hits) >= INCIDENT_NUMS:
-        found.append("원 사례 문구·수치 " + ", ".join(hits))
+        # 숫자가 어디서 오는지 짚는다 — 2026-11-09 알파 kakao_2026#007: 풀 크기 10·대기 30000ms 를 원 사례와 같게 골라 로그에
+        # total=10·active=10·기본 오류 문구가 그대로 나왔고, "새로 만들 것"만으로는 재요청에도 같은 값이 남았다
+        nums = sorted({n for h in hits for n in re.findall(r"\d+(?:\.\d+)?", h)}, key=float)
+        hint = (
+            f" — 숫자 {', '.join(nums)} 가 원 사례와 같음: 그 숫자를 정하는 운영 설정부터 다른 값으로 바꾸고, "
+            "로그·지표·자료도 같은 새 값으로 (라이브러리 기본 오류 문구는 안의 숫자가 다르면 괜찮다)"
+            if nums
+            else ""
+        )
+        found.append("원 사례 문구·수치 " + ", ".join(hits) + hint)
     src = "\n".join([inc.symptom, inc.root_cause, inc.key_insight])
     ns = _norm(src)
     quotes = [q for q in _QUOTED.findall(src) if _norm(q) in flat]

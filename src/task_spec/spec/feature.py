@@ -77,8 +77,12 @@ def _kind_words(title: str) -> set[str]:
     return words - _GENERIC
 
 
+def _jaccard(a: set[str], b: set[str]) -> float:
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+
 def _same_kind(a: set[str], b: set[str]) -> bool:
-    return bool(a and b) and len(a & b) / len(a | b) >= STAGE_OVERLAP
+    return bool(a and b) and _jaccard(a, b) >= STAGE_OVERLAP
 
 
 def stage2_kinds_in_stage1(
@@ -95,8 +99,13 @@ def stage2_kinds_in_stage1(
     out = []
     for t in titles:
         w = _kind_words(t)
-        if any(_same_kind(w, k) for k in kinds):
-            out.append(t)
+        if not any(_same_kind(w, k) for k in kinds):
+            continue
+        # 1단계 단서(discoverable_by)에 더 가까우면 그 자료다 — 2026-11-09 알파 kakaobank_2026#005: 단서 '평시 DB 연결 사용량
+        # 대시보드' 그대로인 제목이 2단계 'DB 연결 상태 로그'(일반어를 빼면 {db, 연결})와 0.5 로 겹쳐 재요청에도 못 고침
+        if max((_jaccard(w, d) for d in disc), default=0.0) > max(_jaccard(w, k) for k in kinds):
+            continue
+        out.append(t)
     return out
 
 
