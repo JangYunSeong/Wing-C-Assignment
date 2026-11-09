@@ -14,6 +14,7 @@ from operator import add
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.provenance import NodeError, Provenance
@@ -69,6 +70,58 @@ class ContractResponse(Schema):
         return data
 
 
+class AuthRule(Schema):
+    """권한 규칙 칸 — 권한 실패(401·403)가 있는 엔드포인트만. 코드가 요청자 행을 시드에 덧붙이고(통과용·거절용) 그 행에서
+    헤더 통과·거절 값과 규칙 문장을 만든다 (starter/auth_rule.py). StateRule 과 같은 방식.
+
+    2026-11-09 알파 smilegate_2026#002: 같은 명세의 계약 14개가 권한을 4가지로 정했고(8개는 '요청자 식별자'뿐), 공개 테스트 예시의
+    통과 값이 시드와 맞지 않아(통과하는 등급의 행이 없음) 계약이 거절되거나 모든 요청이 403 에서 끝났다."""
+
+    kind: Literal["role", "fixed", "other"] = Field(
+        description="role: 요청자가 엔티티 한 행이고 그 행의 필드 값으로 가름 · fixed: 정해진 헤더 값만 통과 · other: 그 밖 (글로)"
+    )
+    header: str = Field(
+        min_length=1,
+        max_length=60,
+        description="요청자를 나타내는 요청 헤더 이름 — 이 엔드포인트 headers 에 있어야 함",
+    )
+    denied_status: int = Field(
+        ge=401,
+        le=403,
+        description="권한이 없을 때 응답 코드 (401 또는 403) — 이 엔드포인트 responses 에 있어야 함",
+    )
+    entity: str | None = Field(
+        default=None, pattern=r"^m\d{1,2}$", description="role: 요청자 엔티티 id (예: m1)"
+    )
+    identifies: str | None = Field(
+        default=None,
+        max_length=60,
+        description="role: 헤더 값이 가리키는 그 엔티티 필드 (예: id, memberId) — 행마다 다른 값이어야 함",
+    )
+    attribute: str | None = Field(
+        default=None, max_length=60, description="role: 권한을 가르는 그 엔티티 필드 (예: rank)"
+    )
+    allowed: list[Annotated[str, Field(min_length=1, max_length=60)]] = Field(
+        default_factory=list,
+        max_length=20,
+        description="role: 통과하는 attribute 값 · fixed: 통과하는 헤더 값",
+    )
+    same_as_path: list[Annotated[str, Field(min_length=1, max_length=60)]] = Field(
+        default_factory=list,
+        max_length=4,
+        description="role: 경로 변수와 같아야 통과하는 요청자 필드 (예: 같은 길드 — guildId). 없으면 비움",
+    )
+    description: str | None = Field(
+        default=None,
+        max_length=200,
+        description="other: 규칙 한 줄 (자동 보장 안 됨 — 사람이 확인)",
+    )
+    # 코드가 채운다 (fit_auth) — 덧붙인 요청자 행 id 와 그 행의 헤더 값. LLM 출력 스키마에는 보이지 않는다
+    rows: SkipJsonSchema[list[int]] = Field(default_factory=list)
+    ok_value: SkipJsonSchema[str | None] = None
+    denied_value: SkipJsonSchema[str | None] = None
+
+
 class Endpoint(Schema):
     """공개 인터페이스 1개 — http 면 메서드·경로, cli 면 명령, file 이면 입출력 파일."""
 
@@ -85,6 +138,10 @@ class Endpoint(Schema):
     # false 면 시작 코드는 자리만 둔다. 2026-11-07 알파 테스트: 명세 글에 `METHOD /path` 가 없어 기존 API 목록이 비자
     # 시작 코드 생성기가 범위를 짐작 — 1회차는 기존 API 를 비우고 새 조회 API 를 구현, 2회차는 새 기능까지 다 구현.
     existing: bool = False
+    auth: AuthRule | None = Field(
+        default=None,
+        description="권한 실패(401·403)를 내는 엔드포인트만: 누가 통과하는지 (AuthRule). 그 밖은 null",
+    )
 
     @field_validator("refs")
     @classmethod

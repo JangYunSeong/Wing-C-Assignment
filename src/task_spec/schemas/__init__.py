@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus, TaskKind
 from task_spec.schemas.build import (
+    AuthRule,
     BuildState,
     BuildStatus,
     CaseRows,
@@ -211,6 +212,7 @@ __all__ = [
     "SeedGroup",
     "SeedRule",
     "StateRule",
+    "AuthRule",
     "SeedScalar",
     "TaskContract",
     "FailureReason",
