@@ -684,15 +684,21 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
             f"명세(상황·요구·수용 기준)에 나온 API 가 계약에 없음: {', '.join(missing)} — "
             "기존 API 도 요청 헤더·본문·응답·오류까지 계약에 넣는다"
         )
-    used = mentioned_apis(
-        [
-            *(t.checks for t in contract.public_tests),
-            *(f"{c.scenario} {c.expect}" for c in plan.cases),
-        ]
-    )
-    stray = [a for a in used if not _in_contract(a, rx)]
+    # 어디서 무엇을 썼는지 글 그대로 — 2026-11-09 v17 프론트: 'GET /drafts/{}' 만 보여 주고 고칠 방법이 없어 재요청 2회에도 같은 답
+    sources = [(t.test_id, t.checks) for t in contract.public_tests]
+    sources += [(c.case_id, f"{c.scenario} {c.expect}") for c in plan.cases]
+    stray: dict[str, list[str]] = {}
+    for where, text in sources:
+        for m, p in _API.findall(text):
+            if not _in_contract(_api_key(m, p), rx):
+                stray.setdefault(f"{m.upper()} {p}", []).append(where)
     if stray:
-        problems.append(f"공개 테스트·숨은 케이스가 계약에 없는 API 를 씀: {', '.join(stray)}")
+        have = ", ".join(f"{e.method} {e.path}" for e in contract.endpoints if e.method)
+        problems.append(
+            "공개 테스트·숨은 케이스가 계약에 없는 API 를 씀: "
+            + "; ".join(f"{api} ({', '.join(dict.fromkeys(ws))})" for api, ws in stray.items())
+            + f" — 계약에 있는 API({have})로 확인하거나, 꼭 필요하면 그 API 를 endpoints 에 더한다"
+        )
     entity_ids = {m.entity_id for m in contract.entities}
     bad = sorted(
         {
