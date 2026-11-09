@@ -71,6 +71,20 @@ hidden_helper:
 public_helper:
   path: src/__public__/contract.ts
   package: public
+# 생성기 프롬프트 — Java 하네스에 묶인 gen_* 대신 프론트엔드판 (prompts/gen_*_react/)
+prompt_tasks:
+  gen_hidden: gen_hidden_react
+  gen_public: gen_public_react
+  gen_starter: gen_starter_react
+  gen_naive: gen_naive_react
+  gen_accepted: gen_accepted_react
+# 수리 안내 문구의 스택 이름 (starter/repair.py — 기본은 Java 문구)
+repair_terms:
+  reason_call: reason(code, 설명)
+  public_helper: contract.ts
+  feature_first: >-
+    기능이 동작했는지 먼저 확인한다: 정상 응답을 보내 화면에 결과가 보이는 것을 (사유 없이) 단언한 뒤 숨은 요구를 시험하고,
+    '없다'만이 아니라 있어야 할 화면 결과도 확인한다. 요청은 contract.ts 의 waitFor…() 로 붙잡고 응답은 계약 형식 그대로 보낸다.
 limits:
   max_files: 60
   max_file_bytes: 100000
@@ -81,9 +95,10 @@ image:
   grader_only: [hidden/, manifest.yaml, README.tpl.md]
   grader_only_dependencies: []   # 하네스는 MSW·Testing Library 등 응시용 의존성과 같은 것만 쓴다
 hidden_rules:
-  # 숨은 테스트는 하네스(../harness)와 테스트 도구만 — 지원자 구현 내부(src/...)를 import 하지 않는다 (공개 계약인 화면으로만 판정)
+  # 숨은·공개 테스트는 하네스·계약 도우미(./contract)·테스트 도구만 — 지원자 구현 내부(src/...)를 import 하지 않는다 (공개 계약인 화면으로만 판정).
+  # 상위 폴더(../) import 는 하네스 진입점만 허용 (숨은: ../harness/grader, 공개: ../__grading__/harness/grader)
   forbidden_imports:
-    - '^\s*import\s+[^;]*from\s+[''"]\.\./\.\./'
+    - '^\s*import\s+[^;]*from\s+[''"]\.\./(?!harness/grader[''"]|__grading__/harness/grader[''"])'
   reason_patterns:
     - '\breason\(\s*[''"]([a-z0-9_]+)[''"]'
   case_id_pattern: '\bhc\d{1,2}\b'
@@ -102,15 +117,15 @@ failure_reasons:
   - code: stale_response_shown
     description: 먼저 보낸 요청의 응답이 늦게 와 최신 입력의 화면을 덮음
     log_patterns: ['\[reason:stale_response_shown\]']
-    how: 같은 API 를 두 번 이상 부르게 조작하고 api.waitForCall 로 둘 다 붙잡은 뒤 나중 요청부터 respond, 먼저 요청을 나중에 respond. 사유는 "최신 입력의 화면이 그대로인지" 단언에
+    how: 같은 API 를 두 번 이상 부르게 입력하고 waitFor…() 로 둘 다 붙잡은 뒤 나중 요청부터 respond 해 최신 목록이 보이는 것을 (사유 없이) 확인하고, 먼저 요청을 나중에 respond. 사유는 "최신 입력의 화면이 그대로인지" 단언에
   - code: stale_error_shown
     description: 대체된(이미 지난) 요청의 실패가 최신 화면에 오류로 보임
     log_patterns: ['\[reason:stale_error_shown\]']
-    how: 나중 요청을 respond 한 뒤 먼저 요청을 fail(500) 또는 networkError. 사유는 "오류 알림이 없는지" 단언에
+    how: 앞 입력의 요청을 붙잡아 둔 채 글자를 더 입력해 나중 요청을 respond(최신 목록이 보이는 것을 사유 없이 확인)한 뒤, 붙잡아 둔 앞 요청을 fail(500) 또는 networkError. 사유는 "오류 알림이 없고 목록이 그대로인지" 단언에
   - code: cleared_result_reappears
     description: 입력을 지우거나 닫은 뒤 늦게 온 응답이 결과를 다시 띄움
     log_patterns: ['\[reason:cleared_result_reappears\]']
-    how: 요청을 붙잡아 둔 채 입력을 지우거나 닫고, 그 뒤 respond. 사유는 "결과가 다시 보이지 않는지" 단언에
+    how: 먼저 한 입력으로 요청·응답해 목록이 보이는 것을 (사유 없이) 확인하고, 글자를 더 입력해 생긴 새 요청을 waitFor…() 로 붙잡아 둔 채 입력을 모두 지운 뒤(목록이 닫힌 것 확인) 그 붙잡은 요청에 respond. 지운 뒤의 새 요청(빈 입력)을 기다리지 않는다 — 빈 입력에 요청하지 않는 구현도 맞다. 사유는 "결과가 다시 보이지 않는지" 단언에
   - code: duplicate_request
     description: 한 번의 조작(제출·클릭)에 같은 요청이 두 번 이상 나감
     log_patterns: ['\[reason:duplicate_request\]']

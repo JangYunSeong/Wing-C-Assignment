@@ -187,8 +187,12 @@ async function settle(key: string): Promise<void> {
 
 /** 붙잡힌 요청 하나 — 응답을 보내고 앱이 처리할 때까지 기다린다. 같은 요청(메서드·경로·쿼리)이 여럿이면 모두에 같은 응답. */
 export interface CallHandle extends Call {
+  /** 응답 — `respond(본문)`·`respond(본문, 201)`, 상태를 먼저 쓴 `respond(404, 본문)` 도 받는다. */
   respond(json: unknown, status?: number): Promise<void>;
+  respond(status: number, json: unknown): Promise<void>;
+  /** 오류 응답 — `fail()`·`fail(503)`·`fail(409, 본문)`, 또는 본문만 `fail({ code, message })` (상태 500). */
   fail(status?: number, json?: unknown): Promise<void>;
+  fail(json: object): Promise<void>;
   networkError(): Promise<void>;
 }
 
@@ -209,12 +213,21 @@ function handle(call: HeldCall): CallHandle {
     params: call.params,
     query: call.query,
     body: call.body,
-    async respond(json: unknown, status = 200) {
+    async respond(a: unknown, b?: unknown) {
+      // 상태를 먼저 쓴 꼴(respond(500, { message }))도 받는다 — 2026-11-09 상류 평가·알파: 공개 테스트가 이렇게 써 타입 오류 4건
+      const swapped = typeof a === 'number' && b !== undefined && typeof b !== 'number';
+      const [json, status] = swapped ? [b, a as number] : [a, (b as number | undefined) ?? 200];
       replyAll(call.key, { json, status });
       await settle(call.key);
     },
-    async fail(status = 500, json: unknown = { code: 'INTERNAL', message: '일시적인 오류' }) {
-      replyAll(call.key, { json, status });
+    async fail(
+      statusOrBody: number | object = 500,
+      json: unknown = { code: 'INTERNAL', message: '일시적인 오류' },
+    ) {
+      // 본문만 준 꼴(fail({ code, message }))도 받는다 — 2026-11-09 상류 평가: 공개 테스트 3/3 이 이렇게 써 타입 오류
+      const [status, body] =
+        typeof statusOrBody === 'number' ? [statusOrBody, json] : [500, statusOrBody];
+      replyAll(call.key, { json: body, status });
       await settle(call.key);
     },
     async networkError() {

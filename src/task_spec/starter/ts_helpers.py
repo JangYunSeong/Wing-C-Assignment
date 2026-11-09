@@ -10,7 +10,7 @@ import json
 import re
 from typing import Literal
 
-from task_spec.schemas.build import GeneratedFile, TaskContract
+from task_spec.schemas.build import ContractResponse, GeneratedFile, TaskContract
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.hidden_helpers import method_name
 from task_spec.starter.tables import spring_snake
@@ -75,15 +75,147 @@ def render_ts_contract(
         *[f"  api.route({_ts(e.method or '')}, {_ts(msw_path(e.path))});" for e in endpoints],
         "}",
     ]
+    names = {m.entity_id: _ident(m.name) for m in contract.entities}
+    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities}
+    lines += ["", "/** 계약 데이터 모양 (entities) — 응답 본문의 타입 */"]
+    for m in contract.entities:
+        lines.append(f"export interface {names[m.entity_id]} {{")
+        lines += [
+            f"  {_prop(f.name)}{'' if f.required else '?'}: {ts_type(f.type, by_name)};"
+            for f in m.fields
+        ]
+        lines.append("}")
     for e in endpoints:
         q = ", ".join(f.name for f in e.query)
+        base = method_name(e)[:1].upper() + method_name(e)[1:]
+        ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+        errs = [r for r in e.responses if r.status >= 400 and (r.body or r.returns)]
+        err_types = list(dict.fromkeys(_body_type(r, names, by_name) for r in errs))
         lines += [
             "",
+            f"/** {e.endpoint_id} {e.method} {e.path} 성공 응답 본문 ({ok.status if ok else '-'}) */",
+            f"export type {base}Ok = {_body_type(ok, names, by_name) if ok else 'unknown'};",
+            f"/** {e.endpoint_id} 오류 응답 본문 ({', '.join(str(r.status) for r in errs) or '-'}) */",
+            f"export type {base}Error = {' | '.join(err_types) or 'unknown'};",
+            f"/** {e.endpoint_id} 의 붙잡힌 요청 — 응답 본문은 계약의 모양 그대로 (다르면 tsc 가 잡는다) */",
+            f"export interface {base}Call extends Omit<CallHandle, 'respond' | 'fail'> {{",
+            f"  respond(json: {base}Ok, status?: number): Promise<void>;",
+            f"  respond(status: number, json: {base}Ok | {base}Error): Promise<void>;",
+            f"  fail(status?: number, json?: {base}Error): Promise<void>;",
+            f"  fail(json: {base}Error): Promise<void>;",
+            "}",
             f"/** {e.endpoint_id} {e.method} {e.path} — {e.summary}"
             + (f" (쿼리: {q})" if q else "")
             + " */",
-            f"export function waitFor{method_name(e)[:1].upper()}{method_name(e)[1:]}(match?: (call: Call) => boolean): Promise<CallHandle> {{",
-            f"  return api.waitForCall({_ts(e.method or '')}, {_ts(msw_path(e.path))}, match);",
+            f"export function waitFor{base}(match?: (call: Call) => boolean): Promise<{base}Call> {{",
+            f"  return api.waitForCall({_ts(e.method or '')}, {_ts(msw_path(e.path))}, match) as Promise<{base}Call>;",
             "}",
         ]
     return GeneratedFile(path=rule.path, content="\n".join(lines) + "\n")
+
+
+_SCALAR = {
+    **dict.fromkeys(
+        ("string", "text", "uuid", "date", "datetime", "date-time", "time", "email", "url"),
+        "string",
+    ),
+    **dict.fromkeys(("integer", "int", "long", "number", "float", "double", "decimal"), "number"),
+    **dict.fromkeys(("boolean", "bool"), "boolean"),
+    **dict.fromkeys(("array", "list"), "unknown[]"),
+    **dict.fromkeys(("object", "map", "json"), "Record<string, unknown>"),
+}
+
+
+def _ident(name: str) -> str:
+    out = re.sub(r"[^A-Za-z0-9_$]", "", name)
+    return out if out and not out[0].isdigit() else f"T{out}"
+
+
+def _prop(name: str) -> str:
+    return name if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else _ts(name)
+
+
+def ts_type(t: str, entities: dict[str, str]) -> str:
+    """계약 필드 형식 → TypeScript 타입. 모르는 형식은 unknown (막지 않는다)."""
+    t = t.strip()
+    if t.endswith("[]"):
+        inner = ts_type(t[:-2], entities)
+        return f"({inner})[]" if "|" in inner else f"{inner}[]"
+    m = re.fullmatch(r"(?:array|list)\s*<\s*(.+?)\s*>", t, re.I)
+    if m:
+        return ts_type(m.group(1) + "[]", entities)
+    m = re.fullmatch(r"enum\s*\((.+)\)", t, re.I)
+    if m:
+        values = [v.strip() for v in re.split(r"[|,]", m.group(1)) if v.strip()]
+        return " | ".join(_ts(v) for v in values) or "string"
+    if _ident(t) in entities:
+        return entities[_ident(t)]
+    return _SCALAR.get(t.lower(), "unknown")
+
+
+def _body_type(r: ContractResponse, names: dict[str, str], entities: dict[str, str]) -> str:
+    if r.returns:
+        name = names.get(r.returns.removesuffix("[]"), "unknown")
+        return f"{name}[]" if r.returns.endswith("[]") else name
+    if r.body:
+        fields = "; ".join(
+            f"{_prop(f.name)}{'' if f.required else '?'}: {ts_type(f.type, entities)}"
+            for f in r.body
+        )
+        return f"{{ {fields} }}"
+    return "unknown"
+
+
+# ── 테스트 파일의 vitest import 보정 ──────────────────────────────────────
+
+_VITEST_NAMES = (
+    "describe",
+    "it",
+    "test",
+    "expect",
+    "beforeEach",
+    "afterEach",
+    "beforeAll",
+    "afterAll",
+    "vi",
+)
+_VITEST_IMPORT = re.compile(r"^import\s*\{([^}]*)\}\s*from\s*['\"]vitest['\"];?[ \t]*$", re.M)
+_USE = {n: re.compile(rf"(?<![\w.$]){n}\s*[.(]") for n in _VITEST_NAMES}
+_TS_STRING_OR_COMMENT = re.compile(
+    r"//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|`(?:\\.|[^`\\])*`", re.S
+)
+
+
+def ensure_vitest_imports(files: list[GeneratedFile]) -> tuple[list[GeneratedFile], list[str]]:
+    """테스트 파일(*.test.ts·*.test.tsx)이 쓰는 vitest 이름(describe·it·expect·beforeEach …) 중 import 하지 않은 것을 더한다.
+
+    2026-11-09 상류 평가(React 3건): 숨은 테스트가 모두 `beforeEach` 를 vitest 에서 import 하지 않아 첫 컴파일 0/3 — 생성기에 다시 묻지 않고
+    코드가 고친다 (같은 이름을 파일이 따로 정의하면 건드리지 않는다)."""
+    out: list[GeneratedFile] = []
+    notes: list[str] = []
+    for f in files:
+        if not re.search(r"\.test\.tsx?$", f.path):
+            out.append(f)
+            continue
+        code = _TS_STRING_OR_COMMENT.sub(" ", f.content)
+        m = _VITEST_IMPORT.search(f.content)
+        have = {x.strip().split(" as ")[-1].strip() for x in m.group(1).split(",")} if m else set()
+        own = set(re.findall(r"\b(?:const|let|function|import)\s+\{?\s*([A-Za-z_$][\w$]*)", code))
+        missing = [
+            n for n in _VITEST_NAMES if n not in have and n not in own and _USE[n].search(code)
+        ]
+        if not missing:
+            out.append(f)
+            continue
+        if m is not None:
+            names = [x.strip() for x in m.group(1).split(",") if x.strip()] + missing
+            content = (
+                f.content[: m.start()]
+                + f"import {{ {', '.join(names)} }} from 'vitest';"
+                + f.content[m.end() :]
+            )
+        else:
+            content = f"import {{ {', '.join(missing)} }} from 'vitest';\n" + f.content
+        out.append(GeneratedFile(path=f.path, content=content))
+        notes.append(f"{f.path}: vitest import 에 {', '.join(missing)} 를 더함")
+    return out, notes

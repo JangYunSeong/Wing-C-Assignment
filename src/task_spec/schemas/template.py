@@ -301,6 +301,20 @@ class HiddenRules(Schema):
 SlotKind = Literal["starter", "public_test", "hidden", "ref"]
 
 
+class RepairTerms(Schema):
+    """수리 안내 문구(starter/repair.py)에 들어가는 스택 이름·문장 — 기본값은 Java 템플릿 문구 그대로.
+    2026-11-09 React 템플릿: 수리 문구가 Reasons.as·PublicCase·ContractCase 상수를 가리켜 프론트엔드 생성기에 맞지 않았다."""
+
+    reason_call: str = "Reasons.as"  # 단언에 실패 사유를 붙이는 하네스 호출
+    public_helper: str = "PublicCase"  # 공개 테스트가 쓰는 계약 도우미
+    # 기능 없는 시작 코드가 숨은 케이스를 통과할 때 — 기능 단계에 닿았는지 먼저 확인하는 법
+    feature_first: str = (
+        "요청이 기능 단계(저장·기록)에 닿았는지 먼저 확인한다: 규칙·권한을 통과하는 "
+        "값(ContractCase 의 NEXT_OK_…·HEADER_…_OK·okHeaders())으로 요청하고, 응답 상태를 단언한 뒤, '없다'만이 아니라 "
+        "있어야 할 결과(실패 기록 등)도 확인한다."
+    )
+
+
 class TemplateManifest(Schema):
     """템플릿 `templates/<직군>/<스택>/vN/manifest.yaml`."""
 
@@ -346,6 +360,11 @@ class TemplateManifest(Schema):
     # (stack_conditions 는 허용 구현용이라 정답 힌트가 섞여 흔한 구현에 줄 수 없다). 2026-11-07 알파 5회차: 흔한 구현이 REQUIRES_NEW
     # 메서드를 같은 클래스 안에서 불러 전파 옵션이 무시됨 — 커넥션을 하나만 써 숨은 케이스를 두 번 통과.
     naive_conditions: list[str] = Field(default_factory=list)
+    # 생성기 이름(gen_hidden …) → 이 템플릿이 쓰는 프롬프트 작업 (prompts/<작업>/). 없으면 생성기 이름 그대로 (Java 템플릿).
+    # 2026-11-09 React 템플릿: 숨은·공개 테스트·시작 코드 프롬프트가 Java 하네스(ContractCase·@DisplayName·schema.sql)에 묶여 있어
+    # 스택마다 프롬프트를 따로 둔다 — Java 프롬프트를 바꾸지 않아 Java 재평가가 필요 없다.
+    prompt_tasks: dict[str, str] = Field(default_factory=dict)
+    repair_terms: RepairTerms = Field(default_factory=RepairTerms)  # 수리 안내 문구의 스택 이름
 
     @field_validator("starter_test_calls", "unavailable_imports")
     @classmethod

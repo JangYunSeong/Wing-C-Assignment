@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import difflib
 import functools
+import posixpath
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -424,6 +425,38 @@ def _unavailable_imports(o: Overlay, t: Template) -> list[StaticProblem]:
     return out
 
 
+_REL_IMPORT = re.compile(
+    r"""^\s*(?:import|export)\b[^;]*?\bfrom\s+['"](\.{1,2}/[^'"]+)['"]""", re.M
+)
+_TS_EXTS = ("", ".ts", ".tsx", "/index.ts", "/index.tsx")
+
+
+def _test_folder_imports(o: Overlay, t: Template) -> list[StaticProblem]:
+    """구현(시작 코드·참조 구현)이 채점 자리(reserved)나 공개 테스트 자리의 파일을 import — 그 파일은 대상마다 있거나 없어서
+    (시작 코드 + 숨은 테스트 실행에는 공개 테스트가 없다) 컴파일이 깨지고, 지원자 이미지에도 없다. TypeScript 상대 import 만 (Java 는 패키지).
+    2026-11-09 React 알파: 시작 코드·참조 구현 셋이 공개 도우미(src/__public__/contract.ts)의 응답 타입을 import 했다."""
+    m = t.manifest
+    if is_java(m):
+        return []
+    off_limits = [*m.reserved, *m.fill_slots.get("public_test", [])]
+    out: list[StaticProblem] = []
+    for f in o.files:
+        bad = []
+        for spec in _REL_IMPORT.findall(f.content):
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(f.path), spec))
+            if any(glob_match(target + ext, off_limits) for ext in _TS_EXTS):
+                bad.append(spec)
+        if bad:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{f.path} 가 채점·공개 테스트 폴더의 파일을 import 함: {', '.join(sorted(set(bad)))} — 구현은 테스트 도우미를 쓰지 않는다. "
+                    "필요한 타입은 계약의 데이터 모양대로 src/ 안에 직접 정의한다",
+                )
+            )
+    return out
+
+
 def _starter_schema(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
     """시작 코드 스키마가 코드가 쓸 시드와 맞는가 (starter/seed_sql.schema_problems) — 맞지 않으면 기동이 깨진다."""
     rule = t.manifest.seed_sql
@@ -821,6 +854,7 @@ def _hidden_cases(
     if helper is not None:
         out += unknown_helper_names(cases, helper, "숨은 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "숨은 테스트")
+    out += guessed_names(cases, contract, "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
         out += _unknown_calls(cases, contract, rules.http_calls)
@@ -864,12 +898,39 @@ def helper_names(helper: GeneratedFile) -> set[str]:
     return set(methods) | set(consts)
 
 
+_ROLE_NAME = re.compile(r"""ByRole\(\s*['"]([a-z]+)['"]\s*,\s*\{[^}]*\bname\s*:\s*([^,}]+)""")
+
+
+def guessed_names(
+    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
+) -> list[str]:
+    """화면 계약(screens)이 있는 과제에서 테스트가 요소를 접근 가능한 이름으로 찾음 — 계약에는 이름이 없어(test id·역할·설명만)
+    짐작한 이름이고, 올바른 구현도 못 찾는다. 2026-11-09 React 알파: 하네스 문서 예시의 '상품 검색'을 따라 써 모든 구현에서 예외."""
+    if contract is None or not contract.screens:
+        return []
+    out: list[str] = []
+    for f in cases:
+        hits = sorted(
+            {f"{role} {name.strip()[:30]}" for role, name in _ROLE_NAME.findall(f.content)}
+        )
+        if hits:
+            out.append(
+                f"{label} {f.path} 가 요소를 접근 가능한 이름으로 찾음 ({'; '.join(hits[:3])}) — 계약에 이름이 없다. "
+                "계약의 test id 로 찾는다: await screen.findByTestId(TID.X) · byTestId(TID.X)"
+            )
+    return out
+
+
 def unknown_helper_names(
     cases: Iterable[GeneratedFile], helper: GeneratedFile, label: str
 ) -> list[str]:
     """케이스가 도우미에 없는 범위·공개 행·테이블 상수나 계약 API 함수를 쓰면 가까운 실제 이름과 함께.
     2026-11-08 상류 평가: 도우미 소스를 보여 줬는데도 getApiOrdersOrderIdStatus(실제 …StatusAudit)·PUBLIC_ORDER_READY(없는 처음 값)를
     짐작해 컴파일 실패 — 이름은 코드가 만들어 정확히 알므로 Gradle 전에 대조한다."""
+    if not helper.path.endswith(
+        ".java"
+    ):  # 이름 꼴이 Java 기준 — TypeScript 도우미(contract.ts)의 없는 이름은 tsc 가 잡는다
+        return []
     known = helper_names(helper)
     out: list[str] = []
     for f in cases:
@@ -1013,6 +1074,7 @@ def _public_cases(
     if helper is not None:
         out += unknown_helper_names(cases, helper, "공개 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "공개 테스트")
+    out += guessed_names(cases, contract, "공개 테스트")
     text = "\n".join(f.content for f in cases)
     missing = [
         pt.test_id for pt in contract.public_tests if not re.search(rf"\b{pt.test_id}\b", text)
@@ -1057,13 +1119,12 @@ def static_check(
     """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게."""
     res = StaticResult()
     hidden_files = [f for o in overlays if o.kind == "hidden" for f in o.files]
-    hidden_names = [
-        PurePosixPath(f.path).stem
-        for f in hidden_files
-        if not (
-            template.manifest.hidden_layout and f.path == template.manifest.hidden_layout.params
-        )
-    ]
+    # 코드가 쓴 파일(조절값·계약 도우미)의 이름은 빼고 — 2026-11-09 React 알파: 숨은 도우미 contract.ts 의 이름이 공개 테스트의
+    # `import … from './contract'`(공개 도우미)를 누설로 막아 공개 테스트 생성이 재생성 예산을 다 썼다
+    m_ = template.manifest
+    written = {m_.hidden_layout.params if m_.hidden_layout else None}
+    written |= {m_.hidden_helper.path if m_.hidden_helper else None}
+    hidden_names = [PurePosixPath(f.path).stem for f in hidden_files if f.path not in written]
     terms = list(
         dict.fromkeys([*hidden_terms(seed, spec), *(n for n in hidden_names if len(n) >= 4)])
     )
@@ -1084,6 +1145,7 @@ def static_check(
                 )
         if o.kind in ("starter", "ref_naive", "ref_accepted"):
             res.problems += _unavailable_imports(o, template)
+            res.problems += _test_folder_imports(o, template)
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems

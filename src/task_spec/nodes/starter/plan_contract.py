@@ -137,7 +137,11 @@ def plan_input(
         f"{_range(p.minimum, p.maximum)}) — {p.description}"
         for p in m.harness_params
     )
-    reasons = "\n".join(reason_line(r) for r in m.failure_reasons)
+    # 재료가 이 숨은 요구의 사유를 선언했으면 그것만 보인다 (FeatureSeed.reasons)
+    allowed = set(seed.reasons) if seed is not None and seed.reasons else None
+    reasons = "\n".join(
+        reason_line(r) for r in m.failure_reasons if allowed is None or r.code in allowed
+    )
     return PlanContractInputV3(
         template=(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"

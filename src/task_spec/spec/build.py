@@ -25,6 +25,7 @@ from task_spec.spec.common import (
     targets,
 )
 from task_spec.spec.draft import DraftContext
+from task_spec.spec.incidents import feature_incident
 
 KSA_PER_COMP = 3
 
@@ -89,6 +90,11 @@ async def build_common(
             time_limit_min=out.task.time_limit_min,
             ontology_version=ontology_version,
             language_labels=await language_labels(ontology),
-            incident=(incidents or {}).get(profile.sub or ""),
+            # 기능형은 직군 템플릿이 시험할 수 있는 사례 (spec/incidents.feature_incident), 그 밖은 직군 기본 사례
+            incident=(
+                feature_incident(incidents, profile.sub or "")
+                if task_kind == "feature"
+                else (incidents or {}).get(profile.sub or "")
+            ),
         )
     return out

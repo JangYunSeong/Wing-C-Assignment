@@ -608,13 +608,19 @@ def _leaks(contract: TaskContract, spec: SpecView, seed: FeatureSeed | None) -> 
     ]
 
 
-def _reasons(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
-    codes = manifest.reason_codes
+def _reasons(
+    plan: HiddenPlan, manifest: TemplateManifest, seed: FeatureSeed | None = None
+) -> list[str]:
+    codes = set(manifest.reason_codes)
+    if (
+        seed is not None and seed.reasons
+    ):  # 재료가 선언한 이 숨은 요구의 사유만 (FeatureSeed.reasons)
+        codes &= set(seed.reasons)
     bad = sorted({c.intended_reason for c in plan.cases if c.intended_reason not in codes})
     if not bad:
         return []
     return [
-        f"숨은 케이스의 의도한 실패 사유가 템플릿 코드 목록에 없음: {', '.join(bad)} "
+        f"숨은 케이스의 의도한 실패 사유가 템플릿 코드 목록(재료가 정했으면 그 숨은 요구의 사유)에 없음: {', '.join(bad)} "
         f"(쓸 수 있는 것: {', '.join(sorted(codes)) or '없음'})"
     ]
 
@@ -860,7 +866,7 @@ def check_contract(
     problems += _leaks(contract, spec, seed)
     harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
-    problems += _reasons(plan, manifest)
+    problems += _reasons(plan, manifest, seed)
     if manifest.seed_rows:
         problems += seed_problems(contract)
         problems += case_rows_problems(contract, plan, manifest)

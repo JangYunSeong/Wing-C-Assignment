@@ -45,7 +45,7 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
 from task_spec.spec.build import build_common
-from task_spec.spec.incidents import load_incidents
+from task_spec.spec.incidents import feature_incident, load_incidents
 from task_spec.starter.render import render_readme
 from task_spec.starter.templates import load_template, select_template
 
@@ -163,7 +163,9 @@ async def main() -> None:
     )  # ② 부터 다시 돌릴 때 쓴다
 
     # ② 명세 → 공개 계약 + 숨은 테스트 계획
-    inc = incidents[p.sub]
+    inc = feature_incident(incidents, p.sub)  # 직군 템플릿이 시험할 수 있는 사례
+    if inc is None or inc.feature is None:
+        raise SystemExit(f"기능형 재료가 없는 직군: {p.sub}")
     # 직군 → 템플릿 (없는 직군은 Java 로 — 종이 단계 밖)
     template = select_template(p.sub) or load_template(JAVA)
     res = await plan_contract(

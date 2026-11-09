@@ -4,7 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { api, params, reason, tag, textsByRole } from '../harness/grader';
+import { api, openRoute, params, reason, tag, textsByRole } from '../harness/grader';
 
 function Probe() {
   const [log, setLog] = useState<string[]>([]);
@@ -89,6 +89,24 @@ describe('하네스 자체 점검', () => {
     expect(textsByRole('listitem')).toEqual(['error:a:503', 'rejected:b']);
   });
 
+  it('respond 는 상태를 먼저 써도 같은 응답 (respond(503, 본문))', async () => {
+    const { click } = setup();
+    await click('a');
+    await (await api.waitForCall('GET', '/__selftest/echo')).respond(503, { value: 'x' });
+    await click('b');
+    await (await api.waitForCall('GET', '/__selftest/echo', (c) => c.query.get('q') === 'b')).respond({ value: 'B' }, 200);
+    expect(textsByRole('listitem')).toEqual(['error:a:503', 'ok:b:B']);
+  });
+
+  it('fail 은 본문만 줘도 상태 500 으로 보낸다', async () => {
+    const { click } = setup();
+    await click('a');
+    await (await api.waitForCall('GET', '/__selftest/echo')).fail({ code: 'X', message: 'y' });
+    await click('b');
+    await (await api.waitForCall('GET', '/__selftest/echo', (c) => c.query.get('q') === 'b')).fail(409, { code: 'C' });
+    expect(textsByRole('listitem')).toEqual(['error:a:500', 'error:b:409']);
+  });
+
   it('always 는 붙잡지 않고 바로 응답한다', async () => {
     api.always('GET', '/__selftest/echo', { json: { value: 'fixed' } });
     const { click } = setup();
@@ -121,6 +139,13 @@ describe('하네스 자체 점검', () => {
     await api.reset();
     expect(api.pending()).toBe(0);
     expect(api.calls()).toEqual([]);
+  });
+
+  it('openRoute 는 앱 주소를 화면 경로로 바꾼다 (renderApp(route) 가 그리기 전에)', () => {
+    openRoute('/__selftest/route?tab=2');
+    expect(window.location.pathname + window.location.search).toBe('/__selftest/route?tab=2');
+    openRoute('/');
+    expect(window.location.pathname).toBe('/');
   });
 
   it('사유 태그와 조절값 기본값', () => {

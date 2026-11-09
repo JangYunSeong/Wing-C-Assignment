@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from task_spec.schemas import DraftTaskInputV2, TaskItem
 from task_spec.spec.common import FLAG_NO_INCIDENT, FLAG_PUBLIC_INCIDENT
 from task_spec.spec.draft import DraftResult, apply, build_input, check
@@ -171,3 +173,24 @@ def test_avoid_terms_checked_in_artifacts_by_word_boundary() -> None:
     ctx.incident = load_incidents(ROOT)["data.analytics"]  # avoid_terms 에 'ExP'
     arts[0] = arts[0].model_copy(update={"content": "experiment_id=7 expected=0.42"})
     assert not any("고유어" in p for p in check(out.model_copy(update={"artifacts": arts}), ctx))
+
+
+def test_feature_tasks_pick_the_incident_the_sub_template_can_test(tmp_path: Path) -> None:
+    """2026-11-09 사용자 결정 — 직군마다 여러 건: 기능형은 직군 템플릿이 시험할 수 있는 추가 사례, 디버깅형은 기본 사례."""
+    from task_spec.spec.incidents import feature_incident
+
+    incs = load_incidents(ROOT)
+    assert (
+        incs["sw.frontend"].incident_id == "pub:sw.frontend:multi-writer-local-db"
+    )  # 기본(디버깅형)
+    fe = feature_incident(incs, "sw.frontend")
+    assert fe is not None and fe.incident_id == "pub:sw.frontend:stale-search-response"
+    assert fe.feature is not None and "frontend/react-vite-ts" in fe.templates
+    assert feature_incident(incs, "sw.backend") is incs["sw.backend"]  # 추가 사례가 없으면 기본
+    assert feature_incident(None, "sw.backend") is None
+    # 추가 사례는 templates 가 있어야 한다 (없으면 어느 과제에서도 쓰이지 않는다)
+    raw = json.loads((ROOT / "sw.frontend.stale-response.json").read_text("utf-8"))
+    raw.pop("templates")
+    (tmp_path / "sw.frontend.extra.json").write_text(json.dumps(raw, ensure_ascii=False), "utf-8")
+    with pytest.raises(ValueError, match="templates"):
+        load_incidents(tmp_path)

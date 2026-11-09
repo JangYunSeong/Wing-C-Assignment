@@ -5,8 +5,14 @@ import App from '../../App';
 
 export { flush } from './grader-api';
 
-/** 앱 전체를 그리고 사용자 조작 도구를 준다. 지원자 구현의 내부 모듈은 import 하지 않는다. */
-export function renderApp() {
+/** 앱의 주소를 route 로 바꾼다 (renderApp 이 그리기 전에 부른다 — 앱의 라우터가 이 주소의 화면을 연다). */
+export function openRoute(route: string): void {
+  window.history.replaceState(null, '', route);
+}
+
+/** 계약 화면 경로(route, 기본 '/')에서 앱 전체를 그리고 사용자 조작 도구를 준다. 지원자 구현의 내부 모듈은 import 하지 않는다. */
+export function renderApp(route = '/') {
+  openRoute(route);
   const user = userEvent.setup();
   const view = render(<App />);
   return { user, ...view };
