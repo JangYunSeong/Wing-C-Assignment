@@ -510,7 +510,13 @@ def test_tests_and_cases_may_only_use_contract_apis() -> None:
     p = _plan()
     p["cases"][0]["scenario"] = "DELETE /orders/{id} 를 동시에 32건"
     res = _check(c, p)
-    assert _has(res.problems, "계약에 없는 API", "POST /orders", "DELETE /orders/{}")
+    assert _has(
+        res.problems,
+        "계약에 없는 API",
+        "POST /orders (pt1)",
+        "DELETE /orders/{id} (hc1)",
+        "계약에 있는 API(PATCH /orders/{id}/status",
+    )
 
 
 def test_visible_operating_value_in_spec_must_be_in_plan() -> None:
