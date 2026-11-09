@@ -128,6 +128,12 @@ async def main() -> None:
             flush=True,
         )
         if res.contract is not None and res.hidden_plan is not None:
+            if (
+                res.raw is not None
+            ):  # LLM 원본 — 코드만 다시 돌리는 회귀 검사용 (eval/starter/replay_contracts.py)
+                (out / f"contract-{n}.raw.json").write_text(
+                    res.raw.model_dump_json(indent=1), "utf-8"
+                )
             (out / f"contract-{n}.json").write_text(
                 json.dumps(
                     {

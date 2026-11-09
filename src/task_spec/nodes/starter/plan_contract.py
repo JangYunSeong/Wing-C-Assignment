@@ -57,6 +57,7 @@ class PlanResult:
     adjustments: list[str] = field(
         default_factory=list
     )  # 코드가 맞춘 행 수 (seed_rows.fit_seed) — 승인 화면에 보임
+    raw: PlanContractOutput | None = None  # 채택한 답의 LLM 원본 (코드가 맞추기 전) — 회귀 검사용
 
     @property
     def ok(self) -> bool:
@@ -178,6 +179,31 @@ def plan_input(
     )
 
 
+def fit_output(
+    out: PlanContractOutput, manifest: TemplateManifest, spec: SpecView
+) -> tuple[PlanContractOutput, list[str]]:
+    """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
+    회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다."""
+    filled, notes = fill_hidden_defaults(out.hidden_plan, manifest)
+    out = out.model_copy(update={"hidden_plan": filled})
+    if manifest.seed_rows:  # 행 수 맞추기는 DB 행 과제에서만
+        fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
+        out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
+        notes += seed_notes
+    stated, state_notes = fit_state(out.contract)
+    out = out.model_copy(update={"contract": stated})
+    notes += state_notes
+    authed, auth_notes = fit_auth(
+        out.contract, manifest.seed_rows
+    )  # 요청자 행은 행 수 맞춘 뒤 시드 끝에
+    out = out.model_copy(update={"contract": authed})
+    notes += auth_notes
+    covered, cover_notes = fit_covers(out.contract, spec)
+    out = out.model_copy(update={"contract": covered})
+    notes += cover_notes
+    return out, notes
+
+
 async def plan_contract(
     task: TaskItem,
     template: Template,
@@ -199,6 +225,7 @@ async def plan_contract(
     base_note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
     note = base_note
     best: tuple[PlanContractOutput, list[str], list[str], list[str], list[str]] | None = None
+    best_raw: PlanContractOutput | None = None
     for attempt in range(ATTEMPTS):
         prompt = assemble(
             prompt_t,
@@ -221,23 +248,8 @@ async def plan_contract(
             continue
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
-        filled, notes = fill_hidden_defaults(out.hidden_plan, manifest)
-        out = out.model_copy(update={"hidden_plan": filled})
-        if manifest.seed_rows:  # 행 수 맞추기는 DB 행 과제에서만
-            fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
-            out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
-            notes += seed_notes
-        stated, state_notes = fit_state(out.contract)
-        out = out.model_copy(update={"contract": stated})
-        notes += state_notes
-        authed, auth_notes = fit_auth(
-            out.contract, manifest.seed_rows
-        )  # 요청자 행은 행 수 맞춘 뒤 시드 끝에
-        out = out.model_copy(update={"contract": authed})
-        notes += auth_notes
-        covered, cover_notes = fit_covers(out.contract, spec)
-        out = out.model_copy(update={"contract": covered})
-        notes += cover_notes
+        raw = out
+        out, notes = fit_output(out, manifest, spec)
         check = check_contract(
             out.contract, out.hidden_plan, spec, manifest, seed, first_answer=attempt == 0
         )
@@ -252,6 +264,7 @@ async def plan_contract(
         score = len(check.problems) + len(check.spec_gaps)
         if best is None or score < len(best[1]) + len(best[2]):
             best = (out, check.problems, check.spec_gaps, notes, check.review_flags)
+            best_raw = raw
         if check.ok or check.spec_gaps:
             break  # 통과 — 또는 명세 결함이라 재요청해도 소용없음
         if attempt == 0:
@@ -274,6 +287,7 @@ async def plan_contract(
         return res
     out, res.problems, res.spec_gaps, res.adjustments, review = best
     res.contract, res.hidden_plan = out.contract, out.hidden_plan
+    res.raw = best_raw
     res.flags += review
     if res.spec_gaps:
         res.flags.append(FLAG_SPEC_GAP + "; ".join(res.spec_gaps))
