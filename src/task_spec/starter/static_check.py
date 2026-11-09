@@ -773,6 +773,8 @@ def _hidden_cases(
     cases = [f for f in o.files if f.path not in (params_path, helper_path)]
     if helper is not None:
         out += unknown_helper_names(cases, helper, "숨은 테스트")
+    if contract is not None:
+        out += state_literals(cases, contract, "숨은 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
@@ -814,6 +816,27 @@ def helper_names(helper: GeneratedFile) -> set[str]:
     methods = re.findall(r"protected (?:static )?[\w<>, \[\]]+? (\w+)\(", helper.content)
     consts = re.findall(r"protected static final [\w\[\]]+ (\w+) =", helper.content)
     return set(methods) | set(consts)
+
+
+def state_literals(cases: Iterable[GeneratedFile], contract: TaskContract, label: str) -> list[str]:
+    """요청 본문 문자열에 계약의 상태 값을 직접 쓴 곳 (Java 문자열 안의 `\\"필드\\":\\"값\\"`) — 도우미 상수(NEXT_OK_·NEXT_BAD_)를 쓰게.
+    응답을 비교하는 단언의 상태 값은 막지 않는다. 2026-11-09 알파: 상태를 연달아 바꾸며 두 번째 전이를 직접 써(DELIVERED→CANCELLED,
+    계약상 불가) 구현 둘 다 400 — 테스트가 틀렸는데 '모든 구현 실패'로 보였고, 다시 만든 테스트도 같은 식으로 틀렸다."""
+    values = {v for m in contract.entities if m.state is not None for v in m.state.values}
+    if not values:
+        return []
+    alt = "|".join(sorted(map(re.escape, values), key=len, reverse=True))
+    rx = re.compile(rf'\\"[A-Za-z_]\w*\\"\s*:\s*\\"({alt})\\"')
+    out: list[str] = []
+    for f in cases:
+        found = sorted(set(rx.findall(_strip_comments(f.content))))
+        if found:
+            out.append(
+                f"{label} {f.path} 가 요청 본문에 상태 값을 직접 씀: {', '.join(found)} — 보낼 다음 상태는 도우미 상수 "
+                "NEXT_OK_<엔티티>_<지금 상태>(허용)·NEXT_BAD_…(거절)로. 연달아 바꾸면 바뀐 상태의 상수로 "
+                "(나갈 전이가 없는 상태는 NEXT_OK_ 가 없다 — 그 상태에서는 모든 변경이 거절)"
+            )
+    return out
 
 
 def unknown_helper_names(
@@ -961,6 +984,7 @@ def _public_cases(
     helper = written.get(rule.path)
     if helper is not None:
         out += unknown_helper_names(cases, helper, "공개 테스트")
+    out += state_literals(cases, contract, "공개 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "공개 테스트")
     text = "\n".join(f.content for f in cases)
     missing = [

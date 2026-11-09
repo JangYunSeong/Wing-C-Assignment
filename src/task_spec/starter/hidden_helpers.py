@@ -92,7 +92,8 @@ def _state_lines(contract: TaskContract) -> list[str]:
         return []
     lines = [
         "",
-        "    // ── 상태 전이 (계약 state 칸): 처음 값별로 허용되는 다음 값(NEXT_OK_)과 거절되는 다음 값(NEXT_BAD_) ──",
+        "    // ── 상태 전이 (계약 state 칸): 상태 값마다 허용되는 다음 값(NEXT_OK_)과 거절되는 다음 값(NEXT_BAD_) ──",
+        "    // 연달아 바꾸면 다음 요청은 바뀐 상태의 상수로. 나갈 전이가 없는 상태는 NEXT_OK_ 가 없다 (그 상태에서는 모든 변경이 거절).",
     ]
     for m in contract.entities:
         if m.state is not None:

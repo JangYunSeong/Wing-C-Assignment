@@ -12,6 +12,7 @@ import re
 from task_spec.schemas import ContractField, GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.template import TableNaming, TemplateManifest
 from task_spec.starter.seed_rows import seed_markdown
+from task_spec.starter.state_rule import sentence
 from task_spec.starter.tables import contract_tables, table_label
 from task_spec.starter.templates import Template
 
@@ -104,6 +105,8 @@ def contract_markdown(
             out += ["", "관계: " + " · ".join(m.relations)]
         if m.foreign_keys:
             out += ["", "외래 키: " + " · ".join(f"`{a}` → `{b}`" for a, b in m.fk_pairs())]
+        if m.state is not None:  # 상태 규칙은 칸에서 — 필드 제약(200자 상한)에 덧붙이지 않는다
+            out += ["", f"상태 규칙 (`{m.state.field}`): {sentence(m.state)}"]
         out.append("")
     if tables is not None:
         out += ["외래 키는 위 엔티티에 적힌 것만 둔다 (적힌 것이 없으면 두지 않는다).", ""]

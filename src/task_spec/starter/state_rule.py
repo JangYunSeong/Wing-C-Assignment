@@ -2,7 +2,9 @@
 
 2026-11-08 상류 평가: 계약 첫 답 9개 중 5개가 상태 전이를 빠뜨렸고("허용 상태 값 중 하나"), 자유 글(constraints)의 'A→B' 를
 정규식으로 찾던 재요청은 2회에도 같은 답이 남은 실행이 있었다. 그래서 정해진 칸으로 받고, 나머지는 기계적으로:
-- 상태 필드 constraints 문장은 칸에서 코드가 쓴다 → README·시작 코드·참조 구현이 같은 규칙을 본다.
+- 계약 글(README·생성기 입력)에 칸에서 코드가 쓴 규칙 문장이 엔티티마다 한 줄 (render.contract_markdown) → 모두 같은 규칙을 본다.
+  필드 constraints 에는 덧붙이지 않는다 — 2026-11-09: 덧붙인 문장이 필드 제약 상한(200자)을 넘어(전이 5개, 235자) 저장한 계약을 다시
+  읽으면 검증에 실패했다.
 - 테스트 도우미에 처음 값별 다음 상태 상수(NEXT_OK_·NEXT_BAD_) → 숨은·공개 테스트가 전이를 짐작하지 않는다.
 - 화살표 글만 적은 답(plan_contract v9 이하)은 코드가 칸으로 옮긴다.
 """
@@ -96,18 +98,8 @@ def legacy_rule(contract: TaskContract, m: Entity) -> StateRule | None:
         return None
 
 
-def _merged(orig: str | None, rule: StateRule) -> str:
-    """칸에서 쓴 문장 — 원래 제약에 화살표가 없으면 뒤에 붙여 남긴다 (예: 1~32자). 두 번 불러도 같다."""
-    s = sentence(rule)
-    if orig and orig.startswith(s):
-        return orig
-    if not orig or ARROW.search(orig):
-        return s
-    return f"{s} ({orig})"
-
-
 def fit_state(contract: TaskContract) -> tuple[TaskContract, list[str]]:
-    """화살표 글만 있으면 칸으로 옮기고, 칸이 있는 엔티티의 상태 필드 constraints 를 칸에서 쓴다. 바꾼 것은 notes 로."""
+    """화살표 글만 있으면 칸으로 옮긴다 (필드 constraints 는 그대로 — 규칙 문장은 계약 글이 칸에서 쓴다). 바꾼 것은 notes 로."""
     notes: list[str] = []
     entities: list[Entity] = []
     changed = False
@@ -120,18 +112,11 @@ def fit_state(contract: TaskContract) -> tuple[TaskContract, list[str]]:
                     f"{m.name}.{rule.field} 의 화살표 전이 글을 state 칸으로 옮김 "
                     f"(전이 {len(rule.transitions)}개, 거절 {rule.rejected_status})"
                 )
-        if rule is None or rule.field not in {f.name for f in m.fields}:
+        if rule is None or m.state is not None:
             entities.append(m)
             continue
-        fields = [
-            f.model_copy(update={"constraints": _merged(f.constraints, rule)})
-            if f.name == rule.field
-            else f
-            for f in m.fields
-        ]
-        new = m.model_copy(update={"state": rule, "fields": fields})
-        changed |= new != m
-        entities.append(new)
+        entities.append(m.model_copy(update={"state": rule}))
+        changed = True
     if not changed:
         return contract, notes
     return contract.model_copy(update={"entities": entities}), notes
@@ -187,13 +172,18 @@ def state_problems(contract: TaskContract, plan: HiddenPlan) -> list[str]:
 
 
 def next_states(contract: TaskContract) -> Iterator[tuple[str, str, str | None, str | None]]:
-    """(엔티티 이름, 처음 값, 허용되는 다음 값, 거절되는 다음 값) — 시드에 있는 처음 값마다. 테스트 도우미 상수 재료."""
+    """(엔티티 이름, 상태 값, 허용되는 다음 값, 거절되는 다음 값) — 계약의 모든 상태 값마다 (나갈 전이가 없으면 허용 값 None).
+    테스트 도우미 상수 재료. 2026-11-09 알파: 시드의 처음 값만 주었더니 상태를 연달아 바꾸는 공개 테스트가 두 번째 전이를
+    짐작해(DELIVERED→CANCELLED, 계약상 불가) 구현 둘 다 '실패'로 보였다 — 바뀐 상태의 다음 값도 상수로 준다."""
     for m in contract.entities:
         rule = m.state
         if rule is None:
             continue
         pairs = rule.pairs()
-        for v in seed_values(contract, m.entity_id, rule.field):
+        values = list(
+            dict.fromkeys([*seed_values(contract, m.entity_id, rule.field), *rule.values])
+        )
+        for v in values:
             ok = next((b for a, b in pairs if a == v), None)
             bad = next((w for w in rule.values if w != v and (v, w) not in pairs), None)
             yield m.name, v, ok, bad

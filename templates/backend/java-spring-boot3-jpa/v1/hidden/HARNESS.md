@@ -10,10 +10,10 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 - **케이스 하나 = HiddenPlan 케이스 하나 = 테스트 클래스 하나.** 클래스의 `@DisplayName` 에 케이스 id(`hc1` …)를 쓴다.
 - **`ContractCase` 를 상속한다** (`GraderSupport` 를 직접 상속하지 않는다). `ContractCase` 는 빌드 파이프라인이 이 과제의 계약에서 만든
   도우미로 이 문서 끝에 소스가 붙어 있다 — 케이스별 id 범위 상수(`HC1_FIRST` …), 계약 테이블 이름(`TABLE_…`), 처음 값별 다음 상태
-  (`NEXT_OK_<엔티티>_<처음 값>` 허용되는 값 · `NEXT_BAD_…` 거절되는 값 — 계약 state 칸에서), 계약 API 호출 함수와 200 본문을 계약 모양
+  (`NEXT_OK_<엔티티>_<상태 값>` 허용되는 값 · `NEXT_BAD_…` 거절되는 값 — 계약 state 칸에서), 계약 API 호출 함수와 200 본문을 계약 모양
   (목록/객체)대로 읽는 `…Body` 함수, 운영 피크 `peak(…)`, 오류 주입 `injectCommitFailure(verb, TABLE_…)`·`injectStatementFailure(verb, TABLE_…)`,
   숫자 비교 `num(…)`. **id·경로·응답 파싱·상태 전이·동시 요청 시간 한도를
-  손으로 쓰지 말고 이것들을 쓴다** — 계약과 어긋날 수 없게. `ContractCase.java` 와 조절값 파일(`grader-params.properties`)은 쓰지 않는다
+  손으로 쓰지 말고 이것들을 쓴다** (상태를 연달아 바꾸면 다음 요청은 바뀐 상태의 상수로 — 나갈 전이가 없는 상태는 `NEXT_OK_` 가 없다) — 계약과 어긋날 수 없게. `ContractCase.java` 와 조절값 파일(`grader-params.properties`)은 쓰지 않는다
   (빌드 파이프라인이 쓴다).
 - 지원자 구현(`com.example.service.*` 중 `grading` 밖)을 import 하지 않는다 — 공개 계약(HTTP)으로만 판정.
 

@@ -7,7 +7,6 @@ from typing import Any
 from task_spec.schemas import HiddenPlan, TaskContract
 from task_spec.starter.contract import check_contract
 from task_spec.starter.hidden_helpers import render_contract_case
-from task_spec.starter.seed_rows import seed_problems
 from task_spec.starter.state_rule import fit_state, next_states, sentence, state_problems
 from task_spec.starter.static_check import unknown_helper_names
 from task_spec.starter.templates import load_template
@@ -39,14 +38,47 @@ def _status(contract: TaskContract) -> str:
     return next(f.constraints or "" for f in contract.entities[0].fields if f.name == "status")
 
 
-def test_fit_state_writes_the_constraints_sentence_from_the_slot() -> None:
+def test_state_rule_is_shown_in_contract_text_not_appended_to_constraints() -> None:
+    """2026-11-09: 칸 문장을 필드 제약에 덧붙였더니 전이 5개짜리가 235자로 상한(200자)을 넘어, 저장한 계약을 다시 읽으면 검증 실패.
+    이제 필드 제약은 그대로 두고 계약 글(README·생성기 입력)이 칸에서 규칙 한 줄을 쓴다."""
+    from task_spec.starter.render import contract_markdown
+
     fitted, notes = fit_state(_with_state())
-    assert notes == []  # 칸이 이미 있으면 옮긴 것 없음
-    assert _status(fitted) == (
-        '상태 값: "READY", "SHIPPED", "DELIVERED". 허용 전이: READY→SHIPPED, SHIPPED→DELIVERED — 그 밖은 409 (1~32자)'
+    assert notes == [] and fitted == _with_state()  # 칸이 이미 있으면 바꾸는 것 없음
+    assert _status(fitted) == "1~32자"
+    text = contract_markdown(fitted)
+    assert (
+        '상태 규칙 (`status`): 상태 값: "READY", "SHIPPED", "DELIVERED". 허용 전이: READY→SHIPPED, SHIPPED→DELIVERED — 그 밖은 409'
+        in text
     )
-    assert fit_state(fitted) == (fitted, [])  # 두 번 불러도 같다
-    assert not seed_problems(fitted)  # 따옴표 값 목록 — 시드 값 검사가 읽는다
+    # 전이가 많아도 저장 → 다시 읽기가 된다 (필드 제약 상한과 무관)
+    many = {
+        "field": "status",
+        "values": [
+            "PENDING",
+            "APPROVED",
+            "REJECTED",
+            "COMPLETED",
+            "CANCELLED",
+            "READY",
+            "SHIPPED",
+            "DELIVERED",
+        ],
+        "transitions": [
+            "PENDING→APPROVED",
+            "PENDING→REJECTED",
+            "APPROVED→COMPLETED",
+            "APPROVED→CANCELLED",
+            "PENDING→CANCELLED",
+            "READY→SHIPPED",
+            "SHIPPED→DELIVERED",
+            "READY→PENDING",
+        ],
+        "rejected_status": 409,
+    }
+    big, _ = fit_state(_with_state(many))
+    assert len(sentence(big.entities[0].state)) > 200  # type: ignore[arg-type]
+    assert TaskContract.model_validate_json(big.model_dump_json()) == big
 
 
 def test_legacy_arrow_text_is_moved_into_the_slot() -> None:
@@ -102,7 +134,12 @@ def test_state_problems_cross_check_contract_seed_and_cases() -> None:
 
 def test_helpers_carry_next_states_and_names_are_checked() -> None:
     contract, _ = fit_state(_with_state())
-    assert list(next_states(contract)) == [("Order", "READY", "SHIPPED", "DELIVERED")]
+    # 계약의 모든 상태 값마다 (시드에 없는 값도) — 연달아 바꾸는 테스트가 두 번째 전이를 짐작하지 않게 (2026-11-09 알파)
+    assert list(next_states(contract)) == [
+        ("Order", "READY", "SHIPPED", "DELIVERED"),
+        ("Order", "SHIPPED", "DELIVERED", "READY"),
+        ("Order", "DELIVERED", None, "READY"),  # 나갈 전이가 없으면 허용 값 없음
+    ]
     plan = HiddenPlan.model_validate(_plan())
     manifest = load_template(JAVA).manifest
     for audience in ("hidden", "public"):
@@ -115,10 +152,10 @@ def test_helpers_carry_next_states_and_names_are_checked() -> None:
 
     case = GeneratedFile(
         path="src/test/java/com/example/service/grading/cases/X.java",
-        content="class X extends ContractCase { void a() { send(NEXT_OK_ORDER_SHIPPED); } }",
+        content="class X extends ContractCase { void a() { send(NEXT_OK_ORDER_DELIVERED); } }",
     )
     msgs = unknown_helper_names([case], helper, "숨은 테스트")
-    assert _has(msgs, "NEXT_OK_ORDER_SHIPPED")
+    assert _has(msgs, "NEXT_OK_ORDER_DELIVERED")  # 나갈 전이가 없는 상태에는 NEXT_OK_ 가 없다
     # 칸이 없으면 상수 없음
     assert "String NEXT_OK_" not in render_contract_case(_with_state(None), plan, manifest).content  # type: ignore[union-attr]
 
@@ -152,3 +189,28 @@ def test_failure_reason_how_reaches_both_generators() -> None:
         and "injectCommitFailure" not in public.content
         and "GraderJdbcHarness" not in public.content
     )
+
+
+def test_state_literal_in_request_body_is_regenerated() -> None:
+    """2026-11-09 알파: 공개 테스트가 상태를 연달아 바꾸며 두 번째 전이를 직접 써(DELIVERED→CANCELLED) 구현 둘 다 '실패'로 보였다."""
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import state_literals
+
+    contract, _ = fit_state(_with_state())
+    literal = GeneratedFile(path="T.java", content='post(id, h, "{\\"status\\":\\"DELIVERED\\"}");')
+    by_const = GeneratedFile(
+        path="U.java", content='post(id, h, "{\\"status\\":\\"" + NEXT_OK_ORDER_SHIPPED + "\\"}");'
+    )
+    compare = GeneratedFile(
+        path="V.java", content='assertThat(row.get("status")).isEqualTo("DELIVERED");'
+    )
+    msgs = state_literals([literal, by_const, compare], contract, "공개 테스트")
+    assert (
+        len(msgs) == 1
+        and "T.java" in msgs[0]
+        and "DELIVERED" in msgs[0]
+        and "바뀐 상태의 상수" in msgs[0]
+    )
+    assert (
+        state_literals([literal], _with_state(None), "공개 테스트") == []
+    )  # 상태 칸이 없으면 검사 없음
