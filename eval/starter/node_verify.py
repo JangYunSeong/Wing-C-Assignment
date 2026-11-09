@@ -22,7 +22,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shlex
 import shutil
 import signal
@@ -32,6 +31,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from eval.starter import image_grade_node as judge
 from eval.starter.gradle_verify import assemble, write_overlay
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
 from task_spec.starter.static_check import Overlay
@@ -39,13 +39,6 @@ from task_spec.starter.templates import Template
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE_CACHE = ROOT / "data" / ".node-modules"
-# tsc --pretty false: `src/App.tsx(3,7): error TS2322: Type 'number' is not assignable to type 'string'.` (+ 들여쓴 이어지는 줄)
-_TSC = re.compile(r"^(?P<path>[^\s(][^(]*)\((?P<line>\d+),\d+\): error (?P<msg>TS\d+: .+)$")
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-_REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
-_PT = re.compile(r"\bpt\d{1,2}\b")
-# 실패 메시지 뒤에 붙는 DOM 덤프·스택 — 앞부분만 남긴다
-_TAIL = re.compile(r"\n\s*\n\s*Ignored nodes:|\n\s+at |\n\s*\n\s*<")
 
 
 def node_env() -> dict[str, str]:
@@ -104,132 +97,39 @@ def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[
 
 
 def tsc_errors(log_text: str, limit: int = 20) -> list[CompileError]:
-    """tsc --pretty false 출력 → 오류 위치·메시지 (이어지는 들여쓴 줄은 detail)."""
-    out: list[CompileError] = []
-    lines = _ANSI.sub("", log_text).splitlines()
-    for i, raw in enumerate(lines):
-        m = _TSC.match(raw.strip())
-        if m is None:
-            continue
-        more: list[str] = []
-        for nxt in lines[i + 1 : i + 4]:
-            if not nxt.startswith("  ") or _TSC.match(nxt.strip()):
-                break
-            more.append(nxt.strip())
-        err = CompileError(
-            path=m.group("path").strip(),
-            line=int(m.group("line")),
-            message=m.group("msg")[:300],
-            detail=" ".join(more)[:300],
-        )
-        if err not in out:
-            out.append(err)
-    return out[:limit]
+    """tsc --pretty false 출력 → 오류 위치·메시지 (판정은 image_grade_node 와 같은 코드)."""
+    return [CompileError(**e) for e in judge.tsc_errors(log_text, limit)]
 
 
-def clean_message(text: str) -> str:
-    """실패 메시지 앞부분 — 색 코드·DOM 덤프·스택을 뗀다."""
-    text = _ANSI.sub("", text or "")
-    m = _TAIL.search(text)
-    if m is not None:
-        text = text[: m.start()]
-    return " ".join(text.split())[:400]
+clean_message = judge.clean_message
 
 
-def _is_assertion(message: str) -> bool:
-    head = message.lstrip()
-    return (
-        head.startswith("AssertionError")
-        or head.startswith(
-            "Error: expect("
-        )  # jest-dom 매처 (사유 메시지는 버려진다 — manifest reason_not_on)
-        or "[reason:" in head.split("\n", 1)[0]
-    )
-
-
-def _rel(name: str, work: Path) -> str:
-    try:
-        return Path(name).resolve().relative_to(work.resolve()).as_posix()
-    except ValueError:
-        return Path(name).as_posix()
-
-
-def _group(rel: str, t: Template) -> str:
+def layout_of(t: Template) -> dict[str, str]:
+    """채점 폴더 배치 — 숨은 케이스·자체 점검·공개 테스트 폴더 (판정이 파일 경로로 그룹을 정한다)."""
     hl = t.manifest.hidden_layout
     public = t.manifest.public_helper
-    public_dir = str(Path(public.path).parent) if public is not None else "src/__public__"
-    if hl is not None and rel.startswith(hl.cases.rstrip("/") + "/"):
-        return "hidden"
-    if hl is not None and rel.startswith(hl.selftest.rstrip("/") + "/"):
-        return "selftest"
-    if rel.startswith(public_dir.rstrip("/") + "/"):
-        return "public"
-    return "existing"
-
-
-def _name(
-    group: str, rel: str, titles: Sequence[str], case_rx: re.Pattern[str], hidden: Overlay | None
-) -> str:
-    """숨은 케이스는 케이스 id (describe 제목 → 파일 본문), 공개 테스트는 pt id, 그 밖은 src 기준 파일 경로."""
-    if group == "hidden":
-        for title in titles:
-            m = case_rx.search(title)
-            if m:
-                return m.group(0)
-        for f in hidden.files if hidden is not None else ():
-            if f.path == rel and (m := case_rx.search(f.content)):
-                return m.group(0)
-    if group == "public":
-        for title in titles:
-            if m := _PT.search(title):
-                return m.group(0)
-    return rel.removeprefix("src/")
+    return {
+        "cases": hl.cases if hl is not None else "",
+        "selftest": hl.selftest if hl is not None else "",
+        "public": str(Path(public.path).parent) if public is not None else "src/__public__",
+    }
 
 
 def vitest_results(
     report: dict[str, Any], work: Path, t: Template, hidden: Overlay | None
 ) -> list[TestResult]:
-    """vitest JSON 보고서 → 파일마다 결과 하나 (첫 실패를 대표로)."""
-    case_rx = re.compile(t.manifest.hidden_rules.case_id_pattern)
-    out: list[TestResult] = []
-    for f in sorted(report.get("testResults", []), key=lambda x: str(x.get("name", ""))):
-        rel = _rel(str(f.get("name", "")), work)
-        group = _group(rel, t)
-        tests = f.get("assertionResults") or []
-        titles = [x for a in tests for x in (a.get("ancestorTitles") or [])] + [
-            str(a.get("title", "")) for a in tests
-        ]
-        name = _name(group, rel, titles, case_rx, hidden)
-        failed = [a for a in tests if a.get("status") == "failed"]
-        if (
-            not failed and f.get("status") == "failed"
-        ):  # 파일을 못 읽음 (import·변환 실패) 또는 훅 실패
-            msg = clean_message(str(f.get("message") or "테스트 파일 실행 실패"))
-            out.append(TestResult(group=group, name=name, result="HARNESS_ERR", message=msg))  # type: ignore[arg-type]
-            continue
-        if not failed:
-            out.append(TestResult(group=group, name=name, result="PASS"))  # type: ignore[arg-type]
-            continue
-        first = failed[0]
-        raw = str((first.get("failureMessages") or [""])[0])
-        msg = clean_message(raw)
-        reason = _REASON.search(_ANSI.sub("", raw))
-        out.append(
-            TestResult(
-                group=group,  # type: ignore[arg-type]
-                name=name,
-                result="ASSERT" if _is_assertion(_ANSI.sub("", raw)) else "HARNESS_ERR",
-                reason=reason.group(1) if reason else None,
-                message=clean_message(f"{first.get('title', '')} — {msg}") if msg else "",
-            )
-        )
-    return out
+    """vitest JSON 보고서 → 파일마다 결과 하나 (첫 실패를 대표로) — 판정은 채점용 이미지의 grade 와 같은 코드."""
+    texts = {f.path: f.content for f in hidden.files} if hidden is not None else None
+    rows = judge.vitest_results(
+        report, work, layout_of(t), t.manifest.hidden_rules.case_id_pattern, texts
+    )
+    return [TestResult.model_validate(r) for r in rows]
 
 
 def _log_tail(log: Path, n: int = 6) -> str:
     lines = [
         ln.strip()
-        for ln in _ANSI.sub("", log.read_text("utf-8", errors="ignore")).splitlines()
+        for ln in judge.strip_ansi(log.read_text("utf-8", errors="ignore")).splitlines()
         if ln.strip() and not ln.startswith("$ ")
     ]
     return " | ".join(lines[-n:])[:400]
@@ -316,10 +216,14 @@ class NodeVerifier:
                     break
                 got = vitest_results(report, dest, self.template, hidden)
                 tests += got
-                with log.open("a", encoding="utf-8") as fh:  # 실패 메시지 — 보고서 요약에는 결과만 남는다
+                with log.open(
+                    "a", encoding="utf-8"
+                ) as fh:  # 실패 메시지 — 보고서 요약에는 결과만 남는다
                     for t in got:
                         if t.result != "PASS":
-                            fh.write(f"## {t.group} {t.name} {t.result} [{t.reason or '-'}] {t.message}\n")
+                            fh.write(
+                                f"## {t.group} {t.name} {t.result} [{t.reason or '-'}] {t.message}\n"
+                            )
         shutil.rmtree(dest, ignore_errors=True)
         return TargetRun.model_validate(
             {

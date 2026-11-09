@@ -875,6 +875,7 @@ def _hidden_cases(
         out += unknown_helper_names(cases, helper, "숨은 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "숨은 테스트")
     out += guessed_names(cases, contract, "숨은 테스트")
+    out += type_escapes(cases, "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
         out += _unknown_calls(cases, contract, rules.http_calls)
@@ -919,6 +920,28 @@ def helper_names(helper: GeneratedFile) -> set[str]:
 
 
 _ROLE_NAME = re.compile(r"""ByRole\(\s*['"]([a-z]+)['"]\s*,\s*\{[^}]*\bname\s*:\s*([^,}]+)""")
+
+
+_TYPE_ESCAPE = re.compile(
+    r"\bas\s+unknown\s+as\b|\bas\s+any\b|:\s*any\b|@ts-(?:ignore|expect-error|nocheck)"
+)
+
+
+def type_escapes(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+    """TypeScript 테스트가 타입 검사를 우회 (`as unknown as`·`as any`·`: any`·`@ts-ignore`) — 계약·하네스 타입이 잡아 주는 잘못(없는 필드·
+    다른 응답 모양)이 실행 때 '요청이 오지 않음'·빈 화면으로 숨는다. 2026-11-09 React 알파(낙관적 갱신): 컴파일 루프가 'Call 에 json 이 없다'고
+    알리자 as unknown as 로 우회해, 없는 json 필드를 보는 조건 때문에 모든 구현에서 요청을 못 찾았다 (실제 필드는 body)."""
+    out: list[str] = []
+    for f in cases:
+        if not f.path.endswith((".ts", ".tsx")):
+            continue
+        hits = sorted({m.group(0) for m in _TYPE_ESCAPE.finditer(f.content)})
+        if hits:
+            out.append(
+                f"{label} {f.path} 가 타입 검사를 우회함 ({', '.join(hits)}) — 하네스·계약 도우미의 타입대로 쓴다 "
+                "(요청 기록은 call.query·call.params·call.body, 응답 본문은 <Api>Ok 타입)"
+            )
+    return out
 
 
 def guessed_names(
@@ -1095,6 +1118,7 @@ def _public_cases(
         out += unknown_helper_names(cases, helper, "공개 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "공개 테스트")
     out += guessed_names(cases, contract, "공개 테스트")
+    out += type_escapes(cases, "공개 테스트")
     text = "\n".join(f.content for f in cases)
     missing = [
         pt.test_id for pt in contract.public_tests if not re.search(rf"\b{pt.test_id}\b", text)

@@ -367,7 +367,10 @@ def contract_text(contract: TaskContract) -> str:
         parts += [fx.summary, fx.content]
     for sc in contract.screens:
         parts += [sc.route, sc.summary]
-        parts += [f"{el.test_id} {_words(el.test_id)} {el.description}" for el in sc.elements]
+        parts += [
+            f"{el.test_id} {_words(el.test_id)} {el.description} {el.action or ''}"
+            for el in sc.elements
+        ]
         parts += [f"{k.name} {k.shape}" for k in sc.storage]
     for s in contract.seed:
         parts += s.rules
@@ -778,12 +781,19 @@ def _entity_existing(contract: TaskContract, plan: HiddenPlan) -> tuple[list[str
     return problems, flags
 
 
-def _needs(contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None) -> list[str]:
+_MUTATING = ("POST", "PUT", "PATCH", "DELETE")
+ROW_NEEDS = ("stateful_target", "transition_rules", "empty_record_entity")
+
+
+def _needs(
+    contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None, row_seeds: bool = True
+) -> list[str]:
     """재료가 선언한 '숨은 요구에 계약이 꼭 가져야 할 것'(FeatureSeed.contract_needs)을 기계적으로 대조 — 빠진 것을 구체적으로 알려 다시 요청.
     2026-11-07~08 알파 평가: 대상 엔티티 없음(감사 기록에 시드), 상태 전이 규칙 없음(숨은 테스트·시작 코드가 다른 전이를 짐작)."""
     if seed is None or not seed.contract_needs:
         return []
-    need = {n.kind: n.note for n in seed.contract_needs}
+    # 행 기반 종류(대상 엔티티·전이 규칙·기록 엔티티)는 행 시드 템플릿에서만, 프론트 종류(바꾸는 API·결과 화면)는 모든 템플릿에서
+    need = {n.kind: n.note for n in seed.contract_needs if row_seeds or n.kind not in ROW_NEEDS}
     rows = {s.entity_id: s.rows for s in contract.seed}
     flagged = any(m.existing for m in contract.entities)
     in_cases = {d.entity_id for c in plan.cases for d in c.data}
@@ -804,6 +814,17 @@ def _needs(contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None) -
             f"숨은 요구에 필요한 것이 계약에 없음 — 상태 전이 규칙: {need['transition_rules']}. 대상 엔티티의 state 칸에 "
             "상태 값 전부(values)·허용 전이(transitions, 'A→B' 꼴로 빠짐없이)·거절 코드(rejected_status)를 적는다 "
             "(숨은 테스트와 시작 코드가 같은 규칙을 따르게)"
+        )
+    mutating = [e for e in contract.endpoints if (e.method or "").upper() in _MUTATING]
+    if "mutation_endpoint" in need and not mutating:
+        out.append(
+            f"숨은 요구에 필요한 것이 계약에 없음 — 화면이 부르는 바꾸는 API: {need['mutation_endpoint']}. "
+            "endpoints 에 POST·PUT·PATCH·DELETE 중 하나로 (요청 본문·성공 응답 본문 포함) 적는다"
+        )
+    if "result_screen" in need and not any(sc.elements for sc in contract.screens):
+        out.append(
+            f"숨은 요구에 필요한 것이 계약에 없음 — 결과를 보여 주는 화면 요소: {need['result_screen']}. "
+            "screens 에 그 값을 보여 주는 요소(test id·역할·설명)를 적는다"
         )
     if "empty_record_entity" in need and not [
         m for m in contract.entities if rows.get(m.entity_id, 0) == 0 and not m.existing
@@ -851,6 +872,40 @@ def _foreign_keys(contract: TaskContract) -> list[str]:
     return out
 
 
+INTERACTIVE_ROLES = frozenset(
+    {
+        "button",
+        "input",
+        "textbox",
+        "searchbox",
+        "combobox",
+        "checkbox",
+        "radio",
+        "switch",
+        "link",
+        "tab",
+        "menuitem",
+    }
+)
+
+
+def _ui_actions(contract: TaskContract) -> list[str]:
+    """조작하는 화면 요소(버튼·입력 등)에 조작 방법(action)이 없음 — 무엇을 하면 언제 서버 요청이 나가는지 계약이 정해야 테스트와 구현이
+    같은 조작을 한다. 2026-11-09 React 알파(낙관적 갱신): 수량 입력의 저장 시점이 계약에 없어 테스트는 입력 즉시, 허용 구현은 포커스 이동 때 요청."""
+    missing = [
+        el.test_id
+        for sc in contract.screens
+        for el in sc.elements
+        if el.role in INTERACTIVE_ROLES and not (el.action or "").strip()
+    ]
+    if not missing:
+        return []
+    return [
+        f"조작하는 화면 요소에 조작 방법(action)이 없음: {', '.join(missing[:8])} — 무엇을 하면 무엇이 일어나고 서버 요청이 언제 나가는지 "
+        "한 줄로 적는다 (예: '클릭하면 수량 1 증가 — 바로 저장 요청', '값을 바꾸고 포커스를 옮기면 저장 요청')"
+    ]
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -864,6 +919,7 @@ def check_contract(
     problems += _naming(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _leaks(contract, spec, seed)
+    problems += _ui_actions(contract)
     harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest, seed)
@@ -879,7 +935,8 @@ def check_contract(
         entity_problems, entity_flags = _entity_existing(contract, plan)
         problems += entity_problems
         flags += entity_flags
-        problems += _needs(contract, plan, seed)
+    # 재료가 선언한 필요 요소는 행 시드가 없는 템플릿(프론트엔드)에서도 — 2026-11-09 팩트 체크: 행 시드 템플릿에서만 돌아 프론트 재료의 선언이 무시됐다
+    problems += _needs(contract, plan, seed, manifest.seed_rows)
     problems += state_problems(contract, plan)
     problems += header_problems(contract)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)

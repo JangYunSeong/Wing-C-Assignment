@@ -144,7 +144,9 @@ def make_draft_spec(
             )
             redo_common = revise is not None and revise.revise_target != "verification"
             # v2 기능형은 그 직군 공개 사례에 기능형 재료(feature)가 있어야 한다 — 없으면 기본값 규칙에서 뺀다
-            seed_ok = bool((inc0 := feature_incident(incidents, p.sub or "")) and inc0.feature)
+            seed_ok = bool(
+                (inc0 := feature_incident(incidents, p.sub or "", p.posting_id)) and inc0.feature
+            )
             seed_needed = feature_ready and prompts is not None and uses_seed(prompts)
             kind, kind_flags = await choose_kind(
                 p,

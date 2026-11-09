@@ -8,7 +8,13 @@ from pydantic import Field
 
 from task_spec.schemas.base import Schema
 
-NeedKind = Literal["stateful_target", "transition_rules", "empty_record_entity"]
+NeedKind = Literal[
+    "stateful_target",
+    "transition_rules",
+    "empty_record_entity",
+    "mutation_endpoint",
+    "result_screen",
+]
 
 
 class ContractNeed(Schema):
@@ -19,6 +25,8 @@ class ContractNeed(Schema):
     - stateful_target: 상태를 가진 대상 엔티티 — 이미 있음(existing), 시드 행이 있고, 숨은 케이스 data 가 그 엔티티
     - transition_rules: 그 대상의 상태 필드(또는 상태를 바꾸는 요청 필드)에 허용 전이 규칙(A→B)이 적혀 있음
     - empty_record_entity: 요청마다 쌓이는 기록 엔티티 — 새로 만듦(existing 아님), 처음 0행
+    - mutation_endpoint: 화면이 부르는 바꾸는 API (POST·PUT·PATCH·DELETE) — 프론트엔드 재료 (2026-11-09: 중복 제출·낙관적 갱신)
+    - result_screen: 그 결과를 보여 주는 화면 요소 (계약 screens) — 바뀐 값이 화면에 보여야 판정할 수 있다
     """
 
     kind: NeedKind

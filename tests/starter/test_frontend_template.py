@@ -115,7 +115,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v1"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v2"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v1"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
@@ -175,6 +175,13 @@ def test_contract_helper_is_written_for_hidden_and_public_typescript_tests() -> 
         assert "export type GetApiProductsSuggestOk = { items: unknown[] };" in f.content
         assert "respond(json: GetApiProductsSuggestOk, status?: number)" in f.content
         assert "Promise<GetApiProductsSuggestCall>" in f.content
+        # 요청 기록도 계약 타입 — match 조건에서 call.body·call.params 를 좁히지 않고 읽는다 (2026-11-09 알파: body 가 unknown 이라 세 번 연속 컴파일 실패)
+        assert (
+            "export interface GetApiProductsSuggestRequest extends Omit<Call, 'body' | 'params'>"
+            in f.content
+        )
+        assert "match?: (call: GetApiProductsSuggestRequest) => boolean" in f.content
+        assert "  params: Record<string, string>;" in f.content and "  body: unknown;" in f.content
 
 
 # ── 3단계: 템플릿이 고른 생성기 프롬프트 · 입력의 도우미 블록 · 수리 문구 (2026-11-09) ──
@@ -299,13 +306,13 @@ def test_material_reasons_narrow_the_plan_input_and_check() -> None:
     from pathlib import Path
 
     from task_spec.nodes.starter.plan_contract import plan_input
-    from task_spec.spec.incidents import feature_incident, load_incidents
+    from task_spec.spec.incidents import incident_by_id, load_incidents
     from task_spec.starter.contract import _reasons
     from tests.starter.test_static_check import _approved
 
-    inc = feature_incident(
+    inc = incident_by_id(
         load_incidents(Path(__file__).resolve().parents[2] / "incidents" / "public_v1"),
-        "sw.frontend",
+        "pub:sw.frontend:stale-search-response",
     )
     assert inc is not None and inc.feature is not None
     seed = inc.feature
@@ -388,3 +395,62 @@ def test_guessed_accessible_names_are_reasked() -> None:
         "findByRole('textbox', { name: /상품 검색/ })", "findByTestId('search-input')"
     )
     assert not any("접근 가능한 이름" in m for m in _run(by_id))
+
+
+def test_frontend_contract_needs_are_checked_without_row_seeds() -> None:
+    """2026-11-09 팩트 체크: 필요 요소 검사가 행 시드 템플릿에서만 돌아 프론트 재료(바꾸는 API·결과 화면)의 선언이 무시됐다."""
+    from task_spec.schemas.incident import ContractNeed
+    from task_spec.starter.contract import _needs
+    from tests.starter.test_contract import BACKEND_SEED
+
+    seed = BACKEND_SEED.model_copy(
+        update={
+            "contract_needs": [
+                ContractNeed(kind="mutation_endpoint", note="주문을 만드는 API"),
+                ContractNeed(kind="result_screen", note="주문 번호"),
+            ]
+        }
+    )
+    got = _needs(_contract(), _plan(), seed)  # GET 만 있는 계약
+    assert any("바꾸는 API" in m for m in got) and not any("화면 요소" in m for m in got)
+    post = _contract().model_copy(
+        update={"endpoints": [_contract().endpoints[0].model_copy(update={"method": "POST"})]}
+    )
+    assert _needs(post, _plan(), seed) == []
+
+
+def test_screens_with_route_variables_become_typed_functions() -> None:
+    """2026-11-09 React 알파(중복 제출): 공개 테스트가 '/products/:productId' 를 변수 없이 열었다 — 함수로 두어 tsc 가 잡게."""
+    from task_spec.starter.ts_helpers import screen_route
+
+    assert screen_route("/cart") == '"/cart"'
+    assert screen_route("/products/:productId") == (
+        "(p: { productId: string }) => `/products/${encodeURIComponent(p.productId)}`"
+    )
+    assert screen_route("/a/{x}/b/:y").startswith("(p: { x: string; y: string }) =>")
+
+
+def test_type_escapes_in_typescript_tests_are_reasked() -> None:
+    """2026-11-09 React 알파: 'Call 에 json 이 없다'를 as unknown as 로 우회해 모든 구현에서 요청을 못 찾았다."""
+    escaped = HC1.replace(
+        "    renderApp();\n", "    renderApp();\n    const c = {} as unknown as { json: number };\n"
+    )
+    assert any("타입 검사를 우회" in m for m in _run(escaped))
+    assert not any("타입 검사를 우회" in m for m in _run())
+
+
+def test_ui_element_action_reaches_contract_text_and_helper() -> None:
+    """조작 방법(action)은 계약 글의 '조작' 칸과 contract.ts 주석으로 — 테스트·구현이 같은 조작(요청 시점 포함)을 하게."""
+    from task_spec.starter.render import contract_markdown
+    from task_spec.starter.ts_helpers import render_ts_contract
+
+    c = _contract()
+    el = c.screens[0].elements[0].model_copy(update={"action": "입력할 때마다 추천 요청"})
+    c = c.model_copy(update={"screens": [c.screens[0].model_copy(update={"elements": [el]})]})
+    md = contract_markdown(c)
+    assert "| test id | 역할 | 설명 | 조작 |" in md and "| 입력할 때마다 추천 요청 |" in md
+    ts = render_ts_contract(c, FE.manifest, "hidden")
+    assert (
+        ts is not None
+        and 'SEARCH_INPUT: "search-input", // 조작: 입력할 때마다 추천 요청' in ts.content
+    )

@@ -232,7 +232,19 @@ templates/<직군>/<스택>/CURRENT
    상류 평가 3공고 끝까지 3/3. 알파 3공고(KB·네이버·현대오토에버) 모두 빌드 review — 흔한 구현 3케이스가 의도한 사유로 실패,
    허용 구현 숨은·공개 전부 통과, 시작 코드는 숨은 케이스 0개 통과 (회당 $0.15~0.17). 고친 것: 응답 타입(tsc)·test id 로만 찾기·
    구현이 테스트 폴더를 import 금지·사유별 작성법 — 알파 실패 원인에서 하나씩.
-   남은 것: Node 기반 응시용·채점용 이미지 · 다른 프론트 함정(중복 요청·낙관적 갱신) 재료 · 실제 브라우저(Playwright) 층.
+   이미지(2026-11-09): Node 응시용·채점용 이미지 — 런타임 node:22-bookworm-slim(Debian 12, Playwright 공식 지원 계열·alpine 미지원),
+   템플릿 층에 lock 그대로 설치한 node_modules, grade 는 eval/starter/image_grade_node.py(개발 서버 Node 검증기와 같은 판정 코드 한 벌).
+   알파 성공 3건: 응시용 오프라인 tsc·테스트 통과, 채점 — 시작 코드 숨은 0/3, 허용 구현 전부 통과, 흔한 구현 3케이스 의도한 사유, 응시용 레이어 금지 경로 0.
+   재료(2026-11-09): 중복 제출(TanStack Query Mutations 문서 — 같은 mutate 를 여러 번 부르면 기본 병렬, 보조 Stripe 멱등 키 글)·
+   낙관적 갱신 되돌리기(TanStack Query Optimistic Updates — React useOptimistic 은 React 19 라 제외). 여러 추가 사례는 공고 id 해시로 배정.
+   계약 필요 요소(바꾸는 API·결과 화면)는 행 시드가 없는 템플릿에서도 검사.
+   템플릿 v2(2026-11-09, v1 병합 뒤 — v1 은 그대로): 하네스 byTestId(범위, id)·renderApp 이 앞서 그린 앱을 지움, 사유별 작성법(허용 설계가 모두 통과하게),
+   문서(경로 변수 화면은 SCREEN.X({...}) 함수 — tsc 가 잡음, 입력란은 clear 뒤 type, call.body 는 unknown). 계약 화면 요소에 조작 방법(action —
+   서버 요청이 나가는 시점까지, plan_contract v12)과 그 검사. 테스트의 타입 우회(as unknown as·as any·@ts-ignore) 정적 검사.
+   contract.ts 의 waitFor…() 가 계약의 요청 본문·경로 변수 타입까지 (match 조건에서 call.body.<필드> 를 바로 읽음), 템플릿 v2 에 MSW 2 문법 예시·MSW 1 import 차단.
+   알파(재료당 공고 1개): 중복 제출 review(흔한 구현을 설명에 강제해야 함 — AI 첫 답이 대개 버튼을 막아 변별력은 약할 수 있음), 낙관적 갱신 review
+   (흔한 구현 optimistic_not_rolled_back, 허용 구현 전부 통과). 실패한 실행마다 원인(테스트 쪽 조작·타입·문법)을 하나씩 막아 6~7회째에 도달 — B 평가 합계 약 $2.8.
+   남은 것: 실제 브라우저(Playwright) 층.
 4. 백엔드 TypeScript Next.js — Route Handler·Server Action + Prisma (+ 프론트와 공유할 Node 빌드 이미지). NestJS 는 필요할 때.
 5. AI 엔지니어 Python 서빙.
 6. 데이터 엔지니어 PySpark/SQL.

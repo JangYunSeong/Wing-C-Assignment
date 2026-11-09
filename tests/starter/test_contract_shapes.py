@@ -115,7 +115,13 @@ SCREEN = {
     "route": "/orders",
     "summary": "주문 상태를 바꾸고 이력을 본다",
     "elements": [
-        {"test_id": "status-select", "role": "input", "description": "바꿀 상태", "refs": ["r1"]},
+        {
+            "test_id": "status-select",
+            "role": "input",
+            "description": "바꿀 상태",
+            "action": "상태를 고르면 바로 변경 요청",
+            "refs": ["r1"],
+        },
         {
             "test_id": "history-list",
             "role": "list",
@@ -180,6 +186,8 @@ def test_ui_contract_checks() -> None:
     )
     res = _check(_ui_contract(screens=[bad_screen]), _ui_plan(), manifest=m)
     assert any("test id 가 템플릿 규칙과 다름: Status_Select" in p for p in res.problems)
+    # 조작하는 요소(input)에 조작 방법이 없음 — 2026-11-09 React 알파: 저장 시점을 테스트·구현이 다르게 짐작
+    assert any("조작 방법(action)이 없음: Status_Select" in p for p in res.problems)
     assert any("test id" in p and "겹침" in p for p in res.problems)
     assert any("요소 Status_Select 의 refs 에 명세에 없는 id: r9" in p for p in res.problems)
     assert any("숨은 요구" in p and "풀" in p for p in res.problems)  # 화면 문구도 누출 검사
