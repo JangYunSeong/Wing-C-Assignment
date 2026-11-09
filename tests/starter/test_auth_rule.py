@@ -162,8 +162,9 @@ def test_fixed_and_other_rules() -> None:
     assert (
         not auth_problems(other) and auth_flags(other) and "자동 보장 안 됨" in auth_flags(other)[0]
     )
-    # other 는 값을 정하지 않으므로 예시가 없으면 헤더 검사가 그대로 말한다
-    assert header_problems(other)
+    # other 는 값을 정하지 않으므로 예시가 없으면 헤더 검사가 말하고, other 라서 값이 필요하다고 짚는다 (fixmt-be2)
+    [msg] = header_problems(other)
+    assert msg.startswith("auth 가 other 라 코드가 요청자 값을 정하지 않음") and "=1 → 200" in msg
 
 
 def test_state_values_follow_the_materials() -> None:
