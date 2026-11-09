@@ -546,3 +546,22 @@ async def test_hidden_repair_regenerates_only_the_named_case() -> None:
         f"- {HC1_PATH}:12 cannot find symbol", prev.files, rx, ["hc1", "hc2"]
     ) == ["hc1"]
     assert repair_targets("단언 순서를 바꾼다", prev.files, rx, ["hc1", "hc2"]) == ["hc1", "hc2"]
+
+
+def test_hidden_files_with_the_same_name_are_renamed_per_case() -> None:
+    # 2026-11-09 fix12-be: hc2·hc3 이 둘 다 RollbackLeftSuccessTest.java 라 합칠 때 hc3 이 hc2 를 덮어 생성 실패
+    from task_spec.nodes.starter.generate import rename_for_case
+    from task_spec.schemas import GeneratedFile
+
+    path = f"{CASES}/RollbackLeftSuccessTest.java"
+    first = GeneratedFile(
+        path=path, content='@DisplayName("hc2 …")\nclass RollbackLeftSuccessTest {}'
+    )
+    second = GeneratedFile(
+        path=path, content='@DisplayName("hc3 …")\nclass RollbackLeftSuccessTest {}'
+    )
+    renamed = rename_for_case(second, "hc3", {path: first})
+    assert renamed.path.endswith("/RollbackLeftSuccessHc3Test.java")
+    assert "class RollbackLeftSuccessHc3Test" in renamed.content and "hc3" in renamed.content
+    ts = rename_for_case(GeneratedFile(path="src/__hidden__/sync.test.tsx", content="x"), "hc3", {})
+    assert ts.path == "src/__hidden__/sync.hc3.test.tsx"

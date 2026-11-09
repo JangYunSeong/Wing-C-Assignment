@@ -668,6 +668,33 @@ def repair_targets(
     return [i for i in ids if i in named] or list(ids)
 
 
+def rename_for_case(
+    f: GeneratedFile, cid: str, taken: Mapping[str, GeneratedFile]
+) -> GeneratedFile:
+    """다른 케이스 파일과 경로가 같으면 케이스 id 를 넣어 이름을 바꾼다 — Java 는 클래스 이름도 파일 이름과 같게.
+
+    2026-11-09 fix12-be: 의도한 사유가 같은 숨은 케이스 hc2·hc3 을 따로 만들었더니 둘 다 RollbackLeftSuccessTest.java 라
+    합칠 때 hc3 이 hc2 를 덮어 '케이스가 숨은 테스트에 없음: hc2' 로 생성 실패 — 루프가 시작도 못 했다."""
+    p = PurePosixPath(f.path)
+    tag = cid[:1].upper() + cid[1:]
+    if p.suffix == ".java":
+        stem = p.stem
+        base = stem[: -len("Test")] if stem.endswith("Test") and len(stem) > 4 else stem
+        new = f"{base}{tag}Test"
+        path = str(p.with_name(new + ".java"))
+        content = re.sub(rf"\b{re.escape(stem)}\b", new, f.content)
+    else:
+        head, _, rest = p.name.partition(".")
+        path = str(p.with_name(f"{head}.{cid}.{rest}" if rest else f"{head}.{cid}"))
+        content = f.content
+    n = 2
+    while path in taken:  # 그래도 겹치면 번호
+        q = PurePosixPath(path)
+        path = str(q.with_name(f"{q.stem}{n}{q.suffix}"))
+        n += 1
+    return f.model_copy(update={"path": path, "content": content})
+
+
 async def gen_hidden(
     b: BuildInputs,
     *,
@@ -722,8 +749,11 @@ async def gen_hidden(
         return res
     kept = [f for f in before if case_owner(f, rx, ids) not in targets]
     files = {f.path: f for f in kept}
-    for r in parts:
-        files |= {f.path: f for f in r.overlay.files}  # type: ignore[union-attr]
+    for cid, r in zip(targets, parts, strict=True):
+        for f in r.overlay.files:  # type: ignore[union-attr]
+            if f.path in files and case_owner(files[f.path], rx, ids) not in (None, cid):
+                f = rename_for_case(f, cid, files)
+            files[f.path] = f
     res.overlay = Overlay(kind="hidden", files=(*files.values(), *code_written))
     res.problems = b.check(res.overlay)  # 합친 뒤 계획 전체로 (케이스 누락·두 파일에 같은 케이스)
     if res.problems:
