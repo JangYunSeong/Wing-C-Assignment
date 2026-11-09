@@ -118,3 +118,14 @@ def test_hidden_defaults_fill_only_invisible_params() -> None:
     bare = HiddenPlan.model_validate(_plan(harness={"concurrency": 32}))
     out, _ = fill_hidden_defaults(bare, JAVA.manifest)
     assert "pool_size" not in out.harness
+
+
+def test_columns_follow_the_schema_quoting() -> None:
+    """2026-11-09 알파: 시작 코드가 `"rank"` 로 선언했는데 시드가 따옴표 없이 넣어 H2 가 대문자 RANK 를 찾아 기동 실패."""
+    quoted = SCHEMA.replace(
+        "    status VARCHAR(20) NOT NULL,", '    "status" VARCHAR(20) NOT NULL,'
+    )
+    sql = render_seed_sql(_seeded(), JAVA.manifest, quoted).content  # type: ignore[union-attr]
+    assert 'INSERT INTO orders (id, "status") VALUES' in sql
+    assert "RESTART WITH 251" in sql  # 따옴표 없는 id 는 그대로·재설정도 그대로
+    assert not schema_problems(quoted, _seeded(), JAVA.manifest)
