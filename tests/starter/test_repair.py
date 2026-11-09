@@ -291,6 +291,20 @@ def test_naive_passing_a_case_is_regenerated_before_the_hidden_test() -> None:
         assert _keys(_assign(report, **{other: 1})) == ["gen_naive:naive-all"], other
 
 
+def test_naive_that_shows_the_trap_elsewhere_is_not_regenerated() -> None:
+    """2026-11-09 v19-loop1: 흔한 구현이 hc2 를 의도한 사유로 떨어졌는데 hc1 만 통과 — 함정은 갖고 있으니 다시 만들지 않고
+    hc1 숨은 테스트를 본다 (다시 만든 흔한 구현은 REQUIRES_NEW 를 같은 클래스에서 불러 함정을 잃었다)."""
+    naive = _run(
+        "naive-all",
+        "ref_naive",
+        _t("hidden", "hc1"),
+        _t("hidden", "hc2", "ASSERT", "rollback_left_success", "성공 기록이 남음"),
+    )
+    plan = _assign(_report(naive, _run("d1", "ref_accepted", *GOOD_ACC)))
+    assert _keys(plan) == ["gen_hidden"]
+    assert "흔한 구현(naive-all)이 숨은 케이스 hc1 를 통과" in plan.actions[0].note
+
+
 def test_naive_regenerated_for_another_failure_keeps_its_structure() -> None:
     """다른 사유(공개 테스트 실패)로 흔한 구현을 다시 만들 때 설명의 구조를 '더 안전하게' 바꾸지 말라고 붙인다 — ③ 수리 요청엔 이미 있다."""
     naive = _run("naive-all", "ref_naive", _t("public", "Pt1Test", "ASSERT", None, "기록 없음"))

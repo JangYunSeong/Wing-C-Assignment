@@ -588,7 +588,24 @@ def _gate3(
         for c in plan.cases
         if c.trap_id in missed and (r := run.case(c.case_id)) is not None and r.result == "PASS"
     ]
-    if passed and regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0:
+    # 같은 숨은 요구의 다른 케이스에서 의도한 사유(계획의 어느 케이스든)로 떨어졌으면 흔한 구현은 함정을 갖고 있다 — 통과한 케이스가
+    # 그 함정을 못 잰 것이니 흔한 구현을 다시 만들지 않는다. 2026-11-09 v19-loop1: 흔한 구현(따로 둔 AuditService 의 REQUIRES_NEW)이
+    # hc2·hc3·hc4 를 rollback_left_success 로 떨어졌는데 hc1 만 통과해 흔한 구현을 다시 만들었고, 다시 만든 판은 REQUIRES_NEW 를
+    # 같은 클래스 안에서 불러(프록시를 안 거쳐 무효) 함정을 잃고 숨은 케이스를 모두 통과했다.
+    intended = {c.intended_reason for c in plan.cases}
+    traps = {c.trap_id for c in passed}
+    shows_trap = any(
+        c.trap_id in traps
+        and (r := run.case(c.case_id)) is not None
+        and r.result == "ASSERT"
+        and r.reason in intended
+        for c in plan.cases
+    )
+    if (
+        passed
+        and not shows_trap
+        and regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0
+    ):
         # 흔한 구현이 숨은 케이스를 통과 — 테스트가 약한지보다 흔한 구현이 설명을 안 따랐는지를 먼저 본다.
         # 2026-11-07 배송 감사 재실행: 흔한 구현이 REQUIRES_NEW 를 상태 변경 트랜잭션이 끝난 뒤 불러 커넥션을 하나씩만 썼다.
         # 숨은 테스트는 맞았다 (진짜 흔한 구현으로 바꾸자 hc1·hc2 모두 의도한 사유로 실패). 이 회차에는 이 대상의 다른 ③ 배정을 미룬다 —
