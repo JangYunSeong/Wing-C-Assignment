@@ -49,12 +49,14 @@ from task_spec.spec.common import (
 )
 from task_spec.spec.draft import (
     _ART_ID,
+    FLAG_UNMEASURED,
     DraftContext,
     DraftResult,
     _norm,
     _phrase,
     check,
     check_artifact_list,
+    cross_family_targets,
     draft_task,
     incident_copied,
     repair,
@@ -540,7 +542,12 @@ def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
 def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다."""
     # 이슈형 공통 규칙 (제목·상황·산출물·1단계 자료 목록의 노출 검사, 1단계 관찰 행동 id 포함)
-    problems = check(cast(Any, out), ctx, min_distractor=FEATURE_MIN_DISTRACTOR)
+    problems = check(
+        cast(Any, out),
+        ctx,
+        min_distractor=FEATURE_MIN_DISTRACTOR,
+        skip_targets=frozenset(t.competency_id for t in cross_family_targets(ctx)),
+    )
     trap_ids = [t.trap_id for t in out.traps]
     traps = set(trap_ids)
     s1 = [a.artifact_id for a in out.artifacts]
@@ -978,4 +985,8 @@ async def draft_feature_task(
     )
     res.incident_id = inc.incident_id
     res.seed = seed
+    if cross := cross_family_targets(ctx):
+        res.flags.append(
+            FLAG_UNMEASURED + ", ".join(f"{t.label}({t.competency_id})" for t in cross)
+        )
     return res

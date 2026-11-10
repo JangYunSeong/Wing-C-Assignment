@@ -271,3 +271,35 @@ def test_long_artifact_is_trimmed_by_lines_and_flagged() -> None:
         debug_stage = None
 
     assert trimmed_artifacts(Out()) == ["a1"]
+
+
+def test_cross_family_targets_only_for_other_job_families() -> None:
+    # 2026-11-10 갱신 손실 명세: 백엔드 공고의 'React·Vue 프론트엔드' 역량 수행준거를 인용하지 못해 실패 — 기능형에서만 표시로
+    from dataclasses import replace
+
+    from task_spec.spec.draft import cross_family_targets
+
+    ctx = _ctx()
+    fe = TargetCompetency(
+        competency_id="comp:fe.framework", label="React·Vue", ncs_criterion_ids=["E9.1#1"]
+    )
+    sql = TargetCompetency(competency_id="comp:data.sql", label="SQL", ncs_criterion_ids=["E8.1#1"])
+    infra = TargetCompetency(competency_id="comp:infra.server_ops", label="서버 인프라")
+    backend = replace(ctx, targets=[*ctx.targets, fe, sql, infra], sub="sw.backend")
+    assert [t.competency_id for t in cross_family_targets(backend)] == [
+        "comp:fe.framework",
+        "comp:infra.server_ops",
+    ]
+    assert cross_family_targets(replace(backend, sub="sw.frontend")) == [
+        infra
+    ]  # 프론트 공고의 fe.* 는 그대로
+    assert cross_family_targets(replace(backend, sub=None)) == []  # 직군을 모르면 예전처럼
+    # 검사: 빼라고 한 역량만 인용 검사에서 빠진다 (이슈형은 skip_targets 를 주지 않아 예전 그대로)
+    out = _out()
+    full = check(out, backend)
+    assert any("comp:fe.framework" in p for p in full)
+    skipped = check(
+        out, backend, skip_targets=frozenset({"comp:fe.framework", "comp:infra.server_ops"})
+    )
+    assert not any("comp:fe.framework" in p for p in skipped)
+    assert any("comp:data.sql" in p for p in skipped)

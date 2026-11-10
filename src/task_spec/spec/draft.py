@@ -77,10 +77,33 @@ class DraftContext:
     ontology_version: str
     language_labels: list[str] = field(default_factory=list)  # 온톨로지의 언어 전체 (본문 검사용)
     incident: PublicIncident | None = None  # 공고 직군의 공개 사례 (draft_task v2 부터 입력)
+    sub: str | None = (
+        None  # 공고 직군 id (sw.backend …) — 기능형의 다른 계열 역량 판단 (cross_family_targets)
+    )
 
     @property
     def criterion_ids(self) -> set[str]:
         return {c.criterion_id for c in self.criteria}
+
+
+# 다른 직군 전용 역량 계열 (역량 id 접두어 → 그 계열의 직군 id 접두어). sw·si·data 는 여러 직군 공통이라 넣지 않는다.
+CROSS_FAMILIES = {"fe": "sw.frontend", "infra": "infra.", "ai": "data.ml"}
+FLAG_UNMEASURED = "이 과제로 재지 않는 공고 역량 (다른 직군 계열 — 면접·다른 과제 몫): "
+
+
+def cross_family_targets(ctx: DraftContext) -> list[TargetCompetency]:
+    """공고 직군과 다른 직군 전용 계열의 대상 역량 — 기능형 과제(직군 템플릿 하나)로는 재지 않는다.
+    2026-11-10 갱신 손실 명세: 백엔드 공고의 주 역량에 'React·Vue 기반 프론트엔드 개발' 이 있어 행동 기준이 그 수행준거를
+    인용하지 못한다며 재요청에도 실패했다 (공고 해시 배정은 역량 구성을 보지 않는다). 사용자 결정: 기능형에만."""
+    if not ctx.sub:
+        return []
+    out = []
+    for t in ctx.targets:
+        family = t.competency_id.removeprefix("comp:").split(".", 1)[0]
+        home = CROSS_FAMILIES.get(family)
+        if home is not None and not ctx.sub.startswith(home):
+            out.append(t)
+    return out
 
 
 @dataclass
@@ -351,7 +374,13 @@ def check_artifact_list(
     return problems
 
 
-def check(out: DraftTaskOutput, ctx: DraftContext, *, min_distractor: int = 3) -> list[str]:
+def check(
+    out: DraftTaskOutput,
+    ctx: DraftContext,
+    *,
+    min_distractor: int = 3,
+    skip_targets: frozenset[str] = frozenset(),
+) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다 — 온톨로지·공고 값만 담는다.
 
     min_distractor: 자료 중 방해 자료 최소 수 (이슈형·슬롯 3, 기능형 1단계 2 — 자료가 5~8개라)."""
@@ -367,6 +396,10 @@ def check(out: DraftTaskOutput, ctx: DraftContext, *, min_distractor: int = 3) -
             problems.append(f"{name} 가 목록에 없는 수행준거 id 를 인용: {', '.join(bad)}")
         cited |= set(a.criterion_ids) & allowed
     for t in ctx.targets:
+        if (
+            t.competency_id in skip_targets
+        ):  # 기능형의 다른 직군 계열 역량 (cross_family_targets) — 표시만
+            continue
         if t.ncs_criterion_ids and not cited & set(t.ncs_criterion_ids):
             problems.append(
                 f"행동 기준이 역량 {t.competency_id} 의 수행준거를 하나도 인용하지 않음"
