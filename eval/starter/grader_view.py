@@ -6,7 +6,8 @@
 채점·평가 권한 전용 — 숨은 요구와 숨은 테스트가 평문으로 들어 있다. 산출물은 단일 HTML 파일(외부 요청 없음)이고 git 밖(data/)에 둔다.
 인증 없는 API 화면에는 얹지 않는다 (API 응답 모델은 숨은 정보를 담지 않는다).
 
-  uv run python -m eval.starter.grader_view --out data/mock_images/grader_view.html [--build <build_id> ...] [--db main]
+  uv run python -m eval.starter.grader_view --serve [--port 8765] [--db main]   # DB 를 매번 읽는 로컬 화면 (127.0.0.1)
+  uv run python -m eval.starter.grader_view --out data/mock_images/grader_view.html [--build <id> ...]   # 스냅샷 파일
 """
 
 from __future__ import annotations
@@ -29,24 +30,37 @@ from task_spec.starter.store import PgBuildStore
 ROOT = Path(__file__).resolve().parents[2]
 
 
+_CONFIG_CACHE: dict[str, dict[str, Any]] = {}
+
+
 def image_config(image: str) -> dict[str, Any] | None:
-    """판정 이미지 안의 /grader/config.json — 이미지가 없으면 None."""
-    r = subprocess.run(
-        [
-            "podman",
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--entrypoint",
-            "cat",
-            image,
-            "/grader/config.json",
-        ],
-        capture_output=True,
-        text=True,
+    """판정 이미지 안의 /grader/config.json — 이미지가 없으면 None. 이미지 내용(image id)이 같으면 다시 읽지 않는다."""
+    ident = subprocess.run(
+        ["podman", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True
     )
-    return json.loads(r.stdout) if r.returncode == 0 else None
+    if ident.returncode != 0:
+        return None
+    key = ident.stdout.strip()
+    if key not in _CONFIG_CACHE:
+        r = subprocess.run(
+            [
+                "podman",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--entrypoint",
+                "cat",
+                image,
+                "/grader/config.json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            return None
+        _CONFIG_CACHE[key] = json.loads(r.stdout)
+    return _CONFIG_CACHE[key]
 
 
 def reasons_of(template_ref: str) -> dict[str, str]:
@@ -182,7 +196,7 @@ main{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 54px)}
 nav{border-right:1px solid var(--line);background:var(--panel);padding:8px;overflow:auto}
 nav button{display:block;width:100%;text-align:left;border:0;background:none;color:inherit;padding:9px 10px;border-radius:8px;cursor:pointer;font:inherit}
 nav button:hover{background:var(--code)}nav button[aria-current=true]{background:var(--code);box-shadow:inset 3px 0 var(--acc)}
-nav small{display:block;color:var(--mute)}section{padding:20px;max-width:1100px}
+#reload{margin-left:auto;font:inherit;padding:4px 12px;border-radius:8px;border:1px solid var(--line);background:var(--code);color:inherit;cursor:pointer}nav small{display:block;color:var(--mute)}section{padding:20px;max-width:1100px}
 h2{font-size:18px;margin:0 0 4px}h3{font-size:14px;margin:22px 0 8px}.mute{color:var(--mute)}
 .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:12px 0}.meta div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow-wrap:anywhere}
 .meta b{display:block;font-size:12px;color:var(--mute);font-weight:500}
@@ -195,16 +209,23 @@ details{background:var(--panel);border:1px solid var(--line);border-radius:8px;m
 .tag{display:inline-block;font-size:12px;padding:1px 7px;border-radius:99px;background:var(--code);border:1px solid var(--line)}
 @media (max-width:760px){main{grid-template-columns:1fr}nav{border-right:0;border-bottom:1px solid var(--line);display:flex;overflow-x:auto}nav button{white-space:nowrap}section{padding:16px}}
 </style></head><body>
-<header><h1>판정 이미지 테스트 정보</h1><span class="badge">채점·평가 권한 전용 — 숨은 요구·숨은 테스트 포함</span><span class="mute" id="gen"></span></header>
+<header><h1>판정 이미지 테스트 정보</h1><span class="badge">채점·평가 권한 전용 — 숨은 요구·숨은 테스트 포함</span><span class="mute" id="gen"></span><button id="reload" hidden>DB 다시 읽기</button></header>
 <main><nav id="nav"></nav><section id="view"></section></main>
 <script id="data" type="application/json">__DATA__</script>
 <script>
-const D=JSON.parse(document.getElementById('data').textContent);
+let D=JSON.parse(document.getElementById('data').textContent);const LIVE=D.live===true;
 const $=(s,r=document)=>r.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mb=n=>(n/1e6).toFixed(1)+' MB';
-$('#gen').textContent=D.generated+' · '+D.builds.length+'개 빌드';
 const nav=$('#nav');
-D.builds.forEach((b,i)=>{const e=document.createElement('button');e.innerHTML=esc(b.title||b.build_id)+'<small>'+esc(b.build_id)+' · '+esc(b.template_ref.split('@')[0])+'</small>';e.onclick=()=>show(i);nav.append(e)});
+function build(){
+ $('#gen').textContent=(LIVE?'DB '+D.db+' · ':'스냅샷 · ')+D.generated+' · '+D.builds.length+'개 빌드';
+ nav.innerHTML='';
+ D.builds.forEach((b,i)=>{const e=document.createElement('button');e.innerHTML=esc(b.title||b.build_id)+'<small>'+esc(b.build_id)+' · '+esc(b.template_ref.split('@')[0])+'</small>';e.onclick=()=>show(i);nav.append(e)});
+ show(Math.max(0,D.builds.findIndex(b=>b.build_id===location.hash.slice(1))))}
+async function load(){
+ $('#gen').textContent='DB 읽는 중…';
+ try{const r=await fetch('/data.json',{cache:'no-store'});if(!r.ok)throw new Error(r.status);D=await r.json();build()}
+ catch(e){$('#gen').textContent='읽지 못함: '+e.message}}
 function pass(s){return s.hidden_total?`${s.hidden_passed}/${s.hidden_total}`:'–'}
 function show(i){
  [...nav.children].forEach((e,j)=>e.setAttribute('aria-current',j===i));
@@ -236,38 +257,87 @@ function show(i){
  h+=`<h3>공개 케이스 (지원자가 보는 테스트)</h3><div>${pub.map(c=>'<span class="tag">'+esc(c.id)+'</span>').join(' ')||'–'}</div>`;
  if(b.review_flags.length)h+=`<h3 class="warn">승인자가 볼 검토 표시</h3><ul>${b.review_flags.map(f=>'<li>'+esc(f)+'</li>').join('')}</ul>`;
  h+=`<h3>테스트 소스 (이미지에 들어간 파일)</h3>`+b.files.map(f=>`<details><summary><span class="tag">${esc(f.kind==='hidden'?'숨은':'공개')}</span> <code>${esc(f.path)}</code> <span class="mute">${f.content.split('\\n').length}줄</span></summary><pre>${esc(f.content)}</pre></details>`).join('');
- $('#view').innerHTML=h;window.scrollTo(0,0);location.hash=b.build_id}
-show(Math.max(0,D.builds.findIndex(b=>b.build_id===location.hash.slice(1))));
+ $('#view').innerHTML=h;window.scrollTo?.(0,0);location.hash=b.build_id}
+if(LIVE){$('#reload').hidden=false;$('#reload').onclick=load;load()}else build();
 </script></body></html>
 """
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--build", action="append", default=[], help="빌드 id (없으면 전부)")
-    ap.add_argument("--db", choices=["test", "main"], default="test")
-    a = ap.parse_args()
-    s = Settings()  # type: ignore[call-arg]
-    builds = await collect(dsn(s, a.db), a.build)
+def snapshot(conninfo: str, only: list[str], label: str) -> dict[str, Any]:
     from datetime import datetime
 
-    data = json.dumps(
-        {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"), "builds": builds},
-        ensure_ascii=False,
-    )
+    return {
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "db": label,
+        "builds": asyncio.run(collect(conninfo, only)),
+    }
+
+
+def page_with(data: dict[str, Any]) -> str:
+    return PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"))
+
+
+def serve(conninfo: str, label: str, port: int) -> None:
+    """127.0.0.1 에서만 — 화면은 열 때마다, `/data.json` 은 요청마다 DB 를 읽는다 (읽기 전용 GET 두 개)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    csp = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'"
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code: int, body: bytes, ctype: str) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", csp)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.headers.get("Host", "") not in allowed:  # DNS rebinding 방지
+                return self._send(403, b"forbidden", "text/plain")
+            path = self.path.split("?", 1)[0].split("#", 1)[0]
+            if path == "/":
+                shell = page_with({"live": True, "db": label, "generated": "", "builds": []})
+                return self._send(200, shell.encode(), "text/html; charset=utf-8")
+            if path == "/data.json":
+                try:
+                    body = json.dumps(snapshot(conninfo, [], label), ensure_ascii=False).encode()
+                except Exception as e:  # DB 연결 실패 등 — 접속 정보가 담기지 않게 종류만
+                    return self._send(502, type(e).__name__.encode(), "text/plain")
+                return self._send(200, body, "application/json; charset=utf-8")
+            self._send(404, b"not found", "text/plain")
+
+        def log_message(self, fmt: str, *args: Any) -> None:  # 접속 로그에 경로만
+            print(f"{self.address_string()} {fmt % args}")
+
+    print(f"판정 화면(실시간, DB {label}) → http://127.0.0.1:{port}/   (Ctrl+C 로 끝)")
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", help="스냅샷 HTML 로 저장 (없으면 --serve)")
+    ap.add_argument("--serve", action="store_true", help="127.0.0.1 에서 DB 를 읽어 보여 준다")
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--build", action="append", default=[], help="빌드 id (스냅샷만, 없으면 전부)")
+    ap.add_argument("--db", choices=["test", "main"], default="test")
+    a = ap.parse_args()
+    if not a.out and not a.serve:
+        ap.error("--out 또는 --serve")
+    s = Settings()  # type: ignore[call-arg]
+    conninfo, label = dsn(s, a.db), a.db
+    if a.serve:
+        return serve(conninfo, label, a.port)
+    data = snapshot(conninfo, a.build, label)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(PAGE.replace("__DATA__", data.replace("</", "<\\/")), "utf-8")
+    out.write_text(page_with(data), "utf-8")
     out.chmod(0o600)
-    print(f"→ {out} ({len(builds)}개 빌드, {out.stat().st_size / 1e3:.0f} KB)")
-    for b in builds:
-        bad = [c["id"] for c in b["cases"] if c["mismatch"]]
-        print(
-            f"  {b['build_id']}: 숨은 {sum(c['kind'] == 'hidden' for c in b['cases'])} · 공개 {sum(c['kind'] == 'public' for c in b['cases'])} · 이미지 {'있음' if b['image_found'] else '없음'}"
-            + (f" · 어긋남 {bad}" if bad else "")
-        )
+    print(f"→ {out} ({len(data['builds'])}개 빌드, {out.stat().st_size / 1e3:.0f} KB)")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
