@@ -1,0 +1,115 @@
+{
+  "incident_id": "pub:sw.frontend:offline-replay-partial-failure",
+  "sub": "sw.frontend",
+  "title": "TanStack Query — Network Mode",
+  "org": "TanStack (TanStack Query 문서)",
+  "url": "https://tanstack.com/query/latest/docs/framework/react/guides/network-mode",
+  "published": "날짜 표시 없음 (2026-11-10 원문 확인)",
+  "source_lang": "en",
+  "symptom": "현장(지하 창고·이동 중)에서 연결 없이 기록한 점검 메모 일부가 서버에 없거나, 어떤 메모는 두 개씩 올라가 있다. 연결이 오락가락한 날에만 생긴다.",
+  "naive_fix": "근거 없이 다시 연결되면 기록 전체를 한 번 더 보내게 하거나, 실패하면 사용자에게 다시 입력하라고 알린다.",
+  "root_cause": "끊긴 동안 쌓은 변경을 다시 연결되면 한꺼번에 보내고, 결과와 상관없이 대기열을 통째로 지우거나(실패분이 사라짐) 통째로 남긴다(성공분까지 다시 보내 두 번 반영).",
+  "why_naive_fails": "전체를 다시 보내면 이미 반영된 변경이 두 번 들어간다. 다시 입력하라는 알림은 무엇이 빠졌는지 사용자가 모른다.",
+  "key_insight": "다시 보내는 단위는 변경 하나다 — 하나씩 결과를 확인해 성공한 것만 대기열에서 지우고 실패한 것은 남겨 다음 연결 때 보낸다. 원문은 연결이 없으면 요청을 보내지 않고 멈춰 두었다가 연결이 돌아오면 이어서 실행한다고 한다 ('Queries and Mutations will not fire unless you have network connection').",
+  "deep_structure": "여러 작업을 한꺼번에 다시 보낼 때 결과를 묶음으로 처리하면 일부만 실패했을 때 잃거나 두 번 반영된다 — 작업마다 완료를 확인하고 그 단위로 지워야 한다.",
+  "surface": [
+    "점검 메모 → 주문 초안·출퇴근 기록·장바구니 변경",
+    "다시 연결될 때 보내기 → 앱을 다시 열 때·주기적 재시도",
+    "직접 만든 대기열 → 데이터 가져오기 라이브러리의 멈춘 변경 요청"
+  ],
+  "tech": [
+    "React",
+    "TypeScript",
+    "TanStack Query",
+    "IndexedDB"
+  ],
+  "verified": true,
+  "notes": "원문은 TanStack Query 문서의 Network Mode 절이다 (기본 online 모드에서 'Queries and Mutations will not fire unless you have network connection', 멈춘 조회는 'continue to run once you re-gain network connection'). 원문은 사고 글이 아니고 일부 실패를 직접 말하지 않는다 — '끊기면 모아 두었다가 다시 보낸다'는 계약 background 에 그대로 적혀 숨은 요구가 될 수 없어(2026-11-10 알파 0108be12 계약), 숨은 요구를 '다시 보내는 중 일부가 실패할 때'로 잡았다. 시험은 템플릿 v4 하네스(network·api.collection·api.once·api.serverState). 날짜 표시 없음, 2026-11-10 원문 확인.",
+  "avoid_terms": [
+    "Network Mode",
+    "resumePausedMutations"
+  ],
+  "hidden_terms": [
+    "부분 실패",
+    "partial failure",
+    "멱등",
+    "idempotent",
+    "at-least-once"
+  ],
+  "accepted_fixes": [
+    "[복구] 대기열의 변경을 하나씩 보내 성공을 확인한 것만 지우고 실패한 것은 남겨 다음 연결 때 보낸다 — 함정: 한꺼번에 보내고 결과와 상관없이 통째로 지우거나 통째로 남김",
+    "[복구] 변경마다 클라이언트가 만든 번호를 붙여 보내고 같은 번호는 서버가 한 번만 반영한다 — 조건: 서버 API 가 그 번호를 받음",
+    "[재발 방지] 데이터 가져오기 라이브러리의 멈춘 변경 요청(연결이 돌아오면 이어서 실행)을 쓴다 — 조건: 실패한 변경을 다시 시도할 때도 하나씩"
+  ],
+  "source_literals": [
+    "networkMode",
+    "offlineFirst"
+  ],
+  "templates": [
+    "frontend/react-vite-ts"
+  ],
+  "feature": {
+    "business_need": "현장 점검 앱에 점검 메모를 남기는 화면을 추가한다. 지하·이동 중처럼 연결이 끊겨도 메모를 쓸 수 있고, 다시 연결되면 쓴 메모를 서버에 올린다. 서버에 올라간 메모는 관리 화면에서 본다.",
+    "naive_impl": "연결이 끊긴 동안 쓴 메모를 브라우저 저장소의 대기열에 쌓고, 다시 연결되면(online 이벤트) 대기열의 메모를 한꺼번에 저장 API 로 보낸 뒤 대기열을 비운다. 보내기가 실패하면 오류 알림을 띄운다.",
+    "hidden_requirement": "끊긴 동안 쓴 메모는 하나도 빠지지 않고 한 번씩만 서버에 올라가야 한다 — 다시 보내는 중 일부가 실패하면(서버 오류·다시 끊김) 실패한 메모만 남겨 다음 연결 때 보내고, 이미 올라간 메모는 다시 보내지 않는다.",
+    "trigger": "현장은 연결이 자주 끊겼다 이어지고, 다시 연결된 직후에는 저장 API 가 간헐적으로 실패한다 (연결이 아직 불안정). 현장 접속 기록과 저장 API 오류 지표에서만 보인다.",
+    "why_naive_breaks": "한꺼번에 보내고 대기열을 비우면 그중 실패한 메모가 사라진다. 실패가 하나라도 있으면 대기열을 통째로 남기도록 고치면 다음 연결 때 이미 올라간 메모까지 다시 보내 두 번 올라간다.",
+    "discoverable_by": [
+      "현장 접속 기록 (끊김·재연결 빈도)",
+      "저장 API 오류 지표 (재연결 직후 실패율)",
+      "기존 메모 화면 코드 발췌"
+    ],
+    "accepted_designs": [
+      "[설계] 대기열의 메모를 하나씩 보내 성공한 것만 지우고, 실패하면 거기서 멈춰 나머지와 함께 남긴다(다음 연결 때 이어서) — 조건: 대기열은 브라우저 저장소에 둠",
+      "[설계] 메모마다 상태(대기·보냄)를 두고 한꺼번에 보내되 결과를 메모마다 확인해 성공한 것만 '보냄'으로 바꾸고, 다음 연결 때 '대기'만 보낸다 — 함정: 결과를 묶음 하나로 판단"
+    ],
+    "stage2_symptom": "배포 뒤 현장 관리자가 '어제 쓴 점검 메모 몇 개가 관리 화면에 없다', '어떤 메모는 두 개씩 올라가 있다'고 신고했다. 연결이 자주 끊긴 현장에서만 생긴다.",
+    "stage2_evidence": [
+      "저장 API 요청 기록 (재연결 직후 같은 메모의 요청·응답 코드)과 단말의 대기열 기록",
+      "현장 접속 기록",
+      "고객 문의 기록"
+    ],
+    "stage2_cause_terms": [
+      "대기열을 통째로 비움",
+      "성공분까지 다시 보냄",
+      "일부 실패 처리 없음"
+    ],
+    "leak_terms": [
+      "부분 실패",
+      "일부 실패",
+      "일부가 실패",
+      "하나씩 보내",
+      "성공한 것만",
+      "실패한 것만",
+      "실패한 메모만",
+      "멱등",
+      "중복 전송",
+      "두 번 보내",
+      "allSettled"
+    ],
+    "trigger_terms": [
+      "간헐적",
+      "불안정",
+      "자주 끊",
+      "재연결 직후",
+      "오류 지표"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [
+      {
+        "kind": "mutation_endpoint",
+        "note": "메모 저장 API (예: POST /api/notes — 본문에 메모, 성공 201 에 저장된 메모)"
+      },
+      {
+        "kind": "result_screen",
+        "note": "메모 쓰기 화면 요소(입력·저장 버튼)와 아직 올라가지 않은 메모 표시 — 대기열은 브라우저 저장소(storage)에, 다시 보내는 시점은 background 에"
+      }
+    ],
+    "reasons": [
+      "offline_change_lost",
+      "offline_change_duplicated"
+    ]
+  }
+}

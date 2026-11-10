@@ -1,0 +1,114 @@
+{
+  "incident_id": "pub:sw.frontend:previous-user-data-after-logout",
+  "sub": "sw.frontend",
+  "title": "Apollo Client — Authentication (Reset store on logout)",
+  "org": "Apollo GraphQL (Apollo Client 문서)",
+  "url": "https://www.apollographql.com/docs/react/networking/authentication",
+  "published": "날짜 표시 없음 (2026-11-10 원문 확인)",
+  "source_lang": "en",
+  "symptom": "공용 기기에서 로그아웃하고 다른 계정으로 로그인하자 앞 사람의 주문 목록이 잠깐(응답이 늦으면 한참) 보였다는 신고가 들어온다.",
+  "naive_fix": "근거 없이 로그인 직후 목록을 다시 불러오게 하거나 로딩 표시를 더 오래 보여 준다.",
+  "root_cause": "불러온 데이터를 API 경로만 키로 하는 전역 캐시에 두고 로그아웃 때 비우지 않아, 다음 사용자가 같은 화면을 열면 새 응답이 오기 전까지 앞 사용자의 캐시가 그대로 보인다.",
+  "why_naive_fails": "다시 불러오기는 응답이 올 때까지 이전 데이터를 그리는 것을 막지 못한다 (캐시가 있으면 먼저 그린다). 로딩 표시를 늘려도 캐시를 그리는 경로는 남는다.",
+  "key_insight": "캐시된 데이터는 그것을 받은 사용자의 것이다. 원문은 조회 결과를 모두 캐시하므로 로그인 상태가 바뀌면 캐시를 없애야 한다고 하고 ('it's important to get rid of them when the login state changes'), 로그인·로그아웃이 끝난 뒤 저장소를 비우라고 한다.",
+  "deep_structure": "주인이 있는 데이터를 주인을 키에 넣지 않고 캐시하면, 주인이 바뀌어도 이전 주인의 데이터가 새 주인에게 보인다 — 주인이 바뀌는 순간 캐시를 비우거나 주인을 키에 넣어야 한다.",
+  "surface": [
+    "주문 목록 → 알림·메시지·장바구니·설정",
+    "로그아웃 후 다른 계정 로그인 → 계정 전환·조직(워크스페이스) 전환",
+    "데이터 가져오기 라이브러리 캐시 → 전역 상태 저장소"
+  ],
+  "tech": [
+    "React",
+    "TypeScript",
+    "TanStack Query",
+    "Zustand"
+  ],
+  "verified": true,
+  "notes": "원문은 Apollo Client 문서의 'Reset store on logout' 절이다 ('call client.resetStore() after your login or logout process has completed', 이유는 화면과 저장소가 지금 사용자의 권한을 반영하게). 원문은 GraphQL 클라이언트 기준이고 앞 사용자 데이터가 보인 사고를 직접 말하지 않는다 — 과제는 템플릿의 TanStack Query·Zustand 캐시로 옮긴다. 날짜 표시 없음, 2026-11-10 원문 확인. 실제 사고 공개 글(ngrok 2022)은 원문을 열지 못해 근거에서 뺐다.",
+  "avoid_terms": [
+    "Apollo",
+    "resetStore",
+    "clearStore"
+  ],
+  "hidden_terms": [
+    "사용자별 캐시",
+    "cache key",
+    "캐시 키"
+  ],
+  "accepted_fixes": [
+    "[복구] 사용자가 바뀌는 순간(로그아웃)에 사용자 데이터 캐시·전역 저장소를 모두 비운 뒤 다음 화면을 그린다 — 함정: 새 사용자로 로그인한 뒤에 비움(그 사이에 이전 데이터가 보임)",
+    "[복구] 캐시 키에 사용자(계정 id)를 넣어 다른 사용자의 캐시를 읽지 않게 한다 — 조건: 로그아웃 때 이전 사용자 캐시도 지움(같은 기기에 남지 않게)",
+    "[재발 방지] 사용자가 바뀌면 앱의 데이터 영역을 사용자마다 새로 만든다(예: 사용자 id 를 key 로 다시 그림) — 조건: 모듈 밖 전역 저장소도 함께 비움"
+  ],
+  "source_literals": [
+    "resetStore",
+    "clearStore",
+    "Reset store on logout"
+  ],
+  "templates": [
+    "frontend/react-vite-ts"
+  ],
+  "feature": {
+    "business_need": "쇼핑몰(또는 예약 서비스)에 로그인한 사용자의 '내 주문 목록' 화면을 추가한다. 로그인·로그아웃이 있고, 목록은 화면에 들어올 때 서버에서 불러와 보여 준다. 화면을 오갈 때는 이미 불러온 목록을 먼저 보여 줘 빠르게 느껴지게 한다.",
+    "naive_impl": "목록 API 응답을 앱 전체가 쓰는 데이터 캐시(템플릿의 TanStack Query 나 전역 저장소)에 API 경로를 키로 둔다. 로그아웃은 저장된 토큰을 지우고 로그인 화면으로 보낸다.",
+    "hidden_requirement": "화면에는 지금 로그인한 사용자의 데이터만 보여야 한다 — 로그아웃하고 다른 사용자로 로그인한 뒤 새 목록 응답이 오기 전에도 앞 사용자의 목록이 한 순간도 보이지 않는다.",
+    "trigger": "매장 태블릿·가족 공용 기기처럼 한 기기에서 여러 계정이 번갈아 로그인한다. 접속 기기 통계와 고객 문의에서만 보인다.",
+    "why_naive_breaks": "로그아웃해도 데이터 캐시가 남아, 다음 사용자가 같은 화면에 들어오면 새 응답이 오기 전까지(응답이 늦거나 실패하면 계속) 앞 사용자의 주문이 보인다.",
+    "discoverable_by": [
+      "접속 기기 통계 (공용·매장 기기 비율)",
+      "고객 문의 기록",
+      "기존 화면의 데이터 캐시 설정 코드"
+    ],
+    "accepted_designs": [
+      "[설계] 로그아웃할 때 사용자 데이터 캐시·전역 저장소를 모두 비운 뒤 로그인 화면으로 보낸다 — 함정: 새 사용자로 로그인한 뒤에 비움",
+      "[설계] 사용자 데이터의 캐시 키에 사용자 id 를 넣는다 — 조건: 로그인 응답(또는 저장된 토큰)에서 사용자 id 를 얻음"
+    ],
+    "stage2_symptom": "배포 뒤 매장 태블릿을 쓰는 직원이 '로그아웃하고 다른 손님 계정으로 들어갔는데 앞 손님의 주문이 잠깐 보였다'고 신고했다. 개발자 PC 에서는 잘 재현되지 않는다.",
+    "stage2_evidence": [
+      "같은 기기에서 이어진 두 계정의 화면 기록과 네트워크 기록 (두 번째 계정의 목록 응답 전 화면)",
+      "고객 문의 기록",
+      "데이터 캐시 설정"
+    ],
+    "stage2_cause_terms": [
+      "캐시가 사용자별이 아님",
+      "로그아웃 때 캐시를 비우지 않음",
+      "이전 사용자 데이터"
+    ],
+    "leak_terms": [
+      "캐시를 비우",
+      "캐시 비우",
+      "queryClient.clear",
+      "removeQueries",
+      "사용자별 캐시",
+      "사용자 id 를 키",
+      "다른 사용자의 데이터",
+      "이전 사용자",
+      "앞 사용자",
+      "개인정보 노출"
+    ],
+    "trigger_terms": [
+      "공용 기기",
+      "공용 PC",
+      "매장 태블릿",
+      "여러 계정",
+      "번갈아",
+      "가족"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [
+      {
+        "kind": "mutation_endpoint",
+        "note": "로그인 API (예: POST /api/auth/login — 성공 응답에 토큰·사용자 id·이름)"
+      },
+      {
+        "kind": "result_screen",
+        "note": "사용자 데이터 목록 화면(들어올 때 GET 으로 불러옴)과 항목 요소, 로그인 화면·로그아웃 버튼 요소"
+      }
+    ],
+    "reasons": [
+      "other_user_data_shown"
+    ]
+  }
+}
