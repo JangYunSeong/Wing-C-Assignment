@@ -640,6 +640,13 @@ class GenHiddenInputV2(GenHiddenInput):
     previous_files: str = "(없음)"
 
 
+class GenHiddenInputV3(GenHiddenInputV2):
+    """gen_hidden_react v8~ — 이 과제의 허용 설계(요약·조건). 숨은 테스트는 이미 숨은 요구를 보므로 설계를 줘도 새는 것이 없다.
+    공개 테스트 입력에는 넣지 않는다 (허용 설계는 숨은 요구의 해법이다)."""
+
+    accepted_designs: str = "(없음)"
+
+
 class GenRefInputV2(GenRefInput):
     """gen_naive·gen_accepted v2~ — 수리면 자기 이전 출력."""
 

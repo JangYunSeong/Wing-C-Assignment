@@ -45,6 +45,10 @@ TRAP_SUFFIX = "#trap"
 # 구현 실행 오류(repair_terms.impl_crash)로 다시 만든 횟수 키 — 컴파일 오류처럼 함정과 무관한 결함이라 일반 예산과 따로 센다.
 # 2026-11-09 데이터 알파 6회차: 실행 오류 수리가 흔한 구현의 예산을 써, 다음 회차에 흔한 구현이 hc4 를 통과했는데(③) 다시 만들 수 없어 빌드가 끝났다.
 CRASH_SUFFIX = "#crash"
+# 다른 허용 구현은 통과하는 숨은 케이스에서 한 허용 구현만 다시 만든 뒤에도 떨어질 때 숨은 테스트를 다시 만든 횟수 키 — 일반 예산과 따로.
+# 2026-11-10 프론트 알파 49507571·008d6314: 숨은 테스트가 한 설계의 진행(이어 붙인 뒤 정확히 40건, 첫 재연결에 4건 이상)을 단언해
+# 다른 허용 설계(쪽 번호+거르기, 실패하면 멈춤)를 막았는데, 흔한 구현은 의도한 사유로 잡혀 '허용 구현 탓'으로 끝났다.
+DESIGN_SUFFIX = "#design"
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
 KEEP_NAIVE = (
     "\n지적된 실패만 고친다 — 입력의 흔한 구현 설명이 말하는 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)는 "
@@ -794,6 +798,11 @@ def _gate4(
                 )
             )
             continue
+        passing = [
+            r.target
+            for r in runs
+            if (got := r.case(c.case_id)) is not None and got.result == "PASS"
+        ]
         for r, res in failed:
             key = f"gen_accepted:{r.target}"
             if regen_counts.get(key, 0) == 0:
@@ -805,6 +814,22 @@ def _gate4(
                         f"{r.target} 가 {c.case_id} 실패 [{res.reason or '-'}]",
                         f"이 허용 설계 구현이 숨은 요구 {c.trap_id} 의 확인({c.case_id}, 통과 조건: {c.expect})에서 실패했다: "
                         f"{_short(res.message)} — 설계 조건과 스택 조건을 지켜 다시 쓴다.",
+                    )
+                )
+            elif passing and regen_counts.get(f"gen_hidden{DESIGN_SUFFIX}", 0) == 0:
+                # 다시 만든 허용 구현이 또 떨어지는데 다른 허용 구현은 통과 — 케이스가 한 설계의 진행만 단언했을 수 있다.
+                # 흔한 구현을 의도한 사유로 잡는지(아래 갈래)는 이 케이스가 공정한지를 말해 주지 않는다. 한 번만 테스트를 의심한다.
+                actions.append(
+                    RepairAction(
+                        "gen_hidden",
+                        "",
+                        "④",
+                        f"다시 만든 {r.target} 만 {c.case_id} 실패 — 설계와 모순 의심",
+                        f"허용 설계 구현({r.target})을 다시 만들어도 숨은 케이스 {c.case_id} 에서 실패하고, 다른 허용 설계 "
+                        f"구현({', '.join(passing)})은 통과한다: {_short(res.message)} — 허용 설계 {r.target} 의 정당한 동작"
+                        "(목록 길이·한 번에 보내는 건수·실패 뒤 멈춤 등 설계마다 다른 값)을 단언하지 않았는지 본다. "
+                        f"모든 허용 설계에서 같은 결과(통과 조건: {c.expect})만 확인하고, 흔한 구현은 계속 의도한 사유로 실패해야 한다.",
+                        budget=DESIGN_SUFFIX,
                     )
                 )
             elif any(

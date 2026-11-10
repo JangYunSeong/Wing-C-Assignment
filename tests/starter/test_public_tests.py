@@ -81,6 +81,9 @@ async def test_gen_public_keeps_code_written_helpers_and_checks_cases() -> None:
     inp = public_input(b.task, b.contract, b.plan, b.template)
     assert "abstract class PublicCase" in inp.harness_api and "pt1 (p1)" in inp.public_tests
     assert "hc1" not in inp.public_tests and "pool" not in inp.harness_api.lower()
+    # 허용 설계는 숨은 요구의 해법 — 숨은 테스트 입력(v8~)에만, 공개 테스트 입력에는 없다
+    dumped = inp.model_dump_json()
+    assert b.task.accepted_designs and all(d.summary not in dumped for d in b.task.accepted_designs)
     handwritten = (f"{PUB}/PublicCase.java", "abstract class PublicCase {}")
     fake = FakeBackend().push(_files((f"{PUB}/OrderHistoryPublicTest.java", CASE), handwritten))
     res = await _gen(gen_public, fake, b)

@@ -14,6 +14,10 @@ Java 의 "단언이 아닌 예외"와 같은 자리라 수리는 구현끼리 �
 
 의존성: 템플릿 package-lock.json 으로 한 번 설치한 node_modules 를 대상마다 링크한다
 (data/.node-modules/<템플릿>@v<n>-<lock 해시>/, git 밖. 환경 변수 NODE_MODULES_DIR 로 바꿀 수 있다).
+
+Node 는 이미지와 같은 기반 컨테이너(`NODE_IMAGE`, node:22)에서 돌린다 — 설치·tsc·vitest 모두. 조립 폴더와 node_modules 를
+같은 절대 경로로 붙여 링크가 그대로 풀린다. 2026-11-10 프론트 알파: 호스트 Node 24 에서는 jsdom 의 AbortSignal 을 fetch 가
+거부해 요청을 취소하는 허용 구현이 모든 테스트에서 떨어졌다 — 이미지(Node 22)에서는 31/31 통과. `NODE_VERIFY_IMAGE=host` 면 호스트 Node.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import shutil
 import signal
 import subprocess
 import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -39,10 +44,12 @@ from task_spec.starter.templates import Template
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE_CACHE = ROOT / "data" / ".node-modules"
+# 응시용·채점용 이미지의 Node 기반과 같게 (build_mock_images 가 이 값을 쓴다)
+NODE_IMAGE = "docker.io/library/node:22-bookworm-slim"
 
 
 def node_env() -> dict[str, str]:
-    return os.environ | {"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"}
+    return os.environ | node_env_vars()
 
 
 def node_modules_for(t: Template, timeout: int = 1800) -> Path:
@@ -59,16 +66,15 @@ def node_modules_for(t: Template, timeout: int = 1800) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     for f in ("package.json", "package-lock.json"):
         shutil.copy2(t.project / f, d / f)
-    with (d / "install.log").open("w", encoding="utf-8") as log:
-        subprocess.run(
-            ["npm", "ci", "--no-audit", "--no-fund", "--prefer-offline"],
-            cwd=d,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            check=True,
-            timeout=timeout,
-            env=node_env(),
-        )
+    code, _ = run_node(
+        ["npm", "ci", "--no-audit", "--no-fund", "--prefer-offline"],
+        d,
+        d / "install.log",
+        timeout,
+        network=True,
+    )
+    if code != 0:
+        raise RuntimeError(f"npm ci 실패 ({code}) — {d / 'install.log'}")
     (d / ".installed").write_text("", "utf-8")
     return d / "node_modules"
 
@@ -94,6 +100,38 @@ def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[
             p.wait()
             code = None
     return code, time.monotonic() - start
+
+
+def node_image() -> str:
+    return os.environ.get("NODE_VERIFY_IMAGE", NODE_IMAGE)
+
+
+def run_node(
+    cmd: Sequence[str],
+    cwd: Path,
+    log: Path,
+    timeout: int,
+    mounts: Sequence[Path] = (),
+    network: bool = False,
+) -> tuple[int | None, float]:
+    """Node 명령 하나를 이미지와 같은 기반 컨테이너에서 (`run_logged` 와 같은 반환). 경로는 같은 절대 경로로 붙인다."""
+    image = node_image()
+    if image == "host":
+        return run_logged(cmd, cwd, log, timeout)
+    name = f"nv-{uuid.uuid4().hex[:12]}"
+    paths = sorted({str(p.resolve()) for p in (cwd, *mounts)})
+    full = ["podman", "run", "--rm", "--name", name, "-w", str(cwd.resolve())]
+    full += [] if network else ["--network", "none"]
+    full += [x for k, v in node_env_vars().items() for x in ("-e", f"{k}={v}")]
+    full += [x for p in paths for x in ("-v", f"{p}:{p}")]
+    code, seconds = run_logged([*full, image, *cmd], cwd, log, timeout)
+    if code is None:  # 시간 초과 — 클라이언트만 끊겨 컨테이너가 남지 않게
+        subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)
+    return code, seconds
+
+
+def node_env_vars() -> dict[str, str]:
+    return {"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"}
 
 
 def tsc_errors(log_text: str, limit: int = 20) -> list[CompileError]:
@@ -166,7 +204,9 @@ class NodeVerifier:
         cmds = self.template.manifest.commands
         cmd = shlex.split((cmds.test_compile if cmds is not None else None) or "npx tsc --noEmit")
         start = log.stat().st_size if log.exists() else 0
-        code, _ = run_logged([*cmd, "--pretty", "false"], dest, log, self.timeout)
+        code, _ = run_node(
+            [*cmd, "--pretty", "false"], dest, log, self.timeout, [self.node_modules.parent]
+        )
         with log.open("r", encoding="utf-8", errors="ignore") as fh:
             fh.seek(start)
             return code, tsc_errors(fh.read())
@@ -181,8 +221,12 @@ class NodeVerifier:
             else ["npx", "vitest", "run"]
         )
         report = dest / (".grading-report.json" if grading else ".existing-report.json")
-        code, _ = run_logged(
-            [*base, "--reporter=json", f"--outputFile={report}"], dest, log, self.timeout
+        code, _ = run_node(
+            [*base, "--reporter=json", f"--outputFile={report}"],
+            dest,
+            log,
+            self.timeout,
+            [self.node_modules.parent],
         )
         if not report.is_file():
             return code, None

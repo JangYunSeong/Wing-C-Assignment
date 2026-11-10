@@ -230,7 +230,8 @@ def test_hidden_input_has_plan_and_harness_but_no_code() -> None:
         in text
     )
     assert "조절값 파일(src/test/resources/grader-params.properties)은 쓰지 않는다" in text
-    assert "class Order" not in text and D1.summary not in text
+    # 허용 설계는 요약·조건 글만 (2026-11-10 — 모든 허용 설계에서 같은 결과만 단언하도록). 참조 구현 코드는 여전히 보지 않는다
+    assert D1.summary in text and D2.summary in text and "class Order" not in text
 
 
 def test_ref_inputs_see_starter_and_their_own_goal_only() -> None:

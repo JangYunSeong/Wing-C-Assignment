@@ -34,7 +34,7 @@ from task_spec.schemas import (
     GeneratedFile,
     GeneratedFiles,
     GenHiddenInput,
-    GenHiddenInputV2,
+    GenHiddenInputV3,
     GenPublicInput,
     GenRefInput,
     GenRefInputV3,
@@ -292,7 +292,7 @@ def hidden_input(
         helper is not None
     ):  # 이 과제의 계약 도우미 — 숨은 케이스가 상속(Java)·import(TypeScript)한다 (starter/hidden_helpers.py)
         api += helper_block(m, helper, m.hidden_helper, "계약 도우미")
-    return GenHiddenInputV2(
+    return GenHiddenInputV3(
         stack=stack_text(m),
         harness_api=api,
         slots=slots_text(m, "hidden"),
@@ -306,6 +306,9 @@ def hidden_input(
         ),
         failure_reasons=_lines([reason_line(r) for r in m.failure_reasons]),
         revision_note=note or NONE,
+        accepted_designs=_lines(
+            [f"{d.design_id}: {d.summary} — {d.conditions}" for d in task.accepted_designs]
+        ),
     )
 
 
