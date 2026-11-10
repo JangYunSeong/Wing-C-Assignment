@@ -215,3 +215,69 @@ async def test_generators_cannot_overwrite_the_app_types_file() -> None:
     assert [f.path for f in ref.files] == [
         "src/pages/Search.tsx"
     ]  # 구현은 쓰지 못함 — 시작 코드 판이 그대로
+
+
+# ── A3 선택 값 (계약 options) ─────────────────────────────────────
+
+
+def _choice_contract(options: list[str]) -> TaskContract:
+    d = _list_contract().model_dump(mode="json")
+    d["screens"][0]["elements"].append(
+        {
+            "test_id": "category-select",
+            "role": "combobox",
+            "description": "점검 항목 선택",
+            "action": "고르면 화면 값만 바뀜 — 요청은 저장 버튼에서",
+            "options": options,
+            "refs": ["r1"],
+        }
+    )
+    return TaskContract.model_validate(d)
+
+
+def test_choice_elements_need_values_without_placeholders() -> None:
+    from task_spec.starter.contract import _ui_options, choice_element
+
+    assert "options" in "\n".join(_ui_options(_choice_contract([])))
+    assert "안내 문구" in "\n".join(_ui_options(_choice_contract(["선택하세요", "센서"])))
+    assert _ui_options(_choice_contract(["캘리브레이션", "센서"])) == []
+    # 검색 자동완성 입력란(combobox)은 선택형이 아니다
+    assert not choice_element("combobox", "search-input", "검색어")
+
+
+def test_tests_must_choose_from_contract_values() -> None:
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import option_guesses
+
+    c = _choice_contract(["캘리브레이션", "센서"])
+
+    def f(body: str) -> list[GeneratedFile]:
+        return [GeneratedFile(path="src/__grading__/cases/hc1.test.tsx", content=body)]
+
+    assert option_guesses(f("await user.selectOptions(sel, sel.options[0]);"), c, "숨은 테스트")
+    assert option_guesses(f("await user.selectOptions(sel, '액추에이터');"), c, "숨은 테스트")
+    assert option_guesses(f("await user.selectOptions(sel, '센서');"), c, "숨은 테스트") == []
+    assert (
+        option_guesses(
+            f("await user.selectOptions(sel, OPTIONS.CATEGORY_SELECT[0]);"), c, "숨은 테스트"
+        )
+        == []
+    )
+
+
+def test_starter_must_render_contract_values() -> None:
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import Overlay, _starter_options
+
+    c = _choice_contract(["캘리브레이션", "센서"])
+
+    def o(body: str) -> Overlay:
+        return Overlay(
+            kind="starter", files=(GeneratedFile(path="src/pages/Form.tsx", content=body),)
+        )
+
+    assert _starter_options(o('<option value="">선택</option><option>센서</option>'), c)
+    literal = '<option value="">선택하세요</option><option value="캘리브레이션">캘리브레이션</option><option value="센서">센서</option>'
+    assert _starter_options(o(literal), c) == []
+    via_const = "import { OPTIONS } from '../api/contract-types';\nOPTIONS.CATEGORY_SELECT.map((v) => <option key={v}>{v}</option>)"
+    assert _starter_options(o(via_const), c) == []

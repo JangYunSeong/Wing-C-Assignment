@@ -1129,6 +1129,46 @@ def _ui_actions(contract: TaskContract) -> list[str]:
     ]
 
 
+_CHOICE_ROLES = ("listbox", "radio", "option", "tab")
+_SELECT_HINT = re.compile(r"select|dropdown|선택|고른다|고름|드롭다운", re.I)
+_PLACEHOLDER = re.compile(
+    r"^\s*(?:-+|선택|선택하세요|선택해\s*주세요|전체|select\b.*|choose\b.*)\s*$", re.I
+)
+
+
+def choice_element(role: str, test_id: str, description: str) -> bool:
+    """고를 수 있는 값이 정해진 요소인가 — 역할이 선택형이거나, combobox 인데 이름·설명이 선택 목록을 말함
+    (검색 자동완성 입력란도 combobox 라 그것은 빼야 한다)."""
+    if role in _CHOICE_ROLES:
+        return True
+    return role == "combobox" and bool(_SELECT_HINT.search(f"{test_id} {description}"))
+
+
+def _ui_options(contract: TaskContract) -> list[str]:
+    """선택형 요소에 고를 수 있는 값(options)이 없거나 안내 문구가 섞임 — 값이 글로만 있으면 테스트·시작 코드·구현이 각자 짐작한다.
+    2026-11-10 프론트 알파(fefix 008d6314): 숨은 테스트가 첫 항목(안내 문구, 빈 값)을 골라 필수 입력을 검사하는 허용 구현만 떨어짐."""
+    missing, placeholder = [], []
+    for sc in contract.screens:
+        for el in sc.elements:
+            if not choice_element(el.role, el.test_id, el.description):
+                continue
+            if not el.options:
+                missing.append(el.test_id)
+            elif any(_PLACEHOLDER.match(v) for v in el.options):
+                placeholder.append(el.test_id)
+    out = []
+    if missing:
+        out.append(
+            f"선택형 화면 요소에 고를 수 있는 값(options)이 없음: {', '.join(missing[:8])} — 화면에 보이는 값 그대로 적는다 "
+            "(예: options: ['캘리브레이션', '센서', '액추에이터']). 설명 글에만 두지 않는다 — 테스트·시작 코드가 이 값을 그대로 쓴다"
+        )
+    if placeholder:
+        out.append(
+            f"options 에 안내 문구가 섞임: {', '.join(placeholder[:8])} — '선택하세요' 같은 빈 항목은 넣지 않고 고를 수 있는 값만"
+        )
+    return out
+
+
 _ENUM_SQL = re.compile(r"\bENUM\s*\(([^)]*)\)", re.I)
 _ENUM_BLOCK = re.compile(r"\benum\s+\w+\s*\{([^}]*)\}")
 _PIPES = re.compile(r"""(?:["']?[A-Za-z][\w-]*["']?\s*\|\s*)+["']?[A-Za-z][\w-]*["']?""")
@@ -1268,6 +1308,7 @@ def check_contract(
     problems += _api_refs(contract, plan, spec)
     problems += _leaks(contract, spec, seed)
     problems += _ui_actions(contract)
+    problems += _ui_options(contract)
     problems += _ui_load_and_background(contract)
     problems += _ui_data_source(contract)
     problems += _ui_form_fields(contract)

@@ -78,6 +78,10 @@ def render_ts_contract(
         for k, v in tids.items()
     ]
     lines += ["} as const;", ""]
+    lines += options_lines(
+        contract,
+        "선택은 `await user.selectOptions(el, OPTIONS.X[0])` — 값을 짐작하거나 options[0] 으로 고르지 않는다",
+    )
     lines.append(
         "/** 화면 경로 (계약 screens) — renderApp(SCREEN.S1). 경로 변수가 있는 화면은 함수: SCREEN.S2({ id: '1' }) */"
     )
@@ -168,6 +172,22 @@ def render_ts_contract(
 APP_TYPES = "src/api/contract-types.ts"
 
 
+def options_lines(contract: TaskContract, how: str) -> list[str]:
+    """선택형 요소의 고를 수 있는 값 (계약 screens[].elements[].options) — 테스트 도우미와 앱 타입이 같은 상수를 낸다."""
+    opts: dict[str, list[str]] = {}
+    for sc in contract.screens:
+        for el in sc.elements:
+            if el.options:
+                opts.setdefault(_const(el.test_id), list(el.options))
+    return [
+        f"/** 선택형 요소의 고를 수 있는 값 (계약 options) — {how} */",
+        "export const OPTIONS = {",
+        *[f"  {k}: {json.dumps(v, ensure_ascii=False)}," for k, v in opts.items()],
+        "} as const;",
+        "",
+    ]
+
+
 def app_type_names(contract: TaskContract) -> list[str]:
     """앱 계약 타입 파일이 내보내는 이름 — 엔티티 이름 + API 마다 <Api>Ok·<Api>Error (+ 본문 있는 요청은 <Api>Body)."""
     out = [_ident(m.name) for m in contract.entities]
@@ -190,6 +210,7 @@ def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> Gene
         "// 이 과제의 공개 계약에서 빌드 파이프라인이 만든 타입 — 손으로 고치지 않는다 (잠김).",
         "// 서버 응답은 이 타입으로 읽는다: `const data: <Api>Ok = await res.json();` — 같은 이름의 타입을 다시 정의하지 않는다.",
         "",
+        *options_lines(contract, "선택 목록은 이 값을 그대로 그린다 (안내 문구는 따로)"),
         "/** 계약 데이터 모양 (entities) */",
     ]
     for m in contract.entities:

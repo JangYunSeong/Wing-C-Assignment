@@ -610,6 +610,39 @@ def _test_folder_imports(o: Overlay, t: Template) -> list[StaticProblem]:
     return out
 
 
+_OPTIONS_IMPORT = re.compile(
+    r"""import\s*(?:type\s*)?\{[^}]*\bOPTIONS\b[^}]*\}\s*from\s+['"][./\w-]*contract-types['"]"""
+)
+
+
+def _starter_options(o: Overlay, contract: TaskContract | None) -> list[StaticProblem]:
+    """시작 코드가 선택형 요소의 계약 값(options)을 그리는가 — 값을 그대로 쓰거나 contract-types 의 OPTIONS 로.
+    다르면 테스트(OPTIONS 로 고름)와 화면(다른 값)이 어긋난다."""
+    if contract is None:
+        return []
+    text = "\n".join(f.content for f in o.files if f.path.endswith((".ts", ".tsx")))
+    uses_const = bool(_OPTIONS_IMPORT.search(text))
+    out: list[StaticProblem] = []
+    for sc in contract.screens:
+        for el in sc.elements:
+            if not el.options or uses_const:
+                continue
+            absent = [
+                v
+                for v in el.options
+                if not re.search(rf"""['"`>]\s*{re.escape(v)}\s*['"`<]""", text)
+            ]
+            if absent:
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"선택형 요소 {el.test_id} 의 계약 값이 화면에 없음: {', '.join(absent[:5])} — "
+                        "contract-types 의 OPTIONS 로 그리거나 계약 값을 그대로 쓴다 (안내 문구는 따로, 값은 비워 둠)",
+                    )
+                )
+    return out
+
+
 _JSON_INLINE = re.compile(
     r":\s*\{[^;=]*\}\s*(?:\[\])?\s*=\s*await\s+[\w.$]+\.json\(\)"  # const data: { items: X[] } = await res.json()
     r"|\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … }
@@ -1124,6 +1157,7 @@ def _hidden_cases(
     out += array_substring_contains(cases, "숨은 테스트")
     out += misplaced_test_imports(cases, "숨은 테스트")
     out += selector_guesses(cases, contract, "숨은 테스트")
+    out += option_guesses(cases, contract, "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
         out += _unknown_calls(cases, contract, rules.http_calls)
@@ -1233,6 +1267,38 @@ def array_substring_contains(cases: Iterable[GeneratedFile], label: str) -> list
             out.append(
                 f"{label} {f.path} 가 항목 글 배열에 toContain('글자') 를 씀: {' '.join(hits[0].split())[:90]} — 배열의 toContain 은 항목 글 전체가 같아야 맞는다. "
                 "글 일부를 찾을 때는 `expect(texts.some((t) => t.includes('이름')), reason(…)).toBe(true)`"
+            )
+    return out
+
+
+_OPTION_INDEX = re.compile(r"\.options\s*\[\s*\d+\s*\]")
+_SELECT_CALL = re.compile(r"selectOptions\s*\(\s*[^,]+,\s*(['\"`])([^'\"`]+)\1")
+
+
+def option_guesses(
+    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
+) -> list[str]:
+    """선택 값을 짐작 — `select.options[0]`(첫 항목은 안내 문구·빈 값일 수 있다)이나 계약 options 에 없는 글로 고름.
+    2026-11-10 프론트 알파(fefix 008d6314): 숨은 테스트가 options[0](안내 문구)을 골라 필수 입력을 검사하는 허용 구현만 떨어짐.
+    계약이 값을 정했으면 도우미 OPTIONS 로 고른다."""
+    values = {
+        v for sc in (contract.screens if contract else []) for el in sc.elements for v in el.options
+    }
+    out: list[str] = []
+    for f in cases:
+        index = bool(_OPTION_INDEX.search(f.content))
+        unknown = sorted(
+            {m.group(2) for m in _SELECT_CALL.finditer(f.content)} - values if values else set()
+        )
+        if index or unknown:
+            what = (
+                "선택 목록의 n 번째 항목(options[n])으로 고름"
+                if index
+                else f"계약 options 에 없는 값으로 고름: {', '.join(unknown[:5])}"
+            )
+            out.append(
+                f"{label} {f.path}: {what} — 첫 항목은 안내 문구(빈 값)일 수 있다. 도우미 OPTIONS 의 값으로 고른다 "
+                "(`await user.selectOptions(el, OPTIONS.CATEGORY_SELECT[0])`)"
             )
     return out
 
@@ -1954,6 +2020,7 @@ def _public_cases(
     out += array_substring_contains(cases, "공개 테스트")
     out += misplaced_test_imports(cases, "공개 테스트")
     out += selector_guesses(cases, contract, "공개 테스트")
+    out += option_guesses(cases, contract, "공개 테스트")
     text = "\n".join(f.content for f in cases)
     missing = [
         pt.test_id for pt in contract.public_tests if not re.search(rf"\b{pt.test_id}\b", text)
@@ -2041,6 +2108,8 @@ def static_check(
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
             res.problems += _starter_schema(o, template, contract)
+            if not is_java(template.manifest):
+                res.problems += _starter_options(o, contract)
             res.review_flags += flags
         if o.kind == "public_test":
             res.problems += _public_cases(o, template, plan, contract)

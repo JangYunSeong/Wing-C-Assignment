@@ -275,6 +275,14 @@ class UiElement(Schema):
         description="조작하는 요소(버튼·입력 등)는 필수 — 무엇을 하면 무엇이 일어나고 서버 요청이 언제 나가는지 한 줄 "
         "(예: '클릭하면 수량 1 증가 — 바로 저장 요청', '값을 바꾸고 포커스를 옮기면 저장 요청')",
     )
+    # 고를 수 있는 값이 정해진 요소(선택 목록·라디오·탭)의 값 — 테스트는 이 값(도우미 OPTIONS)으로 고르고 시작 코드는 이 값을 그린다.
+    # 2026-11-10 프론트 알파(fefix 008d6314): 값이 설명 글에만 있어('캘리브레이션·센서 등') 숨은 테스트가 첫 항목(안내 문구, 빈 값)을 골라,
+    # 필수 입력을 검사하는 허용 구현만 저장하지 않아 떨어졌다.
+    options: list[Annotated[str, Field(min_length=1, max_length=60)]] = Field(
+        default_factory=list,
+        max_length=20,
+        description="고를 수 있는 값이 정해진 요소(선택 목록·라디오·탭)만 — 화면에 보이는 값 그대로 (안내 문구 '선택하세요' 는 넣지 않는다)",
+    )
     refs: list[str] = Field(min_length=1)
 
     @field_validator("role", mode="before")
