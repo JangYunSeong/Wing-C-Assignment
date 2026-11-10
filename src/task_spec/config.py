@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     incidents_dir: Path = Path("incidents/public_v1")
     # 지원자 데이터 루트 (git 밖, 불변식 1)
     data_dir: Path
+    # 과제 전달 묶음 루트 (data/images/<build_id>/…, 이슈 #85). 지원자 데이터 볼륨과 나눠 두려면 따로 지정한다 —
+    # 비우면 <data_dir>/images. 수백 MB 이미지 파일이라 백업·보관 정책이 지원자 데이터와 다르다
+    images_dir: Path | None = None
+
+    @property
+    def images_root(self) -> Path:
+        return self.images_dir if self.images_dir is not None else self.data_dir / "images"
 
     # 자기소개서 사용 여부 [확정: 2026-11-03 사용자 — 검증할 주장은 이력서에서만].
     # false 면 API 가 자기소개서를 저장하지 않고, 그래프도 처리하지 않는다 (개인정보 최소 처리).
