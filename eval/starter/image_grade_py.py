@@ -38,6 +38,9 @@ _PT = re.compile(r"\bpt\d{1,2}\b")
 SKIP = (".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".git")
 # compileall: `*** Error compiling './pipeline/run.py'...` 뒤 `  File "...", line N` · `SyntaxError: …`
 _COMPILE_FILE = re.compile(r'^\s*File "(?P<path>[^"]+)", line (?P<line>\d+)')
+# pytest 수집 중 문법 오류: `E     File "<절대 경로>", line N` 뒤에 `E   SyntaxError: …` (2026-11-10 qwen 알파: 공개 테스트 문법 오류를 못 읽어 재요청 0회로 끝남)
+_E_FILE = re.compile(r'^E\s+File "(?P<path>[^"]+)", line (?P<line>\d+)')
+_E_ERR = re.compile(r"^E\s+(?P<msg>\w*Error: .+)$")
 _COMPILE_ERR = re.compile(r"^(?P<kind>\w*Error): (?P<msg>.+)$")
 
 
@@ -140,14 +143,37 @@ _FRAME = re.compile(r"^(?P<path>[^\s:]+\.py):(?P<line>\d+): in ")
 _E_LINE = re.compile(r"^E\s+(?P<msg>\w*(?:Error|Exception)\b.*)$")
 
 
-def compile_errors(log_text: str, limit: int = 20) -> list[dict[str, Any]]:
+def _relative(path: str, root: str | None) -> str:
+    if root and path.startswith(root.rstrip("/") + "/"):
+        return path[len(root.rstrip("/")) + 1 :]
+    return path.lstrip("./")
+
+
+def compile_errors(log_text: str, limit: int = 20, root: str | None = None) -> list[dict[str, Any]]:
     """compileall·pytest --collect-only 출력 → [{path, line, message, detail}].
-    수집 오류는 traceback 의 `<경로>:<줄>: in …` 프레임(저장소 루트 기준) 중 마지막 것과 그 뒤 `E   …Error: …` 줄로."""
+    수집 오류는 traceback 의 `<경로>:<줄>: in …` 프레임(저장소 루트 기준) 중 마지막 것과 그 뒤 `E   …Error: …` 줄로.
+    테스트 파일의 문법 오류는 pytest 가 `E     File "<절대 경로>", line N` 로 보이므로 root(조립 폴더) 기준 상대 경로로 바꾼다."""
     out: list[dict[str, Any]] = []
     lines = log_text.splitlines()
     frame: tuple[str, int] | None = None
     for i, raw in enumerate(lines):
         line = raw.rstrip()
+        ef = _E_FILE.match(line)
+        if ef:
+            msg = next(
+                (m.group("msg") for m in map(_E_ERR.match, lines[i + 1 : i + 6]) if m),
+                "SyntaxError",
+            )
+            err = {
+                "path": _relative(ef.group("path"), root),
+                "line": int(ef.group("line")),
+                "message": msg[:300],
+                "detail": "",
+            }
+            if err not in out:
+                out.append(err)
+            frame = None
+            continue
         fm = _FRAME.match(line.strip())
         if fm and "site-packages" not in fm.group("path") and not fm.group("path").startswith("/"):
             frame = (fm.group("path").lstrip("./"), int(fm.group("line")))
@@ -247,7 +273,12 @@ def run_all(
     if any(c not in (0, 5) for c in codes):  # 5 = 수집된 테스트 없음
         with log.open("r", encoding="utf-8", errors="ignore") as fh:
             fh.seek(start)
-            return "compile_error", [], compile_errors(fh.read()), round(time.monotonic() - t0, 1)
+            return (
+                "compile_error",
+                [],
+                compile_errors(fh.read(), root=str(WORK)),
+                round(time.monotonic() - t0, 1),
+            )
     tests: list[dict[str, Any]] = []
     runs = [("existing.xml", [py, "-m", "pytest", "-o", "junit_family=xunit1"], "")]
     if targets:

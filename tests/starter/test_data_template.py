@@ -589,3 +589,71 @@ def test_command_path_must_be_where_the_starter_can_write() -> None:
     d["endpoints"][0]["path"] = "batch/daily_sales_summary.py"
     got = _command_paths(TaskContract.model_validate(d), DE.manifest)
     assert len(got) == 1 and "pipeline/**/*.py" in got[0] and "pipeline/run.py" in got[0]
+
+
+def test_read_json_invalid_arguments_are_caught() -> None:
+    """2026-11-10 알파 13회차: read_json_auto(…, format='json', lines=true) → 'lines' 없음, 다시 만들자 format='json' → 허용 값 아님 (1.5.6 확인)."""
+
+    def hits(code: str) -> list[str]:
+        ref = Overlay(
+            kind="ref_accepted",
+            files=(GeneratedFile(path="pipeline/run.py", content=code),),
+            label="d1",
+        )
+        return [
+            p.message
+            for p in static_check(
+                [ref], template=DE, plan=_plan(), spec=_spec(), contract=_contract(), seed=None
+            ).problems
+            if "되풀이되는 실수" in p.message
+        ]
+
+    assert any(
+        "lines" in m
+        for m in hits("q = \"SELECT * FROM read_json_auto($files, format='json', lines=true)\"\n")
+    )
+    assert any(
+        "'json' 은 없다" in m
+        for m in hits("q = \"SELECT * FROM read_json($files, format='json')\"\n")
+    )
+    assert hits("q = \"SELECT * FROM read_json($files, format = 'newline_delimited')\"\n") == []
+    assert hits('q = "SELECT * FROM read_json_auto($files)"\n') == []
+
+
+def test_command_script_must_fix_sys_path_before_importing_its_package() -> None:
+    """2026-11-10 알파 14회차: 허용 구현이 맨 위에서 `from pipeline.inputs import …` — `python pipeline/run.py` 로 ModuleNotFoundError."""
+    from task_spec.starter.static_check import _script_imports
+
+    bad = "import sys\nfrom pipeline.inputs import read_rows\nsys.path.insert(0, '..')\n"
+    good = "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parent.parent))\nfrom pipeline.inputs import read_rows\n"
+
+    def got(code: str, path: str = "pipeline/run.py") -> list[str]:
+        o = Overlay(
+            kind="ref_accepted", label="d1", files=(GeneratedFile(path=path, content=code),)
+        )
+        return [p.message for p in _script_imports(o, DE, _contract())]
+
+    assert len(got(bad)) == 1 and "pipeline/run.py:2" in got(bad)[0]
+    assert got(good) == []
+    assert got(bad, path="pipeline/helpers.py") == []  # 명령 스크립트가 아니면 import 로 쓰인다
+
+
+def test_unreadable_marker_inside_a_tuple_is_also_caught() -> None:
+    """2026-11-10 알파 14회차: `assert v in ("<unreadable>", {})` — == 비교만 보던 검사가 놓쳤다."""
+    src = (
+        "def read(ws):\n    try:\n        return ws.read_parquet('out')\n    except Exception:\n        return '<unreadable>'\n\n\n"
+        "def test_hc3() -> None:\n    v = read(None)\n    assert v in ('<unreadable>', {}), 'x'\n"
+    )
+    assert (
+        len(
+            unreadable_as_pass(
+                [GeneratedFile(path="grading/cases/test_hc3.py", content=src)], "숨은 테스트"
+            )
+        )
+        == 1
+    )
+    ok = src.replace(
+        "assert v in ('<unreadable>', {}), 'x'",
+        "assert v not in ('<unreadable>',) and v == {}, 'x'",
+    )
+    assert unreadable_as_pass([GeneratedFile(path="t.py", content=ok)], "x") == []

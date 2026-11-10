@@ -22,6 +22,7 @@
 
 - Python 3.11 · DuckDB 1.5 · pyarrow 26 · pandas 2.3 · numpy 2.4 · pytest (의존성은 `pyproject.toml` 의 것만 — 바꾸지 않는다)
 - 작업 코드는 `pipeline/` 아래, 진입점은 계약의 명령. 저장소 루트에서 실행된다.
+- 입력 파일 읽기 도우미 `pipeline/inputs.py` 가 있다 — `read_rows(data_files(폴더))` 가 그 폴더의 .jsonl·.csv·.parquet 을 행 목록으로 (형식 추정 없이 값 그대로). 쓰지 않아도 되고, 이 파일은 바꾸지 않는다 (채점 때 원본으로 되돌린다).
 
 ## 실행
 
