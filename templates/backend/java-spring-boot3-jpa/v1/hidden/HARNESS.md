@@ -23,7 +23,7 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
 
 ## GraderSupport (상속)
 
-- `@SpringBootTest(RANDOM_PORT)` — 지원자 저장소 그대로 띄운다. 운영 조건(`pool_size` · `connection_timeout_ms` · `server_threads`)은 자동으로 Spring 속성에 들어간다. 요청 한도 `REQUEST_TIMEOUT` 은 **`java.time.Duration`** 이다 (`request_timeout_s` 를 주지 않으면 30초와 연결 대기 한도 × 2 + 5초 중 긴 쪽). `Duration.ofSeconds(REQUEST_TIMEOUT)` 처럼 다시 감싸지 않는다 — 운영 피크는 `peak(…)` 가 이미 넣어 둔다.
+- `@SpringBootTest(RANDOM_PORT)` — 지원자 저장소 그대로 띄운다. 운영 조건(`pool_size` · `connection_timeout_ms` · `server_threads`)은 자동으로 Spring 속성에 들어간다. 요청 한도 `REQUEST_TIMEOUT` 은 **`java.time.Duration`** 이다 (`request_timeout_s` 를 주지 않으면 30초와 연결 대기 한도 × 2 + 5초 중 긴 쪽). `Duration.ofSeconds(REQUEST_TIMEOUT)` 처럼 다시 감싸지 않는다 — 운영 피크는 `peak(…)` 가 이미 넣어 둔다. 이 한도는 `Burst` 의 마감(`Burst.fire(…, REQUEST_TIMEOUT)`)으로 잰다 — 그 밖의 요청(데우기·조회 확인)은 클라이언트가 최소 30초 기다리므로 시간 초과를 재려면 `Burst` 로 보낸다.
 - `protected HttpResponse<String> send(String method, String path, Map<String, String> headers, String jsonBody)` — body 가 null 이면 본문 없음
 - `protected HttpResponse<String> get(String path)`
 - `send` · `get` 은 `IOException, InterruptedException`, `json` · `jsonObject` 는 `IOException`, `await` 는 `Exception` 을 던진다 (검사 예외) — 테스트 메서드와 이것들을 부르는 private 헬퍼에는 `throws Exception` 을 붙인다. `Burst.Call` 람다는 `throws Exception` 이라 그대로 써도 된다. `Predicate`·`Function` 같은 표준 람다 안에서는 이것들을 부르지 않는다.
