@@ -721,3 +721,18 @@ def test_peak_on_a_case_without_burst_rows_is_rejected() -> None:
     assert any("버스트 행이 없는 케이스인데 peak" in p for p in bad)
     good = _reason_rules([GeneratedFile(path=path, content=once)], *args)
     assert not any("버스트 행이 없는" in p for p in good)
+
+
+def test_path_problem_names_the_allowed_slots_and_test_data_alternative() -> None:
+    # 2026-11-10 retrydupx #030: 갈 곳을 알려 주지 않아 시작 코드가 같은 테스트 리소스 경로에 두 번 써 생성 실패
+    from task_spec.starter.static_check import _paths
+
+    o = Overlay(
+        kind="starter",
+        files=(GeneratedFile(path="src/test/resources/seed-test.sql", content="INSERT 1"),),
+    )
+    [p] = _paths(o, JAVA)
+    assert "쓸 수 있는 경로: src/main/java/" in p.message
+    assert "시드의 테스트 몫 행" in p.message
+    other = Overlay(kind="starter", files=(GeneratedFile(path="build.gradle", content="x"),))
+    assert all("시드의 테스트 몫 행" not in x.message for x in _paths(other, JAVA))

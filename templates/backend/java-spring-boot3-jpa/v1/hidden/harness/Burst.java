@@ -20,7 +20,7 @@ import java.util.function.IntUnaryOperator;
  */
 public final class Burst {
 
-    /** actual = HTTP 상태 코드, -1 = 클라이언트 시간 초과·연결 오류. */
+    /** actual = HTTP 상태 코드, -1 = 요청 한도(wait) 초과·클라이언트 시간 초과·연결 오류. */
     public record Outcome(int index, int expected, int actual, long millis, String error) {
         public boolean ok() {
             return actual == expected;
@@ -33,7 +33,7 @@ public final class Burst {
         int send(int index) throws Exception;
     }
 
-    /** 출발선 대기·스레드 시작 몫 — 요청 한도(wait)는 HTTP 클라이언트가 지키고, 이것은 그 결과를 모으는 쪽의 여유. */
+    /** 출발선 대기·스레드 시작 몫 — 요청 한도(wait)는 요청마다 걸린 시간으로 재고, 이것은 그 결과를 모으는 쪽의 여유. */
     static final Duration GRACE = Duration.ofSeconds(2);
 
     private Burst() {
@@ -53,7 +53,14 @@ public final class Burst {
                     int want = expected.applyAsInt(index);
                     try {
                         int status = call.send(index);
-                        return new Outcome(index, want, status, (System.nanoTime() - t0) / 1_000_000, null);
+                        long ms = (System.nanoTime() - t0) / 1_000_000;
+                        // 응답은 왔지만 요청 한도(wait)를 넘김 — 시간 초과로 센다. HTTP 클라이언트는 최소 30초 기다리고(GraderSupport
+                        // .CLIENT_TIMEOUT) 모으는 쪽은 GRACE 만큼 더 기다리므로, 이 비교가 없으면 짧은 한도(1~2초) 과제의 실제 한도가
+                        // 한도 + 2초가 된다 (2026-11-10 목록 과제 #055: 한도 2초에 지연 로딩 흔한 구현이 4초 안에 끝나 통과).
+                        if (ms > wait.toMillis()) {
+                            return new Outcome(index, want, -1, ms, "over request limit: " + ms + "ms > " + wait.toMillis() + "ms (HTTP " + status + ")");
+                        }
+                        return new Outcome(index, want, status, ms, null);
                     } catch (Exception e) {
                         return new Outcome(index, want, -1, (System.nanoTime() - t0) / 1_000_000, e.toString());
                     }

@@ -82,6 +82,21 @@ class HarnessSelfTest extends GraderSupport {
     }
 
     @Test
+    void 응답이_와도_요청_한도를_넘기면_시간_초과로_센다() throws Exception {
+        // 모으는 쪽의 여유(GRACE) 안에 끝났어도 요청 한도(wait)를 넘긴 요청은 실패 — 짧은 한도 과제의 실제 한도가 늘지 않게
+        List<Burst.Outcome> outcomes = Burst.fire(2, i -> 200, i -> {
+            if (i == 1) {
+                Thread.sleep(500);
+            }
+            return 200;
+        }, Duration.ofMillis(200));
+        assertThat(outcomes.get(0).ok()).isTrue();
+        assertThat(outcomes.get(1).actual()).isEqualTo(-1);
+        assertThat(outcomes.get(1).error()).contains("over request limit");
+        assertThat(Burst.failures(outcomes)).isEqualTo(1);
+    }
+
+    @Test
     void 버스트_결과를_운영_실패와_규칙_불일치로_나눠_센다() {
         List<Burst.Outcome> outcomes = List.of(
                 new Burst.Outcome(0, 200, 200, 1, null),

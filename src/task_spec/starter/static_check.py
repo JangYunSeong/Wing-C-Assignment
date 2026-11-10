@@ -192,7 +192,18 @@ def _paths(o: Overlay, t: Template) -> list[StaticProblem]:
         if locked_harness and glob_match(f.path, locked_harness):
             msg = f"{o.name} 파일 {f.path} 는 잠긴 채점 하네스 자리 — 하네스는 고치지 않고 케이스 자리({m.hidden_layout.cases if m.hidden_layout else ''})에만 쓴다"
         else:
-            msg = f"{o.name} 파일 {f.path} 는 쓸 수 없는 경로 (fill_slots 밖·잠긴 파일·채점 자리)"
+            # 쓸 수 있는 경로를 함께 — 2026-11-10 retrydupx #030: 시작 코드가 테스트 데이터를 src/test/resources/seed-test.sql 에
+            # 두 번 다 써 (문구에 갈 곳이 없었다) 시작 코드 생성이 실패하고 루프가 회차 0 에서 끝났다
+            slots = m.fill_slots.get(KIND_SLOT[o.kind], [])  # type: ignore[index]
+            msg = (
+                f"{o.name} 파일 {f.path} 는 쓸 수 없는 경로 (fill_slots 밖·잠긴 파일·채점 자리) — 쓸 수 있는 경로: "
+                + ", ".join(slots)
+            )
+            if re.search(r"(^|/)(test|tests|__tests__)/resources?/", f.path):
+                msg += (
+                    ". 테스트용 데이터 파일을 따로 두지 않는다 — 시드의 테스트 몫 행(작은 id)을 쓰거나 테스트 코드 안에서 "
+                    "저장소·API 로 만든다 (테스트 리소스 폴더는 채점 설정 자리라 막혀 있다)"
+                )
         out.append(StaticProblem(o.target, msg))
     lim = m.limits
     if lim is not None:

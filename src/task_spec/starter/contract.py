@@ -665,7 +665,22 @@ def _command_paths(contract: TaskContract, manifest: TemplateManifest) -> list[s
     return out
 
 
-def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
+def spec_named_fields(spec: SpecView | None) -> set[str]:
+    """명세에서 지원자에게 보이는 글(제목·상황·공개 요구·공개 수용 기준·자료·추가 요구 답)에 글자 그대로 나온 snake 꼴 이름 —
+    API 요청·응답 필드는 그 이름을 인정한다. 2026-11-10 확장 알파 C #062: 공개 요구가 '요청 본문에 member_id 와 amount, 응답에
+    recharge_id' 로 필드 이름을 정했는데 템플릿 규칙(camelCase)과 달라 재요청 3번에도 실패 — 승인된 명세가 우선이다 (사용자 결정 A).
+    경계는 영문자·숫자·밑줄로만 본다 ('recharge_id와' 처럼 조사가 붙어도)."""
+    if spec is None:
+        return set()
+    rx = re.compile(
+        r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*[A-Za-z0-9](?![A-Za-z0-9_])"
+    )
+    return {w for t in (*spec.public_texts, *spec.visible_texts) for w in rx.findall(t)}
+
+
+def _naming(
+    contract: TaskContract, manifest: TemplateManifest, spec: SpecView | None = None
+) -> list[str]:
     problems: list[str] = []
     if contract.interface_kind not in manifest.interfaces:
         problems.append(
@@ -697,11 +712,20 @@ def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
         if not re.fullmatch(rx.entity, m.name):
             problems.append(f"엔티티 이름 {m.name!r} 가 템플릿 이름 규칙과 다름")
     headers = {id(f) for e in contract.endpoints for f in e.headers}
+    # API 요청·응답·쿼리 필드는 명세가 정한 이름이면 인정 (엔티티 필드는 규칙대로 — DB 열 이름은 snake 변환으로 맞는다)
+    api = {
+        id(f)
+        for e in contract.endpoints
+        for f in [*e.query, *e.request, *(x for r in e.responses for x in r.body)]
+    }
+    named = spec_named_fields(spec)
     bad_fields = sorted(
         {
             f.name
             for _, f in _fields(contract)
-            if id(f) not in headers and not re.fullmatch(rx.field, f.name)
+            if id(f) not in headers
+            and not re.fullmatch(rx.field, f.name)
+            and not (id(f) in api and f.name in named)
         }
     )
     if bad_fields:
@@ -1205,7 +1229,7 @@ def check_contract(
     first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다)."""
     problems = _ids(contract, plan)
     problems += _coverage(contract, plan, spec)
-    problems += _naming(contract, manifest)
+    problems += _naming(contract, manifest, spec)
     problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _leaks(contract, spec, seed)
