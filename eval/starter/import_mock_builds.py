@@ -32,6 +32,7 @@ from eval.starter.build_mock_images import grader_sha256, load_run, template_of
 from eval.starter.register_mock_common import dsn
 from eval.starter.split_delivery import save_image, sha256
 from task_spec.config import Settings
+from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import BuildArtifact, BuildOutcome, BuildRecord, StarterFile
 from task_spec.schemas.package import (
     ArtifactFile,
@@ -59,6 +60,18 @@ def overlay_files(build_id: str, item: dict[str, Any]) -> list[StarterFile]:
         for f in ov.files:
             out.append(StarterFile.of(build_id, ov.kind, f.path, f.content, ov.label))
     return out
+
+
+def repairs_of(run: Path, builds_root: Path) -> list[RepairRecord]:
+    """수리 기록 — 빌드 폴더 report 에 없으면 원래 알파 폴더(report `source`)의 성공한 루프 report 에서."""
+    report = json.loads((run / "report.json").read_text("utf-8"))
+    raw = report.get("repairs")
+    if raw is None and report.get("source"):
+        for loop in sorted((builds_root / report["source"]).glob("loop-*/report.json")):
+            r = json.loads(loop.read_text("utf-8"))
+            if r.get("status") == "review":
+                raw = r.get("repairs")
+    return [RepairRecord.model_validate({**x, "reason": str(x["reason"])[:300]}) for x in raw or []]
 
 
 def summaries(verification: dict[str, Any]) -> dict[str, VerifySummary]:
@@ -116,6 +129,7 @@ async def import_one(
     t: dict[str, Any],
     run: Path,
     context: Path,
+    builds_root: Path,
 ) -> str:
     cid = t["common_id"]
     tmpl = template_of(run)
@@ -154,6 +168,7 @@ async def import_one(
                 hidden_plan=item["plan"],
                 verification=summaries(t["verification"]),
                 review_flags=list(item["task"].review_flags),
+                repairs=repairs_of(run, builds_root),
             ),
         )
         await store.set_status(build.build_id, "verifying")
@@ -230,6 +245,9 @@ async def main() -> None:
         "--task", action="append", default=[], help="<common_id>:<판> — 없으면 manifest 전부"
     )
     ap.add_argument("--db", choices=["test", "main"], default="test")
+    ap.add_argument(
+        "--builds", default="data/eval/build", help="알파 결과 상위 (수리 기록을 읽을 곳)"
+    )
     a = ap.parse_args()
     s = Settings()  # type: ignore[call-arg]
     manifest = Path(a.manifest)
@@ -249,7 +267,13 @@ async def main() -> None:
         for t in picked:
             print(
                 await import_one(
-                    store, conninfo, s.images_root, t, Path(a.runs) / t["source_build"], context
+                    store,
+                    conninfo,
+                    s.images_root,
+                    t,
+                    Path(a.runs) / t["source_build"],
+                    context,
+                    Path(a.builds),
                 ),
                 flush=True,
             )
