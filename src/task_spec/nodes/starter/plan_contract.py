@@ -30,7 +30,13 @@ from task_spec.schemas import (
 )
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import fit_auth
-from task_spec.starter.contract import ROW_NEEDS, SpecView, check_contract, fit_covers
+from task_spec.starter.contract import (
+    ROW_NEEDS,
+    SpecView,
+    check_contract,
+    fit_covers,
+    fit_traps,
+)
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
 from task_spec.starter.templates import Template
@@ -204,6 +210,7 @@ def plan_input(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"
             f"이름 규칙: 경로 {rx.path} · 헤더 {rx.header} · 엔티티 {rx.entity} · 필드 {rx.field}"
             + (f" · 화면 test id {rx.test_id}" if "ui" in m.interfaces else "")
+            + "".join(f"\n- {g}" for g in m.contract_guide)
         ),
         harness_params=params or NONE,
         failure_reasons=reasons or NONE,
@@ -253,6 +260,11 @@ def fit_output(
     covered, cover_notes = fit_covers(out.contract, spec)
     out = out.model_copy(update={"contract": covered})
     notes += cover_notes
+    trapped, trap_notes = fit_traps(
+        out.hidden_plan, spec
+    )  # 사유 코드를 적은 trap_id → 숨김 수용 기준의 숨은 요구
+    out = out.model_copy(update={"hidden_plan": trapped})
+    notes += trap_notes
     return out, notes
 
 

@@ -28,7 +28,7 @@
 |---|---|---|---|
 | 백엔드 (`sw.backend`, 105) | Java 87, Spring 55·Spring Boot 37, JPA 13, PostgreSQL 35, C# 16, JS 17·Node.js 5, Python 7 | **Java 17 + Spring Boot 3 + JPA + H2 (Gradle)** | **Python FastAPI + SQLAlchemy** → **TypeScript Next.js (Route Handler·Server Action + Prisma)** → ASP.NET Core, Kotlin(Spring 변형), NestJS(필요 시) |
 | 프론트엔드 (`sw.frontend`, 12) | React 8, Vue 4, TypeScript 4, JavaScript 4, 상태관리 3 | **React + TypeScript + Vite + Vitest·Testing Library + 가짜 API(MSW)** | Vue 3 |
-| 데이터 엔지니어 (`data.eng`, 11) | Python 10, SQL 9, Spark 7, Airflow 7, Hadoop 6, Kafka 5 | **Python 3.11 + PySpark(로컬 모드) + pytest**, SQL 변형은 DuckDB | Airflow DAG 템플릿(DAG 파싱·태스크 단위 테스트) |
+| 데이터 엔지니어 (`data.eng`, 11) | Python 10, SQL 9, Spark 7, Airflow 7, Hadoop 6, Kafka 5 | **Python 3.11 + DuckDB + pyarrow + pandas·numpy + pytest** (CLI 배치 — 날짜별 입력 폴더 → 파티션 출력) [확정: 2026-11-09 사용자 — 추천대로, pandas·numpy 는 같은 날 추가] | PySpark(로컬 모드) 변형, Airflow DAG 템플릿(DAG 파싱·태스크 단위 테스트) |
 | AI 엔지니어 (`data.ml`, 22) | Python 16, PyTorch/TensorFlow 10, 모델 서빙 5, MLOps 4, Kubernetes 6, LangChain/LangGraph 2 | **Python + FastAPI 서빙 + 작은 CPU 모델(scikit-learn·소형 PyTorch) + pytest** | LLM 앱 변형(LangGraph + 가짜 LLM — 채점에 외부 API 금지) |
 | DBA (`infra.dba`, 3) | MySQL·MariaDB·SQL Server·Tibero·MongoDB 각 3, PostgreSQL·Oracle 2, Python·Shell 2 | **PostgreSQL 16 컨테이너 + SQL 스크립트(마이그레이션·인덱스·백업/복구) + 검증 하네스(Python)** | MySQL 8 |
 
@@ -247,7 +247,70 @@ templates/<직군>/<스택>/CURRENT
    남은 것: 실제 브라우저(Playwright) 층.
 4. 백엔드 TypeScript Next.js — Route Handler·Server Action + Prisma (+ 프론트와 공유할 Node 빌드 이미지). NestJS 는 필요할 때.
 5. AI 엔지니어 Python 서빙.
-6. 데이터 엔지니어 PySpark/SQL.
+6. 데이터 엔지니어 — 진행 중 (2026-11-09, `data/python-duckdb` v1). PySpark 보다 DuckDB 먼저: JVM 없이 이미지가 작고 테스트가 빠르며,
+   숨은 요구(늦게 온 데이터·재실행 멱등·부분 출력)는 엔진과 무관하게 같은 CLI 배치로 시험된다. PySpark 는 같은 재료의 변형으로 뒤에.
+   DuckDB 는 1.5.6(1.x 마지막 줄)으로 고정 — 2.0(2026-10)은 `.arrow()` 제거·미완 결과 엄격 등 API 가 바뀌어, 알파 2회차에서 생성한
+   참조 구현이 모두 2.0 에 없는 API 로 실패했다(생성기·지원자가 아는 API 와 어긋나면 함정이 아닌 잡음).
+   템플릿: `pipeline/run.py --date --raw --out` 뼈대, 잠긴 하네스(`grading/harness/grader.py` — 케이스마다 작은 입력을 테스트가 직접 쓰는
+   `workspace()`·고정 환경으로 명령 실행 `run()`·첫 큰 쓰기에서 프로세스를 죽이는 장애 주입), 자체 점검 5개. 손 예시(daily-agg-pipeline)
+   판정 재현 — 흔한 구현은 의도한 3케이스에서 실패, 한 가지만 빠뜨린 변형은 그 케이스만, 허용 구현 3개 통과, 값을 박은 답은 전부 실패.
+   파이프라인 연결: 계약 도우미 `contract.py`(TypedDict + `run_<명령>()` — CLI 계약의 옵션은 `--이름`), Python 검증기(uv.lock 그대로 만든
+   가상 환경 · compileall + 수집 확인 + pytest JUnit, 채점용 이미지 grade `image_grade_py.py` 와 같은 판정 코드), 생성기 프롬프트 `gen_*_py` v1,
+   계약 검사(파일 fixture 의 형식 하나·행 엔티티, 날짜별 입력 폴더), 테스트가 하네스에 없는 이름(ws.input 등)·없는 키워드 인자
+   (write_csv(header=…) 등)를 쓰면 정적 검사.
+   재료 `data.eng.batch-rerun`(Airflow Best Practices).
+   알파(kakaobank_2026#002, 회당 $0.32~0.37) 3회 모두 failed — 실패마다 원인을 막음: ① 계약 모호(입력 엔티티 없음·형식 둘·입력 파일 하나)
+   → 계약 검사, ② 참조 구현이 DuckDB 2.0 에 없는 API → 1.5.6 고정, 공개 테스트의 없는 인자 → 정적 검사, ③ 허용 구현의 SQL 오류를 수리가
+   '테스트 의심'으로 짚음 → manifest `repair_terms.impl_crash`(명령이 예외로 끝난 흔적이면 그 구현을 다시 만듦), 공개 테스트의 `with workspace()`·
+   필수 인자 누락 → 정적 검사, 한 번 실행으로 앞 날짜 출력을 기대(숨은 요구 시험) → gen_public_py v2 '실행 한 번 = 하루 몫'.
+   3회차에서 흔한 구현은 hc1·hc2 를 의도한 사유(late_data_missed·duplicate_counted)로 실패.
+   4회차($0.27): 공개 테스트는 맞았는데 참조 구현이 출력 폴더를 만들지 않아 실패하면서 예외를 삼키고 종료 코드만 내 — 수리가 원인을 못 보고
+   공개 테스트만 다시 만듦 → gen_starter_py·gen_accepted_py·gen_naive_py v2 '실패는 보이게'(stderr 에 `<예외 종류>: <메시지>` 한 줄, 출력 폴더는
+   없으면 만듦), 템플릿 뼈대 main() 도 같은 모양 — 그 줄을 impl_crash 가 보고 그 구현을 다시 만든다.
+   5회차($0.28): 수리가 처음으로 구현을 지목했지만 원인은 공개 테스트 — 경로 옵션에 `raw_dir="raw"` 를 문자열 그대로 넘겨(명령은 저장소 루트에서 돈다)
+   모든 구현이 '입력 폴더 없음' → 작업 폴더에 쓴 경로를 명령에 문자열 그대로 넘기면 정적 검사(ws.path(…) 로), 이미 다시 만든 구현의 실행 오류는
+   다시 구현 탓으로 보지 않음(기존 규칙 — 테스트 의심 — 으로).
+   6회차($0.28): 공개 테스트 정상, 흔한 구현은 공개 테스트 통과 + hc1~hc3 를 의도한 사유로 실패(hc4 통과). 허용 구현이 다시 만든 뒤에도
+   DuckDB COPY 옵션을 `AUTO_DETECT=TRUE` 로 써 실패(2회차와 같은 실수), 실행 오류 수리가 흔한 구현의 일반 예산을 써 ③(hc4 통과)을 못 함 →
+   manifest `code_pitfalls`(스택에서 되풀이되는 API 실수를 실행 전에 — COPY 옵션의 `=`), 실행 오류 수리는 따로 센다(`#crash`).
+   7회차($0.46, 수리 3회): 흔한 구현은 공개 테스트 통과 + hc1~hc3 의도한 사유(hc4 는 숨은 테스트에 사유 표시 없음). 허용 구현은 다시 만들 때마다
+   다른 DuckDB·pyarrow API 실수(CSV 시각 열이 TIMESTAMP 로 추정되는데 substr · numpy 가 필요한 메서드 · 1.5 의 .arrow() 가 RecordBatchReader) →
+   manifest `stack_notes`(모든 생성기의 기술 환경에 붙는 API 사실 — 1.5.6 에서 확인, 함정 힌트 없음)와 code_pitfalls 2개(numpy·pandas 메서드,
+   `.arrow()`).
+   pandas 2.3.3·numpy 2.4.6 추가 [확정: 2026-11-09 사용자 — "numpy,pandas 넣어야겠는데?"]: 데이터 엔지니어 실무의 기본 도구라 생성기·지원자가
+   당연히 쓴다(7회차의 numpy 실패). pandas 3.0(2026-02)은 Copy-on-Write·문자열 기본 형식이 바뀌어 2.x 마지막 줄, numpy 2.5 는 Python 3.12 이상이라
+   2.4. python-dateutil 은 4.0(2026-11-01 새 메이저) 대신 2.x 로 제한. 손 예시 판정표 그대로, 템플릿 이미지 428 → 534 MB.
+   gen_starter_py·gen_accepted_py·gen_naive_py v3 — 의존성을 라이브러리 이름 대신 '기술 환경·pyproject.toml 에 있는 것'으로.
+   8회차($0.34): 공개 테스트가 또 경로를 틀림(`ws / "raw"` → TypeError, 다시 만들자 `f"{ws}/raw"` → 객체 이름이 경로로). 근본 원인 — 공개 테스트
+   생성기가 받는 PUBLIC.md 에 하네스 API 가 없었다(숨은 테스트는 HARNESS.md 로 전체 API). 1~8회차 공개 테스트의 하네스 오용(header=·partitions 인자·
+   with·"raw"·ws / "raw")이 모두 여기서 → PUBLIC.md 에 하네스 API·경로 넘기는 법·예시, Workspace 가 경로처럼 동작(ws / "raw"·str(ws)·fspath — pytest
+   tmp_path 처럼), 자체 점검 6개.
+   **1~8회차 재검증 (2026-11-09, LLM 비용 없음)** — 회차마다 마지막 증상만 고쳐 온 것을 8회 기록 전체로 다시 확인. 생성된 허용 구현이 한 번도 돌지 않아
+   숨은 테스트의 공정성이 검증된 적이 없었으므로, 각 회차 계약에 맞춘 손 구현 두 개(d1 전부 다시 계산 · d2 이번 폴더에 나온 날짜만)로 2~8회차 테스트를 돌렸다.
+   - 숨은 테스트: d1 은 2·3·4·5·6회차 통과, 7회차(read_parquet 가 파티션 하위 폴더를 안 읽음)·8회차(크래시 뒤 판정이 거꾸로 — '읽을 수 없음'을 통과로)
+     실패. d2(재료의 허용 설계)는 6회차만 통과 — 날짜 폴더를 써 두고 마지막 날짜로 한 번만 실행하는 케이스가 7회 중 6회. 파이프라인은 허용 구현을
+     d1 하나만 만들어 이 불공정을 잡지 못했다. 6회차는 테스트가 완전히 공정 — 허용 구현만 맞았으면 review 에 갔다.
+   - 재료 모순: 흔한 구현(출력이 있으면 그 자리에 새로 씀)은 rerun_not_idempotent 를 낼 수 없는데 사유 목록에 있었다 → 사유에서 뺌.
+   - 바로잡은 판단: DuckDB 를 1.5.6 으로 낮춘 것은 2회차 실패를 고치지 않았다(COPY 옵션 `=` 는 버전 무관, `.arrow()` 는 1.4 부터 RecordBatchReader —
+     1.3.2 까지 Table). 7회차 흔한 구현의 hc3 '의도한 사유'는 올바른 구현도 같이 떨어지는 가짜 판정이었다. stack_notes 의 "값은 ? 로"는
+     COPY … TO ? 와 질의의 ? 가 섞이면 TO 의 ? 가 먼저 묶이는 1.5.6 동작(오류 없이 엉뚱한 파일)을 유도할 수 있었다. `.arrow()` 검사는 `.read_all()` 로
+     바르게 쓴 7회차 흔한 구현도 잡았다(오탐).
+   - 조치: 하네스 폴더 읽기를 하위 파티션까지(읽는 쪽이 보는 것과 같게, _·. 는 뺌), HARNESS.md 판정 규칙(하루씩 실행 · 크래시 뒤 = 직전 성공 상태 그대로),
+     정적 검사 `unrun_input_days`(쓴 날짜 폴더를 실행하지 않는 테스트 — 손 구현 d2 가 떨어진 15케이스 중 14 를 잡고 6회차는 하나도 안 잡음, f-string
+     경로는 보지 않음), PUBLIC.md(파일 이름·개수 단언 금지, 입력 파일 이름에 기대지 않게, ws.files 는 Path), code_pitfalls `unless`(.arrow().read_all())와
+     COPY 매개변수 순서 검사, stack_notes 정정, 계약 trap_id 를 숨김 수용 기준에서 기계적으로(`fit_traps` — 8회 모두 첫 답 재요청), 생성기 첫 답의 정적
+     검사 문제를 보고서에(`static_retries` — 지금까지 남지 않아 검사가 일했는지 확인할 수 없었다).
+   - 남은 것: 알파 review. 허용 설계 d2·d3 는 파이프라인이 만들지 않아 정적 검사·문서로만 지킨다.
+   **9회차 (2026-11-10, main 63c01c2 — plan_contract v19, $0.26)**: 처음으로 허용 구현이 공개·숨은 테스트를 모두 통과. 손 구현 d1·d2 도 모두 통과 —
+   테스트가 허용 설계에 공정해졌다(하루씩 실행 규칙·검사의 효과). 계약 첫 답 문제 9건 → 1건(fit_traps). 흔한 구현은 설명대로(실행 날짜 폴더만·사본 그대로·
+   최종 위치에 바로 씀)인데 hc1 만 의도한 사유로 실패하고 hc2·hc3 를 통과 → 숨은 테스트가 약함: hc3 은 크래시 뒤 '읽을 수 없음'을 통과로 둠 — 다시 보니
+   9회 중 6회(1·2·5·7·8·9) 같은 꼴, 원인은 gen_hidden_py v1 쓰는 법 문장(어제 HARNESS.md 만 고친 조치가 불완전). hc2 는 한 날짜 요약만 비교해 다른 날짜에
+   들어간 사본을 놓침. → gen_hidden_py v2(읽을 수 없음은 실패 · 출력 전체 비교 · 하루씩 실행), 정적 검사 `unreadable_as_pass`(6건 모두 잡고 3·4·6회차는
+   안 잡음), HARNESS.md '출력 전체를 비교'. 한 날짜만 비교하는 꼴은 검사가 없다(프롬프트·문서로만).
+   이미지(2026-11-09): Python 응시용·채점용 — 런타임 python:3.11-slim-bookworm, 템플릿 층에 uv.lock 그대로 만든 /opt/venv(PATH 앞),
+   grade 는 image_grade_py.py(개발 서버 Python 검증기와 같은 판정 코드 한 벌, 채점 대상·설정 파일도 python_verify 에서).
+   배관 확인(알파 3회차 빌드 사본 — failed 라 전달물 아님): 응시용 오프라인 기존 테스트 통과, 채점 결과가 개발 서버 검증기와 케이스 단위로 같음,
+   응시용 레이어 금지 경로 0, 이미지 각 약 428 MB. 성공 빌드가 나오면 build_mock_images --run 으로 전달용을 만든다.
 7. DBA PostgreSQL.
 - 순서는 시범 공고 수와 검증 방법의 성숙도 기준. 각 단계는 템플릿 → 소재(사례 변환) 2~3건 → 빌드 검증 → 평가.
 

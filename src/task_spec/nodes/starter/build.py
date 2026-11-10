@@ -328,6 +328,9 @@ class BuildOutcome:
     regen_counts: dict[str, int] = field(default_factory=dict)
     provenance: list[Provenance] = field(default_factory=list)
     rounds: int = 0  # 다시 만든 회차 수
+    # 생성기 첫 답에 정적 검사가 잡은 문제 (재요청으로 고쳤어도) — 검사가 실제로 일했는지 사후에 확인하려고.
+    # 2026-11-09 데이터 알파 재검증: 보고서에 남지 않아 8회 동안 검사가 무엇을 잡았는지 알 수 없었다.
+    static_retries: list[str] = field(default_factory=list)
     snapshots: list[dict[str, Overlay]] = field(
         default_factory=list
     )  # 검증한 회차마다 그때의 오버레이 (평가·디버깅용)
@@ -396,7 +399,15 @@ async def build_and_repair(
     by_id = {d.design_id: d for d in designs}
     missed = {"naive-all": {t.trap_id for t in b.task.traps}}
 
+    def note_static(r: GenResult) -> None:
+        if r.first_problems:
+            label = f"({r.overlay.label})" if r.overlay is not None and r.overlay.label else ""
+            out.static_retries.append(
+                f"{r.task}{label}: " + " | ".join(p[:160] for p in r.first_problems[:4])
+            )
+
     def took(r: GenResult) -> Overlay | None:
+        note_static(r)
         out.provenance += r.provenance
         out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
         if r.overlay is None or not r.ok:
@@ -408,6 +419,7 @@ async def build_and_repair(
 
     def absorb(fix: ImplFix) -> None:
         for r in fix.results:
+            note_static(r)
             out.provenance += r.provenance
             out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
         out.repairs += fix.repairs

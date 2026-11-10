@@ -400,6 +400,23 @@ def element_refs(contract: TaskContract) -> dict[str, list[str]]:
     return out
 
 
+def fit_traps(plan: HiddenPlan, spec: SpecView) -> tuple[HiddenPlan, list[str]]:
+    """숨은 케이스의 trap_id 가 명세의 숨은 요구가 아니면(예: 실패 사유 코드를 적음) 그 케이스의 숨김 수용 기준(ac_id)이 가리키는 숨은 요구로 —
+    ac_id → trap 은 명세가 정하므로 기계적으로 맞출 수 있다. 명세의 다른 숨은 요구를 적었으면 건드리지 않는다 (검사가 알린다).
+    2026-11-09 데이터 알파 재검증: 계약 첫 답이 8회 모두 trap_id 에 사유 코드(late_data_missed …)를 적어 재요청 — 매번 호출 하나를 썼다."""
+    cases = []
+    notes: list[str] = []
+    for c in plan.cases:
+        want = spec.hidden_acs.get(c.ac_id)
+        if want is not None and c.trap_id != want and c.trap_id not in spec.trap_ids:
+            notes.append(
+                f"숨은 케이스 {c.case_id} 의 trap_id {c.trap_id} → {want} ({c.ac_id} 의 숨은 요구)"
+            )
+            c = c.model_copy(update={"trap_id": want})
+        cases.append(c)
+    return (plan.model_copy(update={"cases": cases}) if notes else plan), notes
+
+
 def fit_covers(contract: TaskContract, spec: SpecView) -> tuple[TaskContract, list[str]]:
     """covers 에 빠진 계약 요소를 그 요소가 스스로 적은 refs 의 공개 요구에 잇는다 — 역색인은 코드가 (기계적 출력).
 
@@ -836,6 +853,27 @@ def _needs(
             f"숨은 요구에 필요한 것이 계약에 없음 — 화면이 부르는 바꾸는 API: {need['mutation_endpoint']}. "
             "endpoints 에 POST·PUT·PATCH·DELETE 중 하나로 (요청 본문·성공 응답 본문 포함) 적는다"
         )
+    if "dated_input_folders" in need:
+        dated = [
+            fx
+            for fx in contract.fixtures
+            # 날짜가 폴더 이름 자체 (출력 파티션 date=YYYY-MM-DD 는 입력 구조가 아니다)
+            if fx.kind == "file"
+            and re.search(
+                r"(?<![=\w])(?:YYYY-MM-DD|\{date\}|<date>)/", f"{fx.summary} {fx.content}"
+            )
+        ]
+        date_opt = any(
+            "date" in fl.name.lower() or "date" in fl.type.lower()
+            for e in contract.endpoints
+            if not e.method
+            for fl in [*e.request, *e.query]
+        )
+        if not dated or not date_opt:
+            out.append(
+                f"숨은 요구에 필요한 것이 계약에 없음 — 날짜별 입력 폴더: {need['dated_input_folders']}. fixtures(kind file)에 "
+                "입력 폴더 규칙(예: <raw>/YYYY-MM-DD/*.jsonl — 받은 날짜별 폴더)을, 명령 옵션에 그 상위 폴더와 실행 날짜를 둔다"
+            )
     if "result_screen" in need and not any(sc.elements for sc in contract.screens):
         out.append(
             f"숨은 요구에 필요한 것이 계약에 없음 — 결과를 보여 주는 화면 요소: {need['result_screen']}. "
@@ -902,6 +940,31 @@ INTERACTIVE_ROLES = frozenset(
         "menuitem",
     }
 )
+
+
+_FORMATS = ("jsonl", "csv", "parquet")
+
+
+def _file_fixtures(contract: TaskContract) -> list[str]:
+    """파일을 다루는 템플릿(interfaces 에 file): 파일 fixture 마다 형식 하나·행 모양 엔티티 이름. 2026-11-09 데이터 알파:
+    입력 형식이 'csv 또는 parquet', 입력 레코드 필드가 엔티티 없이 글로만('결제번호·매장ID 등') — 테스트와 구현이 필드 이름을 서로 짐작해 모든 구현이 실패."""
+    out: list[str] = []
+    names = [m.name for m in contract.entities]
+    for fx in contract.fixtures:
+        if fx.kind != "file":
+            continue
+        text = f"{fx.summary} {fx.content}"
+        formats = {f for f in _FORMATS if re.search(rf"\b{f}\b", text.lower())}
+        if len(formats) > 1:
+            out.append(
+                f"파일 {fx.fixture_id} 의 형식이 하나로 정해지지 않음 ({'·'.join(sorted(formats))}) — jsonl·csv·parquet 중 하나만 적는다"
+            )
+        if not any(re.search(rf"\b{re.escape(n)}\b", text) for n in names):
+            out.append(
+                f"파일 {fx.fixture_id} 에 행 모양 엔티티가 없음 — 그 파일의 한 줄(한 행)이 어떤 엔티티인지 이름을 적고 (예: '한 줄에 Payment 하나'), "
+                "그 엔티티를 entities 에 필드로 둔다 (입력 레코드와 출력 행은 따로)"
+            )
+    return out
 
 
 def _ui_actions(contract: TaskContract) -> list[str]:
@@ -1003,6 +1066,8 @@ def check_contract(
     problems += _leaks(contract, spec, seed)
     problems += _ui_actions(contract)
     problems += _ui_load_and_background(contract)
+    if "file" in manifest.interfaces:
+        problems += _file_fixtures(contract)
     harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest, seed)

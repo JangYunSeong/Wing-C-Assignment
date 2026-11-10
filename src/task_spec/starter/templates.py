@@ -96,6 +96,7 @@ def available(root: Path = TEMPLATES_ROOT) -> list[str]:
 TEMPLATE_FOR_SUB: dict[str, str] = {
     "sw.backend": "backend/java-spring-boot3-jpa",
     "sw.frontend": "frontend/react-vite-ts",
+    "data.eng": "data/python-duckdb",
 }
 
 
@@ -108,6 +109,11 @@ def select_template(sub: str, root: Path = TEMPLATES_ROOT) -> Template | None:
 def is_java(m: TemplateManifest) -> bool:
     """Java 전용 산출물·검사(JPA 저장 확인, 클래스 상속 검사 등)를 쓸 템플릿인가."""
     return m.stack is not None and m.stack.language.lower() == "java"
+
+
+def is_python(m: TemplateManifest) -> bool:
+    """Python 템플릿(데이터 엔지니어 — contract.py·Python 검증기·Python 이미지)인가."""
+    return m.stack is not None and m.stack.language.lower() == "python"
 
 
 def load_template(

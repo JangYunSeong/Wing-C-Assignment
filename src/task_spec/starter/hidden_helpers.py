@@ -24,7 +24,7 @@ from task_spec.starter.seed_rows import allocate_rows, public_free
 from task_spec.starter.seed_sql import default_value
 from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
-from task_spec.starter.templates import is_java
+from task_spec.starter.templates import is_java, is_python
 
 _SEG = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
 
@@ -222,6 +222,10 @@ def render_contract_case(
 ) -> GeneratedFile | None:
     """audience=hidden: 숨은 케이스 도우미(ContractCase — 케이스 범위·테이블·peak). public: 공개 테스트 도우미(PublicCase —
     공개 테스트 몫 행, 동시 요청·오류 주입 없음 — 공개 테스트는 숨은 요구를 시험하지 않는다)."""
+    if is_python(manifest):  # 데이터 템플릿 — contract.py (starter/py_helpers.py)
+        from task_spec.starter.py_helpers import render_py_contract
+
+        return render_py_contract(contract, manifest, audience)
     if not is_java(manifest):  # TypeScript 템플릿 — contract.ts (starter/ts_helpers.py)
         from task_spec.starter.ts_helpers import render_ts_contract
 

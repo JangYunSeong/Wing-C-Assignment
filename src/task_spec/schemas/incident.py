@@ -14,6 +14,7 @@ NeedKind = Literal[
     "empty_record_entity",
     "mutation_endpoint",
     "result_screen",
+    "dated_input_folders",
 ]
 
 
@@ -27,6 +28,7 @@ class ContractNeed(Schema):
     - empty_record_entity: 요청마다 쌓이는 기록 엔티티 — 새로 만듦(existing 아님), 처음 0행
     - mutation_endpoint: 화면이 부르는 바꾸는 API (POST·PUT·PATCH·DELETE) — 프론트엔드 재료 (2026-11-09: 중복 제출·낙관적 갱신)
     - result_screen: 그 결과를 보여 주는 화면 요소 (계약 screens) — 바뀐 값이 화면에 보여야 판정할 수 있다
+    - dated_input_folders: 입력이 날짜별 폴더(예 <raw>/YYYY-MM-DD/*.jsonl)로 쌓이고 명령은 그 상위 폴더와 날짜를 옵션으로 받는다 — 데이터 배치 재료 (2026-11-09)
     """
 
     kind: NeedKind

@@ -1,0 +1,158 @@
+# 템플릿 data/python-duckdb v1 — 데이터 엔지니어 배치 작업 과제 (starter-templates §2: Python 3.11 + DuckDB — 2026-11-09 사용자 결정으로
+# PySpark 보다 먼저. 손 예시 daily-agg-pipeline 이 DuckDB 로 검증됨). 숨은 테스트는 케이스마다 작은 입력 파일을 직접 쓰고(하네스 Workspace)
+# 작업을 별도 프로세스로 실행해(종료 코드·시간 제한·쓰기 중 크래시 주입) 출력 파일을 계약 형식으로 읽어 판정한다.
+# 기준 재현(2026-11-09): 손 예시 구현 9개 — 흔한 구현은 늦은 결제·크래시·사본에서, 하나만 놓친 구현은 그 열에서만, 허용 구현 3개는 전부 통과.
+template_id: data/python-duckdb
+version: 1
+stack:
+  language: Python
+  language_version: "3.11"
+  framework: DuckDB 1.5 + pyarrow 26 + pandas 2.3 + numpy 2.4 (배치 작업 CLI), pytest 9
+  framework_version: "1.5"
+  build_tool: uv
+  build_tool_version: "0.13"
+interfaces: [cli, file]
+workspace: /workspace
+commands:
+  build: uv sync --frozen --offline
+  test: python -m pytest -q
+  hidden_test: python -m pytest -c grading/harness/grader-pytest.ini grading/selftest grading/cases public_tests
+  run: python pipeline/run.py
+  test_compile: python -m pytest -c grading/harness/grader-pytest.ini --collect-only -q grading/cases public_tests
+naming:
+  path: '^[a-z0-9_./\-]*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][a-z0-9_]*$'
+  table:
+    style: none
+# DB 행을 바꾸는 과제가 아님 — 시드·행 배정 대신 입력 파일 형식(fixtures)과 숨은 케이스 setup
+seed_rows: false
+fill_slots:
+  starter:
+    - pipeline/**/*.py
+    - tests/**/*.py
+    - tests/**/*.jsonl
+    - tests/**/*.csv
+    - tests/**/*.json
+    - data/**/*.jsonl
+    - data/**/*.csv
+    - data/**/*.json
+    - scripts/**/*.py
+    - docs/**
+  public_test:
+    - public_tests/**/*.py
+  hidden:
+    - grading/cases/**/*.py
+    - grading/grader-params.json
+  ref:
+    - pipeline/**/*.py
+# 어느 오버레이도 덮어쓸 수 없다 — 의존성은 템플릿이 정한 것만 (DuckDB·pyarrow·pandas·numpy)
+locked:
+  - pyproject.toml
+  - uv.lock
+reserved:
+  - grading/**
+hidden_layout:
+  harness: grading/harness
+  selftest: grading/selftest
+  cases: grading/cases
+  params: grading/grader-params.json
+# 계약 도우미 — 코드가 계약에서 쓴다 (starter/py_helpers.py): 명령 실행 함수(run_<명령>)·데이터 모양(TypedDict)·경로 상수
+hidden_helper:
+  path: grading/cases/contract.py
+  package: cases
+public_helper:
+  path: public_tests/contract.py
+  package: public_tests
+# 계약 계획(plan_contract) 입력의 템플릿 설명에 붙는다 — CLI 과제를 계약에 적는 법
+contract_guide:
+  - "명령은 endpoints 에 method 없이 — path 는 저장소 루트 기준 스크립트 경로(예: pipeline/run.py), request 는 명령행 옵션(이름 그대로 --이름, 밑줄은 하이픈), responses 의 status 는 종료 코드(0 성공·그 밖 실패)."
+  - "입력·출력 파일은 fixtures(kind file)에 하나씩 — 위치(폴더 규칙, 예 입력 <raw>/YYYY-MM-DD/*.jsonl · 출력 <out>/daily_sales/date=YYYY-MM-DD/*.parquet)와 형식 하나(jsonl·csv·parquet 중 하나, '또는' 없이), 그리고 그 파일의 한 줄(한 행)이 어떤 엔티티인지 이름을 적는다."
+  - "입력 레코드와 출력 행은 entities 에 따로 필드로 적는다 (필드 이름·형식 그대로 — 테스트와 구현이 같은 이름을 쓴다)."
+limits:
+  max_files: 60
+  max_file_bytes: 200000
+  max_total_bytes: 800000
+  allow_dependency_changes: false
+image:
+  template_layer: [project/]
+  grader_only: [hidden/, manifest.yaml, README.tpl.md]
+  grader_only_dependencies: []
+hidden_rules:
+  # 숨은·공개 테스트는 하네스·계약 도우미·pytest 만 — 지원자 구현(pipeline/…)을 import 하지 않는다 (공개 계약인 명령·파일로만 판정)
+  forbidden_imports:
+    - '^\s*(?:from|import)\s+pipeline\b'
+  reason_patterns:
+    - '\breason\(\s*[''"]([a-z0-9_]+)[''"]'
+  case_id_pattern: '\bhc\d{1,2}\b'
+# 템플릿에 없는 라이브러리 · 채점 자리 import — 시작 코드·참조 구현이 쓰면 실행 전에 재요청
+unavailable_imports:
+  - '^\s*(?:import|from)\s+(?:polars|pyspark|sqlalchemy|requests|boto3|airflow)\b'
+  - '^\s*(?:import|from)\s+(?:harness|cases|public_tests)\b'
+prompt_tasks:
+  gen_hidden: gen_hidden_py
+  gen_public: gen_public_py
+  gen_starter: gen_starter_py
+  gen_naive: gen_naive_py
+  gen_accepted: gen_accepted_py
+repair_terms:
+  reason_call: reason(code, 설명)
+  public_helper: public_tests/contract.py
+  feature_first: >-
+    작업이 동작했는지 먼저 확인한다: 정상 입력으로 실행해 종료 코드 0 과 출력이 정의대로인 것을 (사유 없이) 단언한 뒤 숨은 요구를 시험하고,
+    '없다'만이 아니라 있어야 할 출력 값도 확인한다. 명령은 contract.py 의 run_…() 로, 입력은 Workspace.write_… 로 쓴다.
+  # 명령이 예외로 끝난 흔적 (DuckDB "Binder Error:"·"Parser Error:", Python "KeyError:"·Traceback) — argparse 의 소문자 "error:" 는 아님
+  impl_crash: '\b[A-Z][A-Za-z]*(?: [A-Z][a-z]+)? ?(?:Error|Exception):|Traceback \(most recent call last\)'
+harness_params:
+  - name: job_timeout_s
+    kind: int
+    description: 작업 한 번 실행의 시간 제한 (초) — 넘으면 시간 초과
+    minimum: 5
+    maximum: 600
+    required: false
+failure_reasons:
+  - code: late_data_missed
+    description: 나중에 들어온 앞 날짜(또는 앞 구간) 데이터가 결과에 반영되지 않음
+    log_patterns: ['\[reason:late_data_missed\]']
+    how: 앞 날짜로 실행해 출력이 정의대로인 것을 (사유 없이) 확인한 뒤, 다음 날짜 입력 폴더에 앞 날짜 레코드를 넣고 다음 날짜로 실행. 사유는 "앞 날짜 출력이 늦게 온 레코드까지 반영했는지" 단언에
+  - code: duplicate_counted
+    description: 같은 레코드의 사본(재전송)이 두 번 이상 집계됨
+    log_patterns: ['\[reason:duplicate_counted\]']
+    how: 같은 식별자의 레코드를 같은 폴더·다음 날짜 폴더에 다시 넣고 실행. 사유는 "출력 값이 한 번만 센 값인지" 단언에
+  - code: partial_output_visible
+    description: 실행 도중 죽은(실패한) 실행이 반쯤 쓴 출력을 남겨 읽는 쪽이 틀린 값을 봄
+    log_patterns: ['\[reason:partial_output_visible\]']
+    how: 정상 실행 뒤 다음 실행을 run_…(…, crash_after_bytes=128) 로 쓰는 중에 죽이고, 읽는 쪽 화면(출력)의 날짜·구간마다 '직전 성공 값' 또는 '이번 실행이 성공했을 때의 값' 인지 단언. 그 뒤 다시 실행하면 정상 값인지도. 다른 숨은 요구(늦은 데이터·사본)를 같은 케이스에 섞지 않는다
+  - code: rerun_not_idempotent
+    description: 같은 입력으로 같은 날짜·구간을 다시 실행하면 결과가 달라짐 (덧붙음·중복)
+    log_patterns: ['\[reason:rerun_not_idempotent\]']
+    how: 정상 실행 뒤 같은 입력·같은 옵션으로 한 번 더 실행. 사유는 "출력이 첫 실행과 같은지" 단언에
+  - code: contract_mismatch
+    description: 출력 위치·형식·열이 계약과 다름
+    log_patterns: ['\[reason:contract_mismatch\]']
+    how: 계약의 출력 위치·열·형식으로 읽어 비교. 사유는 그 비교 단언에
+# 허용 설계가 이 스택에서 성립하는 조건 (spec-to-code §4.2) — 손 예시 daily-agg-pipeline REPORT 실험에서
+# 이 스택의 API 사실 — 모든 생성기의 기술 환경에 붙는다 (함정·해법 없음). DuckDB 1.5.6·pandas 2.3.3 에서 확인 (2026-11-09 데이터 알파 7회차)
+stack_notes:
+  - "DuckDB 결과는 `con.execute(sql, [값…]).fetchall()`(튜플 목록)로 받는다. Arrow 표가 필요하면 `.to_arrow_table()` — `.arrow()` 는 표가 아니라 RecordBatchReader 다."
+  - "pandas 2.3·numpy 2.4 가 있다 — DuckDB 결과를 DataFrame 으로 받으려면 `.df()`, DuckDB SQL 은 같은 이름의 DataFrame 변수를 표처럼 바로 읽는다. parquet 은 `DataFrame.to_parquet(경로, index=False)`."
+  - "`read_csv(…)` 는 열 형식을 추정한다 — 날짜·시각 모양의 열은 DATE·TIMESTAMP 로 읽힌다(pandas 로 받으면 datetime64). 날짜 문자열은 SQL 이면 `strftime(열, '%Y-%m-%d')`, pandas 면 `.dt.strftime('%Y-%m-%d')` 로 만들고, 문자열 함수(substr 등)를 쓰려면 `all_varchar = true` 로 읽는다."
+  - "COPY 옵션은 `=` 없이 쓴다 — `COPY t FROM 'a.csv' (HEADER, DELIMITER ',')`, `COPY (SELECT …) TO 'o.parquet' (FORMAT parquet)`."
+  - "값은 SQL 문자열에 끼워 넣지 않고 매개변수로 넘긴다 (f-string 안의 `{…}` 는 DuckDB 의 struct 문법과 섞인다). 단 `COPY (… WHERE d = ?) TO ? …` 처럼 COPY 대상 경로와 질의 값을 함께 `?` 로 넘기면 TO 의 `?` 가 첫 값에 먼저 묶여 오류 없이 엉뚱한 파일에 쓴다 — 대상 경로는 문자열로 쓰거나 `$1`·`$2` 번호 매개변수로."
+# 생성 모델이 되풀이하는 DuckDB 실수 — 시작 코드·참조 구현에서 찾으면 실행 전에 재요청 (2026-11-09 데이터 알파 2·6·7회차)
+code_pitfalls:
+  - pattern: '(?i)\b(?:FROM|TO)\s+(?:''[^'']*''|"[^"]*"|\?|\{[^}]*\})\s*\([^()]*\b\w+\s*='
+    fix: >-
+      DuckDB COPY 의 옵션은 `=` 없이 쓴다 — `COPY t FROM 'a.csv' (HEADER, DELIMITER ',')` · `COPY (SELECT …) TO 'o.parquet' (FORMAT parquet)`.
+      CSV·JSON 을 읽을 때는 표 함수(`SELECT * FROM read_csv('a.csv', header = true)`)를 써도 된다
+  - pattern: '\.arrow\(\)'
+    unless: '\.read_all\(\)'
+    fix: DuckDB 1.5 의 `.arrow()` 는 표가 아니라 RecordBatchReader 다 (num_rows·column·to_pylist 없음) — 표가 필요하면 `.to_arrow_table()` (또는 `.arrow().read_all()`)
+  # COPY 대상 경로 ? 가 질의 안의 ? 보다 먼저 묶인다 (1.5.6 에서 확인 — 오류 없이 첫 값 이름의 파일에 쓰고 질의는 0행)
+  - pattern: '(?is)\bCOPY\s*\((?:(?!\bTO\b).)*?\?(?:(?!\bTO\b).)*?\)\s*TO\s+\?'
+    fix: "`COPY (… WHERE d = ?) TO ? …` 는 TO 의 `?` 가 첫 값에 먼저 묶여 오류 없이 엉뚱한 파일에 쓴다 — 대상 경로를 문자열로 쓰거나 `$1`·`$2` 번호 매개변수로 (`COPY (… WHERE d = $1) TO $2 (FORMAT parquet)`)"
+stack_conditions:
+  - 출력은 임시 경로(같은 파일 시스템)에 다 쓴 뒤 os.replace(파일)·폴더 이름 바꾸기로 한 번에 바꿔 넣는다 — 쓰는 도중 죽어도 읽는 쪽은 직전 결과를 본다. 기존 출력을 먼저 지우고 쓰면 그 사이 비거나 반쯤 쓴 상태가 보인다.
+  - DuckDB COPY … TO 는 대상 경로에 바로 쓴다 — 원자적으로 바꾸려면 임시 경로에 COPY 한 뒤 바꿔 넣는다. 이름이 _·. 로 시작하는 임시 파일은 읽는 쪽이 무시한다.
+  - 늦게 온 데이터는 이번 입력 폴더만이 아니라 영향 받은 앞 날짜·구간을 다시 계산해야 반영된다 (지금까지 받은 입력 전체, 또는 이번에 나온 날짜만 다시 계산).
+  - 같은 레코드의 사본은 식별자로 하나만 남긴다 (DISTINCT ON·GROUP BY 식별자·dict) — 폴더를 가로질러서도.

@@ -61,7 +61,21 @@ def contract_markdown(
     for e in contract.endpoints:
         head = f"{e.method} {e.path}" if e.method else e.path
         out += [f"### `{head}`", "", e.summary, ""]
-        for label, fields in (("헤더", e.headers), ("쿼리", e.query), ("본문", e.request)):
+        if not e.method and (
+            e.request or e.query
+        ):  # CLI 명령 — 옵션은 --이름 (starter/py_helpers.flag)
+            out.append(
+                "- 옵션: "
+                + " · ".join(
+                    _field(f).replace(f"`{f.name}`", f"`--{f.name.replace('_', '-')}`", 1)
+                    for f in [*e.request, *e.query]
+                )
+            )
+        for label, fields in (
+            (("헤더", e.headers), ("쿼리", e.query), ("본문", e.request))
+            if e.method
+            else (("헤더", e.headers),)
+        ):
             if fields:
                 out.append(f"- {label}: " + " · ".join(_field(f) for f in fields))
         for r in e.responses:

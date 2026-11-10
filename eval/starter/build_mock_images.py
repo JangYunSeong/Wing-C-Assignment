@@ -3,10 +3,12 @@
     uv run python -m eval.starter.build_mock_images            # 기본 3과제
     uv run python -m eval.starter.build_mock_images --run data/eval/build/<빌드 폴더> ...
 
-층: 런타임(Java: JDK 17 / Node: node 22 bookworm-slim) → 템플릿 층(템플릿 project/ + 오프라인 의존성 — Gradle 캐시 또는 node_modules,
-하네스·manifest 없음) → 과제 층. 빌드 폴더의 직군(report.json sub)으로 템플릿을 고른다 (select_template — 2026-11-09 React 템플릿).
+층: 런타임(Java: JDK 17 / Node: node 22 bookworm-slim / Python: python 3.11 slim-bookworm) → 템플릿 층(템플릿 project/ + 오프라인
+의존성 — Gradle 캐시·node_modules·uv.lock 그대로 만든 가상 환경 /opt/venv, 하네스·manifest 없음) → 과제 층. 빌드 폴더의 직군(report.json sub)으로
+템플릿을 고른다 (select_template — 2026-11-09 React·데이터 템플릿).
   응시용 = 템플릿 층 + 시작 코드 + README (숨은 테스트 없음)
-  채점용 = 템플릿 층 + python3 + grade(Java: eval/starter/image_grade.py · Node: image_grade_node.py) + 숨은 테스트·하네스·조절값 + config.json
+  채점용 = 템플릿 층 + python3 + grade(Java: eval/starter/image_grade.py · Node: image_grade_node.py · Python: image_grade_py.py)
+           + 숨은 테스트·하네스·조절값 + config.json
 참조 구현(ref_*)은 어느 이미지에도 넣지 않는다 — 검증 때 제출물로만 쓴다.
 
 검증 (모두 --network none): 응시용에서 기존 테스트가 오프라인으로 통과, 채점용으로 시작 코드만·허용 구현·흔한 구현 제출물을 채점.
@@ -32,6 +34,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from eval.starter import python_verify
 from eval.starter.gradle_verify import case_ids, write_overlay
 from eval.starter.node_verify import layout_of
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract, TaskItem
@@ -42,6 +45,7 @@ from task_spec.starter.templates import (
     candidate_layer_rules,
     forbidden_in,
     is_java,
+    is_python,
     load_template,
     select_template,
 )
@@ -73,6 +77,9 @@ class Stack:
         str, ...
     ]  # 응시용 이미지에서 네트워크 없이 — 의존성이 이미지 안에 다 있는가
     scan_skip: tuple[str, ...]  # 레이어 검사에서 뺄 런타임 경로 (작업 경로가 아닌 곳)
+    grader_setup: tuple[str, ...] = (
+        PYTHON3,
+    )  # 채점 기반 층 — grade 스크립트를 돌릴 python3 (Python 런타임은 이미 있음)
 
 
 JAVA = Stack(
@@ -99,8 +106,28 @@ NODE = Stack(
 )
 
 
+# Python 3.11(템플릿 requires-python) Debian 12 slim — uv.lock 그대로 /opt/venv 에 설치, PATH 앞에. 응시용에서 `python -m pytest` 가 그 환경
+PY_VENV = "/opt/venv"
+UV_VERSION = "0.13.6"  # 개발 서버와 같은 uv (lock 형식이 같게)
+PY = Stack(
+    base="docker.io/library/python:3.11-slim-bookworm",
+    install=(
+        f"ENV UV_PROJECT_ENVIRONMENT={PY_VENV} UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy PATH={PY_VENV}/bin:$PATH",
+        # lock 그대로 설치하고 뼈대 테스트를 한 번 — 응시·채점 컨테이너는 네트워크 없음. 캐시·바이트코드는 지운다
+        f"RUN pip install --no-cache-dir uv=={UV_VERSION} && uv sync --frozen --no-install-project && uv cache clean "
+        "&& python -m pytest -q -p no:cacheprovider && find . -name __pycache__ -prune -exec rm -rf {} +",
+    ),
+    grade_script=ROOT / "eval" / "starter" / "image_grade_py.py",
+    candidate_check=("python", "-m", "pytest", "-q", "-p", "no:cacheprovider"),
+    scan_skip=("usr/", "opt/", "etc/", "var/", "lib/", "root/"),
+    grader_setup=(),
+)
+
+
 def stack_for(t: Template) -> Stack:
-    return JAVA if is_java(t.manifest) else NODE
+    if is_java(t.manifest):
+        return JAVA
+    return PY if is_python(t.manifest) else NODE
 
 
 def template_of(run: Path) -> Template:
@@ -243,6 +270,8 @@ def grader_overlay(t: Template, item: dict[str, Any], dest: Path) -> dict[str, A
     if item["public"] is not None:
         write_overlay(item["public"], dest)
     m = t.manifest
+    if is_python(m):
+        return py_config(t, item)
     if not is_java(m):
         return node_config(t, item)
     classes = case_ids(item["hidden"], m.hidden_rules.case_id_pattern)
@@ -305,6 +334,39 @@ def node_config(t: Template, item: dict[str, Any]) -> dict[str, Any]:
         "existing_command": ["npx", "vitest", "run"],
         "grading_command": shlex.split(cmds.hidden_test),
         "layout": layout_of(t),
+        "case_id_pattern": m.hidden_rules.case_id_pattern,
+        "timeout_s": TIMEOUT_S,
+        "cases": cases,
+    }
+
+
+def py_config(t: Template, item: dict[str, Any]) -> dict[str, Any]:
+    """Python grade 설정 (image_grade_py) — 개발 서버 Python 검증기와 같은 명령·대상 (케이스 id 는 테스트 이름의 hc*·pt*)."""
+    m = t.manifest
+    cases: list[dict[str, Any]] = [
+        {
+            "id": c.case_id,
+            "trap_id": c.trap_id,
+            "intended_reason": c.intended_reason,
+            "kind": "hidden",
+        }
+        for c in item["plan"].cases
+    ]
+    if item["public"] is not None:
+        cases += [{"id": pt.test_id, "kind": "public"} for pt in item["contract"].public_tests]
+    return {
+        "common_id": item["common_id"],
+        "revision": item["revision"],
+        "template_ref": m.ref,
+        "template_dir": m.workspace,
+        "locked": list(m.locked),
+        "reserved": list(m.reserved),
+        "python": f"{PY_VENV}/bin/python",
+        "compile_paths": list(python_verify.COMPILE_PATHS),
+        "grading_paths": python_verify.grading_paths(t),
+        "grading_ini": python_verify.GRADING_INI,
+        "grading_rootdir": python_verify.GRADING_ROOTDIR,
+        "layout": python_verify.layout_of(t),
         "case_id_pattern": m.hidden_rules.case_id_pattern,
         "timeout_s": TIMEOUT_S,
         "cases": cases,
@@ -389,7 +451,9 @@ def main() -> None:
             "utf-8",
         )
         pm("build", "-t", template_img, str(tdir), log=log)
-        print(f"② 채점 기반 층 {t.manifest.ref} (python3 + grade)", flush=True)
+        print(
+            f"② 채점 기반 층 {t.manifest.ref} (python3 + grade)", flush=True
+        )  # Python 런타임은 python3 설치 생략
         gdir = ctx / "grader-base" / stem
         gdir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(st.grade_script, gdir / "grade.py")
@@ -397,7 +461,7 @@ def main() -> None:
             containerfile(
                 template_img,
                 [
-                    PYTHON3,
+                    *st.grader_setup,
                     "COPY grade.py /grader/grade.py",
                     "RUN printf '#!/bin/sh\\nexec python3 /grader/grade.py \"$@\"\\n' > /usr/local/bin/grade && chmod +x /usr/local/bin/grade",
                 ],

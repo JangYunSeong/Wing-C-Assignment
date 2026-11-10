@@ -313,6 +313,27 @@ class RepairTerms(Schema):
         "값(ContractCase 의 NEXT_OK_…·HEADER_…_OK·okHeaders())으로 요청하고, 응답 상태를 단언한 뒤, '없다'만이 아니라 "
         "있어야 할 결과(실패 기록 등)도 확인한다."
     )
+    # 단언 실패 메시지가 '구현 실행 중 오류'(명령이 예외로 끝남)를 보이는 꼴 — 맞으면 테스트가 아니라 그 구현을 다시 만든다.
+    # 빈 값이면 쓰지 않는다 (Java·Node 는 서버 쪽 예외 판별이 따로 있다). 2026-11-09 데이터 알파 3회차: 허용 구현의 SQL 오류를
+    # '모든 구현이 공개 테스트 실패 — 테스트 의심'으로 짚어 공개 테스트만 두 번 다시 만들었다.
+    impl_crash: str = ""
+
+
+class CodePitfall(Schema):
+    """생성 모델이 이 스택에서 되풀이하는 API 실수 — 시작 코드·참조 구현 코드에서 찾으면 실행 전에 바른 쓰는 법과 함께 재요청.
+    2026-11-09 데이터 알파 2·6회차: 참조 구현이 DuckDB COPY 옵션을 `AUTO_DETECT=TRUE` 로 써 Parser Error (다시 만들어도 반복)."""
+
+    pattern: str = Field(min_length=1)  # 정규식 (파일 전체에서 찾음)
+    fix: str = Field(min_length=1)  # 재요청 문구 — 바른 쓰는 법
+    # 이 정규식이 같은 파일에 있으면 걸지 않는다 — 바르게 쓴 꼴 (예: .arrow() 뒤 .read_all()). 2026-11-09 재검증: 7회차 흔한 구현이
+    # .arrow().read_all() 로 바르게 썼는데 걸렸다.
+    unless: str = ""
+
+    @field_validator("pattern", "unless")
+    @classmethod
+    def _rx(cls, v: str) -> str:
+        re.compile(v)
+        return v
 
 
 class TemplateManifest(Schema):
@@ -364,7 +385,16 @@ class TemplateManifest(Schema):
     # 2026-11-09 React 템플릿: 숨은·공개 테스트·시작 코드 프롬프트가 Java 하네스(ContractCase·@DisplayName·schema.sql)에 묶여 있어
     # 스택마다 프롬프트를 따로 둔다 — Java 프롬프트를 바꾸지 않아 Java 재평가가 필요 없다.
     prompt_tasks: dict[str, str] = Field(default_factory=dict)
+    # 계약 계획(plan_contract) 입력의 템플릿 설명 끝에 붙는 안내 — 이 스택에서 계약을 적는 법 (예: CLI 명령·옵션·종료 코드).
+    # 2026-11-09 데이터 템플릿: 공용 계약 프롬프트는 HTTP·화면 중심이라 CLI·파일 과제의 칸 쓰는 법을 템플릿이 알려 준다.
+    contract_guide: list[str] = Field(default_factory=list)
     repair_terms: RepairTerms = Field(default_factory=RepairTerms)  # 수리 안내 문구의 스택 이름
+    # 이 스택에서 되풀이되는 API 실수 (static_check._code_pitfalls)
+    code_pitfalls: list[CodePitfall] = Field(default_factory=list)
+    # 이 스택의 API 사실 — 모든 생성기의 기술 환경(stack_text)에 붙는다. 함정·해법과 무관한 쓰는 법만 (흔한 구현에도 가므로).
+    # 2026-11-09 데이터 알파 7회차: 허용 구현이 다시 만들 때마다 DuckDB·pyarrow API 를 틀림 (CSV 시각 열이 TIMESTAMP 로 추정되는데 substr,
+    # numpy 가 필요한 메서드, 1.5 의 .arrow() 가 RecordBatchReader) — 생성 모델의 DuckDB 지식이 옛 판에 맞춰져 있다.
+    stack_notes: list[str] = Field(default_factory=list)
 
     @field_validator("starter_test_calls", "unavailable_imports")
     @classmethod

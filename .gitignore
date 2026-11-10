@@ -1,5 +1,7 @@
 # 지원자 원본·가명화본·주장·대조·명세 결과·체크포인트·온톨로지 산출물 (CLAUDE.md 불변식 1)
 data/
+# 템플릿의 직군 폴더(templates/data/ — 데이터 직군 템플릿, 가상 파일만)는 넣는다. 그 아래의 data/ 는 여전히 무시
+!templates/data/
 *.pdf
 *.docx
 *.hwp
