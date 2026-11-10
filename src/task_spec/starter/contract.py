@@ -38,6 +38,7 @@ from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
+from task_spec.starter.feasibility import feasibility_problems
 from task_spec.starter.header_values import header_problems
 from task_spec.starter.seed_rows import case_rows_problems, seed_problems
 from task_spec.starter.state_rule import legacy_rule, state_problems
@@ -1317,6 +1318,7 @@ def check_contract(
     harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest, seed)
+    problems += feasibility_problems(plan, manifest)
     if manifest.seed_rows:
         problems += seed_problems(contract)
         problems += case_rows_problems(contract, plan, manifest)

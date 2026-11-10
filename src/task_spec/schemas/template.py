@@ -55,6 +55,18 @@ class HarnessParam(Schema):
     # 지원자에게 보이지 않는 조절값이 HiddenPlan 에 빠졌을 때 코드가 넣는 값 (plan_contract.fill_hidden_defaults — 재요청하지 않음).
     # 2026-11-07 알파 3×3: 버스트 케이스에 bursts 가 빠져 재요청에도 안 고쳐져 계약 생성 실패.
     default: float | None = None
+    # 성립 검사(starter/feasibility.py)에서만 쓰는 값 — 계획에 없을 때 하네스가 실제로 쓰는 값 (다른 조절값을 쓰는 식, 예
+    # "max(30, connection_timeout_ms * 2 / 1000 + 5)"). default 와 달리 계획에 채워 넣지 않는다.
+    default_expr: str | None = Field(default=None, max_length=200)
+
+    @field_validator("default_expr")
+    @classmethod
+    def _expr(cls, v: str | None) -> str | None:
+        if v is not None:
+            from task_spec.starter.feasibility import parse
+
+            parse(v)
+        return v
 
     @field_validator("spec_patterns")
     @classmethod
@@ -80,6 +92,23 @@ class HarnessParam(Schema):
         return self
 
 
+class Feasibility(Schema):
+    """이 사유로 흔한 구현이 실제로 떨어지려면 조절값이 만족해야 하는 조건 한 줄 (starter/feasibility.py 가 계산)."""
+
+    when: str = Field(
+        min_length=1, max_length=200
+    )  # 예: "rows * query_delay_ms >= 2000 * request_timeout_s"
+    why: str = Field(min_length=1, max_length=300)
+
+    @field_validator("when")
+    @classmethod
+    def _expr(cls, v: str) -> str:
+        from task_spec.starter.feasibility import parse
+
+        parse(v)
+        return v
+
+
 class FailureReason(Schema):
     """의도한 실패 사유 코드 1개 — verifier 가 실행 로그·예외를 이 패턴으로 대조한다 (게이트 ③)."""
 
@@ -92,6 +121,9 @@ class FailureReason(Schema):
     # 이 사유를 하네스로 일으키는 법 한 줄 — 코드가 계약·숨은 테스트 생성기 입력과 케이스 줄에 싣는다.
     # 2026-11-08 상류 평가: 롤백 사유 케이스 9개 중 8개가 계획 단계부터 "허용되지 않은 전이"로 적혀 숨은 테스트 첫 답에 주입이 빠짐 (2/9).
     how: str | None = Field(default=None, max_length=300)
+    # 이 사유가 그 조절값으로 실제로 일어나는 조건 — 성립하지 않으면 계약 단계에서 숫자를 붙여 재요청한다.
+    # 2026-11-10 변별 실패 분석: N+1 계획 23개 중 5개가 200행 × 20ms = 4초 < 요청 한도 30~65초라 흔한 구현이 떨어질 수 없었다.
+    feasible: list[Feasibility] = Field(default_factory=list)
 
     @field_validator("log_patterns", "requires")
     @classmethod

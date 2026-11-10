@@ -228,12 +228,14 @@ harness_params:
     minimum: 0
     maximum: 200
     required: false
+    default_expr: "0"  # 계획에 없으면 하네스는 지연을 넣지 않는다 (GraderJdbcHarness.queryDelayMs = 0) — 성립 검사용
   - name: request_timeout_s
     kind: int
     description: 채점 클라이언트의 요청 하나 시간 한도 (기본 = max(30, connection_timeout_ms × 2 / 1000 + 5))
     minimum: 1
     maximum: 120
     required: false
+    default_expr: "max(30, connection_timeout_ms * 2 / 1000 + 5)"  # GraderSupport.requestTimeout 과 같은 계산 — 성립 검사용
   - name: await_timeout_ms
     kind: int
     description: 비동기 설계를 위해 결과를 기다리는 최대 시간 (기본 5000)
@@ -252,10 +254,16 @@ failure_reasons:
       - '\[reason:pool_acquire_timeout\]'
     requires: ['\bpeak\(', 'Burst\.(?:rounds|fire)\(']  # 운영 피크를 실제로 재현해야 이 사유가 나온다
     how: 운영 피크를 peak(…) 로 재현한다 (동시 요청 수만큼씩 버스트 수만큼, 요청마다 다른 행). 사유는 Burst.failures(…) 단언에
+    feasible:  # 성립 조건 (starter/feasibility.py) — 2026-11-10: 동시 20·풀 20 에서도 흔한 구현(커넥션을 쥔 채 하나 더)이 이 사유로 떨어짐
+      - when: "concurrency >= pool_size"
+        why: 흔한 구현은 요청마다 커넥션을 쥔 채 기다린다 — 동시 요청 수가 풀 크기 이상이어야 연결이 바닥난다
   - code: request_timeout
     description: 채점 클라이언트 요청이 시간 한도 안에 끝나지 않음
     log_patterns: ['HttpTimeoutException', '\[reason:request_timeout\]']
     how: 케이스 data 가 버스트면 동시 요청(peak(…))으로, 아니면 지연 없이 같은 요청을 한 번 보내 데운 뒤 지연을 주입(GraderJdbcHarness.queryDelayMs)하고 Burst.fire(1, …) 로 한 번 보낸다 (버스트가 아닌 케이스에 peak 를 쓰면 올바른 구현도 동시 부하로 시간 초과). 사유는 Burst.failures(…) 단언에
+    feasible:  # 성립 조건 — 2026-11-10 nplus1-d: 200행 × 20ms = 4초 < 한도 30초라 흔한 구현(행마다 쿼리)이 떨어질 수 없었다
+      - when: "rows * query_delay_ms >= 1000 * request_timeout_s"  # 저장 계획 비교: 비율 0~0.13 은 한 번도 안 잡힘, 1.0 부터 잡힘 — 필요조건만
+        why: 흔한 구현(행마다 쿼리 한 번)의 시간 ≈ 행 수 × 쿼리 지연 — 요청 한도 이상이어야 시간 초과로 떨어진다
   - code: server_error
     description: 기대한 응답 대신 5xx
     log_patterns: ['\[reason:server_error\]']
