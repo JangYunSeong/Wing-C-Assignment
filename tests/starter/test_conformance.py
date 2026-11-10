@@ -281,3 +281,23 @@ def test_starter_must_render_contract_values() -> None:
     assert _starter_options(o(literal), c) == []
     via_const = "import { OPTIONS } from '../api/contract-types';\nOPTIONS.CATEGORY_SELECT.map((v) => <option key={v}>{v}</option>)"
     assert _starter_options(o(via_const), c) == []
+
+
+def test_dev_mock_server_reading_request_bodies_is_not_flagged() -> None:
+    """2026-11-10 검증 알파 cf-fe-token: 개발용 가짜 서버가 요청 본문을 `await request.json() as {…}` 로 읽은 것을 응답 모양으로 잘못 잡아
+    시작 코드 생성이 멈췄다."""
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import Overlay, _contract_types_usage
+
+    mock = "http.post('/api/x', async ({ request }) => { const body = (await request.json()) as { id: number }; return HttpResponse.json(body); })"
+    o = Overlay(kind="starter", files=(GeneratedFile(path="src/mocks/handlers.ts", content=mock),))
+    assert _contract_types_usage(o, FE, _list_contract()) == []
+    o = Overlay(
+        kind="starter",
+        files=(
+            GeneratedFile(
+                path="src/api/x.ts", content="import type { A } from './contract-types';\n" + mock
+            ),
+        ),
+    )
+    assert _contract_types_usage(o, FE, _list_contract()) == []

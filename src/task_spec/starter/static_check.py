@@ -645,7 +645,7 @@ def _starter_options(o: Overlay, contract: TaskContract | None) -> list[StaticPr
 
 _JSON_INLINE = re.compile(
     r":\s*\{[^;=]*\}\s*(?:\[\])?\s*=\s*await\s+[\w.$]+\.json\(\)"  # const data: { items: X[] } = await res.json()
-    r"|\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … }
+    r"|(?<!request)(?<!req)\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … } — 요청 본문(request.json())은 빼고
 )
 _TYPES_IMPORT = re.compile(r"""from\s+['"](?:\.{1,2}/)+(?:[\w-]+/)*contract-types['"]""")
 
@@ -665,7 +665,14 @@ def _contract_types_usage(
     decl = re.compile(rf"\bexport\s+(?:interface|type)\s+({'|'.join(map(re.escape, names))})\b")
     out: list[StaticProblem] = []
     for f in o.files:
-        if f.path == types.path or not f.path.endswith((".ts", ".tsx")) or ".test." in f.path:
+        if (
+            f.path == types.path
+            or not f.path.endswith((".ts", ".tsx"))
+            or ".test." in f.path
+            or f.path.startswith(
+                "src/mocks/"
+            )  # 개발용 가짜 서버 — 응답을 만드는 쪽 (요청 본문 request.json() 을 읽는다)
+        ):
             continue
         redefined = sorted(set(decl.findall(f.content)))
         inline = bool(_JSON_INLINE.search(f.content))
