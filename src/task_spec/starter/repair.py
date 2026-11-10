@@ -338,6 +338,18 @@ def _public_refs(
         if not bad:
             continue
         msgs = {r.target: (t.message if t is not None else "결과 없음") for r, t in bad}
+        defect = _test_defect(msgs, terms)
+        if defect:
+            out.append(
+                RepairAction(
+                    "gen_public",
+                    "",
+                    "⑤",
+                    f"공개 테스트 {name} 가 하네스가 짚은 테스트 결함으로 실패 ({', '.join(defect)})",
+                    f"하네스가 공개 테스트 {name} 의 결함을 짚었다: {_short(msgs[defect[0]])} — 구현 탓이 아니다. 테스트를 고친다.",
+                )
+            )
+            continue
         crash_rx = re.compile(terms.impl_crash) if terms is not None and terms.impl_crash else None
         # 이미 다시 만든 구현이 또 실행 오류면 구현 탓으로 보지 않는다 — 테스트가 준 입력(경로 등)이 원인일 수 있어 아래 규칙으로
         # (2026-11-09 데이터 알파 5회차: 공개 테스트가 경로를 문자열 그대로 넘겨 모든 구현이 '입력 폴더 없음' — 구현만 두 번 다시 만들었다)
@@ -684,7 +696,17 @@ def _ref_existing(
     ]
 
 
-def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAction]:
+def _test_defect(msgs: Mapping[str, str], terms: RepairTerms | None) -> list[str]:
+    """하네스가 테스트 결함이라고 짚은 실패 메시지(manifest repair_terms.test_defect)를 낸 대상들."""
+    if terms is None or not terms.test_defect:
+        return []
+    rx = re.compile(terms.test_defect)
+    return [t for t, m in msgs.items() if rx.search(m)]
+
+
+def _hidden_broken(
+    runs: Sequence[TargetRun], plan: HiddenPlan, terms: RepairTerms | None = None
+) -> list[RepairAction]:
     """숨은 케이스가 판정까지 못 감(테스트 자체 예외·결과 없음) — **구현끼리 비교해** 탓을 정한다.
 
     - 준비된 구현 **모두**에서 그러면 숨은 테스트 탓 → `gen_hidden`.
@@ -698,6 +720,19 @@ def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAc
             (r, x) for r in runs if (x := r.case(c.case_id)) is None or x.result == "HARNESS_ERR"
         ]
         if not bad:
+            continue
+        defect = _test_defect({r.target: x.message for r, x in bad if x is not None}, terms)
+        if defect:
+            msg = next(x.message for r, x in bad if x is not None and r.target == defect[0])
+            out.append(
+                RepairAction(
+                    "gen_hidden",
+                    "",
+                    "④",
+                    f"숨은 케이스 {c.case_id} 가 하네스가 짚은 테스트 결함으로 실패 ({', '.join(defect)})",
+                    f"하네스가 숨은 케이스 {c.case_id} 의 결함을 짚었다: {_short(msg)} — 구현 탓이 아니다. 테스트를 고친다.",
+                )
+            )
             continue
         if len(bad) == len(runs):
             missing = [r.target for r, x in bad if x is None]
@@ -1100,7 +1135,7 @@ def assign(
     # 숨은 게이트는 공개 테스트를 통과한 구현만 믿는다 — 공개 요구가 깨진 구현의 숨은 결과는 그 결함 탓일 수 있다
     # (2026-11-08: 시작 코드 결함으로 두 구현이 같은 500 을 내자 흔한 구현이 '의도한 사유'로 실패한 것처럼 보였다)
     judged = [r for r in ready if r.target in trusted]
-    actions += _hidden_broken(judged, plan)
+    actions += _hidden_broken(judged, plan, terms)
     for run in judged:
         if run.kind == "ref_naive":
             hits = marker_hits(overlays.get(run.target), fix_markers)

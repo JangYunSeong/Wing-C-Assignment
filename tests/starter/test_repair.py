@@ -1016,3 +1016,29 @@ def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() ->
     assert [a.key for a in spent.actions] == [
         "gen_accepted:d2"
     ]  # 한 번 의심했으면 원래대로 (예산이 막는다)
+
+
+def test_harness_diagnosed_test_defect_goes_straight_to_the_test() -> None:
+    """React 템플릿 v7: match 없는 기다림에 붙잡힌 요청이 여럿이면 하네스가 테스트 결함이라고 짚는다 — 어느 구현에서 났든 첫 회차에 그 테스트를."""
+    from task_spec.schemas.template import RepairTerms
+
+    terms = RepairTerms(test_defect=r"붙잡힌 \w+ \S+ 요청이 \d+개 — match 로")
+    msg = "Error: 붙잡힌 GET /api/x 요청이 2개 — match 로 확인할 요청을 고른다"
+    report = _report(
+        _run("naive-all", "ref_naive", *GOOD_NAIVE, _t("public", "pt1", "HARNESS_ERR", None, msg)),
+        _run("d1", "ref_accepted", *GOOD_ACC, _t("public", "pt1")),
+    )
+    plan = assign(report, PLAN2, OVERLAYS, MISSED, {}, terms=terms)
+    assert [(a.key, a.gate) for a in plan.actions] == [("gen_public", "⑤")]
+    hidden = _report(
+        _run("naive-all", "ref_naive", *GOOD_NAIVE),
+        _run(
+            "d1", "ref_accepted", _t("hidden", "hc1", "HARNESS_ERR", None, msg), _t("hidden", "hc2")
+        ),
+        _run("d2", "ref_accepted", *GOOD_ACC),
+    )
+    plan = assign(hidden, PLAN2, OVERLAYS, MISSED, {}, terms=terms)
+    assert [(a.key, a.gate) for a in plan.actions] == [("gen_hidden", "④")]
+    # 패턴이 없는 템플릿은 지금 규칙 그대로 (그 구현)
+    plan = assign(report, PLAN2, OVERLAYS, MISSED, {})
+    assert [a.key for a in plan.actions] == ["gen_naive:naive-all"]
