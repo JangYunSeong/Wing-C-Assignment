@@ -353,7 +353,26 @@ def _harness(
             )
             continue
         if quote and quote.strip() == NO_EVIDENCE:
-            if p.required:
+            # 시간 조절값인데 자료에 단위를 환산해 그 값이 되는 줄이 있으면 막지 않고 승인자에게 — 2026-11-10 nplus1-i: 자료의
+            # '응답 p99 ≤ 800 ms' 로 request_timeout_s=1 을 맞게 정하고도 '시간 초과 값' 이 따로 없다며 근거를 세 번 다 '없음'으로 썼다
+            matched = (
+                [
+                    h
+                    for h in timed_hints(p.name, spec.visible_texts, limit=20)
+                    if isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and float(value) in _converted(h, param_unit(p.name) or "")
+                ]
+                if param_unit(p.name)
+                else []
+            )
+            if matched:
+                flags.append(
+                    f"운영 값 {p.name}={value} 의 근거를 계약이 '없음'으로 썼지만 자료의 시간 값과 환산해 맞음: "
+                    + " / ".join(matched[:3])
+                    + " — 승인자 확인"
+                )
+            elif p.required:
                 gaps.append(
                     f"명세 1단계 자료·추가 요구 구체 답에 운영 수치 {p.name} 이 없음 — "
                     "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"

@@ -743,3 +743,12 @@ def test_timed_hints_list_lines_with_time_values_for_a_missed_quote() -> None:
     )
     assert plan_evidence_missing(plan, "request_timeout_s")
     assert not plan_evidence_missing(plan, "query_delay_ms")  # 계획에 없는 조절값
+
+
+def test_no_evidence_timed_value_matching_material_is_flagged_not_a_gap() -> None:
+    # 2026-11-10 nplus1-i: '응답 p99 ≤ 800 ms' 로 request_timeout_s=1 을 맞게 정하고 근거를 세 번 다 '없음' — 명세 결함으로 끝났다
+    from task_spec.starter.contract import _converted, timed_hints
+
+    texts = ["목록 응답 한도\n- p99 응답 시간 ≤ 800 ms"]
+    [line] = timed_hints("request_timeout_s", texts)
+    assert 1.0 in _converted(line, "s") and 3.0 not in _converted(line, "s")
