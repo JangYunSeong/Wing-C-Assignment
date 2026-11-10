@@ -79,6 +79,7 @@ class FeatureSeed(Schema):
         for rx in v:
             re.compile(rx)
         return v
+
     starter: str | None = None  # 검증된 시작 코드 예제 (data/feature_starters/<id>) — 없으면 명세만
     reviewed: bool = False  # 사람이 검토했는지 — false 면 명세 review_flags 에 남긴다
     contract_needs: list[ContractNeed] = Field(default_factory=list)  # 계약에 꼭 있어야 할 요소

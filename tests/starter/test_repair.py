@@ -993,3 +993,26 @@ def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> No
     assert [a.key for a in plain.actions] == [
         "gen_naive:naive-all"
     ] and "정답 장치" not in plain.actions[0].reason
+
+
+def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() -> None:
+    """2026-11-10 응답 순서 cf4: 공개 테스트가 지난 요청에 응답해, 지난 응답을 무시하는 허용 구현 d2 만 계속 떨어졌다."""
+    from task_spec.starter.repair import DESIGN_SUFFIX
+
+    pub = _t("public", "pt1", "HARNESS_ERR", None, "Unable to find recommendation-list")
+    report = _report(
+        _run("naive-all", "ref_naive", *GOOD_NAIVE, _t("public", "pt1")),
+        _run("d1", "ref_accepted", *GOOD_ACC, _t("public", "pt1")),
+        _run("d2", "ref_accepted", *GOOD_ACC, pub),
+    )
+    first = assign(report, PLAN2, OVERLAYS, MISSED, {})
+    assert [a.key for a in first.actions] == ["gen_accepted:d2"]  # 처음엔 그 구현
+    again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1})
+    assert [(a.key, a.budget) for a in again.actions] == [("gen_public", DESIGN_SUFFIX)]
+    assert "naive-all, d1" in again.actions[0].note and "match" in again.actions[0].note
+    spent = assign(
+        report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1, f"gen_public{DESIGN_SUFFIX}": 1}
+    )
+    assert [a.key for a in spent.actions] == [
+        "gen_accepted:d2"
+    ]  # 한 번 의심했으면 원래대로 (예산이 막는다)

@@ -379,6 +379,28 @@ def _public_refs(
                         )
                     )
                     continue
+                if (
+                    r.kind == "ref_accepted"
+                    and regen_counts.get(f"gen_accepted:{r.target}", 0) >= 1
+                    and regen_counts.get(f"gen_public{DESIGN_SUFFIX}", 0) == 0
+                ):
+                    # 다시 만든 허용 구현만 또 떨어지고 다른 구현은 통과 — 공개 테스트가 한 구현 방식에 기댔을 수 있다 (게이트 ④ 와 같은 규칙).
+                    # 2026-11-10 응답 순서 cf4: 공개 pt1 이 '서버'를 치고 조건 없이 먼저 온 요청('서')에 응답해, 지난 응답을 무시하는 허용 구현 d2 만
+                    # 목록을 못 보여 줬다 — d2 를 두 번 다시 만들고 예산을 다 썼다. 공개 테스트 입력에는 설계를 넣지 않는다 (숨은 요구의 해법).
+                    passing = [x.target for x, t in res if t is not None and t.result == "PASS"]
+                    out.append(
+                        RepairAction(
+                            "gen_public",
+                            "",
+                            "⑤",
+                            f"다시 만든 {r.target} 만 공개 테스트 {name} 실패 — 테스트가 한 구현 방식에 기댐 의심",
+                            f"공개 테스트 {name} 가 다시 만든 구현({r.target})에서만 또 실패하고 다른 구현({', '.join(passing)})은 통과한다: "
+                            f"{_short(msgs[r.target])} — 올바른 구현마다 다를 수 있는 것(먼저 보낸 요청, 요청 수, 중간 화면)에 기대지 않는지 본다. "
+                            "요청이 여러 개 나갈 수 있으면 `waitFor…(match)` 로 확인할 요청(지금 입력의 요청 등)을 골라 응답하고, 공개 수용 기준이 말하는 결과만 단언한다.",
+                            budget=DESIGN_SUFFIX,
+                        )
+                    )
+                    continue
                 out.append(
                     RepairAction(
                         _gen_for(r),
