@@ -841,3 +841,48 @@ def test_hidden_case_passed_by_a_starter_without_the_feature_regenerates_the_hid
     again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_hidden": 1})
     assert not any(a.generator == "gen_hidden" and a.gate == "②'" for a in again.actions)
     assert any("숨은 테스트를 다시 만든 뒤에도" in f for f in again.flags)
+
+
+def test_python_job_crash_blames_that_implementation_not_the_public_test() -> None:
+    """2026-11-09 데이터 알파 3회차: 허용 구현의 SQL 오류·흔한 구현의 값 불일치를 '테스트 의심'으로 짚었다."""
+    from task_spec.schemas import TargetRun
+    from task_spec.schemas.template import RepairTerms
+    from task_spec.starter.repair import _public_refs
+
+    def run(target: str, kind: str, result: str, message: str) -> TargetRun:
+        return TargetRun.model_validate(
+            {
+                "target": target,
+                "kind": kind,
+                "setup": "ok",
+                "tests": [{"group": "public", "name": "pt1", "result": result, "message": message}],
+            }
+        )
+
+    crash = 'assert 1 == 0 + where 1 = JobResult(code=1, stderr=\'{"message": "Binder Error: No function matches substr(TIMESTAMP)"}\').code'
+    runs = [
+        run("d1", "ref_accepted", "ASSERT", crash),
+        run("naive-all", "ref_naive", "ASSERT", "assert 3000 == 5000"),
+    ]
+    terms = RepairTerms(impl_crash=r"\b[A-Z][A-Za-z]*(?: [A-Z][a-z]+)? ?(?:Error|Exception):")
+    acts, trusted = _public_refs(runs, {}, "", terms)
+    assert [(a.generator, a.label) for a in acts] == [("gen_accepted", "d1")]
+    assert "실행 오류" in acts[0].reason and trusted == set()
+    assert (
+        acts[0].budget_key == "gen_accepted:d1#crash"
+    )  # 일반 재생성 예산과 따로 센다 (알파 6회차)
+    # 패턴이 없는 스택(Java·Node)은 그대로 — 모든 구현 실패는 테스트 의심
+    acts, _ = _public_refs(runs, {}, "", RepairTerms())
+    assert [a.generator for a in acts] == ["gen_public"]
+    # 이미 다시 만든 구현이 또 실행 오류 — 구현 탓을 반복하지 않고 기존 규칙(테스트 의심)으로 (알파 5회차)
+    acts, _ = _public_refs(runs, {"gen_accepted:d1": 1}, "", terms)  # 일반 예산을 쓴 것은 상관없음
+    assert [(a.generator, a.label) for a in acts] == [("gen_accepted", "d1")]
+    acts, _ = _public_refs(runs, {"gen_accepted:d1#crash": 1}, "", terms)
+    assert [a.generator for a in acts] == ["gen_public"]
+    # 모든 구현이 같은 실행 오류 — 공유 원인(입력·계약)일 수 있어 기존 규칙대로
+    same = [
+        run("d1", "ref_accepted", "ASSERT", crash),
+        run("naive-all", "ref_naive", "ASSERT", crash),
+    ]
+    acts, _ = _public_refs(same, {}, "", terms)
+    assert [a.generator for a in acts] == ["gen_public"]

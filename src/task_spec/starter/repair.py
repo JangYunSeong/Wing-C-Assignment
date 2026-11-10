@@ -42,6 +42,9 @@ COMPILE_SUFFIX = "#compile"  # regen_counts 에서 컴파일 수리 횟수 키 (
 # 2026-11-09 알파 (2df170e2): 2회차에 흔한 구현을 기존 테스트 깨짐(⑤)으로 다시 만들어 예산을 쓰자, 3회차에 다시 만든 흔한 구현이
 # 설명의 구조(상태 변경 트랜잭션 안에서 별도 트랜잭션 기록)를 버리고 hc1·hc2 를 통과했는데 ③ 이 흔한 구현 대신 숨은 테스트를 배정했다.
 TRAP_SUFFIX = "#trap"
+# 구현 실행 오류(repair_terms.impl_crash)로 다시 만든 횟수 키 — 컴파일 오류처럼 함정과 무관한 결함이라 일반 예산과 따로 센다.
+# 2026-11-09 데이터 알파 6회차: 실행 오류 수리가 흔한 구현의 예산을 써, 다음 회차에 흔한 구현이 hc4 를 통과했는데(③) 다시 만들 수 없어 빌드가 끝났다.
+CRASH_SUFFIX = "#crash"
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
 KEEP_NAIVE = (
     "\n지적된 실패만 고친다 — 입력의 흔한 구현 설명이 말하는 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)는 "
@@ -235,12 +238,17 @@ def _starter_public(
 
 
 def _public_refs(
-    runs: Sequence[TargetRun], regen_counts: Mapping[str, int], shared: str = ""
+    runs: Sequence[TargetRun],
+    regen_counts: Mapping[str, int],
+    shared: str = "",
+    terms: RepairTerms | None = None,
 ) -> tuple[list[RepairAction], set[str]]:
     """참조 구현 + 공개 테스트 — 공개 요구는 흔한 구현·허용 구현 모두 지켜야 한다. 구현끼리 비교해 탓을 정한다.
     - 일부 구현만 실패 → 그 구현. 단 흔한 구현만 실패하고 이미 다시 만들었으면 공개 테스트가 숨은 요구를 시험하는 것(누설, ⑤) → gen_public
     - 모든 구현이 같은 오류: 서버 쪽 예외면 공유 코드(시작 코드) → gen_starter, 단언 불일치면 테스트 의심 → gen_public
     - 모든 구현이 서로 다른 오류 → gen_public
+    - 구현 실행 오류(manifest repair_terms.impl_crash — 명령이 예외로 끝남): 모든 구현이 같은 오류가 아니면 그 구현마다 한 번 다시 만든다
+      (실행이 안 된 구현과는 비교할 수 없어 이번엔 나머지 구현의 실패를 짚지 않는다). 다시 만든 뒤에도 실행 오류면 위 규칙대로
     돌려주는 집합 = 공개 테스트를 모두 통과한 구현 라벨 (숨은 게이트는 이 구현만 믿는다)."""
     names = sorted({t.name for r in runs for t in r.results("public")})
     trusted = {r.target for r in runs if all(t.result == "PASS" for t in r.results("public"))}
@@ -251,6 +259,33 @@ def _public_refs(
         if not bad:
             continue
         msgs = {r.target: (t.message if t is not None else "결과 없음") for r, t in bad}
+        crash_rx = re.compile(terms.impl_crash) if terms is not None and terms.impl_crash else None
+        # 이미 다시 만든 구현이 또 실행 오류면 구현 탓으로 보지 않는다 — 테스트가 준 입력(경로 등)이 원인일 수 있어 아래 규칙으로
+        # (2026-11-09 데이터 알파 5회차: 공개 테스트가 경로를 문자열 그대로 넘겨 모든 구현이 '입력 폴더 없음' — 구현만 두 번 다시 만들었다)
+        crashed = [
+            r
+            for r, t in bad
+            if crash_rx is not None
+            and t is not None
+            and t.result == "ASSERT"
+            and crash_rx.search(t.message)
+            and regen_counts.get(f"{_gen_for(r)}:{r.target}{CRASH_SUFFIX}", 0) < 1
+        ]
+        same_everywhere = len(bad) == len(runs) and len({_signature(m) for m in msgs.values()}) == 1
+        if crashed and not same_everywhere:
+            for r in crashed:
+                out.append(
+                    RepairAction(
+                        _gen_for(r),
+                        r.target,
+                        "⑤",
+                        f"{r.target} 가 공개 테스트 {name} 에서 실행 오류",
+                        f"공개 테스트 {name} 에서 이 구현({r.target})의 명령이 오류로 끝났다: {_short(msgs[r.target])} — "
+                        "오류가 난 코드(질의 문법·형 변환·입력 읽기)를 고친다. 입력 파일의 필드 형식은 계약 엔티티 그대로 다룬다.",
+                        budget=CRASH_SUFFIX,
+                    )
+                )
+            continue
         if len(bad) < len(runs):
             for r, _ in bad:
                 if r.kind == "ref_naive" and regen_counts.get(f"gen_naive:{r.target}", 0) >= 1:
@@ -811,7 +846,7 @@ def assign(
     res.unresolved += ambiguous
     for run in ready:
         actions += _ref_existing(run, starter, skip)
-    public_acts, trusted = _public_refs(ready, counts, shared)
+    public_acts, trusted = _public_refs(ready, counts, shared, terms)
     actions += public_acts
     # 숨은 게이트는 공개 테스트를 통과한 구현만 믿는다 — 공개 요구가 깨진 구현의 숨은 결과는 그 결함 탓일 수 있다
     # (2026-11-08: 시작 코드 결함으로 두 구현이 같은 500 을 내자 흔한 구현이 '의도한 사유'로 실패한 것처럼 보였다)

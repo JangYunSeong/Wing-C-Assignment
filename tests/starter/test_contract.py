@@ -657,3 +657,23 @@ def test_fit_covers_connects_loose_elements_by_their_own_refs() -> None:
     only_ac = _spec(req_ids=("r1",))
     fitted, _ = fit_covers(contract, only_ac)
     assert fitted.covers.get("p2") == ["e2"]
+
+
+def test_case_trap_id_is_fixed_from_the_hidden_acceptance_criterion() -> None:
+    """2026-11-09 데이터 알파 재검증: 계약 첫 답이 8회 모두 trap_id 에 실패 사유 코드를 적어 재요청 — ac_id → trap 은 명세가 정한다."""
+    from task_spec.starter.contract import fit_traps
+
+    spec = _spec()
+    plan = HiddenPlan.model_validate(_plan())
+    ac, trap = next(iter(spec.hidden_acs.items()))
+    wrong = plan.model_copy(
+        update={
+            "cases": [
+                c.model_copy(update={"ac_id": ac, "trap_id": "some_reason_code"})
+                for c in plan.cases
+            ]
+        }
+    )
+    fixed, notes = fit_traps(wrong, spec)
+    assert {c.trap_id for c in fixed.cases} == {trap} and len(notes) == len(plan.cases)
+    assert fit_traps(fixed, spec) == (fixed, [])  # 맞으면 그대로

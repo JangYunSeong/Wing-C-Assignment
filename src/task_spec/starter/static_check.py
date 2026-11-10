@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import ast
 import difflib
 import functools
 import posixpath
@@ -942,6 +943,10 @@ def _hidden_cases(
     if helper is not None:
         out += unknown_helper_names(cases, helper, "숨은 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "숨은 테스트")
+    out += unknown_py_harness_members(cases, t.hidden / "harness", "숨은 테스트")
+    out += unknown_py_keywords(cases, t.hidden / "harness", helper, "숨은 테스트")
+    out += unrun_input_days(cases, "숨은 테스트")
+    out += unreadable_as_pass(cases, "숨은 테스트")
     out += guessed_names(cases, contract, "숨은 테스트")
     out += type_escapes(cases, "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
@@ -1029,6 +1034,404 @@ def guessed_names(
             out.append(
                 f"{label} {f.path} 가 요소를 접근 가능한 이름으로 찾음 ({'; '.join(hits[:3])}) — 계약에 이름이 없다. "
                 "계약의 test id 로 찾는다: await screen.findByTestId(TID.X) · byTestId(TID.X)"
+            )
+    return out
+
+
+_PY_CLASS = re.compile(r"^class (\w+)\b[^\n]*:\n((?:(?:[ \t]+[^\n]*|)\n)*)", re.M)
+
+
+@functools.lru_cache(maxsize=8)
+def py_harness_members(grader: Path) -> dict[str, frozenset[str]]:
+    """Python 하네스(grader.py)의 클래스 → 쓸 수 있는 이름 (메서드·속성·필드). Workspace·JobResult 를 테스트가 쓴다."""
+    if not grader.is_file():
+        return {}
+    src = grader.read_text("utf-8")
+    out: dict[str, frozenset[str]] = {}
+    for m in _PY_CLASS.finditer(src):
+        body = m.group(2)
+        names = set(re.findall(r"^\s{4}def (\w+)\(", body, re.M))
+        names |= set(re.findall(r"^\s{4}(\w+)\s*:", body, re.M))  # 데이터클래스 필드
+        names |= set(re.findall(r"self\.(\w+)\s*=", body))
+        out[m.group(1)] = frozenset(n for n in names if not n.startswith("_"))  # 내부용 이름은 빼고
+    return out
+
+
+_PY_MAKERS = {"Workspace": r"workspace\(\)", "JobResult": r"run(?:_\w+)?\("}
+
+
+def unknown_py_harness_members(
+    cases: Iterable[GeneratedFile], harness_dir: Path, label: str
+) -> list[str]:
+    """Python 테스트가 하네스 객체(workspace() 의 Workspace, run…() 의 JobResult)에 없는 속성을 씀 — 실행해야 드러나는 AttributeError.
+    2026-11-09 데이터 알파: 공개 테스트가 ws.input·ws.output·ws.extend 를 지어내 모든 구현에서 예외."""
+    members = py_harness_members(harness_dir / "grader.py")
+    if not members:
+        return []
+    out: list[str] = []
+    for f in cases:
+        if not f.path.endswith(".py"):
+            continue
+        bad: set[tuple[str, str, str]] = set()
+        for cls, maker in _PY_MAKERS.items():
+            allowed = members.get(cls)
+            if not allowed:
+                continue
+            for var in set(re.findall(rf"^\s*(\w+)\s*=\s*{maker}", f.content, re.M)):
+                for attr in re.findall(rf"(?<![\w.]){re.escape(var)}\.(\w+)", f.content):
+                    if attr not in allowed:
+                        bad.add((var, cls, attr))
+        if bad:
+            hints = []
+            for var, cls, attr in sorted(bad):
+                near = difflib.get_close_matches(attr, sorted(members[cls]), n=1, cutoff=0.5)
+                hints.append(
+                    f"{var}.{attr} ({cls}" + (f" — 가까운 이름: {near[0]})" if near else ")")
+                )
+            out.append(
+                f"{label} {f.path} 가 하네스에 없는 이름을 씀: {', '.join(hints)} — 하네스 문서의 이름만 쓴다 "
+                f"(Workspace: {', '.join(sorted(members.get('Workspace', ())))})"
+            )
+    return out
+
+
+@dataclass(frozen=True)
+class PySignature:
+    """Python 함수·메서드 시그니처 — 테스트가 하네스·계약 도우미를 맞게 부르는지 (키워드 이름·필수 인자) 대조용."""
+
+    positional: tuple[str, ...]  # 위치로 받을 수 있는 이름 (순서대로, self 제외)
+    keywords: frozenset[str]  # 키워드로 받을 수 있는 이름
+    required: frozenset[str]  # 기본값 없는 이름
+    varargs: bool  # *args
+    varkw: bool  # **kwargs
+    returns: str  # 돌려주는 클래스 이름 (모르면 "")
+
+
+def _signature_of(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> PySignature:
+    a = fn.args
+    pos = [x.arg for x in [*a.posonlyargs, *a.args] if x.arg not in ("self", "cls")]
+    kw_pos = [x.arg for x in a.args if x.arg not in ("self", "cls")]
+    n_def = len(a.defaults)
+    pos_required = pos[: len(pos) - n_def] if n_def else pos
+    kwonly_required = [x.arg for x, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is None]
+    ret = ""
+    if isinstance(fn.returns, ast.Name):
+        ret = fn.returns.id
+    elif isinstance(fn.returns, ast.Constant) and isinstance(fn.returns.value, str):
+        ret = fn.returns.value  # 문자열 표기
+    return PySignature(
+        positional=tuple(pos),
+        keywords=frozenset([*kw_pos, *(x.arg for x in a.kwonlyargs)]),
+        required=frozenset([*pos_required, *kwonly_required]),
+        varargs=a.vararg is not None,
+        varkw=a.kwarg is not None,
+        returns=ret,
+    )
+
+
+def _py_signatures(src: str) -> tuple[dict[str, PySignature], dict[str, str]]:
+    """Python 모듈 → 함수·메서드 시그니처('f' · 'Class.m')와 모듈 수준 인스턴스(`params = _Params()` → 클래스)."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {}, {}
+    sigs: dict[str, PySignature] = {}
+    instances: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            sigs[node.name] = _signature_of(node)
+        elif isinstance(node, ast.ClassDef):
+            for b in node.body:
+                if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    sigs[f"{node.name}.{b.name}"] = _signature_of(b)
+        elif (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+        ):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    instances[tgt.id] = node.value.func.id
+    return sigs, instances
+
+
+@functools.lru_cache(maxsize=8)
+def _harness_signatures(grader: Path) -> tuple[dict[str, PySignature], dict[str, str]]:
+    return _py_signatures(grader.read_text("utf-8")) if grader.is_file() else ({}, {})
+
+
+def _call_problems(node: ast.Call, name: str, sig: PySignature) -> list[str]:
+    """없는 키워드 이름·빠진 필수 인자 (*args·**kwargs 를 받거나 넘기면 보지 않는다)."""
+    if any(isinstance(a, ast.Starred) for a in node.args) or any(
+        k.arg is None for k in node.keywords
+    ):
+        return []
+    out: list[str] = []
+    accepted = ", ".join(sig.positional + tuple(sorted(sig.keywords - set(sig.positional))))
+    if not sig.varkw:
+        out += [
+            f"{name}({k.arg}=…) — 받는 이름: {accepted or '없음'}"
+            for k in node.keywords
+            if k.arg is not None and k.arg not in sig.keywords
+        ]
+    if not sig.varargs:
+        given = set(sig.positional[: len(node.args)]) | {k.arg for k in node.keywords if k.arg}
+        missing = sorted(sig.required - given)
+        if missing:
+            out.append(
+                f"{name}(…) 에 필수 인자 {', '.join(missing)} 가 빠짐 — 받는 이름: {accepted}"
+            )
+    return out
+
+
+def unknown_py_keywords(
+    cases: Iterable[GeneratedFile], harness_dir: Path, helper: GeneratedFile | None, label: str
+) -> list[str]:
+    """Python 테스트가 하네스 함수·메서드(workspace().write_csv 등)나 계약 도우미 함수(run_…)를 시그니처와 다르게 부름 — 실행해야 드러나는
+    TypeError. 없는 키워드 인자·빠진 필수 인자·문맥 관리자가 아닌 하네스 객체에 with·작업 폴더 경로를 문자열 그대로 명령에(5회차).
+    2026-11-09 데이터 알파 2~3회차: 공개 테스트가 ws.write_csv(..., header=...)·ws.partitions(폴더)(key 빠짐)·`with workspace() as ws`
+    를 지어내 모든 구현에서 예외 (다시 만들어도 반복)."""
+    h_sigs, h_inst = _harness_signatures(harness_dir / "grader.py")
+    c_sigs, _ = _py_signatures(helper.content) if helper is not None else ({}, {})
+    if not h_sigs and not c_sigs:
+        return []
+    out: list[str] = []
+    for f in cases:
+        if not f.path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(f.content)
+        except SyntaxError:
+            continue  # 문법 오류는 컴파일 확인이 알린다
+        funcs: dict[str, PySignature] = {}  # 이 파일이 import 한 하네스·도우미 함수 (별칭 포함)
+        commands: set[str] = set()  # 그중 계약 도우미의 명령 함수 (run_…)
+        objs: dict[str, str] = {}  # 이름 → 하네스 클래스 (params 같은 인스턴스, workspace() 결과)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                last = node.module.rsplit(".", 1)[-1]
+                pool = (
+                    h_sigs
+                    if node.module == "harness.grader"
+                    else c_sigs
+                    if last == "contract"
+                    else None
+                )
+                if pool is None:
+                    continue
+                for al in node.names:
+                    local = al.asname or al.name
+                    if al.name in pool:
+                        funcs[local] = pool[al.name]
+                        if pool is c_sigs:
+                            commands.add(local)
+                    elif pool is h_sigs and al.name in h_inst:
+                        objs[local] = h_inst[al.name]
+
+        def made_by(value: ast.expr | None, funcs: dict[str, PySignature] = funcs) -> str:
+            """하네스·도우미 함수 호출 결과의 클래스 (모르면 "")."""
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in funcs
+            ):
+                return funcs[value.func.id].returns
+            return ""
+
+        bad: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and (cls := made_by(node.value)):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        objs[tgt.id] = cls
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    expr = item.context_expr
+                    cls = made_by(expr) or (
+                        objs.get(expr.id, "") if isinstance(expr, ast.Name) else ""
+                    )
+                    if cls and f"{cls}.__enter__" not in h_sigs:
+                        bad.append(
+                            f"with {ast.unparse(expr)} — {cls} 는 with 로 쓰지 않는다 (그냥 대입: x = {ast.unparse(expr)})"
+                        )
+                        if isinstance(item.optional_vars, ast.Name):
+                            objs[item.optional_vars.id] = cls
+        # 작업 폴더에 쓰고 읽는 경로의 첫 마디 (ws.write_csv("raw/…") → raw) — 명령에 그 이름을 문자열 그대로 넘기면 저장소 루트 기준이 된다
+        ws_roots: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in objs
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                first = node.args[0].value.strip("/").removeprefix("./").split("/", 1)[0]
+                if first:
+                    ws_roots.add(first)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id in funcs:
+                bad += _call_problems(node, node.func.id, funcs[node.func.id])
+                if node.func.id in commands:
+                    for kw in node.keywords:
+                        v = kw.value
+                        if (
+                            kw.arg
+                            and isinstance(v, ast.Constant)
+                            and isinstance(v.value, str)
+                            and v.value.removeprefix("./").split("/", 1)[0] in ws_roots
+                        ):
+                            bad.append(
+                                f"{node.func.id}({kw.arg}={v.value!r}) — 작업 폴더 경로를 문자열 그대로 넘김. 명령은 저장소 루트에서 돌므로 "
+                                f"ws.path({v.value!r}) 로 넘긴다"
+                            )
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in objs
+            ):
+                cls = objs[node.func.value.id]
+                sig = h_sigs.get(f"{cls}.{node.func.attr}")
+                if sig is not None:
+                    bad += _call_problems(node, f"{node.func.value.id}.{node.func.attr}", sig)
+        if bad:
+            out.append(
+                f"{label} {f.path} 가 하네스·계약 도우미를 잘못 부름: {'; '.join(sorted(set(bad))[:6])} — "
+                "하네스 문서·계약 도우미의 시그니처대로, 경로는 ws.path(…) 로 넘긴다"
+            )
+    return out
+
+
+_DAY = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
+_WRITERS = frozenset({"write_jsonl", "write_csv", "write_parquet", "write_text", "write_json"})
+
+
+def unrun_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+    """Python 테스트 함수가 날짜 폴더(`raw/2026-09-01/…`)에 입력을 쓰고 그 날짜로는 명령을 실행하지 않음 — 마지막 날짜로 한 번만 실행해 앞 날짜
+    출력까지 기대하는 꼴. 받은 날짜마다 실행하는 정상 운영에서만 맞는 허용 설계('이번 폴더에 나온 날짜만 다시 계산')가 떨어진다.
+    2026-11-09 데이터 알파 2~8회차 재검증: 손으로 쓴 허용 구현 두 가지로 돌려 보니 이 꼴의 케이스(hc3·hc4)가 7회 중 6회 나왔다.
+    날짜·경로가 변수로 만들어지는 함수는 보지 않는다 (글자 그대로인 것만)."""
+    out: list[str] = []
+    for f in cases:
+        if not f.path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(f.content)
+        except SyntaxError:
+            continue
+        commands: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").rsplit(".", 1)[-1] == "contract"
+            ):
+                commands |= {
+                    al.asname or al.name for al in node.names if al.name.startswith("run_")
+                }
+        if not commands:
+            continue
+        for fn in tree.body:
+            if not (
+                isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and fn.name.startswith("test")
+            ):
+                continue
+            written: set[str] = set()
+            ran: set[str] = set()
+            unknown = False
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr in _WRITERS
+                    and node.args
+                ):
+                    a0 = node.args[0]
+                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                        written |= {
+                            m.group(1)
+                            for m in _DAY.finditer(a0.value)
+                            if f"{m.group(1)}/" in a0.value
+                        }
+                    else:
+                        unknown = True
+                elif isinstance(node.func, ast.Name) and node.func.id in commands:
+                    for kw in node.keywords:
+                        v = kw.value
+                        if (
+                            isinstance(v, ast.Constant)
+                            and isinstance(v.value, str)
+                            and _DAY.fullmatch(v.value)
+                        ):
+                            ran.add(v.value)
+                        elif kw.arg and "date" in kw.arg and not isinstance(v, ast.Constant):
+                            unknown = True
+            missing = sorted(written - ran)
+            if ran and missing and not unknown:
+                out.append(
+                    f"{label} {f.path} 의 {fn.name} 가 날짜 폴더 {', '.join(missing)} 에 입력을 쓰고 그 날짜로 실행하지 않음 (실행한 날짜: "
+                    f"{', '.join(sorted(ran))}) — 받은 날짜 순서대로 하루씩 실행한다. 마지막 날짜로 한 번만 실행해 앞 날짜 출력까지 기대하면 "
+                    "'이번 폴더에 나온 날짜만 다시 계산'하는 허용 설계가 떨어진다"
+                )
+    return out
+
+
+def _compares(expr: ast.expr, values: set[str], op: type[ast.cmpop]) -> bool:
+    return (
+        isinstance(expr, ast.Compare)
+        and len(expr.ops) == 1
+        and isinstance(expr.ops[0], op)
+        and any(
+            isinstance(x, ast.Constant) and x.value in values
+            for x in (expr.left, *expr.comparators)
+        )
+    )
+
+
+def unreadable_as_pass(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+    """크래시 케이스가 `except` 에서 바꾼 '읽을 수 없음' 표시 값을 통과로 둠 — `if v != 'unreadable': assert …`(그 값이면 단언을 건너뜀)이나
+    `assert v == 'UNREADABLE' or …`. 깨진 파일이 보이는 것이 바로 숨은 요구 위반인데 최종 위치에 바로 쓰다 죽는 흔한 구현이 통과한다.
+    2026-11-10 데이터 알파 8·9회차: 두 번 다 이 꼴 (프롬프트의 '읽을 수 없음을 값으로 바꿔 단언'이 무엇이 실패인지 말하지 않았다)."""
+    out: list[str] = []
+    for f in cases:
+        if not f.path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(f.content)
+        except SyntaxError:
+            continue
+        marks: set[str] = set()
+        for h in ast.walk(tree):
+            if isinstance(h, ast.ExceptHandler):
+                for n in ast.walk(h):
+                    v = n.value if isinstance(n, (ast.Return, ast.Assign)) else None
+                    if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                        marks.add(v.value)
+        if not marks:
+            continue
+        hits: list[int] = []
+        for n in ast.walk(tree):
+            if (
+                isinstance(n, ast.If)
+                and _compares(n.test, marks, ast.NotEq)
+                and any(isinstance(x, ast.Assert) for b in n.body for x in ast.walk(b))
+            ):
+                hits.append(n.lineno)
+            elif (
+                isinstance(n, ast.Assert)
+                and isinstance(n.test, ast.BoolOp)
+                and isinstance(n.test.op, ast.Or)
+                and any(_compares(v, marks, ast.Eq) for v in n.test.values)
+            ):
+                hits.append(n.lineno)
+        if hits:
+            out.append(
+                f"{label} {f.path} 가 크래시 뒤 '읽을 수 없음'({', '.join(sorted(repr(m) for m in marks))})을 통과로 둠 (줄 {', '.join(map(str, sorted(hits)[:4]))}) — "
+                "읽을 수 없는 출력이 보이면 그것이 실패다. 그 값을 건너뛰거나 허용하지 말고 직전 성공 값(또는 성공했을 때의 값)과만 같게 단언한다"
             )
     return out
 
@@ -1187,6 +1590,10 @@ def _public_cases(
     if helper is not None:
         out += unknown_helper_names(cases, helper, "공개 테스트")
     out += unknown_harness_members(cases, t.hidden / "harness", "공개 테스트")
+    out += unknown_py_harness_members(cases, t.hidden / "harness", "공개 테스트")
+    out += unknown_py_keywords(cases, t.hidden / "harness", helper, "공개 테스트")
+    out += unrun_input_days(cases, "공개 테스트")
+    out += unreadable_as_pass(cases, "공개 테스트")
     out += guessed_names(cases, contract, "공개 테스트")
     out += type_escapes(cases, "공개 테스트")
     text = "\n".join(f.content for f in cases)
@@ -1262,6 +1669,7 @@ def static_check(
             res.problems += _unavailable_imports(o, template)
             res.problems += _test_folder_imports(o, template)
             res.problems += _code_overrides(o, template)
+            res.problems += _code_pitfalls(o, template)
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
@@ -1288,6 +1696,28 @@ def static_check(
         res.review_flags += _hygiene(None, [readme], avoid_terms)
     res.review_flags = list(dict.fromkeys(res.review_flags))
     return res
+
+
+def _code_pitfalls(o: Overlay, t: Template) -> list[StaticProblem]:
+    """manifest code_pitfalls — 이 스택에서 생성 모델이 되풀이하는 API 실수를 실행 전에 (파일·줄과 바른 쓰는 법)."""
+    out: list[StaticProblem] = []
+    for pit in t.manifest.code_pitfalls:
+        rx = re.compile(pit.pattern)
+        ok = re.compile(pit.unless) if pit.unless else None
+        hits = [
+            f"{f.path}:{f.content.count(chr(10), 0, m.start()) + 1} `{' '.join(m.group(0).split())[:80]}`"
+            for f in o.files
+            if ok is None or not ok.search(f.content)
+            for m in rx.finditer(f.content)
+        ]
+        if hits:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{o.name} 에 이 스택에서 되풀이되는 실수: {'; '.join(hits[:4])} — {pit.fix}",
+                )
+            )
+    return out
 
 
 def overlay_from_dir(kind: FileKind, root: Path, label: str = "") -> Overlay:

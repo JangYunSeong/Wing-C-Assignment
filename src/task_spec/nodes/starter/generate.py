@@ -103,6 +103,8 @@ def stack_text(m: TemplateManifest) -> str:
         m.seed_sql is not None and m.seed_sql.id_column
     ):  # 시드가 id 를 직접 넣는 테이블의 id 열 꼴 (스택 문법 그대로)
         text += f"\n시드 테이블 id 열: `{m.seed_sql.id_column}` (시드가 id 를 직접 넣는다 — 이 꼴 그대로)"
+    if m.stack_notes:  # 이 스택의 API 사실 (manifest stack_notes — 함정과 무관한 쓰는 법)
+        text += "\n이 스택에서 쓰는 법:\n" + "\n".join(f"- {n}" for n in m.stack_notes)
     return text
 
 
@@ -201,8 +203,9 @@ def helper_block(
     """하네스 문서 끝에 붙이는 이 과제의 도우미 소스 — Java 는 클래스 이름·```java, TypeScript 는 파일 이름·```ts."""
     if is_java(m):
         name, lang = (rule.class_name if rule else ""), "java"
-    else:
-        name, lang = PurePosixPath(helper.path).name, "ts"
+    else:  # TypeScript contract.ts · Python contract.py
+        name = PurePosixPath(helper.path).name
+        lang = "python" if helper.path.endswith(".py") else "ts"
     return (
         f"\n\n## {name} — 이 과제의 {what} "
         f"(`{helper.path}`, 빌드 파이프라인이 만든다 — 쓰지 않는다)\n\n```{lang}\n{helper.content}```\n"

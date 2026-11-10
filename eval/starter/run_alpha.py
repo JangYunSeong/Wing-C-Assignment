@@ -256,6 +256,7 @@ async def main() -> None:
         "review_flags": built_out.review_flags,
         "usage": usage_by_prompt(built_out.provenance),
         "adjustments": built_out.adjustments,
+        "static_retries": built_out.static_retries,
         "verify": [[_run_row(r) for r in rep.runs] for rep in built_out.reports],
     }
     report["cost_usd"] = round(spent, 4)
