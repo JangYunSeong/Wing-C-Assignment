@@ -1073,6 +1073,9 @@ def _hidden_cases(
     out += unreadable_as_pass(cases, "숨은 테스트")
     out += guessed_names(cases, contract, "숨은 테스트")
     out += type_escapes(cases, "숨은 테스트")
+    out += array_substring_contains(cases, "숨은 테스트")
+    out += misplaced_test_imports(cases, "숨은 테스트")
+    out += selector_guesses(cases, contract, "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
         out += _unknown_calls(cases, contract, rules.http_calls)
@@ -1138,6 +1141,89 @@ def type_escapes(cases: Iterable[GeneratedFile], label: str) -> list[str]:
             out.append(
                 f"{label} {f.path} 가 타입 검사를 우회함 ({', '.join(hits)}) — 하네스·계약 도우미의 타입대로 쓴다 "
                 "(요청 기록은 call.query·call.params·call.body, 응답 본문은 <Api>Ok 타입)"
+            )
+    return out
+
+
+# 항목 글 배열을 만드는 꼴 — textsByRole(…) 결과, 요소 목록의 .map(… textContent …)
+_ARRAY_OF_TEXTS = re.compile(
+    r"\b(?:const|let)\s+(\w+)\s*(?::\s*string\[\]\s*)?=\s*(?:textsByRole\(|[^;]*?\.map\(\s*\(?\s*\w+\s*\)?\s*=>[^;]*?textContent)"
+)
+_TL_NAMES = frozenset(
+    {
+        "waitFor",
+        "screen",
+        "render",
+        "within",
+        "fireEvent",
+        "cleanup",
+        "act",
+        "renderHook",
+        "userEvent",
+    }
+)
+_VITEST_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]vitest['\"]")
+_QUERY_SELECTOR = re.compile(r"\.querySelector(?:All)?\(\s*['\"`]([^'\"`]+)")
+
+
+def array_substring_contains(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+    """항목 글 배열에 `toContain('글 일부')` — 배열의 toContain 은 항목이 통째로 같아야 맞다 ('입출금 (10,000원)' ≠ '입출금').
+    2026-11-10 알파 fe7c·fe7d-token: 허용 구현이 이 단언에서만 떨어지고, 흔한 구현의 '의도한 사유' 실패도 실은 이 단언이었다."""
+    out: list[str] = []
+    for f in cases:
+        if not f.path.endswith((".ts", ".tsx")):
+            continue
+        names = set(_ARRAY_OF_TEXTS.findall(f.content))
+        # 배열 그대로 (texts[0] 처럼 항목 하나를 꺼낸 문자열은 toContain 이 글 일부를 본다 — 걸지 않음)
+        pats = [
+            rf"expect\(\s*{re.escape(n)}\s*(?:,[^;]*?)?\)\s*\.(?:not\.)?toContain\(\s*['\"`]"
+            for n in names
+        ]
+        pats.append(r"expect\(\s*textsByRole\([^;]*?\)\s*\.(?:not\.)?toContain\(\s*['\"`]")
+        hits = [m.group(0) for pat in pats for m in re.finditer(pat, f.content)]
+        if hits:
+            out.append(
+                f"{label} {f.path} 가 항목 글 배열에 toContain('글자') 를 씀: {' '.join(hits[0].split())[:90]} — 배열의 toContain 은 항목 글 전체가 같아야 맞는다. "
+                "글 일부를 찾을 때는 `expect(texts.some((t) => t.includes('이름')), reason(…)).toBe(true)`"
+            )
+    return out
+
+
+def misplaced_test_imports(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+    """화면 도구(waitFor·screen·render·within …)를 vitest 에서 import — Testing Library 의 것이다. 2026-11-10 알파 fe-v3-opt-r2·fe7d-offline:
+    `import { waitFor } from 'vitest'` 로 컴파일 실패(TS2459), 재요청 2번에도 남음."""
+    out: list[str] = []
+    for f in cases:
+        bad = sorted(
+            {
+                n.strip().split(" as ")[0]
+                for m in _VITEST_IMPORT.finditer(f.content)
+                for n in m.group(1).split(",")
+            }
+            & _TL_NAMES
+        )
+        if bad:
+            out.append(
+                f"{label} {f.path} 가 {', '.join(bad)} 를 vitest 에서 import 함 — 화면 도구는 '@testing-library/react'(userEvent 는 '@testing-library/user-event')에서, "
+                "vitest 에서는 describe·it·expect·beforeEach·vi 만"
+            )
+    return out
+
+
+def selector_guesses(
+    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
+) -> list[str]:
+    """화면 계약이 있는 과제에서 테스트가 querySelector 로 요소를 짐작(`input[name="userId"]`) — 계약에 없는 꼴이라 올바른 구현도 못 찾는다.
+    2026-11-10 알파 fe7d-user: 계약 로그인 폼에 입력란 test id 가 없어 테스트가 name 속성으로 찾다 모든 구현에서 예외."""
+    if contract is None or not contract.screens:
+        return []
+    out: list[str] = []
+    for f in cases:
+        found = sorted({m.group(1) for m in _QUERY_SELECTOR.finditer(f.content)})
+        if found:
+            out.append(
+                f"{label} {f.path} 가 querySelector 로 요소를 짐작함 ({', '.join(found[:3])}) — 요소는 계약의 test id 로만 찾는다 "
+                "(`await screen.findByTestId(TID.X)`·`byTestId(범위, TID.X)`). 계약에 그 요소가 없으면 짐작하지 말고 화면 결과로 확인한다"
             )
     return out
 
@@ -1817,6 +1903,9 @@ def _public_cases(
     out += unreadable_as_pass(cases, "공개 테스트")
     out += guessed_names(cases, contract, "공개 테스트")
     out += type_escapes(cases, "공개 테스트")
+    out += array_substring_contains(cases, "공개 테스트")
+    out += misplaced_test_imports(cases, "공개 테스트")
+    out += selector_guesses(cases, contract, "공개 테스트")
     text = "\n".join(f.content for f in cases)
     missing = [
         pt.test_id for pt in contract.public_tests if not re.search(rf"\b{pt.test_id}\b", text)

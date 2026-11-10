@@ -1221,6 +1221,36 @@ def _ui_data_source(contract: TaskContract) -> list[str]:
     ]
 
 
+_FIELD_ROLES = frozenset(
+    {"input", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch", "listbox"}
+)
+
+
+def _ui_form_fields(contract: TaskContract) -> list[str]:
+    """ui 계약: 폼(form) 요소만 있고 그 안의 입력란·제출 버튼이 요소로 없음 — 테스트는 test id 로만 찾으므로 입력란을 짐작한다
+    (`input[name="userId"]`). 2026-11-10 저장된 화면 계약에서 폼이 있는 화면 13개 중 12개가 이랬고, 알파 fe7d-user 숨은 테스트가
+    로그인 입력란을 name 속성으로 찾다 모든 구현에서 예외."""
+    if contract.interface_kind != "ui":
+        return []
+    out: list[str] = []
+    for sc in contract.screens:
+        forms = [el.test_id for el in sc.elements if el.role == "form"]
+        if not forms:
+            continue
+        roles = {el.role for el in sc.elements}
+        missing = [
+            w
+            for w, ok in (("입력란", bool(roles & _FIELD_ROLES)), ("제출 버튼", "button" in roles))
+            if not ok
+        ]
+        if missing:
+            out.append(
+                f"화면 {sc.route} 의 폼({', '.join(forms)})에 {'·'.join(missing)} 요소가 없음 — 폼 안에서 사용자가 다루는 입력란(textbox 등)과 "
+                "제출 버튼을 각각 test id 가 있는 요소로 적고 조작(action)을 쓴다 (테스트는 test id 로만 찾는다). 입력란이 없는 폼이면 form 대신 button 하나로 적는다"
+            )
+    return out
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -1240,6 +1270,7 @@ def check_contract(
     problems += _ui_actions(contract)
     problems += _ui_load_and_background(contract)
     problems += _ui_data_source(contract)
+    problems += _ui_form_fields(contract)
     if "file" in manifest.interfaces:
         problems += _file_fixtures(contract)
     harness_problems, gaps, flags = _harness(plan, spec, manifest)

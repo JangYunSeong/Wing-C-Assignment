@@ -115,7 +115,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v5"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v6"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v1"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
@@ -640,3 +640,72 @@ def test_all_refs_breaking_an_existing_test_outside_the_router_blame_the_starter
 def test_textsbyrole_scope_overload_is_in_the_v5_harness() -> None:
     src = (FE.hidden / "harness" / "grader-ui.tsx").read_text("utf-8")
     assert "export function textsByRole(scope: HTMLElement, role: string): string[];" in src
+
+
+def test_test_checks_array_contains_vitest_imports_and_selector_guesses() -> None:
+    """2026-11-10 알파 fe7b·fe7c·fe7d: 항목 글 배열에 toContain('글자') · waitFor 를 vitest 에서 import · querySelector 로 입력란 짐작."""
+    from task_spec.starter.static_check import (
+        array_substring_contains,
+        misplaced_test_imports,
+        selector_guesses,
+    )
+
+    bad = (
+        "import { describe, it, expect, waitFor } from 'vitest';\n"
+        "const names = textsByRole('listitem');\n"
+        "expect(names, reason('session_lost', '이름')).toContain('입출금');\n"
+        "const input = form.querySelector('input[name=\"userId\"]');\n"
+    )
+    good = (
+        "import { describe, it, expect } from 'vitest';\n"
+        "import { waitFor } from '@testing-library/react';\n"
+        "const names = textsByRole('listitem');\n"
+        "expect(names.some((t) => t.includes('입출금')), reason('session_lost', '이름')).toBe(true);\n"
+        "expect(names[0]).toContain('입출금');\n"
+        "expect(names).toEqual(['입출금']);\n"
+    )
+    f_bad, f_good = (
+        _f("src/__grading__/cases/hc1.test.tsx", bad),
+        _f("src/__grading__/cases/hc1.test.tsx", good),
+    )
+    assert len(array_substring_contains([f_bad], "숨은 테스트")) == 1
+    assert array_substring_contains([f_good], "숨은 테스트") == []
+    assert "waitFor" in misplaced_test_imports([f_bad], "숨은 테스트")[0]
+    assert misplaced_test_imports([f_good], "숨은 테스트") == []
+    assert "querySelector" in selector_guesses([f_bad], _contract(), "숨은 테스트")[0]
+    assert selector_guesses([f_good], _contract(), "숨은 테스트") == []
+
+
+def test_form_without_its_fields_is_sent_back() -> None:
+    """2026-11-10: 저장된 화면 계약에서 폼이 있는 화면 대부분이 폼 요소 하나만 적어 테스트가 입력란을 짐작했다."""
+    from task_spec.starter.contract import _ui_form_fields
+
+    base = _contract().model_dump()
+    base["screens"][0]["elements"] = [
+        {"test_id": "login-form", "role": "form", "description": "로그인", "refs": ["r1"]}
+    ]
+    problems = _ui_form_fields(TaskContract.model_validate(base))
+    assert len(problems) == 1 and "입력란" in problems[0] and "제출 버튼" in problems[0]
+    base["screens"][0]["elements"] += [
+        {
+            "test_id": "login-id",
+            "role": "textbox",
+            "description": "아이디",
+            "action": "입력하면 값만 바뀜 — 요청은 버튼에서",
+            "refs": ["r1"],
+        },
+        {
+            "test_id": "login-submit",
+            "role": "button",
+            "description": "로그인",
+            "action": "클릭하면 POST /api/auth/login",
+            "refs": ["r1"],
+        },
+    ]
+    assert _ui_form_fields(TaskContract.model_validate(base)) == []
+
+
+def test_v6_harness_types_bodies_and_server_state() -> None:
+    src = (FE.hidden / "harness" / "grader-api.ts").read_text("utf-8")
+    assert "serverState<T = Body>(path: string): T[]" in src
+    assert "once<B = Body>(" in src and "calls<B = Body>(" in src
