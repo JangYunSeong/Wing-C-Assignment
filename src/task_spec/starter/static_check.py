@@ -391,6 +391,60 @@ def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
     return out
 
 
+_PATCH_CALL = re.compile(r"HttpMethod\.PATCH|\.patchForObject\s*\(")
+_SQL_STRING = re.compile(r"'(?:''|[^'])*'")
+_QUOTED_NAME = re.compile(r'"([A-Za-z_]\w*)"')
+
+
+def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[StaticProblem]:
+    """이 템플릿에서 실행 때만 깨지는 두 가지 — 2026-11-10 stab3·v19-be 시작 코드의 기존 기능 테스트가 그대로 실패해 재생성 예산을 다 썼다
+    (재현: 작은 프로젝트에서 둘 다 확인).
+    - TestRestTemplate 로 PATCH: 템플릿에 Apache HttpClient 가 없어 JDK HttpURLConnection — 'Invalid HTTP method: PATCH'
+    - schema.sql 의 큰따옴표 이름("rank"): H2 에서 대소문자를 구분하는 이름이 되어 따옴표 없는 엔티티 매핑으로는 'Column … not found'"""
+    if not is_java(t.manifest):
+        return []
+    out: list[StaticProblem] = []
+    # 엔티티가 같은 따옴표 표기(@Column(name = "\"rank\"")·백틱)로 매핑한 이름은 맞다 — 시드 SQL 도 스키마 표기를 따른다
+    # (seed_sql.declared_name, 2026-11-10 stab1 은 이렇게 맞춰 통과)
+    escaped = {
+        n
+        for f in o.files
+        if f.path.endswith(".java")
+        for n in re.findall(r'\\"(\w+)\\"|`(\w+)`', f.content)
+        for n in n
+        if n
+    }
+    config = " ".join(f.content for f in o.files if f.path.endswith(_CONFIG_SUFFIX))
+    if "globally_quoted_identifiers" in config:
+        escaped |= {"*"}
+    for f in o.files:
+        if f.path.endswith(".java") and "/test/" in f.path:
+            body = _strip_comments(f.content)
+            if "TestRestTemplate" in body and _PATCH_CALL.search(body):
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"{o.name} {f.path} 가 TestRestTemplate 로 PATCH 를 보냄 — 이 템플릿의 TestRestTemplate 은 JDK HttpURLConnection 이라 "
+                        "'Invalid HTTP method: PATCH' 로 실패한다. 테스트는 MockMvc 로 쓴다 (@AutoConfigureMockMvc 는 클래스에 한 번)",
+                    )
+                )
+        elif f.path.endswith(".sql") and f.path != seed_path:
+            names = sorted(
+                n
+                for n in set(_QUOTED_NAME.findall(_SQL_STRING.sub("''", f.content)))
+                if n not in escaped and "*" not in escaped
+            )
+            if names:
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"{o.name} {f.path} 의 큰따옴표 이름 {', '.join(names)} 을 엔티티가 따옴표 없이 매핑함 — H2 에서 따옴표 이름은 대소문자를 "
+                        '구분해 \'Column … not found\' 가 난다. 엔티티도 같은 표기로 매핑하거나(@Column(name = "\\"rank\\"")) 스키마에서 따옴표를 뺀다',
+                    )
+                )
+    return out
+
+
 def _code_overrides(o: Overlay, t: Template) -> list[StaticProblem]:
     """구현이 코드로 운영 값(연결 풀·데이터소스·요청 스레드)을 만들거나 바꿈 — 설정 키를 바꾸는 것(_harness_overrides)과 같은 우회."""
     if not is_java(t.manifest):
@@ -1815,6 +1869,9 @@ def static_check(
             res.problems += _code_pitfalls(o, template)
             res.problems += _script_imports(o, template, contract)
             res.problems += _datasource_config(o, template)
+            res.problems += _java_test_pitfalls(
+                o, template, template.manifest.seed_sql.path if template.manifest.seed_sql else None
+            )
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems

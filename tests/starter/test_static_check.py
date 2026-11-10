@@ -655,3 +655,35 @@ def test_datasource_settings_not_in_the_template_are_rejected() -> None:
         got = _datasource_config(o, JAVA)
         assert bool(got) is bad, got
         assert not got or "spring.datasource.url" in got[0].message
+
+
+def test_java_runtime_only_pitfalls_in_starter_tests_and_schema() -> None:
+    # 2026-11-10 stab3·v19-be: 시작 코드의 기존 기능 테스트가 실행 때만 깨져 재생성 예산을 다 씀 (작은 프로젝트로 재현)
+    from task_spec.starter.static_check import _java_test_pitfalls
+
+    seed = JAVA.manifest.seed_sql.path if JAVA.manifest.seed_sql else None
+
+    def probs(*files: tuple[str, str]) -> list[str]:
+        o = Overlay(kind="starter", files=tuple(GeneratedFile(path=p, content=c) for p, c in files))
+        return [p.message for p in _java_test_pitfalls(o, JAVA, seed)]
+
+    test = "src/test/java/x/RankTest.java"
+    patch = 'class T { @Autowired TestRestTemplate rest; void t() { rest.exchange("/a", HttpMethod.PATCH, e, Map.class); } }'
+    mvc = 'class T { @Autowired MockMvc mvc; void t() throws Exception { mvc.perform(patch("/a")); } }'
+    assert any("Invalid HTTP method: PATCH" in p for p in probs((test, patch)))
+    assert not probs((test, mvc))
+    schema = (
+        "src/main/resources/schema.sql",
+        'CREATE TABLE m (id BIGINT, "rank" VARCHAR(20), note VARCHAR(9) DEFAULT \'"x"\');',
+    )
+    plain = ("src/main/java/x/M.java", '@Column(name = "rank") private String rank;')
+    quoted = ("src/main/java/x/M.java", '@Column(name = "\\"rank\\"") private String rank;')
+    [p] = probs(schema, plain)
+    assert "rank" in p and "따옴표 없이 매핑" in p and '"x"' not in p.split("—")[0]
+    assert not probs(
+        schema, quoted
+    )  # 엔티티가 같은 표기 — 시드 SQL 도 스키마 표기를 따른다 (stab1 통과)
+    # 코드가 쓰는 시드 파일은 보지 않는다
+    assert not probs(
+        ("src/main/resources/data.sql", "INSERT INTO m (id, \"rank\") VALUES (1, 'A');"), plain
+    )
