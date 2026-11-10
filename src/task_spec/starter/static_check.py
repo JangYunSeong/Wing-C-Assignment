@@ -52,7 +52,7 @@ from task_spec.starter.tables import (
     same_table,
     spring_snake,
 )
-from task_spec.starter.templates import Template, glob_match, is_java, slot_allows
+from task_spec.starter.templates import Template, glob_match, is_java, is_python, slot_allows
 
 KIND_SLOT = {
     "starter": "starter",
@@ -1462,13 +1462,23 @@ def future_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
 
 
 def _compares(expr: ast.expr, values: set[str], op: type[ast.cmpop]) -> bool:
+    """`x == 표시` (op=Eq) · `x != 표시` (op=NotEq). 표시가 튜플·목록·집합 안이면 `x in (표시, …)` 도 Eq, `x not in (…)` 도 NotEq 로 본다
+    (2026-11-10 알파 14회차: `assert v in ("<unreadable>", {})` 를 놓쳤다)."""
+    if not (isinstance(expr, ast.Compare) and len(expr.ops) == 1):
+        return False
+    sides = (expr.left, *expr.comparators)
+    if isinstance(expr.ops[0], op) and any(
+        isinstance(x, ast.Constant) and x.value in values for x in sides
+    ):
+        return True
+    member = {ast.Eq: ast.In, ast.NotEq: ast.NotIn}.get(op)
     return (
-        isinstance(expr, ast.Compare)
-        and len(expr.ops) == 1
-        and isinstance(expr.ops[0], op)
+        member is not None
+        and isinstance(expr.ops[0], member)
         and any(
-            isinstance(x, ast.Constant) and x.value in values
-            for x in (expr.left, *expr.comparators)
+            isinstance(c, (ast.Tuple, ast.List, ast.Set))
+            and any(isinstance(e, ast.Constant) and e.value in values for e in c.elts)
+            for c in expr.comparators
         )
     )
 
@@ -1502,11 +1512,17 @@ def unreadable_as_pass(cases: Iterable[GeneratedFile], label: str) -> list[str]:
                 and any(isinstance(x, ast.Assert) for b in n.body for x in ast.walk(b))
             ):
                 hits.append(n.lineno)
-            elif (
-                isinstance(n, ast.Assert)
-                and isinstance(n.test, ast.BoolOp)
-                and isinstance(n.test.op, ast.Or)
-                and any(_compares(v, marks, ast.Eq) for v in n.test.values)
+            elif isinstance(n, ast.Assert) and (
+                (
+                    isinstance(n.test, ast.BoolOp)
+                    and isinstance(n.test.op, ast.Or)
+                    and any(_compares(v, marks, ast.Eq) for v in n.test.values)
+                )
+                or (
+                    isinstance(n.test, ast.Compare)
+                    and isinstance(n.test.ops[0], ast.In)
+                    and _compares(n.test, marks, ast.Eq)
+                )
             ):
                 hits.append(n.lineno)
         if hits:
@@ -1752,6 +1768,7 @@ def static_check(
             res.problems += _test_folder_imports(o, template)
             res.problems += _code_overrides(o, template)
             res.problems += _code_pitfalls(o, template)
+            res.problems += _script_imports(o, template, contract)
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
@@ -1778,6 +1795,65 @@ def static_check(
         res.review_flags += _hygiene(None, [readme], avoid_terms)
     res.review_flags = list(dict.fromkeys(res.review_flags))
     return res
+
+
+def _imports_package(stmt: ast.stmt, pkg: str) -> bool:
+    if isinstance(stmt, ast.ImportFrom):
+        return (stmt.module or "").split(".")[0] == pkg and stmt.level == 0
+    return isinstance(stmt, ast.Import) and any(a.name.split(".")[0] == pkg for a in stmt.names)
+
+
+def _touches_sys_path(stmt: ast.stmt) -> bool:
+    for n in ast.walk(stmt):
+        t = (
+            n.func.value
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            else (
+                n.targets[0].value
+                if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Subscript)
+                else None
+            )
+        )
+        if (
+            isinstance(t, ast.Attribute)
+            and t.attr == "path"
+            and isinstance(t.value, ast.Name)
+            and t.value.id == "sys"
+        ):
+            return True
+    return False
+
+
+def _script_imports(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
+    """Python 명령 스크립트가 저장소 루트를 sys.path 에 넣기 전에 자기 패키지(pipeline)를 import — `python pipeline/x.py` 로 실행하면
+    sys.path[0] 이 pipeline/ 라 ModuleNotFoundError. 2026-11-10 데이터 알파 14회차: 허용 구현이 입력 도우미를 맨 위에서 import 해 두 번 다 실패."""
+    if contract is None or not is_python(t.manifest):
+        return []
+    commands = {e.path for e in contract.endpoints if e.method is None}
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if f.path not in commands or not f.path.endswith(".py"):
+            continue
+        pkg = PurePosixPath(f.path).parts[0]
+        try:
+            body = ast.parse(f.content).body
+        except SyntaxError:
+            continue
+        fixed = False
+        for stmt in body:
+            if _touches_sys_path(stmt):
+                fixed = True
+            elif _imports_package(stmt, pkg) and not fixed:
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"{o.name} 의 명령 스크립트 {f.path}:{stmt.lineno} 가 저장소 루트를 sys.path 에 넣기 전에 {pkg} 를 import — "
+                        f"`python {f.path}` 로 실행하면 ModuleNotFoundError. 템플릿 뼈대처럼 그 import 앞에 "
+                        "`sys.path.insert(0, str(Path(__file__).resolve().parent.parent))`",
+                    )
+                )
+                break
+    return out
 
 
 def _code_pitfalls(o: Overlay, t: Template) -> list[StaticProblem]:

@@ -132,7 +132,7 @@ class PythonVerifier:
         bad = next((c for c in codes if c not in (0, 5)), 0)  # 5 = 수집된 테스트 없음
         with log.open("r", encoding="utf-8", errors="ignore") as fh:
             fh.seek(start)
-            errors = [CompileError(**e) for e in judge.compile_errors(fh.read())]
+            errors = [CompileError(**e) for e in judge.compile_errors(fh.read(), root=str(dest))]
         return bad, errors
 
     def _pytest(

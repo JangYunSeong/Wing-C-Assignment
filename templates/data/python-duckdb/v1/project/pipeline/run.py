@@ -27,7 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         run(args.date, args.raw, args.out)
-    except Exception as e:  # 실패는 원인을 stderr 에 한 줄 남기고 계약의 실패 종료 코드로 (말없이 삼키지 않는다)
+    # 실패는 원인을 stderr 에 한 줄 남기고 계약의 실패 종료 코드로 (말없이 삼키지 않는다)
+    except Exception as e:
         print(f"{type(e).__name__}: {e}", file=sys.stderr)
         return 1
     return 0

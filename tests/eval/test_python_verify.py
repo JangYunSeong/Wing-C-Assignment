@@ -125,3 +125,24 @@ def test_mock_image_builder_python_stack_and_grade_config(tmp_path: Path) -> Non
     assert cfg["layout"] == LAYOUT and "pipeline" in cfg["compile_paths"]
     assert "uv.lock" in cfg["locked"] and "grading/**" in cfg["reserved"]
     assert [(c["id"], c["kind"]) for c in cfg["cases"]] == [("hc1", "hidden"), ("pt1", "public")]
+
+
+def test_pytest_collection_syntax_error_is_located_relative_to_the_assembly() -> None:
+    """2026-11-10 qwen 알파: 공개 테스트 문법 오류가 pytest 수집에서 `E     File "<절대 경로>", line N` 로 나와 못 읽고 재요청 0회로 끝났다."""
+    log = (
+        "_____________ ERROR collecting test_pt1_x.py ______________\n"
+        "/usr/lib64/python3.11/ast.py:50: in parse\n"
+        "    return compile(source, filename, mode, flags,\n"
+        'E     File "/work/r1/public_tests/test_pt1_x.py", line 31\n'
+        "E       actual = {(x['a']: 1 for x in rows)}\n"
+        "E                        ^\n"
+        "E   SyntaxError: invalid syntax\n"
+    )
+    assert g.compile_errors(log, root="/work/r1") == [
+        {
+            "path": "public_tests/test_pt1_x.py",
+            "line": 31,
+            "message": "SyntaxError: invalid syntax",
+            "detail": "",
+        }
+    ]
