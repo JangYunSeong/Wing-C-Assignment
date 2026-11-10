@@ -728,3 +728,18 @@ def test_timed_evidence_accepts_unit_conversion_and_rounding() -> None:
     assert (
         evidence_check(12, "단일 SELECT 왕복 p50은 11.4ms", texts) == "bad"
     )  # 단위 없는 조절값은 예전처럼
+
+
+def test_timed_hints_list_lines_with_time_values_for_a_missed_quote() -> None:
+    # 2026-11-10 nplus1-f: 자료의 '응답 p99 ≤ 800 ms' 를 두고 request_timeout_s 근거를 '없음' — 후보를 짚어 한 번 더 묻는다
+    from task_spec.nodes.starter.plan_contract import plan_evidence_missing
+    from task_spec.starter.contract import timed_hints
+
+    texts = ["목록 응답 한도\n- p99 응답 시간 ≤ 800 ms\n- 건수 200", "풀 크기 50"]
+    assert timed_hints("request_timeout_s", texts) == ["- p99 응답 시간 ≤ 800 ms"]
+    assert timed_hints("pool_size", texts) == []  # 단위 없는 조절값은 표기 패턴 몫
+    plan = HiddenPlan.model_validate(
+        _plan() | {"harness": {"request_timeout_s": 2}, "evidence": {"request_timeout_s": "없음"}}
+    )
+    assert plan_evidence_missing(plan, "request_timeout_s")
+    assert not plan_evidence_missing(plan, "query_delay_ms")  # 계획에 없는 조절값

@@ -226,6 +226,19 @@ def _converted(quote: str, unit: str) -> set[float]:
     return out
 
 
+def timed_hints(name: str, texts: Iterable[str], limit: int = 4) -> list[str]:
+    """시간 조절값의 근거 후보 — 명세 자료·답에서 그 단위로 환산할 수 있는 수가 든 줄 (근거를 '없음'으로 쓴 답을 다시 묻는다)."""
+    if param_unit(name) is None:
+        return []
+    out: list[str] = []
+    for text in texts:
+        for line in text.splitlines():
+            line = line.strip()
+            if _TIMED.search(line) and line not in out:
+                out.append(line[:MAX_QUOTE])
+    return out[:limit]
+
+
 def evidence_check(
     value: HarnessValue, quote: str, texts: Iterable[str], unit: str | None = None
 ) -> Literal["ok", "ambiguous", "bad"]:

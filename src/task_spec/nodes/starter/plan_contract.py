@@ -32,6 +32,7 @@ from task_spec.schemas import (
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import fit_auth
 from task_spec.starter.contract import (
+    NO_EVIDENCE,
     ROW_NEEDS,
     SpecView,
     check_contract,
@@ -39,6 +40,7 @@ from task_spec.starter.contract import (
     fit_covers,
     fit_traps,
     hidden_terms,
+    timed_hints,
 )
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
@@ -83,6 +85,11 @@ def _range(lo: float | None, hi: float | None) -> str:
 # 계약 생성 시도 수 — 첫 답 + 재요청 2회. 2026-11-08 상류 평가: 검사 항목이 늘자(전이 규칙 + 관찰 불가 통과 조건) 재요청 한 번에
 # 다 고치지 못해 계약 실패가 0/9 → 3/9 로 늘었다 (재요청은 필요할 때만 — 회당 약 $0.03).
 ATTEMPTS = 3
+
+
+def plan_evidence_missing(plan: HiddenPlan, name: str) -> bool:
+    quote = plan.evidence.get(name)
+    return name in plan.harness and (not quote or quote.strip() == NO_EVIDENCE)
 
 
 def for_material(template: Template, seed: FeatureSeed | None) -> Template:
@@ -386,7 +393,20 @@ async def plan_contract(
         if best is None or score < len(best[1]) + len(best[2]):
             best = (out, check.problems, check.spec_gaps, notes, check.review_flags)
             best_raw = raw
-        if check.ok or check.spec_gaps:
+        # 근거를 '없음'으로 쓴 시간 조절값인데 자료에 그 단위의 수가 있으면 한 번 더 묻는다 — 2026-11-10 nplus1-f: 자료의
+        # '응답 p99 ≤ 800 ms' 를 두고 request_timeout_s=2 · 근거 없음으로 써 명세 결함으로 끝났다
+        hints = (
+            [
+                f"- {p.name}: " + " / ".join(h)
+                for p in manifest.harness_params
+                if p.visible
+                and plan_evidence_missing(out.hidden_plan, p.name)
+                and (h := timed_hints(p.name, spec.visible_texts))
+            ]
+            if check.spec_gaps and attempt < ATTEMPTS - 1
+            else []
+        )
+        if check.ok or (check.spec_gaps and not hints):
             break  # 통과 — 또는 명세 결함이라 재요청해도 소용없음
         if attempt == 0:
             res.first_problems = list(check.problems)
@@ -400,6 +420,12 @@ async def plan_contract(
         lines = "\n".join(
             f"- {p}" for p in check.problems
         )  # 직전 답의 문제만 (앞 회차 문제는 이미 고쳤을 수 있다)
+        if hints:
+            lines += (
+                "\n- 운영 수치 근거를 '없음'으로 썼지만 자료에 그 단위의 수가 있다 — 이 중 근거가 되는 문장을 그대로 인용하고 "
+                "그 값(조절값 단위로 환산·반올림)을 쓴다. 정말 근거가 아니면 '없음':\n"
+                + "\n".join(hints)
+            )
         note = "\n".join(
             x for x in (base_note, f"이전 답의 문제 (고쳐서 다시 쓰세요):\n{lines}") if x
         )
