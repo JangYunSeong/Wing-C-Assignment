@@ -886,3 +886,58 @@ def test_python_job_crash_blames_that_implementation_not_the_public_test() -> No
     ]
     acts, _ = _public_refs(same, {}, "", terms)
     assert [a.generator for a in acts] == ["gen_public"]
+
+
+def test_grading_environment_error_in_every_implementation_is_escalated_not_regenerated() -> None:
+    """2026-11-10 프론트 알파 0108be12: jsdom 에 IndexedDB 가 없어 모든 구현이 `indexedDB is not defined` 였는데
+    '테스트 의심'으로 공개 테스트를 두 번 다시 만들었다 — 무엇을 다시 만들어도 같으므로 '채점 환경 확인 필요'로 올린다."""
+    from task_spec.starter.templates import load_template
+
+    terms = load_template("frontend/react-vite-ts").manifest.repair_terms
+    env = "ReferenceError: indexedDB is not defined"
+
+    def run(target: str, kind: str, hc2: str) -> TargetRun:
+        return TargetRun.model_validate(
+            {
+                "target": target,
+                "kind": kind,
+                "setup": "ok",
+                "tests": [
+                    {
+                        "group": "public",
+                        "name": "pt1",
+                        "result": "HARNESS_ERR",
+                        "message": "Unable to find an element",
+                    },
+                    {"group": "hidden", "name": "hc2", "result": "HARNESS_ERR", "message": hc2},
+                ],
+            }
+        )
+
+    starter = TargetRun.model_validate(
+        {"target": "starter", "kind": "starter", "setup": "ok", "tests": []}
+    )
+    every = VerifyReport(
+        runs=[
+            starter,
+            run("naive-all", "ref_naive", env),
+            run("d1", "ref_accepted", f"{env}\n at x"),
+        ]
+    )
+    plan = assign(every, PLAN2, OVERLAYS, MISSED, {}, (), terms)
+    assert plan.actions == [] and not plan.passed
+    assert len(plan.unresolved) == 1 and plan.unresolved[0].startswith("채점 환경 확인 필요")
+    assert "hidden hc2" in plan.unresolved[0] and "indexedDB" in plan.unresolved[0]
+    # 한 구현만 그 오류 — 그 구현의 선택일 수 있어 기존 규칙대로 (다시 만들기)
+    one = VerifyReport(
+        runs=[
+            starter,
+            run("naive-all", "ref_naive", env),
+            run("d1", "ref_accepted", "AssertionError: x"),
+        ]
+    )
+    plan = assign(one, PLAN2, OVERLAYS, MISSED, {}, (), terms)
+    assert not any(u.startswith("채점 환경") for u in plan.unresolved)
+    # 패턴이 없는 템플릿(Java 등)은 그대로
+    plan = assign(every, PLAN2, OVERLAYS, MISSED, {}, ())
+    assert not any(u.startswith("채점 환경") for u in plan.unresolved)
