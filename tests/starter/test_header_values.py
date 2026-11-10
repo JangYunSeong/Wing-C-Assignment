@@ -116,3 +116,35 @@ def test_hidden_test_with_an_invented_header_value_is_re_requested() -> None:
     )
     assert not problems(case("HEADER_X_REQUESTER_ID_OK"))
     assert not problems(case('"guest"'))  # 계약 값 그대로면 막지 않는다
+
+
+def test_request_key_header_gets_a_new_value_per_request() -> None:
+    # 2026-11-10 retrydup-c: 요청 번호를 상수 하나로 줘 모든 테스트가 같은 번호 — 명세대로 막은 허용 구현이 떨어졌다
+    from task_spec.starter.header_values import PER_REQUEST, header_values, per_request
+
+    c = _contract()
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Request-Id", "type": "string", "constraints": "UUID v4 형식", "refs": ["r1"]}
+    ]
+    contract = TaskContract.model_validate(c)
+    assert per_request(contract, "X-Request-Id")
+    [h] = header_values(contract)
+    assert h.source == PER_REQUEST and h.ok is None and h.denied is None
+    assert not header_problems(contract)
+    c["endpoints"][0]["headers"] = [{"name": "X-Actor", "type": "string", "refs": ["r1"]}]
+    assert not per_request(TaskContract.model_validate(c), "X-Actor")
+
+
+def test_helper_gives_fresh_request_key_and_a_retry_overload() -> None:
+    c = _contract()
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Request-Id", "type": "string", "constraints": "UUID v4 형식", "refs": ["r1"]}
+    ]
+    helper = render_contract_case(
+        TaskContract.model_validate(c), HiddenPlan.model_validate(_plan()), JAVA.manifest
+    )
+    assert helper is not None
+    body = helper.content
+    assert "return okHeaders(newRequestId());" in body
+    assert "protected static Map<String, String> okHeaders(String key)" in body
+    assert 'Map.of("X-Request-Id", key)' in body and "HEADER_X_REQUEST_ID_OK" not in body
