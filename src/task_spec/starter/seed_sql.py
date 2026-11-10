@@ -140,10 +140,40 @@ def _seeded(
 ) -> Iterator[tuple[Entity, SeedRule, str]]:
     tables = contract_tables(contract, manifest.naming.table)
     ents = {m.entity_id: m for m in contract.entities}
-    for s in contract.seed:
+    for s in _fk_order(contract):
         m, table = ents.get(s.entity_id), tables.get(s.entity_id)
         if m is not None and table is not None:
             yield m, s, table
+
+
+def _fk_order(contract: TaskContract) -> list[SeedRule]:
+    """외래 키 대상 엔티티를 먼저 — 2026-11-10 목록 재료: 시드 순서(Order → Customer)대로 넣어 첫 INSERT 부터
+    'Referential integrity constraint violation' 으로 시작 코드가 기동하지 못했다 (값은 대상 범위 안이었다).
+    순환이 있으면 남은 것은 계약 순서 그대로."""
+    by_name = {m.name: m.entity_id for m in contract.entities}
+    deps = {
+        m.entity_id: {by_name.get(target, target) for _, target in m.fk_pairs()} - {m.entity_id}
+        for m in contract.entities
+    }
+    seeded = {s.entity_id for s in contract.seed}
+    pending = list(contract.seed)
+    out: list[SeedRule] = []
+    while pending:
+        done = {s.entity_id for s in out}
+        s = next(
+            (
+                p
+                for p in pending
+                if all(d in done or d not in seeded for d in deps.get(p.entity_id, ()))
+            ),
+            None,
+        )
+        if s is None:  # 순환 — 남은 것은 계약 순서 그대로
+            out += pending
+            break
+        out.append(s)
+        pending.remove(s)
+    return out
 
 
 def render_seed_sql(
