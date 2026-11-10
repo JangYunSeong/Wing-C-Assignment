@@ -261,6 +261,19 @@ _CONTENT_TELLS = (
     "✓",
     "✗",
 )
+# 확인이 필요한 가설 꼴은 결론이 아니다 (2026-11-10: 메모 '네트워크 지연이 원인인지 확인 필요' — 지원자가 기각할 틀린 가설인데 막혔음)
+_HYPOTHESIS_AFTER = re.compile(r"\s*(?:인지|일지|일\s*수|일까|여부|\?)")
+
+
+def _asserted_tells(content: str) -> list[str]:
+    """본문의 판정 문구 — 뒤에 가설 꼴(인지·일 수·여부·?)이 붙은 자리만 있으면 뺀다."""
+    low = content.lower()
+    said = []
+    for w in _CONTENT_TELLS:
+        spots = [m.end() for m in re.finditer(re.escape(w.lower()), low)]
+        if any(not _HYPOTHESIS_AFTER.match(low, end) for end in spots):
+            said.append(w)
+    return said
 
 
 # 핵심·보조 자료 안의 판정·요약 줄 (2026-11-03 웹 예시: 핵심 자료 끝 'Pattern: workers that hold 1st and wait for 2nd fail').
@@ -359,7 +372,7 @@ def check_artifact_list(
                 f"자료 {a.artifact_id} 제목이 결론을 암시함 ({', '.join(tells)}) — 자료 종류만 쓸 것"
             )
         if a.role == "key":
-            said = [w for w in _CONTENT_TELLS if w.lower() in a.content.lower()]
+            said = _asserted_tells(a.content)
             if said:
                 problems.append(
                     f"핵심 자료 {a.artifact_id} 가 결론을 직접 말함 ({', '.join(said)}) — 원시 로그·지표·설정만"
