@@ -481,7 +481,8 @@ def main() -> None:
         item = load_run(run, t)
         cid, rev = item["common_id"], item["revision"]
         print(f"③ {cid} ({run.name})", flush=True)
-        cdir, kdir = ctx / cid / "candidate", ctx / cid / "grader"
+        key = f"{cid}-r{rev}"  # 같은 공통 과제의 다른 판이 작업 폴더를 덮어쓰지 않게 (2026-11-10: r3 가 r1·r2 를 덮어 검증이 엇갈림)
+        cdir, kdir = ctx / key / "candidate", ctx / key / "grader"
         candidate_tree(t, item, cdir / "workspace")
         paths = [
             str(p.relative_to(cdir / "workspace"))
@@ -557,8 +558,9 @@ def main() -> None:
     if not a.skip_verify:
         for x in tasks:
             cid, item = x["item"]["common_id"], x["item"]
-            print(f"④ 검증 {cid}", flush=True)
-            sdir = samples / cid
+            key = f"{cid}-r{item['revision']}"
+            print(f"④ 검증 {key}", flush=True)
+            sdir = samples / key
             sdir.mkdir(parents=True, exist_ok=True)
             # 응시용: 네트워크 없이 기존 테스트가 통과하는가 (의존성이 이미지 안에 다 있는가)
             res = subprocess.run(
@@ -589,7 +591,7 @@ def main() -> None:
             }
             x["grades"] = {}
             for name, ref in subs.items():
-                sub = ctx / cid / "submissions" / name
+                sub = ctx / key / "submissions" / name
                 if sub.exists():
                     shutil.rmtree(sub)
                 shutil.copytree(x["cdir"] / "workspace", sub)
