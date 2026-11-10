@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>공통 과제 빌드</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">빌드</div>
+    <div>
+      <h1>공통 과제 빌드</h1>
+      <small>시작 코드·채점 이미지 빌드의 검증 결과와 전달 묶음 · 내부 시험용</small>
+    </div>
+  </div>
+  <nav class="top-nav" aria-label="화면">
+    <a href="./">명세 작업대</a>
+    <a href="builds.html" aria-current="page">빌드</a>
+  </nav>
+</header>
+
+<main class="workbench">
+  <aside class="rail" aria-label="빌드 목록">
+    <div class="rail-step">
+      <div class="step-head"><h2>빌드</h2><span class="hint" id="list-count"></span></div>
+      <div class="seg" role="group" aria-label="상태로 거르기" id="filter">
+        <button type="button" data-f="" aria-pressed="true">전체</button>
+        <button type="button" data-f="review" aria-pressed="false">검토</button>
+        <button type="button" data-f="approved" aria-pressed="false">승인</button>
+        <button type="button" data-f="failed" aria-pressed="false">실패</button>
+      </div>
+      <ul class="recent" id="list"></ul>
+      <p class="recent-empty" id="list-empty" hidden>빌드가 없습니다.</p>
+      <button type="button" class="btn small" id="reload">다시 읽기</button>
+    </div>
+    <div class="rail-step">
+      <p class="note">숨은 테스트 내용(케이스 시나리오·의도한 실패 사유·테스트 소스)은 이 화면에 나오지 않습니다 — 채점·평가 권한이 있는 쪽에서만 봅니다.</p>
+    </div>
+  </aside>
+
+  <section class="sheet" id="sheet" aria-live="polite">
+    <div class="empty" id="empty">
+      <h2>빌드를 고르세요</h2>
+      <p>왼쪽 목록에서 빌드를 고르면 검증 결과, 승인자가 볼 검토 표시, 응시용·채점용 이미지 묶음을 봅니다.</p>
+    </div>
+    <div id="detail" hidden></div>
+  </section>
+</main>
+<script src="builds.js"></script>
+</body>
+</html>
