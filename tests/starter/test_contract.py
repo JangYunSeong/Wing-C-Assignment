@@ -752,3 +752,26 @@ def test_no_evidence_timed_value_matching_material_is_flagged_not_a_gap() -> Non
     texts = ["목록 응답 한도\n- p99 응답 시간 ≤ 800 ms"]
     [line] = timed_hints("request_timeout_s", texts)
     assert 1.0 in _converted(line, "s") and 3.0 not in _converted(line, "s")
+
+
+def test_api_field_names_fixed_by_the_spec_are_accepted() -> None:
+    # 2026-11-10 확장 알파 C #062: 공개 요구가 API 필드를 member_id·recharge_id 로 정해 camelCase 규칙과 충돌 — 명세가 우선 (사용자 결정 A)
+    from dataclasses import replace
+
+    from task_spec.starter.contract import spec_named_fields
+
+    spec = _spec()
+    named = replace(
+        spec, public_texts=("요청 본문에 member_id와 amount를 받고, 응답에 recharge_id와 balance",)
+    )
+    assert spec_named_fields(named) == {"member_id", "recharge_id"}  # 조사가 붙어도
+    c = _contract()
+    c["endpoints"][0]["request"] = [{"name": "member_id", "type": "integer", "refs": ["r1"]}]
+    c["entities"][0]["fields"].append({"name": "order_no", "type": "string", "refs": ["r1"]})
+    m = _manifest()
+    assert _has(_check(c, spec=spec, manifest=m).problems, "member_id")  # 명세에 없으면 예전처럼
+    probs = _check(
+        c, spec=replace(named, public_texts=(*named.public_texts, "order_no 도")), manifest=m
+    ).problems
+    assert not _has(probs, "member_id")  # API 필드는 명세 이름 인정
+    assert _has(probs, "order_no")  # 엔티티 필드는 규칙대로
