@@ -36,7 +36,7 @@ from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import find_terms
-from task_spec.starter.auth_rule import auth_flags, auth_problems
+from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
 from task_spec.starter.header_values import header_problems
 from task_spec.starter.seed_rows import case_rows_problems, seed_problems
 from task_spec.starter.state_rule import legacy_rule, state_problems
@@ -1140,6 +1140,7 @@ def check_contract(
     else:
         flags += [FLAG_MATERIAL + p for p in materials]
     problems += auth_problems(contract, manifest.seed_rows)
+    problems += unreachable_targets(contract, plan)
     flags += auth_flags(contract)
     problems += header_problems(contract)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)

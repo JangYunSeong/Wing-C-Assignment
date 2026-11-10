@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from task_spec.schemas import AuthRule, SeedGroup, SeedRule, SeedScalar, TaskContract
+from task_spec.schemas import AuthRule, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import ContractField, Endpoint, Entity
 from task_spec.starter.seed_sql import default_value
 from task_spec.starter.state_rule import seed_values
@@ -310,6 +310,34 @@ def _order_problems(contract: TaskContract, m: Entity, rule: AuthRule, label: st
             out.append(
                 f"{label}: order 에 {m.name}.state 값 {', '.join(missing)} 이 빠짐 — 모든 값을 순서대로"
             )
+    return out
+
+
+def unreachable_targets(contract: TaskContract, plan: HiddenPlan) -> list[str]:
+    """숨은 케이스의 대상 행이 등급 비교 권한에서 아무 요청자도 바꿀 수 없는 값 (above=target 인데 order 의 맨 위, or_equal 아님).
+    2026-11-10 v19-be2: hc1 버스트 대상 240행을 MASTER 로 두어 어떤 요청자도 통과 못 했다 — 허용 구현이 모두 403 으로 hc1 을
+    떨어지자 숨은 테스트를 '403 기대'로 다시 만들었고, 요청이 권한에서 끝나 기능 없는 시작 코드도 hc1 을 통과했다."""
+    out: list[str] = []
+    for e in contract.endpoints:
+        r = e.auth
+        if (
+            r is None
+            or r.kind != "role"
+            or r.above != "target"
+            or r.or_equal
+            or not r.order
+            or not r.attribute
+        ):
+            continue
+        top = r.order[-1]
+        for c in plan.cases:
+            for d in c.data:
+                if d.entity_id == r.entity and str(d.initial.get(r.attribute)) == top:
+                    out.append(
+                        f"숨은 케이스 {c.case_id} 의 {d.entity_id} 대상 행 {r.attribute}={top} 은 {e.method} {e.path} 의 권한 규칙"
+                        f"(요청자 {r.attribute} 가 대상보다 높아야)에서 어떤 요청자도 바꿀 수 없다 — 요청이 권한에서 끝나 숨은 요구를 재지 못한다. "
+                        f"대상 행은 {top} 보다 낮은 값({', '.join(r.order[:-1])} 중)으로 둔다"
+                    )
     return out
 
 
