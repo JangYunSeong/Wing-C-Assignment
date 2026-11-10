@@ -7,3 +7,4 @@ manifest `prompt_tasks` 로 이 프롬프트를 쓴다 — Java·React 템플릿
 |---|---|---|---|---|
 | 2026-11-09 | 첫 버전 CURRENT = **v1** | opencode:qwen3.8-flash (머리말) | 만들 때 CURRENT 로 둠 (생성기 CURRENT 는 최신 vN — 사용자 결정 2026-11-09) | 데이터 엔지니어 진행 ("데이터 엔지니어 일단 추천대로 진행해줘") |
 | 2026-11-09 | CURRENT v1 → **v2** | opencode:qwen3.8-flash (머리말) · 알파는 openai:gpt-4.1 | v1 알파 3회(kakaobank_2026#002): 공개 테스트가 `with workspace()`·`write_csv(header=)`·`partitions(폴더)`(key 빠짐)로 모든 구현에서 예외, 실행 날짜 05-28 한 번으로 05-27 출력까지 기대(하루 몫만 처리하는 흔한 구현이 공개 테스트에서 실패) → 하루 몫 원칙·하네스 시그니처 원칙 추가. 정적 검사(키워드·필수 인자·with)와 함께 | 생성기 CURRENT 는 최신 vN (사용자 결정 2026-11-09) |
+| 2026-11-10 | CURRENT v2 → **v3** | opencode:qwen3.8-flash (머리말) · 알파는 openai:gpt-4.1 | 알파 5·6·8·9·10회차 공개 테스트가 뒤 날짜 폴더를 그 실행 전에 씀 (future_input_days 로 기록 대조) → 날짜 폴더는 그 날짜 실행 직전에 | 생성기 CURRENT 는 최신 vN (사용자 결정 2026-11-09) |

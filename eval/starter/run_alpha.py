@@ -68,6 +68,12 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--posting", required=True, help="온톨로지 시범 공고 id")
     ap.add_argument("--model", default=None)
+    ap.add_argument(
+        "--model-for",
+        action="append",
+        default=[],
+        help="단계별 모델 (--model 보다 우선) — 예: --model-for plan_contract=openai:gpt-4.1",
+    )
     ap.add_argument("--openai-key-env", default=None)
     ap.add_argument("--budget-usd", type=float, default=0.5)
     ap.add_argument("--designs", type=int, default=1, help="참조 구현을 만들 허용 설계 수")
@@ -94,6 +100,7 @@ async def main() -> None:
     report: dict[str, Any] = {
         "posting": a.posting,
         "model": a.model,
+        "model_for": a.model_for,
         "pins": pins,
         "approval": "생략(평가 전용)",
     }
@@ -135,7 +142,10 @@ async def main() -> None:
         raise SystemExit(report["stopped"])
 
     llm = make_client(a.openai_key_env)
-    prompts = ModelOverride(PinnedVersions(PromptRegistry(ROOT / "prompts"), pins), a.model)  # type: ignore[arg-type]
+    per_task = dict(x.split("=", 1) for x in a.model_for)
+    prompts = ModelOverride(
+        PinnedVersions(PromptRegistry(ROOT / "prompts"), pins), a.model, per_task=per_task
+    )  # type: ignore[arg-type]
     task: TaskItem | None
     if reuse is not None:
         task = TaskItem.model_validate_json(reuse.read_text("utf-8"))

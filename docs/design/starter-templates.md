@@ -307,6 +307,28 @@ templates/<직군>/<스택>/CURRENT
    9회 중 6회(1·2·5·7·8·9) 같은 꼴, 원인은 gen_hidden_py v1 쓰는 법 문장(어제 HARNESS.md 만 고친 조치가 불완전). hc2 는 한 날짜 요약만 비교해 다른 날짜에
    들어간 사본을 놓침. → gen_hidden_py v2(읽을 수 없음은 실패 · 출력 전체 비교 · 하루씩 실행), 정적 검사 `unreadable_as_pass`(6건 모두 잡고 3·4·6회차는
    안 잡음), HARNESS.md '출력 전체를 비교'. 한 날짜만 비교하는 꼴은 검사가 없다(프롬프트·문서로만).
+   **10회차 (2026-11-10, 커밋 57d7f99, $0.29)**: 흔한 구현을 숨은 3케이스 모두 의도한 사유(late_data_missed·duplicate_counted·partial_output_visible)로
+   잡음 — 9회차 조치의 효과. 정적 검사 기록(static_retries)에 숨은 테스트 첫 답의 '쓴 날짜 미실행'이 재요청으로 고쳐진 것이 남았다(검사가 실제로 일함).
+   허용 구현은 hc1·hc2 실패 → 손 구현으로 가림: 받은 폴더를 모두 읽는 변형이 생성된 허용 구현과 같은 케이스·사유로 떨어지고, 실행 날짜까지만 읽는 d1·d2 는
+   통과 — 테스트가 9/2 폴더를 9/1 실행 전에 써 두어 공개 계약에 없는 '뒤 폴더는 읽지 않는다'를 시험한 것. 기록 대조: 10회 중 9회의 숨은·공개 테스트가 이 꼴
+   (손 구현이 실행 날짜까지만 읽어 드러나지 않았을 뿐). 계약에 '실행 날짜까지의 폴더만'을 적는 대신(앞 폴더도 읽는다는 뜻이라 숨은 요구를 암시) 테스트를
+   현실적으로: gen_hidden_py·gen_public_py v3 '입력은 받은 순서대로(그 날짜 실행 직전에)', HARNESS.md·PUBLIC.md 같은 규칙, 정적 검사 `future_input_days`.
+   **11회차 (2026-11-10, $0.33)**: 테스트가 손 구현 세 가지(실행 날짜까지 · 바뀐 날짜만 · 있는 폴더 모두 읽기)에 모두 공정 — 10회차 문제 해결, static_retries 에
+   공개·숨은 테스트 첫 답의 '뒤 날짜 폴더 미리 쓰기'가 재요청으로 고쳐진 기록. 흔한 구현은 hc1·hc3 의도한 사유, hc2 는 사유 없이 실패 — 테스트가 첫(동작 확인)
+   실행 입력에 사본을 넣고 사유 없는 단언으로 봄 → gen_hidden_py v4 '동작 확인 입력에는 숨은 요구를 건드리는 것을 넣지 않음', HARNESS.md 같은 규칙.
+   허용 구현은 `COPY … FROM ? (…, ALL_VARCHAR true)` 로 실패(다시 만들어도 반복) — stack_notes 의 'all_varchar = true 로 읽는다'가 read_csv 인자라고 안 적어 유도.
+   → stack_notes 정정(read_csv 표 함수 인자), code_pitfalls 'read_csv 인자를 COPY 옵션으로'(1.5.6 에서 하나씩 확인: ALL_VARCHAR·UNION_BY_NAME·COLUMNS·TYPES·
+   FILENAME·NAMES 는 오류, AUTO_DETECT·SAMPLE_SIZE·DATEFORMAT·IGNORE_ERRORS·NULL_PADDING 은 COPY 옵션으로도 됨 — 처음 목록에 AUTO_DETECT 를 넣은 것은 오류였다).
+   백엔드 확인(같은 날): 저장된 백엔드 계약 29개를 main 과 이 브랜치에서 다시 돌려 결과 동일, fit_traps 는 trap_id 를 틀리게 한 29개 모두 복원.
+   LLM 실행 — kakaobank_2026#005 백엔드 명세로 계약 생성만(plan_contract v19, gpt-4.1): 첫 답 통과(재요청 0, $0.038).
+   **모델 시험 (2026-11-10, 계약 단계만)**: 운영은 qwen 이라 싼 모델로 보려 했으나 gpt-5.4-nano 는 데이터·백엔드 계약 모두 실패(재요청 때 JSON 형식이 깨짐),
+   gpt-5.4-mini 는 둘 다 통과했지만 추론이 출력 상한(12000)을 다 써 빈 응답이 반복돼 계약 하나에 $0.21~0.37(gpt-4.1 은 $0.04~0.07) → 알파는 gpt-4.1 로 계속
+   [확정: 2026-11-10 사용자] (qwen 대비 과대평가 주의). nano 실패에서 찾은 입력 문제를 고침: 이름 규칙을 정규식만이 아니라 말로(snake_case·camelCase) + 재요청에
+   고칠 이름 제안(paymentId → payment_id), contract_guide 의 '--이름' 문장이 필드 이름을 --run-date 로 쓰게 함 → 'request 필드 이름은 snake_case, 옵션은 코드가 만든다',
+   계약 입력에 '공개 계약에 쓰지 않는 말'(contract._leaks 와 같은 목록). run_alpha 에 --model-for(단계별 모델).
+   **12회차 (gpt-4.1, $0.21)**: 계약 첫 답 통과(9~11회차 내내 있던 '수신 시각' 재요청이 사라짐). 그러나 계약이 명령 경로를 batch/… 로 정해 시작 코드가
+   '쓸 수 없는 경로'로 실패 — 계약 검사에 명령 경로가 시작 코드 쓰기 영역(fill_slots.starter) 안인지 보는 항목이 없었다 → `_command_paths`(저장된 계약 43개 중
+   이 회차만 잡음), contract_guide 에 'pipeline/ 아래'.
    이미지(2026-11-09): Python 응시용·채점용 — 런타임 python:3.11-slim-bookworm, 템플릿 층에 uv.lock 그대로 만든 /opt/venv(PATH 앞),
    grade 는 image_grade_py.py(개발 서버 Python 검증기와 같은 판정 코드 한 벌, 채점 대상·설정 파일도 python_verify 에서).
    배관 확인(알파 3회차 빌드 사본 — failed 라 전달물 아님): 응시용 오프라인 기존 테스트 통과, 채점 결과가 개발 서버 검증기와 케이스 단위로 같음,

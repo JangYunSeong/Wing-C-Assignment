@@ -34,8 +34,10 @@ from task_spec.starter.contract import (
     ROW_NEEDS,
     SpecView,
     check_contract,
+    field_style,
     fit_covers,
     fit_traps,
+    hidden_terms,
 )
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
@@ -189,6 +191,18 @@ def needs_text(seed: FeatureSeed | None, row_seeds: bool = True) -> str:
     )
 
 
+def forbidden_text(seed: FeatureSeed | None, spec: SpecView) -> str:
+    """공개 계약에 쓰지 않는 말 — 생성 뒤 검사(contract._leaks)가 쓰는 목록 그대로 미리 알린다. 2026-11-10 데이터 알파 9~11회차:
+    gpt-4.1 첫 답이 매번 '수신 시각'(재료의 운영 조건 낱말) 하나로 재요청 — 입력에 목록이 없어 모델과 무관하게 호출 하나를 썼다."""
+    terms = hidden_terms(seed, spec)
+    if not terms:
+        return ""
+    return (
+        "\n- 공개 계약(경로·필드 이름·설명·fixtures·seed·공개 테스트 checks)에 쓰지 않는 말 — 숨은 요구·운영 조건을 드러낸다 "
+        f"(숨은 케이스 scenario·expect·setup 에만): {', '.join(terms)}"
+    )
+
+
 def plan_input(
     task: TaskItem, template: Template, note: str | None = None, seed: FeatureSeed | None = None
 ) -> PlanContractInputV3:
@@ -209,6 +223,7 @@ def plan_input(
         template=(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"
             f"이름 규칙: 경로 {rx.path} · 헤더 {rx.header} · 엔티티 {rx.entity} · 필드 {rx.field}"
+            f"\n- 필드 이름(엔티티 필드·요청 필드·옵션 모두)은 {field_style(rx.field)}"
             + (f" · 화면 test id {rx.test_id}" if "ui" in m.interfaces else "")
             + "".join(f"\n- {g}" for g in m.contract_guide)
         ),
@@ -232,7 +247,8 @@ def plan_input(
         or NONE,
         revision_note=note or NONE,
         seed_rules=seed_rules_text(m)
-        + needs_text(seed, m.seed_rows),  # 프론트 종류는 행 시드가 없는 템플릿에도
+        + needs_text(seed, m.seed_rows)  # 프론트 종류는 행 시드가 없는 템플릿에도
+        + forbidden_text(seed, SpecView.from_task(task)),
         row_rules=row_rules_text(m, seed),
         interface_rules=interface_rules_text(m),
     )
