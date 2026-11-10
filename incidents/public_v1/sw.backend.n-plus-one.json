@@ -101,6 +101,10 @@
       "query_delay_ms",
       "request_timeout_s"
     ],
+    "harness_notes": {
+      "query_delay_ms": "자료의 운영 DB 쿼리 한 번 왕복 지연(p50, ms 정수로 반올림)",
+      "request_timeout_s": "자료의 목록 응답 시간 목표·한도(가장 엄격한 백분위 값, 초 정수로 올림 — 예: 800 ms → 1)"
+    },
     "reasons": [
       "request_timeout"
     ]

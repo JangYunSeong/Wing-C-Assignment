@@ -100,8 +100,17 @@ def for_material(template: Template, seed: FeatureSeed | None) -> Template:
     if seed is None or seed.harness is None:
         return template
     need = set(seed.harness)
+    notes = seed.harness_notes
     params = [
-        p.model_copy(update={"required": p.name in need, "visible": p.visible or p.name in need})
+        p.model_copy(
+            update={
+                "required": p.name in need,
+                "visible": p.visible or p.name in need,
+                "description": f"{p.description} — 이 과제: {notes[p.name]}"
+                if p.name in notes
+                else p.description,
+            }
+        )
         for p in template.manifest.harness_params
     ]
     return replace(

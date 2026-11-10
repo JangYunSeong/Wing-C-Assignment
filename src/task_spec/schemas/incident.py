@@ -78,6 +78,9 @@ class FeatureSeed(Schema):
     # 계약이 '명세 자료에 운영 수치 pool_size 없음' 으로 막혔다 — 무엇이 필수인지는 숨은 요구가 정한다.
     # None = 템플릿 required 그대로 (예전과 같음), [] = 필수 없음.
     harness: list[str] | None = None
+    # 그 조절값을 자료의 어느 운영 조건에서 읽는지 (계약 입력의 조절값 설명에 붙는다) — 2026-11-10 목록 재료: 템플릿 설명
+    # '채점 클라이언트의 요청 하나 시간 한도' 를 자료의 '응답 시간 목표' 와 잇지 못해 세 번 1초·2초·30초로 흔들렸다.
+    harness_notes: dict[str, str] = Field(default_factory=dict)
 
 
 class PublicIncident(Schema):
