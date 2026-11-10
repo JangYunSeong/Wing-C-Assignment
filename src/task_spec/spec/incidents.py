@@ -76,6 +76,21 @@ def feature_incident(
     return cands[int(hashlib.sha256(posting_id.encode("utf-8")).hexdigest(), 16) % len(cands)]
 
 
+def pin_feature_incident(incidents: IncidentCatalog, sub: str, incident_id: str) -> IncidentCatalog:
+    """기능형 재료를 하나로 고정한 카탈로그 — 공고 해시 배정과 상관없이 그 재료로 명세를 만든다 (평가 전용).
+    2026-11-10 프론트 재료 7건: '로그아웃 뒤 이전 사용자 데이터' 재료는 프론트 공고 12개 어디에도 배정되지 않아 알파를 돌릴 수 없었다."""
+    chosen = incident_by_id(incidents, incident_id)
+    if chosen is None or chosen.sub != sub or chosen.feature is None:
+        known = [i.incident_id for i in getattr(incidents, "alternates", {}).get(sub, [])]
+        raise ValueError(
+            f"직군 {sub} 의 기능형 재료가 아님: {incident_id} (있는 추가 재료: {known})"
+        )
+    out = IncidentCatalog({**getattr(incidents, "alternates", {}), sub: [chosen]})
+    out.update(incidents)
+    out[sub] = chosen
+    return out
+
+
 def incident_by_id(
     incidents: Mapping[str, PublicIncident] | None, incident_id: str | None
 ) -> PublicIncident | None:

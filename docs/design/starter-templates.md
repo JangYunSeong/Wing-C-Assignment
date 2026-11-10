@@ -271,6 +271,7 @@ templates/<직군>/<스택>/CURRENT
    목록 틀을 기다린 뒤 항목을 getBy 로 바로 찾는 꼴(항목이 한 박자 늦게 그려지는 구현을 깸, 저장된 시작 코드 테스트 19개 중 6개). 조치: React v3 `code_pitfalls`.
    이 재료에는 오프라인·서버 상태가 없어 v3 새 도우미(network·collection)는 쓰이지 않았다 (확인은 맞는 재료가 생길 때).
    재료 4건 추가(2026-11-10, 원문 확인 — 모두 reviewed=false·알파 전): 토큰 갱신 동시성(Auth0 문서 갱신 토큰 회전·재사용 감지) · 로그아웃 뒤 이전 사용자 데이터(Apollo Client 문서 'Reset store on logout') · 이어 붙인 목록 중복(Slack Engineering 2017 페이지 나누기) · 오프라인 재전송 일부 실패(TanStack Query Network Mode — '모아 두었다 다시 보냄'은 계약 background 에 드러나 숨은 요구를 '다시 보내는 중 일부 실패'로). 템플릿 v4(v3 그대로): 사유 코드 6개와 작성법, 하네스 api.once·call.headers, 자체 점검 23개. 재료가 7건이 되어 공고별 배정이 바뀐다 (예: kb_2026_2#007·samsung#006 → 토큰 갱신).
+   재료 7건 공고 하나씩 알파(2026-11-10, gpt-4.1 — fe7·fe7b·fe7c, 합계 약 $4.8): 1회차 review 1(응답 순서). 실패마다 원인을 확인해 막고 실패분만 다시 — 2회차 review +1(이어 붙인 목록 중복). 막은 것: 재료(오프라인 운영 조건 낱말·로그인 상태 저장소 필요 요소) · 계약(화면 과제에 백엔드 권한·헤더 값 검사 안 함 · 없는 엔티티 외래 키 거절에 고치는 법) · LLM 재요청에 받은 값(허용 목록 밖, 영문 식별자만)·역할 별칭 · 템플릿 v5(textsByRole 범위·순서 무관, 숫자 입력란 빈 값 허용·라우터 안에서 그리기 stack_notes, 라우터 없이 화면 그리는 기존 테스트 code_pitfalls, 작성법: 되돌아갈 값·요청 수 세는 시점) · 수리(모든 구현이 기존 테스트를 라우터·Provider 밖 오류로 깨면 시작 코드 테스트) · 다시 만든 채점 코드 컴파일은 앞 회차에서 · 프롬프트 gen_hidden_react v4~v6·gen_public_react v4~v5(항목 글 통째 비교 금지 · 요청 모양 둘이면 둘 다 · 로그인 상태 · 기대 값 다시 계산 · 필수 입력 채우기 · 다시 방문은 앱 안 이동) · CURRENT 를 최신으로(plan_contract v20 등). 실패가 회차마다 다른 생성 실수로 바뀌어(허용 구현 상태 갱신·입력란·되돌림 버그 포함) 재료 자체의 결함은 아직 보이지 않는다.
    남은 것: 실제 브라우저(Playwright) 층.
 4. 백엔드 TypeScript Next.js — Route Handler·Server Action + Prisma (+ 프론트와 공유할 Node 빌드 이미지). NestJS 는 필요할 때.
 5. AI 엔지니어 Python 서빙.

@@ -261,3 +261,23 @@ def test_backend_base_incident_stays_in_the_hash_pool() -> None:
     }
     fe = {feature_incident(incs, "sw.frontend", f"posting#{i}").incident_id for i in range(60)}  # type: ignore[union-attr]
     assert incs["sw.frontend"].incident_id not in fe
+
+
+def test_feature_incident_can_be_pinned_for_evaluation() -> None:
+    """2026-11-10: '로그아웃 뒤 이전 사용자 데이터' 재료는 프론트 공고 어디에도 해시 배정되지 않아 알파용으로 고정한다."""
+    from task_spec.spec.incidents import feature_incident, pin_feature_incident
+
+    incs = load_incidents(ROOT)
+    target = "pub:sw.frontend:previous-user-data-after-logout"
+    pinned = pin_feature_incident(incs, "sw.frontend", target)
+    for pid in ("kb_2026_2#007", "naver_2026#003", "posting#001"):
+        assert feature_incident(pinned, "sw.frontend", pid).incident_id == target  # type: ignore[union-attr]
+    assert feature_incident(incs, "sw.frontend", "kb_2026_2#007").incident_id != target  # type: ignore[union-attr]
+    # 다른 직군은 그대로, 다른 직군의 재료·없는 재료는 거절
+    assert feature_incident(pinned, "sw.backend", "kb_2026_2#007") == feature_incident(
+        incs, "sw.backend", "kb_2026_2#007"
+    )
+    with pytest.raises(ValueError, match="기능형 재료가 아님"):
+        pin_feature_incident(incs, "sw.frontend", "pub:sw.backend:list-query-per-row")
+    with pytest.raises(ValueError, match="있는 추가 재료"):
+        pin_feature_incident(incs, "sw.frontend", "pub:없음:x")

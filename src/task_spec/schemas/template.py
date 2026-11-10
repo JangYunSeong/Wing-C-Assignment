@@ -321,8 +321,12 @@ class RepairTerms(Schema):
     # 테스트·구현을 다시 만들지 않고 '채점 환경 확인 필요'로 올린다. 빈 값이면 쓰지 않는다.
     # 2026-11-10 프론트 알파 0108be12: `indexedDB is not defined` 로 모든 구현이 떨어졌는데 공개 테스트만 두 번 다시 만들었다.
     grading_env: str = ""
+    # 실패 메시지가 '기존 테스트가 화면을 라우터·Provider 없이 그림'을 보이는 꼴 — 모든 구현이 시작 코드의 같은 기존 테스트를 이 꼴로 깨면
+    # 계약 모호가 아니라 시작 코드 테스트를 다시 만든다. 빈 값이면 쓰지 않는다.
+    # 2026-11-10 프론트 알파 fe7b-user: 참조 구현 두 개가 기존 테스트를 'useNavigate() may be used only in the context of a <Router>' 로 깼는데 계약 모호로 짚었다.
+    test_context: str = ""
 
-    @field_validator("impl_crash", "grading_env")
+    @field_validator("impl_crash", "grading_env", "test_context")
     @classmethod
     def _rx(cls, v: str) -> str:
         if v:

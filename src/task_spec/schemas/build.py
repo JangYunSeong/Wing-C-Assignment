@@ -199,6 +199,36 @@ class Fixture(Schema):
         return _check_refs(v)
 
 
+# 화면 요소 역할의 흔한 다른 이름 → UiElement.role 목록의 값 (Testing Library 로 찾는 뜻이 같은 것만)
+ROLE_ALIASES: dict[str, str] = {
+    "spinbutton": "input",
+    "slider": "input",
+    "number": "input",
+    "textarea": "textbox",
+    "searchbar": "searchbox",
+    "select": "combobox",
+    "dropdown": "combobox",
+    "listitem": "item",
+    "grid": "table",
+    "gridcell": "cell",
+    "columnheader": "cell",
+    "rowheader": "cell",
+    "img": "text",
+    "image": "text",
+    "label": "text",
+    "paragraph": "text",
+    "spinner": "progressbar",
+    "loading": "progressbar",
+    "toast": "alert",
+    "alertdialog": "dialog",
+    "modal": "dialog",
+    "nav": "navigation",
+    "section": "region",
+    "group": "region",
+    "menubar": "menu",
+}
+
+
 class UiElement(Schema):
     """화면 요소 — 숨은 테스트·공개 테스트가 test id 로 찾는다."""
 
@@ -246,6 +276,16 @@ class UiElement(Schema):
         "(예: '클릭하면 수량 1 증가 — 바로 저장 요청', '값을 바꾸고 포커스를 옮기면 저장 요청')",
     )
     refs: list[str] = Field(min_length=1)
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _role_alias(cls, v: object) -> object:
+        """흔한 ARIA·HTML 이름은 목록의 같은 뜻 역할로 받는다 — 2026-11-10 프론트 알파 fe7-dup: 목록 밖 역할을 계약 3번이 모두
+        반복해 거절됐다 (재요청이 무엇이 틀렸는지 몰랐다). 목록에 없는 다른 값은 그대로 형식 오류."""
+        if isinstance(v, str):
+            key = v.strip().lower()
+            return ROLE_ALIASES.get(key, key)
+        return v
 
     @field_validator("refs")
     @classmethod

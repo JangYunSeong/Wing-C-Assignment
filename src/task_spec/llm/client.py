@@ -107,11 +107,27 @@ def _violation_kinds(exc: Exception) -> str:
     return "json_parse"
 
 
+# 받은 값을 보여 줄 수 있는 꼴 — 영문 식별자 같은 짧은 값만 (자유 글·한글은 원문이 섞일 수 있어 넣지 않는다)
+_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]{0,39}")
+
+
 def _validation_summary(exc: Exception) -> str:
+    """재요청 문구·실패 사유 — 허용 값 밖(literal·enum)이면 받은 값도 앞에 붙인다 (짧은 값만). 2026-11-10 프론트 알파 fe7-dup:
+    '이 중 하나여야 함' 목록만 보여 줘 계약 3번이 같은 값을 반복했고, 실패 사유가 300자에서 잘려 무슨 값이었는지도 남지 않았다."""
     if isinstance(exc, ValidationError):
-        return "; ".join(
-            f"{'.'.join(map(str, e['loc'])) or '(root)'}: {e['msg']}" for e in exc.errors()[:10]
-        )
+        parts = []
+        for e in exc.errors()[:10]:
+            loc = ".".join(map(str, e["loc"])) or "(root)"
+            got = e.get("input")
+            if (
+                e["type"] in ("literal_error", "enum")
+                and isinstance(got, str)
+                and _TOKEN.fullmatch(got)
+            ):
+                parts.append(f"{loc}: 받은 값 {got!r} 은 허용 값이 아님 — {e['msg']}")
+            else:
+                parts.append(f"{loc}: {e['msg']}")
+        return "; ".join(parts)
     return "JSON 파싱 실패"
 
 

@@ -45,7 +45,12 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
 from task_spec.spec.build import build_common
-from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
+from task_spec.spec.incidents import (
+    feature_incident,
+    incident_by_id,
+    load_incidents,
+    pin_feature_incident,
+)
 from task_spec.starter.render import render_readme
 from task_spec.starter.templates import load_template, select_template
 
@@ -88,6 +93,11 @@ async def main() -> None:
         default=[],
         help="프롬프트 버전 고정 (CURRENT 는 그대로) — 예: --pin plan_contract=8",
     )
+    ap.add_argument(
+        "--incident",
+        default=None,
+        help="기능형 재료 고정 (공고 해시 배정 대신) — 예: --incident pub:sw.frontend:previous-user-data-after-logout",
+    )
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
     pins = {k: int(v) for k, _, v in (x.partition("=") for x in a.pin)}
@@ -116,6 +126,9 @@ async def main() -> None:
     p = await posting_profile(repo, a.posting)
     if p is None or not (p.sub and p.industry_id):
         raise SystemExit(f"공고 프로필이 없음: {a.posting}")
+    if a.incident:
+        incidents = pin_feature_incident(incidents, p.sub, a.incident)
+        report["incident_pinned"] = a.incident
     ev = await query_evidence(
         repo,
         p.competency_ids,

@@ -1061,7 +1061,11 @@ def _foreign_keys(contract: TaskContract) -> list[str]:
             if fk_field not in fields:
                 out.append(f"외래 키 {m.name}.{fk_field} → {target}: {m.name} 에 없는 필드")
             if target not in names:
-                out.append(f"외래 키 {m.name}.{fk_field} → {target}: 계약에 없는 엔티티")
+                # 2026-11-10 프론트 알파 fe7b-offline: 고치는 법 없이 '없는 엔티티'만 알려 3번 모두 같은 외래 키를 걸었다
+                out.append(
+                    f"외래 키 {m.name}.{fk_field} → {target}: 계약에 없는 엔티티 — {target} 를 entities 에 넣거나(이미 있는 데이터면 existing), "
+                    f"과제가 {target} 를 다루지 않으면 외래 키를 빼고 {fk_field} 를 그냥 칸(식별 값)으로 둔다"
+                )
     return out
 
 
@@ -1261,8 +1265,11 @@ def check_contract(
         problems += materials
     else:
         flags += [FLAG_MATERIAL + p for p in materials]
-    problems += auth_problems(contract, manifest.seed_rows)
     problems += unreachable_targets(contract, plan)
-    flags += auth_flags(contract)
-    problems += header_problems(contract)
+    # 권한 칸·헤더 값 검사는 서버가 판정하는 과제(행 시드·요청자 행) 몫 — 화면 과제는 테스트가 서버 응답(401 포함)을 직접 정한다.
+    # 2026-11-10 프론트 알파 fe7-token: 토큰 만료 401 에 '요청자 행·X-Actor 통과 값'을 요구해 계약 3번이 모두 거절됐다.
+    if contract.interface_kind != "ui":
+        problems += auth_problems(contract, manifest.seed_rows)
+        flags += auth_flags(contract)
+        problems += header_problems(contract)
     return ContractCheck(problems=problems, spec_gaps=gaps, review_flags=flags)
