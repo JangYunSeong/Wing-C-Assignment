@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 
 from pydantic import BaseModel
 
@@ -82,6 +83,19 @@ def _range(lo: float | None, hi: float | None) -> str:
 # 계약 생성 시도 수 — 첫 답 + 재요청 2회. 2026-11-08 상류 평가: 검사 항목이 늘자(전이 규칙 + 관찰 불가 통과 조건) 재요청 한 번에
 # 다 고치지 못해 계약 실패가 0/9 → 3/9 로 늘었다 (재요청은 필요할 때만 — 회당 약 $0.03).
 ATTEMPTS = 3
+
+
+def for_material(template: Template, seed: FeatureSeed | None) -> Template:
+    """재료가 선언한 조절값(FeatureSeed.harness)만 필수로 — 재료가 harness 를 적지 않으면(None) 템플릿 required 그대로 (예전과 같음)."""
+    if seed is None or seed.harness is None:
+        return template
+    need = set(seed.harness)
+    params = [
+        p.model_copy(update={"required": p.name in need}) for p in template.manifest.harness_params
+    ]
+    return replace(
+        template, manifest=template.manifest.model_copy(update={"harness_params": params})
+    )
 
 
 def fill_hidden_defaults(plan: HiddenPlan, m: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
@@ -254,13 +268,35 @@ def plan_input(
     )
 
 
+def fit_fk_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
+    """외래 키 대상을 엔티티 id(m2)로 쓴 것을 이름(Customer)으로 — 2026-11-10 목록 재료 계약: 'customerId → m2' 를 재요청에도
+    그대로 내 '계약에 없는 엔티티' 로 계약이 실패했다 (검사는 이름으로 찾는다)."""
+    names = {m.entity_id: m.name for m in contract.entities}
+    notes: list[str] = []
+    entities = []
+    for m in contract.entities:
+        fks = []
+        for fk in m.foreign_keys:
+            field_name, _, target = (x.strip() for x in re.split(r"(→|->)", fk, maxsplit=1))
+            if target in names and target not in names.values():
+                notes.append(
+                    f"{m.name} 외래 키 {field_name} → {target} 를 엔티티 이름 {names[target]} 로"
+                )
+                fk = f"{field_name} → {names[target]}"
+            fks.append(fk)
+        entities.append(m.model_copy(update={"foreign_keys": fks}) if fks != m.foreign_keys else m)
+    return (contract.model_copy(update={"entities": entities}), notes) if notes else (contract, [])
+
+
 def fit_output(
     out: PlanContractOutput, manifest: TemplateManifest, spec: SpecView
 ) -> tuple[PlanContractOutput, list[str]]:
     """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다."""
     filled, notes = fill_hidden_defaults(out.hidden_plan, manifest)
-    out = out.model_copy(update={"hidden_plan": filled})
+    named, fk_notes = fit_fk_targets(out.contract)
+    out = out.model_copy(update={"hidden_plan": filled, "contract": named})
+    notes += fk_notes
     if manifest.seed_rows:  # 행 수 맞추기는 DB 행 과제에서만
         fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
         out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
@@ -297,6 +333,7 @@ async def plan_contract(
     """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획."""
     res = PlanResult()
     spec = SpecView.from_task(task)
+    template = for_material(template, seed)
     manifest = template.manifest
     # 2026-11-07: 템플릿 표기 패턴으로 못 찾으면 LLM 전에 실패시켰는데, 패턴이 한 예시 표현에만 맞아 값이 있는 명세도 막혔다
     # → LLM 이 값 + 근거 인용을 내고 코드가 확인한다 (check_contract). 근거가 "없음"이면 그때 명세 결함.

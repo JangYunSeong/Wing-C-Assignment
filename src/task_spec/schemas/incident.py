@@ -73,6 +73,11 @@ class FeatureSeed(Schema):
     # 2026-11-09 React 상류 평가: 계약 계획이 템플릿 사유 목록에서 숨은 요구(응답 경쟁)와 무관한 duplicate_request 를 골라
     # 올바른 구현도 떨어지는 케이스(같은 검색어를 두 번 입력하면 요청 1번)를 만들었다. 숨은 요구는 재료마다 다르므로 재료에 선언한다.
     reasons: list[str] = Field(default_factory=list)
+    # 이 숨은 요구를 재는 데 꼭 필요한 하네스 조절값 (템플릿 harness_params 이름) — 템플릿의 required 와 합친다.
+    # 2026-11-10 백엔드 재료 3건: 템플릿이 pool_size·concurrency 를 늘 필수로 둬 풀과 무관한 재료(목록 행마다 조회·재시도 중복)
+    # 계약이 '명세 자료에 운영 수치 pool_size 없음' 으로 막혔다 — 무엇이 필수인지는 숨은 요구가 정한다.
+    # None = 템플릿 required 그대로 (예전과 같음), [] = 필수 없음.
+    harness: list[str] | None = None
 
 
 class PublicIncident(Schema):

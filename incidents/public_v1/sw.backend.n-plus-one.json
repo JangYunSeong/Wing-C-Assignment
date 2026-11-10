@@ -97,6 +97,7 @@
     "starter": null,
     "reviewed": false,
     "contract_needs": [],
+    "harness": [],
     "reasons": [
       "request_timeout"
     ]

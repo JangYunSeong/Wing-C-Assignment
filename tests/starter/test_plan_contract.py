@@ -307,3 +307,27 @@ def test_v17_gets_only_the_template_interface_rules() -> None:
         "화면마다 `on_load`" in fe.messages[0].content
         and "`http`: 엔드포인트마다" not in fe.messages[0].content
     )
+
+
+def test_material_decides_required_harness_params_and_fk_targets_use_names() -> None:
+    # 2026-11-10 백엔드 재료 3건: 풀과 무관한 재료 계약이 템플릿의 pool_size 필수 때문에 막혔고, 외래 키 대상을 id 로 씀
+    from task_spec.nodes.starter.plan_contract import fit_fk_targets, for_material
+    from task_spec.schemas import FeatureSeed, TaskContract
+    from task_spec.starter.templates import load_template
+
+    t = load_template("backend/java-spring-boot3-jpa")
+    base = {p.name for p in t.manifest.harness_params if p.required}
+    assert {"pool_size", "concurrency"} <= base
+    raw = json.loads(
+        (ROOT / "incidents" / "public_v1" / "sw.backend.retry-duplicate.json").read_text("utf-8")
+    )
+    seed = FeatureSeed.model_validate(raw["feature"])
+    assert seed.harness == []
+    assert not [p for p in for_material(t, seed).manifest.harness_params if p.required]
+    assert (
+        for_material(t, seed.model_copy(update={"harness": None})) is t
+    )  # 적지 않으면 템플릿 그대로
+    c = _contract()
+    c["entities"][1]["foreign_keys"] = [f"orderId → {c['entities'][0]['entity_id']}"]
+    fixed, notes = fit_fk_targets(TaskContract.model_validate(c))
+    assert fixed.entities[1].foreign_keys == [f"orderId → {c['entities'][0]['name']}"] and notes

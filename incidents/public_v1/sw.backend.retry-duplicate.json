@@ -105,6 +105,7 @@
         "note": "충전 요청마다 쌓이는 충전 기록 엔티티 — 이 과제에서 새로 만듦, 처음 0행, 요청 번호 칸이 있음"
       }
     ],
+    "harness": [],
     "reasons": [
       "duplicate_record",
       "record_mismatch"
