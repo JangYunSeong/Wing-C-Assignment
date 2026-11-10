@@ -154,6 +154,66 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
     return list(out.values())
 
 
+CONFORM_NOTE = (
+    "계약 적합성 스모크(계약 모양 그대로의 응답을 바로 주고 입력란에 글자를 넣음)에서 앱이 깨졌다 — 응답 본문은 계약의 모양 "
+    "그대로 읽는다 (계약 응답이 배열이면 배열, 칸 이름 그대로 — 감싼 객체로 읽지 않는다). 받은 값이 비어도 화면이 내려가지 않게 한다. 실패한 화면:"
+)
+
+
+def _conform(runs: Sequence[TargetRun]) -> list[RepairAction]:
+    """게이트 ⓪ — 계약 적합성 스모크 (starter/conformance.py, 계약에서 코드가 쓴 검사). 탓을 실패 메시지 꼴이 아니라 증거로 정한다:
+    시작 코드가 깨지면 시작 코드 · 참조 구현이 모두 같은 화면에서 깨지면 공유 코드(시작 코드) · 일부만 깨지면 그 구현.
+    2026-11-10 프론트 알파(fefix e99cbba0): 시작 코드 api 모듈이 배열 응답을 `{ items }` 로 읽어 구현들이 화면째 내려갔는데, ⑤가 공개 테스트를
+    의심해 다시 만들고 예산을 다 썼다."""
+
+    def bad(r: TargetRun) -> list[TestResult]:
+        return [t for t in r.results("conform") if t.result != "PASS"]
+
+    def lines(ts: list[TestResult]) -> str:
+        return "\n".join(f"- {t.name}: {_short(t.message)}" for t in ts[:6])
+
+    starter = next((r for r in runs if r.kind == "starter"), None)
+    if starter is not None and (b := bad(starter)):
+        return [
+            RepairAction(
+                "gen_starter",
+                "",
+                "⓪",
+                f"시작 코드가 계약 적합성 스모크 실패: {_short(b[0].name)}",
+                f"{CONFORM_NOTE}\n{lines(b)}",
+            )
+        ]
+    refs = [r for r in runs if r.kind in ("ref_naive", "ref_accepted") and r.setup == "ok"]
+    failing = [(r, b) for r in refs if (b := bad(r))]
+    if not failing:
+        return []
+    if (
+        len(refs) >= 2
+        and len(failing) == len(refs)
+        and len({tuple(sorted(t.name for t in b)) for _, b in failing}) == 1
+    ):
+        return [
+            RepairAction(
+                "gen_starter",
+                "",
+                "⓪",
+                f"참조 구현 모두 같은 화면에서 계약 적합성 스모크 실패 — 공유 코드 의심: {_short(failing[0][1][0].name)}",
+                f"시작 코드 위의 구현 {len(refs)}개가 모두 같은 화면에서 깨진다 — 구현이 함께 쓰는 시작 코드(api 모듈·화면 뼈대)를 "
+                f"계약대로 고친다. {CONFORM_NOTE}\n{lines(failing[0][1])}",
+            )
+        ]
+    return [
+        RepairAction(
+            _gen_for(r),
+            r.target,
+            "⓪",
+            f"{r.target} 가 계약 적합성 스모크 실패: {_short(b[0].name)}",
+            f"{CONFORM_NOTE}\n{lines(b)}",
+        )
+        for r, b in failing
+    ]
+
+
 def _starter(
     run: TargetRun,
     overlays: Mapping[str, Overlay] | None = None,
@@ -930,6 +990,12 @@ def assign(
         res.unresolved += env  # 다시 만들 것이 없다 — 승인자에게 (review_flags)
         return res
     if acts := _starter(starter, overlays, terms):
+        res.actions = acts
+        return res
+    if acts := _conform(report.runs):
+        # 계약 모양 응답에 깨진 코드부터 고친다. 깨진 구현을 빼고 남은 구현끼리 비교하면 '모든 구현이 실패'가 구현 하나로도 성립해
+        # 테스트를 잘못 의심한다 (2026-11-10 e99cbba0 재검증: 깨진 셋을 빼자 남은 d3 하나의 공개 실패로 공개 테스트를 다시 만들려 했다).
+        # 다음 회차에 고친 구현까지 모두 다시 비교한다.
         res.actions = acts
         return res
     acts, flags = _starter_public(starter, counts)

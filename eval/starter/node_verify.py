@@ -39,6 +39,7 @@ from typing import Any
 from eval.starter import image_grade_node as judge
 from eval.starter.gradle_verify import assemble, write_overlay
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
+from task_spec.starter.conformance import CONFORM_CONFIG
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 
@@ -233,13 +234,18 @@ class NodeVerifier:
         return code, json.loads(report.read_text("utf-8"))
 
     def _target(
-        self, target: str, kind: str, parts: Sequence[Overlay], hidden: Overlay | None
+        self,
+        target: str,
+        kind: str,
+        parts: Sequence[Overlay],
+        hidden: Overlay | None,
+        conform: Overlay | None = None,
     ) -> TargetRun:
         dest = self.work / f"r{self.rounds}-{target}"
         log = self.work / f"r{self.rounds}-{target}.log"
         log.write_text("", "utf-8")
         start = time.monotonic()
-        self._assemble(dest, parts)
+        self._assemble(dest, [*parts, *((conform,) if conform is not None else ())])
         setup, detail = "ok", ""
         tests: list[TestResult] = []
         code, errors = self._tsc(dest, log)
@@ -268,6 +274,8 @@ class NodeVerifier:
                             fh.write(
                                 f"## {t.group} {t.name} {t.result} [{t.reason or '-'}] {t.message}\n"
                             )
+            if setup == "ok" and conform is not None:
+                tests += self._conform(dest, log)
         shutil.rmtree(dest, ignore_errors=True)
         return TargetRun.model_validate(
             {
@@ -282,6 +290,49 @@ class NodeVerifier:
                 "seconds": round(time.monotonic() - start, 1),
             }
         )
+
+    def _conform(self, dest: Path, log: Path) -> list[TestResult]:
+        """계약 적합성 스모크 — 전용 설정으로 한 번. 화면(it)마다 결과 하나, 실패는 HARNESS_ERR (단언이 아니라 앱이 깨짐)."""
+        report = dest / ".conform-report.json"
+        code, _ = run_node(
+            [
+                "npx",
+                "vitest",
+                "run",
+                "--config",
+                CONFORM_CONFIG,
+                "--reporter=json",
+                f"--outputFile={report}",
+            ],
+            dest,
+            log,
+            self.timeout,
+            [self.node_modules.parent],
+        )
+        if (
+            not report.is_file()
+        ):  # 스모크가 못 떴다 — 대상 탓이 아니므로 결과를 남기지 않는다 (로그에만)
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(f"## conform 스모크가 돌지 못함 ({code})\n")
+            return []
+        out: list[TestResult] = []
+        for f in json.loads(report.read_text("utf-8")).get("testResults", []):
+            for a in f.get("assertionResults") or []:
+                failed = a.get("status") == "failed"
+                msg = clean_message(str((a.get("failureMessages") or [""])[0])) if failed else ""
+                out.append(
+                    TestResult(
+                        group="conform",
+                        name=str(a.get("title", "conform"))[:120] or "conform",
+                        result="HARNESS_ERR" if failed else "PASS",
+                        message=msg[:400],
+                    )
+                )
+        with log.open("a", encoding="utf-8") as fh:
+            for t in out:
+                if t.result != "PASS":
+                    fh.write(f"## conform {t.name} {t.result} {t.message}\n")
+        return out
 
     def _compile(self, parts: Sequence[Overlay], tag: str = "tests") -> list[CompileError]:
         """템플릿 project/ + 오버레이들(숨은·공개 테스트가 있으면 하네스도)을 조립해 타입 검사만 — 템플릿 commands.test_compile."""
@@ -326,8 +377,10 @@ class NodeVerifier:
         hidden: Overlay,
         refs: Sequence[Overlay],
         public: Overlay | None = None,
+        conform: Overlay | None = None,
     ) -> VerifyReport:
-        """GradleVerifier.verify 와 같은 대상 순서 — 시작 코드(+공개), 시작 코드 그대로 + 숨은, 참조 구현마다 (+공개 + 숨은)."""
+        """GradleVerifier.verify 와 같은 대상 순서 — 시작 코드(+공개), 시작 코드 그대로 + 숨은, 참조 구현마다 (+공개 + 숨은).
+        conform: 계약 적합성 스모크 (starter/conformance.py) — 시작 코드·참조 구현 대상에서 따로 한 번 더 돈다 (group conform)."""
         self.rounds += 1
         self.work.mkdir(parents=True, exist_ok=True)
         pub = (public,) if public is not None else ()
@@ -338,7 +391,11 @@ class NodeVerifier:
                     write_overlay(o, code / name)
             for r in refs:
                 write_overlay(r, code / (r.label or r.kind))
-        runs = [await asyncio.to_thread(self._target, "starter", "starter", (starter, *pub), None)]
+        runs = [
+            await asyncio.to_thread(
+                self._target, "starter", "starter", (starter, *pub), None, conform
+            )
+        ]
         if runs[0].setup == "ok":
             runs.append(
                 await asyncio.to_thread(
@@ -348,7 +405,12 @@ class NodeVerifier:
         for r in refs:
             runs.append(
                 await asyncio.to_thread(
-                    self._target, r.label or r.kind, r.kind, (starter, r, *pub, hidden), hidden
+                    self._target,
+                    r.label or r.kind,
+                    r.kind,
+                    (starter, r, *pub, hidden),
+                    hidden,
+                    conform,
                 )
             )
         return VerifyReport(runs=runs)
