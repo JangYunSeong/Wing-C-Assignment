@@ -96,7 +96,7 @@ def test_mock_image_builder_picks_stack_and_writes_node_grade_config(tmp_path: P
     from tests.starter.test_frontend_template import _contract, _plan
 
     for sub, ref in (
-        ("sw.frontend", "frontend/react-vite-ts@v4"),
+        ("sw.frontend", "frontend/react-vite-ts@v5"),
         ("sw.backend", "backend/java-spring-boot3-jpa@v1"),
     ):
         run = tmp_path / sub

@@ -548,6 +548,35 @@ def _contract_ambiguity(
     return flags, common
 
 
+def _starter_test_context(
+    runs: Sequence[TargetRun], starter: TargetRun, terms: RepairTerms | None
+) -> list[RepairAction]:
+    """참조 구현 둘 이상이 **모두** 시작 코드에서 통과하던 같은 기존 테스트를 '라우터·Provider 밖' 오류(manifest repair_terms.test_context)로
+    깨면 그 테스트가 화면을 맥락 없이 그린 것 — 구현이 useNavigate 등을 쓰는 순간 깨진다. 계약 모호(_contract_ambiguity)보다 먼저 본다."""
+    if terms is None or not terms.test_context or len(runs) < 2:
+        return []
+    rx = re.compile(terms.test_context)
+    broke = [{t.name: t.message for t in _broke_existing(r, starter)} for r in runs]
+    names = sorted(
+        n
+        for n in broke[0]
+        if all(n in b and rx.search(b[n]) for b in broke) and rx.search(broke[0][n])
+    )
+    if not names:
+        return []
+    msg = _short(broke[0][names[0]])
+    return [
+        RepairAction(
+            "gen_starter",
+            "",
+            "②",
+            f"참조 구현 {len(runs)}개가 모두 기존 테스트 {', '.join(names)} 를 같은 맥락 오류로 깸 — 시작 코드 테스트가 화면을 라우터·Provider 없이 그림",
+            f"시작 코드의 기존 테스트 {', '.join(names)} 가 화면 컴포넌트를 라우터(·데이터 Provider) 밖에서 그려, 화면이 이동 기능(useNavigate 등)을 쓰면 깨진다: {msg} — "
+            "기존 테스트에서 화면을 그릴 때는 MemoryRouter(TanStack Query 를 쓰면 QueryClientProvider 도) 안에서 그린다.",
+        )
+    ]
+
+
 def _ref_existing(
     run: TargetRun, starter: TargetRun, skip: set[str] = frozenset()
 ) -> list[RepairAction]:  # type: ignore[assignment]
@@ -908,6 +937,12 @@ def assign(
             continue
         ready.append(run)
     shared = _shared_note(ready, overlays, shared_paths)
+    if acts := _starter_test_context(ready, starter, terms):
+        res.actions = [
+            *actions,
+            *acts,
+        ]  # 시작 코드가 바뀌면 참조 구현은 새 시작 코드 위에 다시 쓰인다
+        return res
     ambiguous, skip = _contract_ambiguity(ready, starter, shared)
     res.unresolved += ambiguous
     for run in ready:

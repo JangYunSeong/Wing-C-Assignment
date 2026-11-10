@@ -115,7 +115,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v4"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v5"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v1"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
@@ -497,15 +497,146 @@ def test_existing_test_must_wait_for_list_items_not_just_the_list() -> None:
         "});\n"
     )
     good = bad.replace("within(list).getByTestId", "await within(list).findByTestId")
-    found = _code_pitfalls(
-        Overlay(kind="starter", files=(_f("src/cart/CartPage.test.tsx", bad),)), FE
-    )
+    found = [
+        p
+        for p in _code_pitfalls(
+            Overlay(kind="starter", files=(_f("src/cart/CartPage.test.tsx", bad),)), FE
+        )
+        if "within("
+        in p.message  # v5: 라우터 없이 화면을 그리는 꼴도 함께 걸린다 (그쪽은 따로 시험)
+    ]
     assert (
         len(found) == 1
         and "findByTestId" in found[0].message
         and "CartPage.test.tsx:3" in found[0].message
     )
+    assert not [
+        p
+        for p in _code_pitfalls(
+            Overlay(kind="starter", files=(_f("src/cart/CartPage.test.tsx", good),)), FE
+        )
+        if "within(" in p.message
+    ]
+
+
+def test_ui_contract_401_needs_no_backend_auth_rule() -> None:
+    """2026-11-10 프론트 알파 fe7-token: 토큰 만료 401 에 백엔드용 권한 칸(요청자 행·X-Actor 통과 값)을 요구해 계약 3번이 모두 거절됐다.
+    화면 과제는 테스트가 서버 응답을 직접 정하므로 권한 칸·헤더 값 검사를 하지 않는다 — 서버가 판정하는 과제는 그대로."""
+    from task_spec.starter.auth_rule import auth_problems
+    from task_spec.starter.contract import SpecView, check_contract
+
+    raw = _contract().model_dump()
+    raw["endpoints"][0]["responses"].append(
+        {"status": 401, "description": "접근 토큰 만료", "body": [_field("code")]}
+    )
+    ui = TaskContract.model_validate(raw)
+    assert auth_problems(ui, seed_rows=False)  # 칸 검사 자체는 401 을 본다
+    spec = SpecView(
+        req_ids=("r1", "r2"),
+        public_ac_ids=("p1",),
+        hidden_acs={"h1": "t1"},
+        trap_ids=("t1",),
+        visible_texts=(),
+    )
+    msgs = check_contract(ui, _plan(), spec, FE.manifest).problems
+    assert not [m for m in msgs if "auth" in m or "권한 거절" in m], msgs
+
+
+def test_role_aliases_and_rejected_value_in_retry_message() -> None:
+    """2026-11-10 fe7-dup: 목록 밖 역할을 3번 반복 — 흔한 이름은 맞는 역할로 받고, 그 밖은 재요청에 받은 값을 보여 준다."""
+    import pytest
+    from pydantic import ValidationError
+
+    from task_spec.llm.client import _validation_summary
+    from task_spec.schemas.build import UiElement
+
+    el = {"test_id": "qty", "description": "수량", "refs": ["r1"]}
+    assert UiElement.model_validate(el | {"role": "spinbutton"}).role == "input"
+    assert UiElement.model_validate(el | {"role": "ListItem"}).role == "item"
+    with pytest.raises(ValidationError) as e:
+        UiElement.model_validate(el | {"role": "gauge"})
+    assert "받은 값 'gauge'" in _validation_summary(e.value)
+    with pytest.raises(
+        ValidationError
+    ) as e:  # 자유 글은 받은 값을 보이지 않는다 (원문이 섞일 수 있음)
+        UiElement.model_validate(el | {"role": "수량 입력 상자"})
+    assert "받은 값" not in _validation_summary(e.value)
+
+
+def test_existing_test_rendering_a_screen_without_router_is_flagged() -> None:
+    """2026-11-10 알파 fe7b-user: 시작 코드의 기존 테스트가 화면을 라우터 없이 그려, 구현이 useNavigate 를 쓰자 두 구현 모두 깼다."""
+    from task_spec.starter.static_check import _code_pitfalls
+
+    bad = "it('x', () => {\n  render(<LoginPage />);\n});\n"
+    good = "it('x', () => {\n  render(<MemoryRouter initialEntries={['/login']}><LoginPage /></MemoryRouter>);\n});\n"
+    found = _code_pitfalls(
+        Overlay(kind="starter", files=(_f("src/pages/LoginPage.test.tsx", bad),)), FE
+    )
+    assert any("MemoryRouter" in p.message for p in found)
+    assert not [
+        p
+        for p in _code_pitfalls(
+            Overlay(kind="starter", files=(_f("src/pages/LoginPage.test.tsx", good),)), FE
+        )
+        if "MemoryRouter" in p.message
+    ]
+
+
+def test_all_refs_breaking_an_existing_test_outside_the_router_blame_the_starter_test() -> None:
+    """같은 알파: 두 구현이 모두 기존 테스트를 'useNavigate() may be used only in the context of a <Router>' 로 깼는데 '계약 모호'로
+    짚고 다시 만들지 않았다 — 시작 코드 테스트를 다시 만든다."""
+    from task_spec.schemas import TargetRun
+    from task_spec.starter.repair import _starter_test_context
+
+    msg = "Error: useNavigate() may be used only in the context of a <Router> component."
+    starter = TargetRun.model_validate(
+        {
+            "target": "starter",
+            "kind": "starter",
+            "setup": "ok",
+            "tests": [{"group": "existing", "name": "pages/LoginPage.test.tsx", "result": "PASS"}],
+        }
+    )
+
+    def ref(t: str, kind: str, m: str) -> TargetRun:
+        return TargetRun.model_validate(
+            {
+                "target": t,
+                "kind": kind,
+                "setup": "ok",
+                "tests": [
+                    {
+                        "group": "existing",
+                        "name": "pages/LoginPage.test.tsx",
+                        "result": "HARNESS_ERR",
+                        "message": m,
+                    }
+                ],
+            }
+        )
+
+    terms = FE.manifest.repair_terms
+    acts = _starter_test_context(
+        [ref("naive-all", "ref_naive", msg), ref("d1", "ref_accepted", msg)], starter, terms
+    )
+    assert [(a.generator, a.gate) for a in acts] == [
+        ("gen_starter", "②")
+    ] and "MemoryRouter" in acts[0].note
+    other = "AssertionError: expected 1 to be 2"
     assert (
-        _code_pitfalls(Overlay(kind="starter", files=(_f("src/cart/CartPage.test.tsx", good),)), FE)
+        _starter_test_context(
+            [ref("naive-all", "ref_naive", other), ref("d1", "ref_accepted", other)], starter, terms
+        )
         == []
     )
+    assert (
+        _starter_test_context(
+            [ref("naive-all", "ref_naive", msg), ref("d1", "ref_accepted", other)], starter, terms
+        )
+        == []
+    )
+
+
+def test_textsbyrole_scope_overload_is_in_the_v5_harness() -> None:
+    src = (FE.hidden / "harness" / "grader-ui.tsx").read_text("utf-8")
+    assert "export function textsByRole(scope: HTMLElement, role: string): string[];" in src
