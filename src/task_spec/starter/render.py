@@ -138,7 +138,11 @@ def contract_markdown(
         out.append("")
     if contract.seed:
         out += ["### 시드 데이터", ""]
-        out += [seed_markdown(s, names.get(s.entity_id, s.entity_id)) for s in contract.seed]
+        ents = {m.entity_id: m for m in contract.entities}
+        out += [
+            seed_markdown(s, names.get(s.entity_id, s.entity_id), ents.get(s.entity_id))
+            for s in contract.seed
+        ]
         out.append("")
     if public_tests:
         out += ["### 공개 테스트", ""]

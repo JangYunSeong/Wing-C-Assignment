@@ -16,8 +16,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
+from task_spec.schemas.build import Entity
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import requester_rows
+from task_spec.starter.seed_sql import _insert_fields, default_value
 
 PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 행 수 — 숨은 범위·작은 id 밖
 RESERVED_ROWS = 10  # 작은 id 쪽 — 숨은 케이스에 나눠 주지 않는다 (지원자 테스트·공개 테스트·시작 코드 테스트 몫)
@@ -461,8 +463,34 @@ def case_rows_problems(
     return out + allocate_rows(contract, plan).problems
 
 
-def seed_markdown(s: SeedRule, name: str) -> str:
-    """README·생성기 입력의 시드 한 줄 — 예: `Delivery` 200행 (id 1~200) — id 1~150: `status`=READY · …"""
+def _default_note(s: SeedRule, entity: Entity | None) -> str:
+    """그룹이 정하지 않은 필드의 실제 값 — 코드(seed_sql.default_value)가 행마다 채운다.
+    2026-11-10 gen-item: 시드 줄에 없던 playerId(실제 'playerId-1')를 시작 코드 테스트가 'player-1' 로 짐작해 기존 테스트 5개가 실패,
+    재생성 예산을 다 썼다."""
+    if entity is None or s.rows == 0:
+        return ""
+    grouped = {k for g in s.groups for k in g.values}
+    shown: list[str] = []
+    for f in _insert_fields(entity, s):
+        if f.name in grouped:
+            continue
+        v = default_value(f, 1)
+        if (
+            isinstance(v, bool)
+            or not isinstance(v, (int, str))
+            or (isinstance(v, str) and v != f"{f.name}-1"[:20])
+        ):
+            shown.append(f"`{f.name}`={v}")  # 행마다 같은 값 (enum 첫 값·false·고정 시각)
+        elif isinstance(v, int):
+            shown.append(f"`{f.name}`=그 행의 id")
+        else:
+            shown.append(f"`{f.name}`='{f.name}-<id>' (예: id 1 → '{v}')")
+    return " — 그 밖의 필드는 행마다: " + ", ".join(shown) if shown else ""
+
+
+def seed_markdown(s: SeedRule, name: str, entity: Entity | None = None) -> str:
+    """README·생성기 입력의 시드 한 줄 — 예: `Delivery` 200행 (id 1~200) — id 1~150: `status`=READY · …
+    entity 를 주면 그룹이 정하지 않은 필드의 실제 값도 적는다 (_default_note)."""
     if s.rows == 0:
         head = f"- `{name}` 0행 (처음엔 비어 있음)"
     else:
@@ -474,6 +502,7 @@ def seed_markdown(s: SeedRule, name: str) -> str:
     ]
     if parts:
         head += " — " + " · ".join(parts)
+    head += _default_note(s, entity)
     if s.rules:
         head += " — " + " · ".join(s.rules)
     if s.rows > RESERVED_ROWS:

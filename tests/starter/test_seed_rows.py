@@ -209,6 +209,32 @@ def test_seed_markdown() -> None:
     )
 
 
+def test_seed_markdown_states_values_code_fills_for_ungrouped_fields() -> None:
+    # 2026-11-10 gen-item: 시드 줄에 없던 playerId(실제 'playerId-1')를 시작 코드 테스트가 'player-1' 로 짐작 — 기존 테스트 5개 실패
+    from task_spec.schemas.build import ContractField, Entity
+
+    contract = _with_seed(TWO_GROUPS)
+    order = Entity(
+        entity_id="m1",
+        name="Order",
+        existing=True,
+        fields=[
+            ContractField(name="id", type="integer", refs=["r1"]),
+            ContractField(name="status", type="enum(READY|SHIPPING)", refs=["r1"]),
+            ContractField(name="ownerId", type="string", refs=["r1"]),
+            ContractField(name="qty", type="integer", refs=["r1"]),
+        ],
+    )
+    line = seed_markdown(contract.seed[0], "Order", order)
+    assert (
+        "그 밖의 필드는 행마다: `ownerId`='ownerId-<id>' (예: id 1 → 'ownerId-1'), `qty`=그 행의 id"
+        in line
+    )
+    assert (
+        "`status`=READY" in line and "그 밖의 필드는 행마다: `status`" not in line
+    )  # 그룹이 정한 필드는 그대로
+
+
 def test_shortage_states_the_exact_rows_needed() -> None:
     """2026-11-07 v3 스모크: rows=106(96+10)로 hc2 를 빠뜨렸고 "늘린다"만으론 재요청도 틀렸다 → 필요한 수를 적는다."""
     contract = _with_seed(_seed(106, (1, 106, {"status": "READY"})))
