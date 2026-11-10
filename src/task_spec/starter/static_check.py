@@ -53,6 +53,7 @@ from task_spec.starter.tables import (
     spring_snake,
 )
 from task_spec.starter.templates import Template, glob_match, is_java, is_python, slot_allows
+from task_spec.starter.ts_helpers import app_type_names, render_app_types
 
 KIND_SLOT = {
     "starter": "starter",
@@ -603,7 +604,54 @@ def _test_folder_imports(o: Overlay, t: Template) -> list[StaticProblem]:
                 StaticProblem(
                     o.target,
                     f"{f.path} 가 채점·공개 테스트 폴더의 파일을 import 함: {', '.join(sorted(set(bad)))} — 구현은 테스트 도우미를 쓰지 않는다. "
-                    "필요한 타입은 계약의 데이터 모양대로 src/ 안에 직접 정의한다",
+                    "응답·데이터 타입은 계약에서 코드가 만든 src/api/contract-types.ts 를 import 한다 (없는 템플릿이면 계약의 데이터 모양대로 src/ 안에 정의)",
+                )
+            )
+    return out
+
+
+_JSON_INLINE = re.compile(
+    r":\s*\{[^;=]*\}\s*(?:\[\])?\s*=\s*await\s+[\w.$]+\.json\(\)"  # const data: { items: X[] } = await res.json()
+    r"|\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … }
+)
+_TYPES_IMPORT = re.compile(r"""from\s+['"](?:\.{1,2}/)+(?:[\w-]+/)*contract-types['"]""")
+
+
+def _contract_types_usage(
+    o: Overlay, t: Template, contract: TaskContract | None
+) -> list[StaticProblem]:
+    """앱 코드가 서버 응답을 계약에서 코드가 만든 타입(src/api/contract-types.ts)으로 읽는가 — TypeScript 템플릿만.
+    2026-11-10 알파 분류: 따로 생성된 조각이 같은 응답을 다르게 읽은 실패가 가장 컸다 (fefix e99cbba0 시작 코드 api 모듈이
+    배열 응답을 `{ items }` 로 읽음). 같은 타입을 쓰게 하면 tsc 가 모양 차이를 잡는다."""
+    if contract is None:
+        return []
+    types = render_app_types(contract, t.manifest)
+    if types is None:
+        return []
+    names = app_type_names(contract)
+    decl = re.compile(rf"\bexport\s+(?:interface|type)\s+({'|'.join(map(re.escape, names))})\b")
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if f.path == types.path or not f.path.endswith((".ts", ".tsx")) or ".test." in f.path:
+            continue
+        redefined = sorted(set(decl.findall(f.content)))
+        inline = bool(_JSON_INLINE.search(f.content))
+        reads = "fetch(" in f.content and ".json()" in f.content
+        missing = reads and not _TYPES_IMPORT.search(f.content)
+        if redefined or inline or missing:
+            why = []
+            if redefined:
+                why.append(f"계약 타입을 다시 정의함({', '.join(redefined)})")
+            if inline:
+                why.append("응답 본문에 모양을 직접 적음")
+            if missing:
+                why.append("응답을 읽는데 계약 타입을 import 하지 않음")
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{f.path}: {'; '.join(why)} — 서버 응답은 {types.path}(잠김, 계약에서 코드가 만든 타입)의 "
+                    "`<Api>Ok` 로 읽는다: `import type { … } from '…/contract-types'`, `const data: <Api>Ok = await res.json()`. "
+                    "응답이 배열이면 배열 그대로 (감싼 객체로 읽지 않는다)",
                 )
             )
     return out
@@ -1982,6 +2030,7 @@ def static_check(
             res.problems += _code_pitfalls(o, template)
             res.problems += _script_imports(o, template, contract)
             res.problems += _datasource_config(o, template)
+            res.problems += _contract_types_usage(o, template, contract)
             res.problems += _java_test_pitfalls(
                 o, template, template.manifest.seed_sql.path if template.manifest.seed_sql else None
             )

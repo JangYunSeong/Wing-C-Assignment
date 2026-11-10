@@ -152,3 +152,66 @@ def test_gate0_silent_when_everything_conforms() -> None:
         _run("d1", "ref_accepted", *GOOD_ACC, _conform()),
     )
     assert plan.passed
+
+
+# ── A1 앱 쪽 계약 타입 ─────────────────────────────────────────────
+
+
+def test_app_types_have_the_same_names_and_shapes_as_the_test_helper() -> None:
+    from task_spec.starter.ts_helpers import APP_TYPES, render_app_types
+
+    f = render_app_types(_list_contract(), FE.manifest)
+    assert f is not None and f.path == APP_TYPES
+    assert "export interface Product {" in f.content
+    assert "export type GetApiProductsSuggestOk = Product[];" in f.content  # 배열이면 배열 그대로
+    java = load_template("backend/java-spring-boot3-jpa")
+    assert render_app_types(_list_contract(), java.manifest) is None  # Java·Python 은 켜지 않는다
+
+
+def _starter_api(content: str):  # type: ignore[no-untyped-def]
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import Overlay
+
+    return Overlay(
+        kind="starter", files=(GeneratedFile(path="src/api/products.ts", content=content),)
+    )
+
+
+def test_reading_responses_without_contract_types_is_reasked() -> None:
+    from task_spec.starter.static_check import _contract_types_usage
+
+    bad = (
+        "export interface Product { name: string }\n"
+        "export async function suggest(q: string) {\n"
+        "  const res = await fetch(`/api/products/suggest?q=${q}`);\n"
+        "  const data: { items: Product[] } = await res.json();\n"
+        "  return data.items;\n}\n"
+    )
+    msg = _contract_types_usage(_starter_api(bad), FE, _list_contract())[0].message
+    assert "다시 정의함(Product)" in msg and "직접 적음" in msg and "import 하지 않음" in msg
+    good = (
+        "import type { GetApiProductsSuggestOk } from './contract-types';\n"
+        "export async function suggest(q: string): Promise<GetApiProductsSuggestOk> {\n"
+        "  const res = await fetch(`/api/products/suggest?q=${q}`);\n"
+        "  const data: GetApiProductsSuggestOk = await res.json();\n"
+        "  return data;\n}\n"
+    )
+    assert _contract_types_usage(_starter_api(good), FE, _list_contract()) == []
+
+
+async def test_generators_cannot_overwrite_the_app_types_file() -> None:
+    from task_spec.nodes.starter.generate import _app_overlay
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.ts_helpers import APP_TYPES
+    from tests.starter.test_frontend_template import _fe_inputs
+
+    b = _fe_inputs()
+    fake = GeneratedFile(path=APP_TYPES, content="export type X = 1;")
+    page = GeneratedFile(path="src/pages/Search.tsx", content="export default 1;")
+    starter = _app_overlay(b, "starter")([fake, page])
+    types = [f for f in starter.files if f.path == APP_TYPES]
+    assert len(types) == 1 and "export type X" not in types[0].content  # 코드 판으로 바뀜
+    ref = _app_overlay(b, "ref_accepted", "d1")([fake, page])
+    assert [f.path for f in ref.files] == [
+        "src/pages/Search.tsx"
+    ]  # 구현은 쓰지 못함 — 시작 코드 판이 그대로
