@@ -617,7 +617,7 @@ def _gate3(
     missed: set[str],
     regen_counts: Mapping[str, int],
     terms: RepairTerms | None = None,
-) -> list[RepairAction]:
+) -> tuple[list[RepairAction], list[str]]:
     passed = [
         c
         for c in plan.cases
@@ -658,14 +658,32 @@ def _gate3(
                 "더 안전한 방식으로 바꾸지 않는다.",
                 budget=TRAP_SUFFIX,
             )
-        ]
+        ], []
+    # 함정을 다른 케이스가 이미 잡는데 숨은 테스트를 다시 만든 뒤에도 흔한 구현이 통과하는 케이스 — 변별하지 못하는 케이스로 표시만.
+    # 2026-11-10 gen-item2: hc1·hc2·hc3 이 의도한 사유로 잡는 t1 을 hc4(record_missing)가 다시 만든 뒤에도 못 잡아 예산을 다 쓰고
+    # 루프가 failed — 허용 구현 3개는 숨은 케이스 4개를 모두 통과했다 (흔한 구현의 함정은 기록 누락이 아니라 연결 고갈).
+    caught = sorted(
+        c.case_id
+        for c in plan.cases
+        if c.trap_id in traps
+        and (r := run.case(c.case_id)) is not None
+        and r.result == "ASSERT"
+        and r.reason == c.intended_reason
+    )
+    flags: list[str] = []
+    settled = caught and regen_counts.get("gen_hidden", 0) >= 1
     out: list[RepairAction] = []
     for c in plan.cases:
         r = run.case(c.case_id)
         if r is None or r.result == "HARNESS_ERR":
             continue
         if c.trap_id in missed:
-            if r.result == "PASS":
+            if r.result == "PASS" and settled:
+                flags.append(
+                    f"숨은 케이스 {c.case_id} 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현({run.target})이 통과 — 같은 숨은 요구 {c.trap_id} 는 "
+                    f"{', '.join(caught)} 가 의도한 사유로 잡는다. {c.case_id} 는 흔한 구현과 올바른 구현을 가르지 않는다 (채점에서 뺄지 사람 확인)"
+                )
+            elif r.result == "PASS":
                 out.append(
                     RepairAction(
                         "gen_hidden",
@@ -702,7 +720,7 @@ def _gate3(
                     "— 케이스가 다른 숨은 요구에 기대지 않게 한다.",
                 )
             )
-    return out
+    return out, flags
 
 
 def _gate4(
@@ -883,7 +901,9 @@ def assign(
     actions += _hidden_broken(judged, plan)
     for run in judged:
         if run.kind == "ref_naive":
-            actions += _gate3(run, plan, missed_traps.get(run.target, set()), counts, terms)
+            acts, flags = _gate3(run, plan, missed_traps.get(run.target, set()), counts, terms)
+            actions += acts
+            res.flags += flags
     accepted = [r for r in judged if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(
