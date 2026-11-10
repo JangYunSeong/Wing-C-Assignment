@@ -86,12 +86,16 @@ ATTEMPTS = 3
 
 
 def for_material(template: Template, seed: FeatureSeed | None) -> Template:
-    """재료가 선언한 조절값(FeatureSeed.harness)만 필수로 — 재료가 harness 를 적지 않으면(None) 템플릿 required 그대로 (예전과 같음)."""
+    """재료가 선언한 조절값(FeatureSeed.harness)만 필수이고, 지원자가 자료에서 찾을 운영 조건이라 보이는 값 — 명세 자료의 근거
+    인용으로 값을 확인한다. 재료가 harness 를 적지 않으면(None) 템플릿 그대로 (예전과 같음).
+    2026-11-10 nplus1-d: query_delay_ms·request_timeout_s 가 템플릿에서 안 보이는 값이라 명세의 '쿼리당 11ms·응답 한도 1초' 대신
+    하네스 기본값(20ms·30초)이 들어가, 지연 로딩 흔한 구현(200건 ≈ 8초)도 hc1 을 통과했다."""
     if seed is None or seed.harness is None:
         return template
     need = set(seed.harness)
     params = [
-        p.model_copy(update={"required": p.name in need}) for p in template.manifest.harness_params
+        p.model_copy(update={"required": p.name in need, "visible": p.visible or p.name in need})
+        for p in template.manifest.harness_params
     ]
     return replace(
         template, manifest=template.manifest.model_copy(update={"harness_params": params})

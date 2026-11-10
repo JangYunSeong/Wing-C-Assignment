@@ -327,6 +327,11 @@ def test_material_decides_required_harness_params_and_fk_targets_use_names() -> 
     assert (
         for_material(t, seed.model_copy(update={"harness": None})) is t
     )  # 적지 않으면 템플릿 그대로
+    timed = for_material(t, seed.model_copy(update={"harness": ["query_delay_ms"]}))
+    param = timed.manifest.param("query_delay_ms")
+    assert (
+        param is not None and param.required and param.visible
+    )  # 재료의 운영 조건 — 자료 근거로 확인
     c = _contract()
     c["entities"][1]["foreign_keys"] = [f"orderId → {c['entities'][0]['entity_id']}"]
     fixed, notes = fit_fk_targets(TaskContract.model_validate(c))
