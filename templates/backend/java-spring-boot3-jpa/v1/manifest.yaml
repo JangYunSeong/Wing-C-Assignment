@@ -255,7 +255,7 @@ failure_reasons:
   - code: request_timeout
     description: 채점 클라이언트 요청이 시간 한도 안에 끝나지 않음
     log_patterns: ['HttpTimeoutException', '\[reason:request_timeout\]']
-    how: 동시 요청(peak(…))이나 지연 주입(GraderJdbcHarness.queryDelayMs)으로 시간 한도를 넘게 만든다. 사유는 Burst.failures(…) 단언에
+    how: 케이스 data 가 버스트면 동시 요청(peak(…))으로, 아니면 지연 없이 같은 요청을 한 번 보내 데운 뒤 지연을 주입(GraderJdbcHarness.queryDelayMs)하고 Burst.fire(1, …) 로 한 번 보낸다 (버스트가 아닌 케이스에 peak 를 쓰면 올바른 구현도 동시 부하로 시간 초과). 사유는 Burst.failures(…) 단언에
   - code: server_error
     description: 기대한 응답 대신 5xx
     log_patterns: ['\[reason:server_error\]']

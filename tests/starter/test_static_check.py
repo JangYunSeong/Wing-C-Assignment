@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from task_spec.schemas import GeneratedFile, HiddenPlan
@@ -687,3 +688,36 @@ def test_java_runtime_only_pitfalls_in_starter_tests_and_schema() -> None:
     assert not probs(
         ("src/main/resources/data.sql", "INSERT INTO m (id, \"rank\") VALUES (1, 'A');"), plain
     )
+
+
+def test_peak_on_a_case_without_burst_rows_is_rejected() -> None:
+    # 2026-11-10 nplus1-g: 목록 한 번 조회 케이스를 peak 로 동시 버스트해 조인 조회 허용 구현까지 시간 초과
+    from task_spec.starter.static_check import _reason_rules
+
+    plan = HiddenPlan.model_validate(
+        _plan()
+        | {
+            "cases": [
+                {
+                    **_plan()["cases"][0],
+                    "case_id": "hc1",
+                    "intended_reason": "request_timeout",
+                    "data": [{"entity_id": "m1", "rows": 1, "initial": {}, "burst": False}],
+                }
+            ]
+        }
+    )
+    peak = '@DisplayName("hc1 목록") class Hc1Test { void t() { var o = peak(i -> 200, i -> getOrders().statusCode()); } }'
+    once = '@DisplayName("hc1 목록") class Hc1Test { void t() { var o = Burst.fire(1, i -> 200, i -> getOrders().statusCode(), W); } }'
+    path = "src/test/java/com/example/service/grading/cases/Hc1Test.java"
+    rules = JAVA.manifest.hidden_rules
+    args = (
+        JAVA.manifest,
+        plan,
+        re.compile(rules.case_id_pattern),
+        [re.compile(p) for p in rules.reason_patterns],
+    )
+    bad = _reason_rules([GeneratedFile(path=path, content=peak)], *args)
+    assert any("버스트 행이 없는 케이스인데 peak" in p for p in bad)
+    good = _reason_rules([GeneratedFile(path=path, content=once)], *args)
+    assert not any("버스트 행이 없는" in p for p in good)

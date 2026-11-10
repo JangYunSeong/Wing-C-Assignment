@@ -838,6 +838,9 @@ def _broad_injections(
     return out
 
 
+_PEAK_CALL = re.compile(r"(?<![\w.])peak\s*\(")
+
+
 def _reason_rules(
     cases: Iterable[GeneratedFile],
     m: TemplateManifest,
@@ -849,6 +852,8 @@ def _reason_rules(
     케이스가 쓰지 않음. 2026-11-08 숨은 테스트 검토: 사유를 Burst.wrong 에 붙임 14/14, 저장 실패 사유인데 주입 없음 4/5."""
     intended = {c.case_id: c.intended_reason for c in plan.cases}
     requires = {r.code: r.requires for r in m.failure_reasons if r.requires}
+    # 버스트 행이 없는 케이스 — 운영 피크(peak)를 쓰면 요청 하나의 조건이 아니라 동시 부하를 잰다
+    single = {c.case_id for c in plan.cases if not any(d.burst for d in c.data)}
     bad_on = [re.compile(p) for p in m.hidden_rules.reason_not_on]
     out: list[str] = []
     for f in cases:
@@ -880,6 +885,14 @@ def _reason_rules(
                         if "GraderJdbcHarness" in "".join(need)
                         else "운영 피크는 peak(...) 로 재현한다"
                     )
+                )
+            if cid in single and _PEAK_CALL.search(f.content):
+                # 2026-11-10 nplus1-g: '목록 한 번 조회가 운영 지연에서 1초 안' 케이스를 peak(…) 로 동시 버스트해,
+                # 조인 조회 허용 구현까지 연결·스레드 대기로 시간 초과 — 흔한 구현과 가르지 못했다
+                out.append(
+                    f"숨은 케이스 {cid} 는 버스트 행이 없는 케이스인데 peak(...) 로 동시 부하를 보냄 — 요청 하나의 조건(지연 주입·시간 한도)을 "
+                    "잰다면 지연 없이 같은 요청을 한 번 보내 데운 뒤, 지연을 주입하고 Burst.fire(1, …) 로 한 번 보내 Burst.failures(…) 에 사유를 "
+                    "붙인다 (동시 요청은 계약 케이스 data 가 버스트일 때만)"
                 )
     return out
 
