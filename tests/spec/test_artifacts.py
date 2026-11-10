@@ -69,6 +69,23 @@ def test_tells_in_titles_and_key_content_are_flagged() -> None:
     assert not any("암시" in p or "직접 말함" in p for p in check(out, _ctx()))
 
 
+def test_hypothesis_forms_are_not_conclusions() -> None:
+    """2026-11-10: '원인인지 확인 필요' 는 지원자가 기각할 가설 — 단정하는 자리가 하나라도 있으면 막는다."""
+    out = _v3()
+    cases = {
+        "메모: 네트워크 지연이 원인인지 확인 필요": False,
+        "캐시 누락일 수 있음": False,
+        "원인: 로그아웃 뒤 캐시 남음": True,
+        "성공 138건 vs 차감 69건 (69건 불일치)": True,
+        "원인인지 확인 필요. 확인 결과 원인은 캐시": True,
+    }
+    for content, flagged in cases.items():
+        arts = [a.model_copy() for a in out.artifacts]
+        arts[0] = arts[0].model_copy(update={"content": content})
+        problems = check(out.model_copy(update={"artifacts": arts}), _ctx())
+        assert any("직접 말함" in p for p in problems) is flagged, content
+
+
 def test_conclusion_lines_in_key_or_support_are_flagged_but_config_keys_are_not() -> None:
     """2026-11-03 웹 예시: 핵심 자료 끝 'Pattern: …' 줄이 정답을 말함. YAML 의 pattern: "^…" 는 원시 설정."""
     out = _v3()
