@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from task_spec.config import Settings
-from task_spec.schemas.build_record import BuildArtifact, BuildOutcome, StarterFile
+from task_spec.schemas.build_record import README_PATH, BuildArtifact, BuildOutcome, StarterFile
 from task_spec.schemas.package import ArtifactFile, ArtifactRole, ReviewDecision, VerifySummary
 from task_spec.starter.store import (
     BuildRepo,
@@ -40,9 +40,13 @@ def _outcome(tree: str) -> BuildOutcome:
     )
 
 
-def _artifact(build_id: str, role: ArtifactRole, tree: str) -> BuildArtifact:
+def _artifact(
+    build_id: str, role: ArtifactRole, tree: str, readme: StarterFile | None = None
+) -> BuildArtifact:
     desc = {"candidate": "candidate.json", "grader": "grader.json", "eval_kit": "kit.json"}[role]
     files = [ArtifactFile(name=desc, sha256=tree, size_bytes=1)]
+    if readme is not None:
+        files.append(ArtifactFile(name=README_PATH, sha256=readme.sha256, size_bytes=readme.size))
     if role != "eval_kit":
         files.append(ArtifactFile(name=archive_name(build_id, role), sha256=tree, size_bytes=9))
     return BuildArtifact(
@@ -120,8 +124,21 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
         await store.approve(bid, "reviewer-fake", AT, [ok])
     with pytest.raises(BuildRuleError, match="현재 결과와 다르다"):
         await store.put_artifact(_artifact(bid, "candidate", H_OLD))  # 수리 전 이미지
-    for role in ("candidate", "grader"):
-        await store.put_artifact(_artifact(bid, role, H_NEW))  # type: ignore[arg-type]
+
+    # 지원자 README — 응시용 묶음의 README.md 는 저장한 README 와 같아야 하고, 승인에는 README 가 있어야 한다
+    readme = StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n")
+    with pytest.raises(BuildRuleError, match="저장한 README 와 다르다"):
+        await store.put_artifact(_artifact(bid, "candidate", H_NEW, readme))  # README 저장 전
+    await store.put_readme(readme)  # review 에서 처음 한 번 (기존 빌드 채우기)
+    await store.put_readme(readme)  # 같은 본문은 그대로
+    with pytest.raises(BuildRuleError, match="생성 뒤 바꾸지 않는다"):
+        await store.put_readme(StarterFile.of(bid, "readme", README_PATH, "# 다른 문장\n"))
+    with pytest.raises(BuildRuleError, match="readme 파일이 아니다"):
+        await store.put_readme(files[0])
+    assert await store.readme(bid) == readme
+    assert await store.files(bid, ["readme"]) == [readme]
+    await store.put_artifact(_artifact(bid, "candidate", H_NEW, readme))
+    await store.put_artifact(_artifact(bid, "grader", H_NEW))
 
     with pytest.raises(BuildRuleError, match="전달"):
         await store.request_delivery(bid, "grader", f"{tag}-grader", "operator-fake", AT)
@@ -158,6 +175,7 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
     d1 = await store.request_delivery(bid, "candidate", f"{tag}-candidate", "operator-fake", AT)
     assert d1.status == "requested" and [f.name for f in d1.files] == [
         "candidate.json",
+        README_PATH,
         archive_name(bid, "candidate"),
     ]
     failed = await store.finish_delivery(d1.delivery_id, False, AT, "가상 연결 실패")
@@ -183,6 +201,30 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
 
 async def test_lifecycle_in_memory() -> None:
     await run_lifecycle(InMemoryBuildStore(), "ct-0123456789ab", "t-mem")
+
+
+async def test_approve_needs_readme() -> None:
+    """README 를 저장하지 않은 빌드는 묶음이 다 있어도 승인하지 않는다 — 승인자가 지원자 문장을 볼 수 없다."""
+    store = InMemoryBuildStore()
+    bid = (await store.new_build("ct-0123456789ab", "onto-test", AT)).build_id
+    for status in ("generating", "verifying"):
+        await store.set_status(bid, status)  # type: ignore[arg-type]
+    await store.save_outcome(bid, _outcome(H_NEW))
+    await store.set_status(bid, "review")
+    for role in ("candidate", "grader"):
+        await store.put_artifact(_artifact(bid, role, H_NEW))  # type: ignore[arg-type]
+    ok = ReviewDecision.of(FLAG, "accepted_risk", "reviewer-fake")
+    with pytest.raises(BuildRuleError, match="README 가 없다"):
+        await store.approve(bid, "reviewer-fake", AT, [ok])
+    await store.put_readme(StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n"))
+    assert (await store.approve(bid, "reviewer-fake", AT, [ok])).status == "approved"
+    with pytest.raises(BuildRuleError, match="README 저장"):
+        await store.put_readme(StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n"))
+
+
+def test_readme_path_fixed() -> None:
+    with pytest.raises(ValueError, match="readme 경로"):
+        StarterFile.of("ct-0123456789ab-b1", "readme", "docs/README.md", "x")
 
 
 async def test_missing_build_raises_key_error() -> None:

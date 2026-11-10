@@ -5,12 +5,13 @@ build_mock_images 의 통합 묶음(images.tar 에 응시용·채점용 12개, m
 역할마다 따로 저장(zstd -3)하고 json·SHA256SUMS 를 붙인다 — image_id 가 바뀌지 않는다.
 
   <out>/<common_id>-r<판>/
-    candidate/  <id>-candidate.tar.zst · candidate.json · SHA256SUMS   → 응시 환경으로만
+    candidate/  <id>-candidate.tar.zst · README.md · candidate.json · SHA256SUMS   → 응시 환경으로만
     grader/     <id>-grader.tar.zst · grader.json · SHA256SUMS         → 채점 서버로만
     eval_kit/   kit.json · SHA256SUMS                                  → 평가 쪽 (채점과 같은 권한)
 
 넣지 않는 것: 참조 구현(ref_*), samples/, 통합 manifest·images.tar, 명세의 지원자 파생 칸(slots·claims_to_verify).
-저장 뒤 tar.zst 를 다시 load 해 image_id 가 같은지 확인한다. 출력은 git 밖(data/).
+저장 뒤 tar.zst 를 다시 load 해 image_id 가 같은지 확인한다. README.md 는 응시용 이미지의 작업 경로에서 꺼낸 그대로 —
+평가 서버·응시 화면이 이미지를 열지 않고 보여 줄 수 있게. 출력은 git 밖(data/).
 
 사용:
   uv run python -m eval.starter.split_delivery --manifest data/mock_images/2026-11-10/manifest.json \\
@@ -21,9 +22,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import subprocess
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +79,26 @@ def save_image(name: str, image_id: str, dst: Path) -> dict[str, Any]:
     }
 
 
+def extract_readme(image: str, workspace: str) -> str:
+    """응시용 이미지의 `<workspace>/README.md` — 지원자가 실제로 받는 문장 (컨테이너는 만들기만 하고 실행하지 않는다)."""
+    ctr = subprocess.run(
+        ["podman", "create", image], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    try:
+        out = subprocess.run(
+            ["podman", "cp", f"{ctr}:{workspace}/README.md", "-"],  # 표준 출력은 tar 묶음
+            check=True,
+            capture_output=True,
+        ).stdout
+        with tarfile.open(fileobj=io.BytesIO(out)) as tar:
+            member = tar.extractfile("README.md")
+            if member is None:
+                raise RuntimeError(f"{image}: {workspace}/README.md 가 파일이 아니다")
+            return member.read().decode("utf-8")
+    finally:
+        subprocess.run(["podman", "rm", ctr], check=True, capture_output=True)
+
+
 def write_role(d: Path, info: dict[str, Any], json_name: str) -> None:
     (d / json_name).write_text(json.dumps(info, ensure_ascii=False, indent=2), "utf-8")
     files = sorted(p for p in d.iterdir() if p.is_file() and p.name != "SHA256SUMS")
@@ -124,6 +147,9 @@ def main() -> None:
 
     c = t["candidate"]
     cimg = save_image(c["name"], c["image_id"], base / "candidate" / f"{key}-candidate.tar.zst")
+    (base / "candidate" / "README.md").write_text(
+        extract_readme(c["image_id"], c["workspace"]), "utf-8"
+    )
     write_role(
         base / "candidate",
         {
@@ -133,6 +159,7 @@ def main() -> None:
             "title": t["title"],
             "image": cimg,
             "workspace": c["workspace"],
+            "readme": "README.md",  # 이미지 안 <workspace>/README.md 와 같은 본문
             "run": f"podman run -it --name <응시자> {c['name']} bash",
             # 숨은 테스트 실행 명령(hidden_test)은 빼고 응시자가 쓰는 명령만
             "commands": {k: v for k, v in c["commands"].items() if k != "hidden_test"},

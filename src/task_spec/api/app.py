@@ -14,7 +14,7 @@ from langgraph.graph.state import CompiledStateGraph
 from task_spec.api.deps import PostingsContext
 from task_spec.api.errors import install_error_handlers
 from task_spec.api.launcher import RunLauncher
-from task_spec.api.routers import health, postings, runs, ui
+from task_spec.api.routers import builds, health, postings, runs, ui
 from task_spec.config import Settings, get_settings
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm.factory import build_llm_client
@@ -29,6 +29,7 @@ from task_spec.prompting import PromptRegistry
 from task_spec.retrieve import build_retriever
 from task_spec.spec.incidents import load_incidents
 from task_spec.spec.store import CommonTaskStore
+from task_spec.starter.store import PgBuildStore
 
 
 def create_app(
@@ -56,6 +57,9 @@ def create_app(
         common_store = await CommonTaskStore.open(
             app.state.settings.database_url.get_secret_value()
         )
+        # 공통 과제 빌드 저장소 — 지원자 README 등 공개 정보 조회 (#85)
+        build_store = await PgBuildStore.open(app.state.settings.database_url.get_secret_value())
+        app.state.builds = build_store
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때
@@ -85,6 +89,7 @@ def create_app(
                 await app.state.ontology.close()
                 await store.close()
                 await common_store.close()
+                await build_store.close()
 
     app = FastAPI(title="task-spec", lifespan=lifespan)
     if settings is not None:
@@ -97,6 +102,7 @@ def create_app(
     install_error_handlers(app)
     app.include_router(runs.router)
     app.include_router(postings.router)
+    app.include_router(builds.router)
     app.include_router(health.router)
     app.include_router(ui.router)
     return app

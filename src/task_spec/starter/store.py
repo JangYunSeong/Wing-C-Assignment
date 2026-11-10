@@ -7,6 +7,8 @@
 - 상태: pending → generating → verifying → review → approved → published (실패 failed).
   수리는 `reopen()` 으로만 verifying·review → generating — 그 빌드의 승인 전 묶음을 지우고 돌려준다 (파일 정리용).
 - 오버레이 파일은 pending·generating 에서만 바꾼다. 생성·검증 결과(outcome)는 generating·verifying 에서만 쓴다.
+  지원자 README(`kind='readme'`)는 `put_readme()` 로 review 까지 쓸 수 있되 verifying·review 에서는 한 번만 (이미 있으면 같은 본문만).
+  응시용 묶음에 README.md 가 있으면 저장한 README 와 해시가 같아야 하고, 승인에는 저장한 README 가 있어야 한다 (승인자가 볼 문장).
 - 묶음: 응시용·채점용은 review 에서, 평가 키트는 approved 에서(승인자 판단이 들어가므로) 등록한다.
   묶음의 tree_sha256·grader_sha256 은 빌드의 현재 outcome 과 같아야 하고, 한 번 등록하면 바꾸지 않는다.
 - 승인은 review 에서만, 응시용·채점용 묶음이 현재 outcome 과 맞고 검토 표시마다 승인자 판단(flag_id)이 있어야 한다.
@@ -27,14 +29,16 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from task_spec.schemas.build import BuildStatus, FileKind, HiddenPlan, RepairRecord, TaskContract
+from task_spec.schemas.build import BuildStatus, HiddenPlan, RepairRecord, TaskContract
 from task_spec.schemas.build_record import (
+    README_PATH,
     BuildArtifact,
     BuildOutcome,
     BuildRecord,
     Delivery,
     DeliveryTarget,
     StarterFile,
+    StoredFileKind,
 )
 from task_spec.schemas.package import (
     BUILD_ID,
@@ -57,6 +61,10 @@ TRANSITIONS: dict[str, set[str]] = {
     "failed": set(),
 }
 _FILES_OPEN = ("pending", "generating")
+_README_ONCE = (
+    "verifying",
+    "review",
+)  # 생성 뒤 — 기존 빌드에 README 를 채울 때. 이미 있으면 같은 본문만
 _OUTCOME_OPEN = ("generating", "verifying")
 _REOPENABLE = ("verifying", "review")
 _ARTIFACT_OPEN: dict[str, tuple[str, ...]] = {
@@ -93,7 +101,7 @@ CREATE TABLE IF NOT EXISTS public.common_task_build (
 );
 CREATE TABLE IF NOT EXISTS public.starter_file (
     build_id text NOT NULL REFERENCES public.common_task_build (id) ON DELETE RESTRICT,
-    kind text NOT NULL CHECK (kind IN ('starter', 'hidden', 'public_test', 'ref_naive', 'ref_accepted')),
+    kind text NOT NULL,
     variant text NOT NULL DEFAULT '',
     path text NOT NULL,
     content text NOT NULL,
@@ -101,6 +109,13 @@ CREATE TABLE IF NOT EXISTS public.starter_file (
     size integer NOT NULL CHECK (size >= 0),
     PRIMARY KEY (build_id, kind, variant, path)
 );
+-- kind 에 readme 추가 (지원자 README 저장) — 이미 만든 테이블의 이름 붙은 CHECK 를 바꾼다
+ALTER TABLE public.starter_file DROP CONSTRAINT IF EXISTS starter_file_kind_check;
+ALTER TABLE public.starter_file ADD CONSTRAINT starter_file_kind_check CHECK (kind IN
+    ('starter', 'hidden', 'public_test', 'ref_naive', 'ref_accepted', 'readme'));
+ALTER TABLE public.starter_file DROP CONSTRAINT IF EXISTS starter_file_readme_path;
+ALTER TABLE public.starter_file ADD CONSTRAINT starter_file_readme_path CHECK
+    (kind <> 'readme' OR (path = 'README.md' AND variant = ''));
 CREATE TABLE IF NOT EXISTS public.build_artifact (
     build_id text NOT NULL REFERENCES public.common_task_build (id) ON DELETE RESTRICT,
     role text NOT NULL CHECK (role IN ('candidate', 'grader', 'eval_kit')),
@@ -188,8 +203,34 @@ def check_artifact_open(build: BuildRecord, artifact: BuildArtifact) -> None:
     check_artifact_current(build, artifact)
 
 
+def check_readme_put(build: BuildRecord, readme: StarterFile, existing: StarterFile | None) -> None:
+    if readme.kind != "readme" or readme.build_id != build.build_id:
+        raise BuildRuleError(f"{build.build_id}: 이 빌드의 readme 파일이 아니다")
+    if build.status in _FILES_OPEN:
+        return
+    _require_status(build, _README_ONCE, "README 저장")
+    if existing is not None and existing.sha256 != readme.sha256:
+        raise BuildRuleError(
+            f"{build.build_id}: 저장한 README 는 생성 뒤 바꾸지 않는다 (수리는 reopen)"
+        )
+
+
+def check_artifact_readme(artifact: BuildArtifact, readme: StarterFile | None) -> None:
+    """응시용 묶음의 README.md 가 저장한 README 와 같은 판인지 — 묶음에 없으면(README 저장 전 묶음) 넘어간다."""
+    if artifact.role != "candidate":
+        return
+    got = next((f for f in artifact.files if f.name == README_PATH), None)
+    if got is not None and (readme is None or got.sha256 != readme.sha256):
+        raise BuildRuleError(
+            f"{artifact.build_id}/candidate: 묶음의 {README_PATH} 가 저장한 README 와 다르다"
+        )
+
+
 def check_approval(
-    build: BuildRecord, decisions: list[ReviewDecision], artifacts: list[BuildArtifact]
+    build: BuildRecord,
+    decisions: list[ReviewDecision],
+    artifacts: list[BuildArtifact],
+    readme: StarterFile | None,
 ) -> None:
     if build.status != "review":
         raise BuildRuleError(f"{build.build_id}: review 상태에서만 승인 (지금 {build.status})")
@@ -202,6 +243,11 @@ def check_approval(
                 f"{build.build_id}: {role} 묶음이 없다 — 승인할 이미지를 먼저 등록"
             )
         check_artifact_current(build, by_role[role])
+        check_artifact_readme(by_role[role], readme)
+    if readme is None:
+        raise BuildRuleError(
+            f"{build.build_id}: 저장한 README 가 없다 — 승인자가 지원자 문장을 볼 수 없다"
+        )
     flags = {flag_id(f) for f in build.outcome.review_flags}
     decided = {d.flag_id for d in decisions}
     if len(flags - decided):
@@ -258,9 +304,13 @@ class BuildRepo(Protocol):
 
     async def put_files(self, build_id: str, files: list[StarterFile]) -> None: ...
 
+    async def put_readme(self, readme: StarterFile) -> None: ...
+
     async def files(
-        self, build_id: str, kinds: Iterable[FileKind] | None = None
+        self, build_id: str, kinds: Iterable[StoredFileKind] | None = None
     ) -> list[StarterFile]: ...
+
+    async def readme(self, build_id: str) -> StarterFile | None: ...
 
     async def approve(
         self, build_id: str, reviewer: str, at: datetime, decisions: list[ReviewDecision]
@@ -357,8 +407,13 @@ class InMemoryBuildStore:
                 raise BuildRuleError(f"다른 빌드의 파일: {f.build_id}")
             self._files[(build_id, f.kind, f.variant, f.path)] = f
 
+    async def put_readme(self, readme: StarterFile) -> None:
+        build = _require(self._builds.get(readme.build_id), readme.build_id)
+        check_readme_put(build, readme, await self.readme(readme.build_id))
+        self._files[(readme.build_id, "readme", "", README_PATH)] = readme
+
     async def files(
-        self, build_id: str, kinds: Iterable[FileKind] | None = None
+        self, build_id: str, kinds: Iterable[StoredFileKind] | None = None
     ) -> list[StarterFile]:
         want = set(kinds) if kinds is not None else None
         got = [
@@ -368,11 +423,16 @@ class InMemoryBuildStore:
         ]
         return sorted(got, key=lambda f: (f.kind, f.variant, f.path))
 
+    async def readme(self, build_id: str) -> StarterFile | None:
+        return self._files.get((build_id, "readme", "", README_PATH))
+
     async def approve(
         self, build_id: str, reviewer: str, at: datetime, decisions: list[ReviewDecision]
     ) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
-        check_approval(build, decisions, await self.artifacts(build_id))
+        check_approval(
+            build, decisions, await self.artifacts(build_id), await self.readme(build_id)
+        )
         return self._put(
             build,
             status="approved",
@@ -384,6 +444,7 @@ class InMemoryBuildStore:
     async def put_artifact(self, artifact: BuildArtifact) -> None:
         build = _require(self._builds.get(artifact.build_id), artifact.build_id)
         check_artifact_open(build, artifact)
+        check_artifact_readme(artifact, await self.readme(artifact.build_id))
         key = (artifact.build_id, artifact.role)
         if key in self._artifacts:
             raise BuildRuleError(
@@ -675,8 +736,34 @@ class PgBuildStore:
                 [(build_id, f.kind, f.variant, f.path, f.content, f.sha256, f.size) for f in files],
             )
 
+    async def put_readme(self, readme: StarterFile) -> None:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            build = await self._locked(cur, readme.build_id)
+            check_readme_put(build, readme, await self._readme_of(cur, readme.build_id))
+            await cur.execute(
+                "INSERT INTO public.starter_file (build_id, kind, variant, path, content, sha256, size) "
+                "VALUES (%s, 'readme', '', %s, %s, %s, %s) ON CONFLICT (build_id, kind, variant, path) "
+                "DO UPDATE SET content = EXCLUDED.content, sha256 = EXCLUDED.sha256, size = EXCLUDED.size",
+                (readme.build_id, README_PATH, readme.content, readme.sha256, readme.size),
+            )
+
+    async def _readme_of(self, cur: Any, build_id: str) -> StarterFile | None:
+        await cur.execute(
+            "SELECT * FROM public.starter_file WHERE build_id = %s AND kind = 'readme'", (build_id,)
+        )
+        r = await cur.fetchone()
+        return None if r is None else StarterFile.model_validate(r)
+
+    async def readme(self, build_id: str) -> StarterFile | None:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            return await self._readme_of(cur, build_id)
+
     async def files(
-        self, build_id: str, kinds: Iterable[FileKind] | None = None
+        self, build_id: str, kinds: Iterable[StoredFileKind] | None = None
     ) -> list[StarterFile]:
         want = list(kinds) if kinds is not None else None
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -698,7 +785,12 @@ class PgBuildStore:
             conn.cursor(row_factory=dict_row) as cur,
         ):
             build = await self._locked(cur, build_id)
-            check_approval(build, decisions, await self._artifacts_of(cur, build_id))
+            check_approval(
+                build,
+                decisions,
+                await self._artifacts_of(cur, build_id),
+                await self._readme_of(cur, build_id),
+            )
             await cur.execute(
                 "UPDATE public.common_task_build SET status = 'approved', approved_by = %s, "
                 "approved_at = %s, review_decisions = %s WHERE id = %s RETURNING *",
@@ -715,6 +807,7 @@ class PgBuildStore:
             conn.cursor(row_factory=dict_row) as cur,
         ):
             check_artifact_open(await self._locked(cur, artifact.build_id), artifact)
+            check_artifact_readme(artifact, await self._readme_of(cur, artifact.build_id))
             await cur.execute(
                 "INSERT INTO public.build_artifact (build_id, role, files, image_id, tree_sha256, "
                 "grader_sha256, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s) "
