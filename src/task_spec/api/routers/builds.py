@@ -1,6 +1,6 @@
 """공통 과제 빌드·전달 묶음 조회 API (이슈 #85) [제안].
 
-GET  /builds?common_id=          : 공통 과제의 빌드 목록
+GET  /builds[?common_id=]        : 공통 과제의 빌드 목록 (없으면 최근 빌드 — 화면 목록용, 제목·공고 id 함께)
 GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수
 GET  /builds/{build_id}/artifacts: 역할별 묶음 파일(이름·sha256·크기)·image_id
 GET  /builds/{build_id}/deliveries: 전달 기록
@@ -31,7 +31,7 @@ from task_spec.schemas.package import (
     VerifySummary,
     flag_id,
 )
-from task_spec.starter.store import BuildRepo, BuildRuleError
+from task_spec.starter.store import BuildRepo, BuildRuleError, TaskLabel
 
 router = APIRouter(tags=["builds"])
 
@@ -47,6 +47,9 @@ class BuildSummary(BaseModel):
     created_at: datetime
     approved_by: str | None = None
     approved_at: datetime | None = None
+    template_ref: str | None = None
+    title: str | None = None  # 공통 과제 제목 (명세 본문은 넣지 않는다)
+    posting_id: str | None = None
 
 
 class FlagView(BaseModel):
@@ -56,7 +59,6 @@ class FlagView(BaseModel):
 
 
 class BuildDetail(BuildSummary):
-    template_ref: str | None = None
     tree_sha256: str | None = None
     grader_sha256: str | None = None
     verification: dict[str, VerifySummary] = Field(default_factory=dict)
@@ -77,7 +79,7 @@ class TargetIn(BaseModel):
     role: ArtifactRole
 
 
-def _summary(b: BuildRecord) -> BuildSummary:
+def _summary(b: BuildRecord, label: TaskLabel | None = None) -> BuildSummary:
     return BuildSummary(
         build_id=b.build_id,
         common_id=b.common_id,
@@ -87,6 +89,9 @@ def _summary(b: BuildRecord) -> BuildSummary:
         created_at=b.created_at,
         approved_by=b.approved_by,
         approved_at=b.approved_at,
+        template_ref=b.outcome.template_ref if b.outcome else None,
+        title=label.title if label else None,
+        posting_id=label.posting_id if label else None,
     )
 
 
@@ -99,9 +104,13 @@ async def _build(store: BuildRepo, build_id: str) -> BuildRecord:
 
 @router.get("/builds")
 async def list_builds(
-    store: BuildsDep, common_id: Annotated[str, Query(pattern=COMMON_ID)]
+    store: BuildsDep,
+    common_id: Annotated[str | None, Query(pattern=COMMON_ID)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[BuildSummary]:
-    return [_summary(b) for b in await store.builds(common_id)]
+    builds = await store.builds(common_id) if common_id else await store.recent(limit)
+    labels = await store.task_labels({b.common_id for b in builds})
+    return [_summary(b, labels.get(b.common_id)) for b in builds]
 
 
 @router.get("/builds/{build_id}")
@@ -114,9 +123,9 @@ async def get_build(build_id: BuildIdPath, store: BuildsDep) -> BuildDetail:
         for f in (o.review_flags if o else [])
     ]
     kinds = Counter[str](f.kind for f in await store.files(build_id))
+    label = (await store.task_labels([b.common_id])).get(b.common_id)
     return BuildDetail(
-        **_summary(b).model_dump(),
-        template_ref=o.template_ref if o else None,
+        **_summary(b, label).model_dump(),
         tree_sha256=o.tree_sha256 if o else None,
         grader_sha256=o.grader_sha256 if o else None,
         verification=o.verification if o else {},

@@ -9,7 +9,7 @@ import httpx
 from task_spec.api.app import create_app
 from task_spec.schemas.build_record import StarterFile
 from task_spec.schemas.package import flag_id
-from task_spec.starter.store import InMemoryBuildStore
+from task_spec.starter.store import InMemoryBuildStore, TaskLabel
 from tests.api.conftest import make_settings
 from tests.starter.test_build_store import AT, FLAG, H_OLD, _artifact, _outcome
 
@@ -60,6 +60,28 @@ async def test_build_views_hide_contract_plan_and_file_bodies(tmp_path: Path) ->
         assert (await c.get(f"/builds/{bid}/deliveries")).json() == []
         everything = r.text + str(arts) + str(builds)
         assert SECRET not in everything and "class App" not in everything
+
+
+async def test_recent_builds_without_common_id_have_titles(tmp_path: Path) -> None:
+    """화면 목록용 — common_id 없이 최근 빌드, 공통 과제 제목·공고 id·템플릿 (명세 본문은 없음)."""
+    store = InMemoryBuildStore()
+    bid = await _review_build(store)
+    other = await store.new_build("ct-ba9876543210", "onto-test", AT)
+    store.labels[CID] = TaskLabel(title="가상 과제 제목", posting_id="가상_공고#001")
+    async with await _client(tmp_path, store) as c:
+        rows = (await c.get("/builds")).json()
+        assert {r["build_id"] for r in rows} == {bid, other.build_id}
+        mine = next(r for r in rows if r["build_id"] == bid)
+        assert (mine["title"], mine["posting_id"]) == ("가상 과제 제목", "가상_공고#001")
+        assert mine["template_ref"] == "data/python-duckdb@v1"
+        assert next(r for r in rows if r["build_id"] == other.build_id)["title"] is None
+        assert len((await c.get("/builds", params={"limit": 1})).json()) == 1
+        assert (await c.get("/builds", params={"limit": 0})).status_code == 422
+        detail = (await c.get(f"/builds/{bid}")).json()
+        assert (
+            detail["title"] == "가상 과제 제목"
+            and detail["template_ref"] == "data/python-duckdb@v1"
+        )
 
 
 async def test_missing_and_malformed_ids(tmp_path: Path) -> None:
