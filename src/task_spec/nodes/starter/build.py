@@ -538,6 +538,7 @@ async def build_and_repair(
                 out.regen_counts,
                 shared,
                 terms=b.template.manifest.repair_terms,
+                fix_markers=b.seed.fix_markers if b.seed is not None else (),
             )
             for (
                 flag

@@ -101,6 +101,13 @@
    "DB 연결",
    "데이터베이스 연결"
   ],
+  "fix_markers": [
+    "TransactionSynchronization",
+    "\\bafterCommit\\b",
+    "@TransactionalEventListener",
+    "@Async\\b",
+    "\\boutbox\\b"
+  ],
   "task_shape": "code",
   "starter": "delivery-audit",
   "reviewed": false,

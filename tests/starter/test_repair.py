@@ -967,3 +967,29 @@ def test_case_that_still_misses_the_naive_after_a_rewrite_is_flagged_not_failed(
     again = _assign(report, gen_hidden=1)
     assert again.passed and not again.actions
     assert any("hc1" in f and "hc2" in f and "가르지 않는다" in f for f in again.flags)
+
+
+def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> None:
+    """흔한 구현이 숨은 케이스를 통과했고 허용 설계의 장치(재료 fix_markers)를 썼다 — 숨은 테스트가 아니라 흔한 구현을 그 장치를 짚어
+    다시 만들고, 다시 만든 뒤에도 그렇면 재료 판정(막는 표시)으로 사람에게 (2026-11-10 응답 순서 cf: React 정리 패턴 let cancelled)."""
+    naive = _run("naive-all", "ref_naive", *GOOD_ACC)  # 숨은 케이스를 모두 통과
+    code = Overlay(
+        kind="ref_naive",
+        label="naive-all",
+        files=(GeneratedFile(path="src/pages/Search.tsx", content="let cancelled = false;"),),
+    )
+    overlays = {**OVERLAYS, "naive-all": code}
+    markers = [r"\blet\s+cancelled\s*="]
+    report = _report(naive, _run("d1", "ref_accepted", *GOOD_ACC))
+    plan = assign(report, PLAN2, overlays, MISSED, {}, fix_markers=markers)
+    assert [(a.key, a.gate) for a in plan.actions] == [("gen_naive:naive-all", "③")]
+    assert "let cancelled =" in plan.actions[0].note and not plan.unresolved
+    again = assign(
+        report, PLAN2, overlays, MISSED, {"gen_naive:naive-all#trap": 1}, fix_markers=markers
+    )
+    assert not again.actions and any(u.startswith("재료 판정: ") for u in again.unresolved)
+    # 표지가 없으면 지금 규칙 그대로 (흔한 구현을 먼저 다시)
+    plain = assign(report, PLAN2, OVERLAYS, MISSED, {}, fix_markers=markers)
+    assert [a.key for a in plain.actions] == [
+        "gen_naive:naive-all"
+    ] and "정답 장치" not in plain.actions[0].reason

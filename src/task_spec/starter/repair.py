@@ -49,6 +49,8 @@ CRASH_SUFFIX = "#crash"
 # 2026-11-10 프론트 알파 49507571·008d6314: 숨은 테스트가 한 설계의 진행(이어 붙인 뒤 정확히 40건, 첫 재연결에 4건 이상)을 단언해
 # 다른 허용 설계(쪽 번호+거르기, 실패하면 멈춤)를 막았는데, 흔한 구현은 의도한 사유로 잡혀 '허용 구현 탓'으로 끝났다.
 DESIGN_SUFFIX = "#design"
+# 흔한 구현이 정답 장치를 쓴다는 재료 판정 — 막는 표시(unresolved)로 옮긴다 (assign)
+MATERIAL_VERDICT = "재료 판정: "
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
 KEEP_NAIVE = (
     "\n지적된 실패만 고친다 — 입력의 흔한 구현 설명이 말하는 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)는 "
@@ -717,12 +719,23 @@ def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAc
     return out
 
 
+def marker_hits(overlay: Overlay | None, markers: Sequence[str]) -> list[str]:
+    """흔한 구현 코드(테스트 제외)에 나온 정답 장치 표지 — 재료 fix_markers."""
+    if overlay is None or not markers:
+        return []
+    text = "\n".join(
+        f.content for f in overlay.files if "/test/" not in f.path and ".test." not in f.path
+    )
+    return sorted({m.group(0) for rx in markers for m in re.finditer(rx, text)})[:6]
+
+
 def _gate3(
     run: TargetRun,
     plan: HiddenPlan,
     missed: set[str],
     regen_counts: Mapping[str, int],
     terms: RepairTerms | None = None,
+    hits: Sequence[str] = (),
 ) -> tuple[list[RepairAction], list[str]]:
     passed = [
         c
@@ -742,6 +755,27 @@ def _gate3(
         and r.reason in intended
         for c in plan.cases
     )
+    if passed and not shows_trap and hits:
+        # 흔한 구현이 숨은 케이스를 통과했고 그 코드에 허용 설계의 장치가 있다 — 숨은 테스트가 아니라 흔한 구현(또는 재료) 문제.
+        # 2026-11-10 응답 순서 cf: 흔한 구현이 매 회차 React 정리 패턴(let cancelled …)을 썼는데 ③ 이 숨은 테스트를 다시 만들었다.
+        ids = ", ".join(c.case_id for c in passed)
+        found = ", ".join(hits)
+        if regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0:
+            return [
+                RepairAction(
+                    "gen_naive",
+                    run.target,
+                    "③",
+                    f"흔한 구현이 {ids} 통과 — 정답 장치({found})를 씀 ({run.target})",
+                    f"이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치({found})를 썼다 — 그 장치를 빼고 입력의 흔한 구현 "
+                    "설명대로만 쓴다 (설명에 없는 방어 코드·정리 함수의 무시 표시·취소·묶음 조회 등을 더하지 않는다).",
+                    budget=TRAP_SUFFIX,
+                )
+            ], []
+        return [], [
+            f"{MATERIAL_VERDICT}흔한 구현({run.target})이 다시 만든 뒤에도 허용 설계의 장치({found})를 써 숨은 케이스 {ids} 를 통과 — "
+            "AI 흔한 구현이 기본으로 정답을 쓰므로 이 함정은 AI 첫 답을 가르지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
+        ]
     if (
         passed
         and not shows_trap
@@ -973,6 +1007,7 @@ def assign(
     regen_counts: Mapping[str, int] | None = None,
     shared_paths: Collection[str] = (),
     terms: RepairTerms | None = None,
+    fix_markers: Sequence[str] = (),
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
@@ -1046,9 +1081,13 @@ def assign(
     actions += _hidden_broken(judged, plan)
     for run in judged:
         if run.kind == "ref_naive":
-            acts, flags = _gate3(run, plan, missed_traps.get(run.target, set()), counts, terms)
+            hits = marker_hits(overlays.get(run.target), fix_markers)
+            acts, flags = _gate3(
+                run, plan, missed_traps.get(run.target, set()), counts, terms, hits
+            )
             actions += acts
-            res.flags += flags
+            res.unresolved += [f for f in flags if f.startswith(MATERIAL_VERDICT)]
+            res.flags += [f for f in flags if not f.startswith(MATERIAL_VERDICT)]
     accepted = [r for r in judged if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(
