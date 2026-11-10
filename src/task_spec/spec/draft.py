@@ -38,7 +38,7 @@ from task_spec.schemas import (
     TaskItem,
     TechEnv,
 )
-from task_spec.schemas.domain import Anchor, BehavioralAnchors
+from task_spec.schemas.domain import ARTIFACT_TRIMMED, Anchor, BehavioralAnchors
 from task_spec.schemas.incident import FeatureSeed, PublicIncident
 from task_spec.spec.common import FLAG_NO_INCIDENT, FLAG_PUBLIC_INCIDENT
 from task_spec.spec.incidents import incident_block
@@ -53,6 +53,9 @@ DIFFICULTY_KO = {
 }
 FLAG_DRAFT_FAILED = "과제 서술 생성 실패 — 결정적 골격만 (제목·상황·행동 기준 없음)"
 FLAG_DRAFT_INVALID = "과제 서술 자동 검증 실패 (재요청 후에도) — 고쳐 쓴 항목 확인 필요: "
+FLAG_ARTIFACT_TRIMMED = (
+    "자료가 3000자를 넘어 코드가 줄 단위로 줄임 — 남은 내용으로 단서가 보이는지 사람 확인: "
+)
 FLAG_NOTE_DROPPED = (
     "승인자 수정 요청에 이름·학교·회사·연락처 같은 개인정보 후보가 있어 LLM 에 보내지 않음 — "
     "개인정보 없이 다시 적어 주세요"
@@ -594,5 +597,20 @@ async def draft_task(
     if problems:
         out, res.anchors_ok = repairer(out, ctx)
         res.flags.append(FLAG_DRAFT_INVALID + "; ".join(problems))
+    if trimmed := trimmed_artifacts(out):
+        res.flags.append(FLAG_ARTIFACT_TRIMMED + ", ".join(trimmed))
     res.output = out
     return res
+
+
+def trimmed_artifacts(out: Any) -> list[str]:
+    """코드가 줄인 자료 (schemas.domain.Artifact._fit_length) — 1단계·2단계 자료 모두."""
+    stages = [getattr(out, "artifacts", None) or []]
+    if (dbg := getattr(out, "debug_stage", None)) is not None:
+        stages.append([*(getattr(dbg, "artifacts", None) or [])])
+    return [
+        f"{label}{a.artifact_id}"
+        for label, arts in zip(("", "2단계 "), stages, strict=False)
+        for a in arts
+        if a.content.endswith(ARTIFACT_TRIMMED)
+    ]
