@@ -208,7 +208,7 @@ def test_several_frontend_materials_are_assigned_by_posting_id_hash() -> None:
     ids = {i.incident_id for i in incs.alternates["sw.frontend"]}
     assert {
         "pub:sw.frontend:stale-search-response",
-        "pub:sw.frontend:duplicate-submit",
+        "pub:sw.frontend:retry-with-new-request-id",
         "pub:sw.frontend:optimistic-not-rolled-back",
     } <= ids
     picked = {
@@ -221,8 +221,8 @@ def test_several_frontend_materials_are_assigned_by_posting_id_hash() -> None:
     )  # type: ignore[union-attr]
     # 이미 만든 명세로 다시 돌릴 때는 명세에 적힌 재료 그대로 (기본·추가 사례 모두에서 찾음)
     assert (
-        incident_by_id(incs, "pub:sw.frontend:duplicate-submit").incident_id
-        == "pub:sw.frontend:duplicate-submit"
+        incident_by_id(incs, "pub:sw.frontend:retry-with-new-request-id").incident_id
+        == "pub:sw.frontend:retry-with-new-request-id"
     )  # type: ignore[union-attr]
     assert incident_by_id(incs, incs["sw.backend"].incident_id) is incs["sw.backend"]
     assert incident_by_id(incs, "pub:없음:x") is None and incident_by_id(incs, None) is None
