@@ -255,7 +255,7 @@ failure_reasons:
   - code: request_timeout
     description: 채점 클라이언트 요청이 시간 한도 안에 끝나지 않음
     log_patterns: ['HttpTimeoutException', '\[reason:request_timeout\]']
-    how: 동시 요청(peak(…))이나 지연 주입(GraderJdbcHarness.queryDelayMs)으로 시간 한도를 넘게 만든다. 사유는 Burst.failures(…) 단언에
+    how: 케이스 data 가 버스트면 동시 요청(peak(…))으로, 아니면 지연 없이 같은 요청을 한 번 보내 데운 뒤 지연을 주입(GraderJdbcHarness.queryDelayMs)하고 Burst.fire(1, …) 로 한 번 보낸다 (버스트가 아닌 케이스에 peak 를 쓰면 올바른 구현도 동시 부하로 시간 초과). 사유는 Burst.failures(…) 단언에
   - code: server_error
     description: 기대한 응답 대신 5xx
     log_patterns: ['\[reason:server_error\]']
@@ -274,6 +274,15 @@ failure_reasons:
     description: 기록 결과가 응답과 맞지 않음
     log_patterns: ['\[reason:record_mismatch\]']
     how: 기록의 대상 id·결과가 그 요청의 응답과 같은지 비교한다. 사유는 그 비교 단언에
+  - code: lost_update
+    description: 같은 행에 동시에 들어온 변경 일부가 사라짐 (남은 값이 성공 응답 합과 맞지 않음)
+    log_patterns: ['\[reason:lost_update\]']
+    requires: ['Burst\.(?:fire|rounds)\(']  # 같은 행에 실제로 동시에 보내야 이 사유가 나온다
+    how: 같은 행 하나에 바꾸는 요청을 Burst.fire(…) 로 동시에 보내고(요청마다 같은 id), 끝난 뒤 계약의 조회 API 로 읽은 값이 처음 값과 성공 응답(200) 수로 계산한 값과 같은지 본다. 사유는 그 값 비교 단언에 (5xx 는 server_error 로 따로)
+  - code: duplicate_record
+    description: 같은 요청을 다시(또는 동시에) 보냈는데 처리가 두 번 일어남
+    log_patterns: ['\[reason:duplicate_record\]']
+    how: 같은 요청 키·같은 본문으로 같은 요청을 차례로 두 번, 그리고 Burst.fire(…) 로 동시에 보낸 뒤 계약의 조회 API 로 기록이 한 건인지(hasSize(1))·값이 한 번만 바뀌었는지 본다. 사유는 그 건수·값 단언에
   - code: injected_failure_ignored
     description: 주입한 DB 오류에도 성공 응답
     log_patterns: ['\[reason:injected_failure_ignored\]']
@@ -289,4 +298,5 @@ stack_conditions:
   - spring.jpa.open-in-view 가 기본값(켬)이면 트랜잭션이 끝나도 요청 동안 연결을 쥔다. 트랜잭션 뒤 기록을 별도 JdbcTemplate·DataSource 로 쓰면 두 번째 연결이 된다 — 같은 EntityManager(같은 연결 재사용)로 쓰거나 open-in-view 를 끈다.
   - TransactionSynchronization.afterCompletion·동기 @TransactionalEventListener 는 끝난 트랜잭션의 연결을 아직 쥔 채로 돈다. 여기서 REQUIRES_NEW 로 쓰면 두 번째 연결이다 — 후처리 변형은 다른 스레드(@Async·아웃박스 폴러)여야 한다.
   - JPA 는 바뀐 엔티티의 UPDATE 를 커밋 때 실행할 수 있어, 그 오류는 @Transactional 메서드 안의 catch 에 잡히지 않고 메서드가 끝난 뒤(프록시의 커밋)에서 난다. 메서드 안에서 쓴 실패 기록도 함께 롤백된다 — 실패 기록은 트랜잭션 메서드를 부른 쪽(트랜잭션 밖)에서 예외를 잡은 뒤 쓴다.
-  - 운영 풀 크기는 채점 때 Spring 속성으로 넣으므로 application.yml 값은 덮인다. 풀을 산정해 늘리는 설계는 코드(데이터소스 설정)에서 정해야 채점에 반영된다.
+  # 2026-11-10: 예전 문장('풀을 산정해 늘리는 설계는 코드(데이터소스 설정)에서 정해야 채점에 반영된다')이 허용 구현에게 채점 운영 값 우회를 가르쳤다
+  - 운영 풀 크기·연결 대기 한도·요청 스레드 수는 채점 환경이 정한다 — application.yml 값은 덮이고, 코드로 데이터소스·풀을 만들거나 바꾸면 정적 검사가 막는다. 숨은 요구는 연결을 쓰는 방식(트랜잭션 경계·기록 시점)으로 푼다.

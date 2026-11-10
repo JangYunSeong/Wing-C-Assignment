@@ -19,7 +19,7 @@ from typing import Literal
 
 from task_spec.schemas.build import Endpoint, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.header_values import header_values
+from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.seed_rows import allocate_rows, public_free
 from task_spec.starter.seed_sql import default_value
 from task_spec.starter.state_rule import next_states, sentence
@@ -166,7 +166,13 @@ def _header_lines(contract: TaskContract) -> list[str]:
         "",
         "    // ── 요청 헤더 값: 규칙(권한)을 통과하는 값(_OK)과 권한이 거절되는 값(_DENIED) — 값을 직접 쓰지 않는다 ──",
     ]
+    keyed = [h for h in values if h.source == PER_REQUEST]
     for h in values:
+        if h.source == PER_REQUEST:
+            lines.append(
+                f"    // {h.name}: 요청마다 새 값 — okHeaders() 가 만든다, 재요청은 okHeaders(key) 로 같은 값"
+            )
+            continue
         key = _value_const(h.name)
         src = {
             "예시": "계약 공개 테스트 예시",
@@ -179,7 +185,31 @@ def _header_lines(contract: TaskContract) -> list[str]:
                 f'    protected static final String HEADER_{key}_DENIED = "{h.denied}"; // {src}'
             )
     oks = [h for h in values if h.ok is not None]
-    if oks:
+    if keyed:
+        pairs = ", ".join(
+            [
+                *(f'"{h.name}", key' for h in keyed),
+                *(f'"{h.name}", HEADER_{_value_const(h.name)}_OK' for h in oks),
+            ]
+        )
+        lines += [
+            "",
+            "    /** 요청마다 다른 요청 키 — 새 요청은 이 값 하나로 */",
+            "    protected static String newRequestId() {",
+            "        return java.util.UUID.randomUUID().toString();",
+            "    }",
+            "",
+            "    /** 규칙(권한)을 통과하는 헤더 묶음 — 부를 때마다 새 요청 키 (서로 다른 요청). 기능 단계에 닿아야 하는 요청에 쓴다 */",
+            "    protected static Map<String, String> okHeaders() {",
+            "        return okHeaders(newRequestId());",
+            "    }",
+            "",
+            "    /** 같은 요청을 다시 보낼 때 — 처음 요청의 키(newRequestId())를 그대로 넘긴다 */",
+            "    protected static Map<String, String> okHeaders(String key) {",
+            f"        return Map.of({pairs});",
+            "    }",
+        ]
+    elif oks:
         pairs = ", ".join(f'"{h.name}", HEADER_{_value_const(h.name)}_OK' for h in oks)
         lines += [
             "",

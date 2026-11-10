@@ -34,7 +34,7 @@ from task_spec.nodes.starter.generate import BuildInputs
 from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
-from task_spec.spec.incidents import load_incidents
+from task_spec.spec.incidents import incident_by_id, load_incidents
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "eval" / "build"
@@ -69,7 +69,10 @@ async def main() -> None:
     src = json.loads(Path(a.input).read_text("utf-8"))
     task = TaskItem.model_validate(src["task"])
     sub = (task.source_incident or "").split(":")[1]
-    inc = load_incidents(ROOT / "incidents" / "public_v1")[sub]
+    # 명세가 쓴 재료 그대로 (run_alpha 와 같게) — 2026-11-10: 직군 기본 사례로 고정해 새 재료 명세에 풀 교착 재료의
+    # 숨은 요구·필요 요소(상태 전이·감사 기록·pool_size)가 붙어 계약이 실패했다
+    incidents = load_incidents(ROOT / "incidents" / "public_v1")
+    inc = incident_by_id(incidents, task.source_incident) or incidents[sub]
     seed = inc.feature
     assert seed is not None, f"{sub} 에 기능형 재료가 없음"
     template = template_for(sub)

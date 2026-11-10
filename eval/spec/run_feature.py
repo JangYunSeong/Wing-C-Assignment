@@ -39,7 +39,7 @@ from task_spec.schemas import DraftFeatureOutput, PublicIncident, TaskItem
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID
 from task_spec.spec.feature import apply_feature, draft_feature_task
-from task_spec.spec.incidents import load_incidents
+from task_spec.spec.incidents import feature_incident, load_incidents
 from task_spec.spec.kind import choose_task_kind
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,8 +115,10 @@ async def pick(
     *,
     force: bool = False,
     limit: int | None = None,
+    incident: str | None = None,
 ) -> tuple[list[tuple[str, CommonDraft]], dict[str, Any]]:
-    """force=False: 기본값 규칙이 feature 인 공고만 / True: 규칙과 상관없이 기능형으로 (직군별 점검)."""
+    """force=False: 기본값 규칙이 feature 인 공고만 / True: 규칙과 상관없이 기능형으로 (직군별 점검).
+    incident: 공고 해시 배정(feature_incident)이 그 사례인 공고만 — 새 재료 점검 (배정 규칙은 그대로, 공고만 고른다)."""
     rel = await load_relatedness(repo)
     rows = await repo.fetch(
         "SELECT id FROM position WHERE in_pilot AND sub = %s ORDER BY id", (sub,)
@@ -128,6 +130,10 @@ async def pick(
         p = await posting_profile(repo, r["id"])
         if p is None or not (p.sub and p.industry_id):
             continue
+        if incident is not None:
+            inc = feature_incident(incidents, p.sub, p.posting_id)
+            if inc is None or inc.incident_id != incident:
+                continue
         choice = choose_task_kind(p)
         kinds[choice.kind] += 1
         basis.append({"posting": r["id"], "kind": choice.kind, "basis": choice.basis})
@@ -287,6 +293,11 @@ async def main() -> None:
         "--subs", nargs="*", default=None, help="이 직군들에서 기능형 강제 (직군별 점검)"
     )
     ap.add_argument("--per-sub", type=int, default=1)
+    ap.add_argument(
+        "--incident",
+        default=None,
+        help="--subs 와 함께: 공고 해시 배정이 이 사례(incident_id)인 공고만 (새 재료 점검)",
+    )
     ap.add_argument("--model", default=None, help="예: openai:gpt-4.1 (기본: 프롬프트 머리말 모델)")
     ap.add_argument("--openai-key-env", default=None, help="예: OPENAI_PREMIUM_API_KEY")
     ap.add_argument(
@@ -308,7 +319,9 @@ async def main() -> None:
     dist: dict[str, Any] = {}
     if a.subs:
         for sub in a.subs:
-            got, d = await pick(repo, version, incidents, sub, force=True, limit=a.per_sub)
+            got, d = await pick(
+                repo, version, incidents, sub, force=True, limit=a.per_sub, incident=a.incident
+            )
             picked += got
             dist[sub] = d["kinds"]
         split_name = "subs"

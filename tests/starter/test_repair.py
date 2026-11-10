@@ -941,3 +941,19 @@ def test_grading_environment_error_in_every_implementation_is_escalated_not_rege
     # 패턴이 없는 템플릿(Java 등)은 그대로
     plan = assign(every, PLAN2, OVERLAYS, MISSED, {}, ())
     assert not any(u.startswith("채점 환경") for u in plan.unresolved)
+
+
+def test_case_that_still_misses_the_naive_after_a_rewrite_is_flagged_not_failed() -> None:
+    """2026-11-10 gen-item2: hc2 가 의도한 사유로 함정을 잡는데 hc1 만 다시 만든 뒤에도 흔한 구현이 통과 — 예산을 다 써 failed 였다.
+    허용 구현은 모두 통과했으니 막지 않고 '변별하지 못하는 케이스'로 사람 확인."""
+    naive = _run(
+        "naive-all",
+        "ref_naive",
+        _t("hidden", "hc1"),
+        _t("hidden", "hc2", "ASSERT", "rollback_left_success", "성공 기록이 남음"),
+    )
+    report = _report(naive, _run("d1", "ref_accepted", *GOOD_ACC))
+    assert _keys(_assign(report)) == ["gen_hidden"]  # 처음엔 숨은 테스트를 다시
+    again = _assign(report, gen_hidden=1)
+    assert again.passed and not again.actions
+    assert any("hc1" in f and "hc2" in f and "가르지 않는다" in f for f in again.flags)

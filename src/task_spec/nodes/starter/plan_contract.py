@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 
 from pydantic import BaseModel
 
@@ -31,6 +32,7 @@ from task_spec.schemas import (
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import fit_auth
 from task_spec.starter.contract import (
+    NO_EVIDENCE,
     ROW_NEEDS,
     SpecView,
     check_contract,
@@ -38,6 +40,7 @@ from task_spec.starter.contract import (
     fit_covers,
     fit_traps,
     hidden_terms,
+    timed_hints,
 )
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
@@ -82,6 +85,37 @@ def _range(lo: float | None, hi: float | None) -> str:
 # 계약 생성 시도 수 — 첫 답 + 재요청 2회. 2026-11-08 상류 평가: 검사 항목이 늘자(전이 규칙 + 관찰 불가 통과 조건) 재요청 한 번에
 # 다 고치지 못해 계약 실패가 0/9 → 3/9 로 늘었다 (재요청은 필요할 때만 — 회당 약 $0.03).
 ATTEMPTS = 3
+
+
+def plan_evidence_missing(plan: HiddenPlan, name: str) -> bool:
+    quote = plan.evidence.get(name)
+    return name in plan.harness and (not quote or quote.strip() == NO_EVIDENCE)
+
+
+def for_material(template: Template, seed: FeatureSeed | None) -> Template:
+    """재료가 선언한 조절값(FeatureSeed.harness)만 필수이고, 지원자가 자료에서 찾을 운영 조건이라 보이는 값 — 명세 자료의 근거
+    인용으로 값을 확인한다. 재료가 harness 를 적지 않으면(None) 템플릿 그대로 (예전과 같음).
+    2026-11-10 nplus1-d: query_delay_ms·request_timeout_s 가 템플릿에서 안 보이는 값이라 명세의 '쿼리당 11ms·응답 한도 1초' 대신
+    하네스 기본값(20ms·30초)이 들어가, 지연 로딩 흔한 구현(200건 ≈ 8초)도 hc1 을 통과했다."""
+    if seed is None or seed.harness is None:
+        return template
+    need = set(seed.harness)
+    notes = seed.harness_notes
+    params = [
+        p.model_copy(
+            update={
+                "required": p.name in need,
+                "visible": p.visible or p.name in need,
+                "description": f"{p.description} — 이 과제: {notes[p.name]}"
+                if p.name in notes
+                else p.description,
+            }
+        )
+        for p in template.manifest.harness_params
+    ]
+    return replace(
+        template, manifest=template.manifest.model_copy(update={"harness_params": params})
+    )
 
 
 def fill_hidden_defaults(plan: HiddenPlan, m: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
@@ -254,13 +288,35 @@ def plan_input(
     )
 
 
+def fit_fk_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
+    """외래 키 대상을 엔티티 id(m2)로 쓴 것을 이름(Customer)으로 — 2026-11-10 목록 재료 계약: 'customerId → m2' 를 재요청에도
+    그대로 내 '계약에 없는 엔티티' 로 계약이 실패했다 (검사는 이름으로 찾는다)."""
+    names = {m.entity_id: m.name for m in contract.entities}
+    notes: list[str] = []
+    entities = []
+    for m in contract.entities:
+        fks = []
+        for fk in m.foreign_keys:
+            field_name, _, target = (x.strip() for x in re.split(r"(→|->)", fk, maxsplit=1))
+            if target in names and target not in names.values():
+                notes.append(
+                    f"{m.name} 외래 키 {field_name} → {target} 를 엔티티 이름 {names[target]} 로"
+                )
+                fk = f"{field_name} → {names[target]}"
+            fks.append(fk)
+        entities.append(m.model_copy(update={"foreign_keys": fks}) if fks != m.foreign_keys else m)
+    return (contract.model_copy(update={"entities": entities}), notes) if notes else (contract, [])
+
+
 def fit_output(
     out: PlanContractOutput, manifest: TemplateManifest, spec: SpecView
 ) -> tuple[PlanContractOutput, list[str]]:
     """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다."""
     filled, notes = fill_hidden_defaults(out.hidden_plan, manifest)
-    out = out.model_copy(update={"hidden_plan": filled})
+    named, fk_notes = fit_fk_targets(out.contract)
+    out = out.model_copy(update={"hidden_plan": filled, "contract": named})
+    notes += fk_notes
     if manifest.seed_rows:  # 행 수 맞추기는 DB 행 과제에서만
         fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
         out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
@@ -297,6 +353,7 @@ async def plan_contract(
     """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획."""
     res = PlanResult()
     spec = SpecView.from_task(task)
+    template = for_material(template, seed)
     manifest = template.manifest
     # 2026-11-07: 템플릿 표기 패턴으로 못 찾으면 LLM 전에 실패시켰는데, 패턴이 한 예시 표현에만 맞아 값이 있는 명세도 막혔다
     # → LLM 이 값 + 근거 인용을 내고 코드가 확인한다 (check_contract). 근거가 "없음"이면 그때 명세 결함.
@@ -345,7 +402,20 @@ async def plan_contract(
         if best is None or score < len(best[1]) + len(best[2]):
             best = (out, check.problems, check.spec_gaps, notes, check.review_flags)
             best_raw = raw
-        if check.ok or check.spec_gaps:
+        # 근거를 '없음'으로 쓴 시간 조절값인데 자료에 그 단위의 수가 있으면 한 번 더 묻는다 — 2026-11-10 nplus1-f: 자료의
+        # '응답 p99 ≤ 800 ms' 를 두고 request_timeout_s=2 · 근거 없음으로 써 명세 결함으로 끝났다
+        hints = (
+            [
+                f"- {p.name}: " + " / ".join(h)
+                for p in manifest.harness_params
+                if p.visible
+                and plan_evidence_missing(out.hidden_plan, p.name)
+                and (h := timed_hints(p.name, spec.visible_texts))
+            ]
+            if check.spec_gaps and attempt < ATTEMPTS - 1
+            else []
+        )
+        if check.ok or (check.spec_gaps and not hints):
             break  # 통과 — 또는 명세 결함이라 재요청해도 소용없음
         if attempt == 0:
             res.first_problems = list(check.problems)
@@ -359,6 +429,12 @@ async def plan_contract(
         lines = "\n".join(
             f"- {p}" for p in check.problems
         )  # 직전 답의 문제만 (앞 회차 문제는 이미 고쳤을 수 있다)
+        if hints:
+            lines += (
+                "\n- 운영 수치 근거를 '없음'으로 썼지만 자료에 그 단위의 수가 있다 — 이 중 근거가 되는 문장을 그대로 인용하고 "
+                "그 값(조절값 단위로 환산·반올림)을 쓴다. 정말 근거가 아니면 '없음':\n"
+                + "\n".join(hints)
+            )
         note = "\n".join(
             x for x in (base_note, f"이전 답의 문제 (고쳐서 다시 쓰세요):\n{lines}") if x
         )

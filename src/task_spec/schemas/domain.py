@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from task_spec.schemas.approval import ApprovalDecision, TaskKind
 from task_spec.schemas.base import Schema
@@ -269,6 +269,10 @@ class Trap(Schema):
     why_ai_fails: str = Field(min_length=1)  # 일반적인 AI 답이 그럴듯하지만 틀리는 이유
 
 
+ARTIFACT_MAX = 3000
+ARTIFACT_TRIMMED = "… (자료가 길어 코드가 줄 단위로 줄임)"
+
+
 class Artifact(Schema):
     """요청 시 공개하는 자료 1건 (자료 점진 공개) [제안: 2026-11-03 — AI 단독 풀이 테스트에서 '자료 전부 제공' 과제가 풀림].
 
@@ -277,8 +281,20 @@ class Artifact(Schema):
 
     artifact_id: str = Field(pattern=r"^a\d{1,2}$")
     title: str = Field(min_length=1, max_length=80)  # 목록에 보이는 이름 — 원인을 드러내지 않음
-    content: str = Field(min_length=1, max_length=3000)
+    content: str = Field(min_length=1, max_length=ARTIFACT_MAX)
     role: Literal["key", "support", "distractor"]
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _fit_length(cls, v: object) -> object:
+        """상한을 넘으면 줄 단위로 잘라 맞추고 표시를 남긴다 (명세 생성이 승인 화면에 '사람 확인'으로 올린다).
+        2026-11-10 갱신 손실 재료: 명세 생성이 요청 기록·대조표 자료를 3000자 넘게 써 스키마 위반이 네 번 반복 —
+        로그·표는 줄을 줄여도 의미가 남는다 (사용자 결정: 코드가 줄이고 사람 확인)."""
+        if not isinstance(v, str) or len(v) <= ARTIFACT_MAX:
+            return v
+        room = ARTIFACT_MAX - len(ARTIFACT_TRIMMED) - 1
+        cut = v.rfind("\n", 0, room)
+        return v[: cut if cut > room // 2 else room].rstrip() + "\n" + ARTIFACT_TRIMMED
 
 
 class Observable(Schema):

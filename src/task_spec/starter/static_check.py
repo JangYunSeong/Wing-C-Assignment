@@ -346,6 +346,105 @@ _CODE_OVERRIDES = (
 )
 
 
+# 어느 DB 에 붙는지 정하는 키 — 풀 크기(hikari.*)는 운영 값 검사(_operating_values·_harness_overrides)가 본다
+_DATASOURCE_KEYS = frozenset(
+    f"spring.datasource.{k}"
+    for k in (
+        "url",
+        "jdbc-url",
+        "name",
+        "generate-unique-name",
+        "driver-class-name",
+        "username",
+        "password",
+    )
+)
+
+
+def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
+    """구현·시작 코드가 템플릿이 정하지 않은 데이터소스 설정(spring.datasource.*)을 씀 — 템플릿은 컨텍스트마다 새 메모리 DB.
+    2026-11-10 v19-be: 시작 코드가 url 을 jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1 로 고정해 하네스 자체 시험(다른 테스트 컨텍스트)이
+    같은 DB 에 schema.sql·data.sql 을 다시 돌려 Table already exists·PK 위반으로 기동 실패 (2026-11-09 d3 도 같은 설정)."""
+    if not is_java(t.manifest):
+        return []
+    base = _config_map(
+        (rel, (t.project / rel).read_text("utf-8", errors="ignore"))
+        for rel in t.files("project")
+        if rel.endswith(_CONFIG_SUFFIX)
+    )
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if not f.path.endswith(_CONFIG_SUFFIX):
+            continue
+        keys = sorted(
+            k for k in _config_map([(f.path, f.content)]) if k in _DATASOURCE_KEYS and k not in base
+        )
+        if keys:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{o.name} 설정 {f.path} 에 템플릿에 없는 데이터소스 설정 {', '.join(keys)} — 템플릿은 테스트 컨텍스트마다 새 메모리 DB 를 쓴다. "
+                    "고정 URL(예: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1)은 컨텍스트끼리 DB 를 나눠 써 schema.sql·data.sql 이 두 번 돌아 "
+                    "기동이 실패한다 — spring.datasource 설정은 쓰지 않는다",
+                )
+            )
+    return out
+
+
+_PATCH_CALL = re.compile(r"HttpMethod\.PATCH|\.patchForObject\s*\(")
+_SQL_STRING = re.compile(r"'(?:''|[^'])*'")
+_QUOTED_NAME = re.compile(r'"([A-Za-z_]\w*)"')
+
+
+def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[StaticProblem]:
+    """이 템플릿에서 실행 때만 깨지는 두 가지 — 2026-11-10 stab3·v19-be 시작 코드의 기존 기능 테스트가 그대로 실패해 재생성 예산을 다 썼다
+    (재현: 작은 프로젝트에서 둘 다 확인).
+    - TestRestTemplate 로 PATCH: 템플릿에 Apache HttpClient 가 없어 JDK HttpURLConnection — 'Invalid HTTP method: PATCH'
+    - schema.sql 의 큰따옴표 이름("rank"): H2 에서 대소문자를 구분하는 이름이 되어 따옴표 없는 엔티티 매핑으로는 'Column … not found'"""
+    if not is_java(t.manifest):
+        return []
+    out: list[StaticProblem] = []
+    # 엔티티가 같은 따옴표 표기(@Column(name = "\"rank\"")·백틱)로 매핑한 이름은 맞다 — 시드 SQL 도 스키마 표기를 따른다
+    # (seed_sql.declared_name, 2026-11-10 stab1 은 이렇게 맞춰 통과)
+    escaped = {
+        n
+        for f in o.files
+        if f.path.endswith(".java")
+        for n in re.findall(r'\\"(\w+)\\"|`(\w+)`', f.content)
+        for n in n
+        if n
+    }
+    config = " ".join(f.content for f in o.files if f.path.endswith(_CONFIG_SUFFIX))
+    if "globally_quoted_identifiers" in config:
+        escaped |= {"*"}
+    for f in o.files:
+        if f.path.endswith(".java") and "/test/" in f.path:
+            body = _strip_comments(f.content)
+            if "TestRestTemplate" in body and _PATCH_CALL.search(body):
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"{o.name} {f.path} 가 TestRestTemplate 로 PATCH 를 보냄 — 이 템플릿의 TestRestTemplate 은 JDK HttpURLConnection 이라 "
+                        "'Invalid HTTP method: PATCH' 로 실패한다. 테스트는 MockMvc 로 쓴다 (@AutoConfigureMockMvc 는 클래스에 한 번)",
+                    )
+                )
+        elif f.path.endswith(".sql") and f.path != seed_path:
+            names = sorted(
+                n
+                for n in set(_QUOTED_NAME.findall(_SQL_STRING.sub("''", f.content)))
+                if n not in escaped and "*" not in escaped
+            )
+            if names:
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"{o.name} {f.path} 의 큰따옴표 이름 {', '.join(names)} 을 엔티티가 따옴표 없이 매핑함 — H2 에서 따옴표 이름은 대소문자를 "
+                        '구분해 \'Column … not found\' 가 난다. 엔티티도 같은 표기로 매핑하거나(@Column(name = "\\"rank\\"")) 스키마에서 따옴표를 뺀다',
+                    )
+                )
+    return out
+
+
 def _code_overrides(o: Overlay, t: Template) -> list[StaticProblem]:
     """구현이 코드로 운영 값(연결 풀·데이터소스·요청 스레드)을 만들거나 바꿈 — 설정 키를 바꾸는 것(_harness_overrides)과 같은 우회."""
     if not is_java(t.manifest):
@@ -739,6 +838,9 @@ def _broad_injections(
     return out
 
 
+_PEAK_CALL = re.compile(r"(?<![\w.])peak\s*\(")
+
+
 def _reason_rules(
     cases: Iterable[GeneratedFile],
     m: TemplateManifest,
@@ -750,6 +852,8 @@ def _reason_rules(
     케이스가 쓰지 않음. 2026-11-08 숨은 테스트 검토: 사유를 Burst.wrong 에 붙임 14/14, 저장 실패 사유인데 주입 없음 4/5."""
     intended = {c.case_id: c.intended_reason for c in plan.cases}
     requires = {r.code: r.requires for r in m.failure_reasons if r.requires}
+    # 버스트 행이 없는 케이스 — 운영 피크(peak)를 쓰면 요청 하나의 조건이 아니라 동시 부하를 잰다
+    single = {c.case_id for c in plan.cases if not any(d.burst for d in c.data)}
     bad_on = [re.compile(p) for p in m.hidden_rules.reason_not_on]
     out: list[str] = []
     for f in cases:
@@ -781,6 +885,14 @@ def _reason_rules(
                         if "GraderJdbcHarness" in "".join(need)
                         else "운영 피크는 peak(...) 로 재현한다"
                     )
+                )
+            if cid in single and _PEAK_CALL.search(f.content):
+                # 2026-11-10 nplus1-g: '목록 한 번 조회가 운영 지연에서 1초 안' 케이스를 peak(…) 로 동시 버스트해,
+                # 조인 조회 허용 구현까지 연결·스레드 대기로 시간 초과 — 흔한 구현과 가르지 못했다
+                out.append(
+                    f"숨은 케이스 {cid} 는 버스트 행이 없는 케이스인데 peak(...) 로 동시 부하를 보냄 — 요청 하나의 조건(지연 주입·시간 한도)을 "
+                    "잰다면 지연 없이 같은 요청을 한 번 보내 데운 뒤, 지연을 주입하고 Burst.fire(1, …) 로 한 번 보내 Burst.failures(…) 에 사유를 "
+                    "붙인다 (동시 요청은 계약 케이스 data 가 버스트일 때만)"
                 )
     return out
 
@@ -1769,6 +1881,10 @@ def static_check(
             res.problems += _code_overrides(o, template)
             res.problems += _code_pitfalls(o, template)
             res.problems += _script_imports(o, template, contract)
+            res.problems += _datasource_config(o, template)
+            res.problems += _java_test_pitfalls(
+                o, template, template.manifest.seed_sql.path if template.manifest.seed_sql else None
+            )
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems

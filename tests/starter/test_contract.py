@@ -709,3 +709,46 @@ def test_trap_fix_follows_each_acceptance_criterion_with_several_hidden_requirem
     )
     fixed, notes = fit_traps(plan, spec)
     assert [c.trap_id for c in fixed.cases] == ["t1", "t2", "t2"] and len(notes) == 2
+
+
+def test_timed_evidence_accepts_unit_conversion_and_rounding() -> None:
+    # 2026-11-10 nplus1-e: '왕복 p50은 11.4ms' → query_delay_ms=12, '목표는 500ms' → request_timeout_s=1 을 거절했다
+    from task_spec.starter.contract import evidence_check, param_unit
+
+    texts = [
+        "단일 SELECT 왕복 p50은 11.4ms 이고",
+        "목록 API 응답 목표는 500ms 이며 1초를 넘으면 이탈한다",
+    ]
+    assert param_unit("query_delay_ms") == "ms" and param_unit("request_timeout_s") == "s"
+    assert param_unit("pool_size") is None
+    assert evidence_check(12, "단일 SELECT 왕복 p50은 11.4ms", texts, "ms") == "ok"
+    assert evidence_check(1, "목록 API 응답 목표는 500ms", texts, "s") == "ok"
+    assert evidence_check(1, "1초를 넘으면 이탈한다", texts, "s") == "ok"  # 조사가 붙은 단위
+    assert evidence_check(3, "목록 API 응답 목표는 500ms", texts, "s") == "bad"  # 환산해도 다른 값
+    assert (
+        evidence_check(12, "단일 SELECT 왕복 p50은 11.4ms", texts) == "bad"
+    )  # 단위 없는 조절값은 예전처럼
+
+
+def test_timed_hints_list_lines_with_time_values_for_a_missed_quote() -> None:
+    # 2026-11-10 nplus1-f: 자료의 '응답 p99 ≤ 800 ms' 를 두고 request_timeout_s 근거를 '없음' — 후보를 짚어 한 번 더 묻는다
+    from task_spec.nodes.starter.plan_contract import plan_evidence_missing
+    from task_spec.starter.contract import timed_hints
+
+    texts = ["목록 응답 한도\n- p99 응답 시간 ≤ 800 ms\n- 건수 200", "풀 크기 50"]
+    assert timed_hints("request_timeout_s", texts) == ["- p99 응답 시간 ≤ 800 ms"]
+    assert timed_hints("pool_size", texts) == []  # 단위 없는 조절값은 표기 패턴 몫
+    plan = HiddenPlan.model_validate(
+        _plan() | {"harness": {"request_timeout_s": 2}, "evidence": {"request_timeout_s": "없음"}}
+    )
+    assert plan_evidence_missing(plan, "request_timeout_s")
+    assert not plan_evidence_missing(plan, "query_delay_ms")  # 계획에 없는 조절값
+
+
+def test_no_evidence_timed_value_matching_material_is_flagged_not_a_gap() -> None:
+    # 2026-11-10 nplus1-i: '응답 p99 ≤ 800 ms' 로 request_timeout_s=1 을 맞게 정하고 근거를 세 번 다 '없음' — 명세 결함으로 끝났다
+    from task_spec.starter.contract import _converted, timed_hints
+
+    texts = ["목록 응답 한도\n- p99 응답 시간 ≤ 800 ms"]
+    [line] = timed_hints("request_timeout_s", texts)
+    assert 1.0 in _converted(line, "s") and 3.0 not in _converted(line, "s")

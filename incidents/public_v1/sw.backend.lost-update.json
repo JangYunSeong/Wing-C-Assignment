@@ -1,0 +1,117 @@
+{
+  "incident_id": "pub:sw.backend:read-modify-write-lost-update",
+  "sub": "sw.backend",
+  "title": "A beginner's guide to database locking and the lost update phenomena",
+  "org": "Vlad Mihalcea (기술 블로그) · PostgreSQL 문서",
+  "url": "https://vladmihalcea.com/a-beginners-guide-to-database-locking-and-the-lost-update-phenomena/",
+  "published": "2014-09-14 (2026-11-10 원문 확인)",
+  "source_lang": "en",
+  "symptom": "남은 수량(재고·포인트·좌석)이 실제 처리 건수와 맞지 않는다. 성공 응답을 받은 차감 건수보다 수량이 덜 줄어 있고, 평소에는 맞다가 요청이 몰린 날에만 어긋난다.",
+  "naive_fix": "근거 없이 메서드에 synchronized 를 붙이거나, 나중에 정산 배치로 수량을 다시 맞춘다.",
+  "root_cause": "두 트랜잭션이 같은 행을 읽고, 각자 읽은 값으로 새 값을 계산해 쓴다 — 나중에 쓴 쪽이 먼저 쓴 변경을 덮어 한쪽 차감이 사라진다(갱신 손실). 대부분 DB 의 기본 격리 수준(Read Committed)은 이를 막지 않는다. 원문 PostgreSQL 문서는 미리 정한 행 하나를 'balance = balance + 100' 처럼 고치는 문장은 안전하다고 하는데, 앱이 값을 읽어 계산한 뒤 쓰면 그 보호를 받지 못한다.",
+  "why_naive_fails": "synchronized 는 서버 한 대의 한 프로세스 안에서만 막고, @Transactional 과 함께 쓰면 커밋 전에 잠금이 풀려 여전히 겹친다. 정산 배치는 이미 넘겨준 수량(초과 판매·초과 사용)을 되돌리지 못한다.",
+  "key_insight": "같은 행에 대한 '읽고 → 계산하고 → 쓰기'가 동시에 겹칠 수 있는지 본다 — 계산을 DB 의 한 문장으로 옮기거나, 읽을 때 잠그거나, 쓸 때 읽은 판이 그대로인지 확인해야 한다.",
+  "deep_structure": "공유 값을 읽은 뒤 그 값으로 새 값을 계산해 쓰는 작업이 동시에 겹치면, 각자 옛 값을 바탕으로 써서 한쪽 변경이 사라진다 — 읽기와 쓰기를 원자적으로 묶거나 충돌을 감지해야 한다.",
+  "surface": [
+    "재고 수량 → 포인트 잔액·좌석 수·쿠폰 남은 수량",
+    "차감 → 적립·좋아요 수 증가",
+    "관계형 DB 행 → 캐시의 카운터 값"
+  ],
+  "tech": [
+    "Java",
+    "Spring Boot",
+    "JPA/Hibernate"
+  ],
+  "verified": true,
+  "notes": "원문은 사고 사후 분석이 아니라 기술 글이다 — 'Most database systems use Read Committed as the default isolation level (MySQL using Repeatable Read instead)', 'Lost updates can happen unless you plan on preventing such situations'. 고친 방법으로 Repeatable Read(PostgreSQL 은 두 번째 트랜잭션을 중단), SELECT … FOR UPDATE(모든 트랜잭션이 함께 써야 함), 버전 칸(낙관적 잠금)을 든다. 보조 출처: PostgreSQL 문서 13.2 Transaction Isolation (https://www.postgresql.org/docs/current/transaction-iso.html) — 미리 정한 행을 고치는 UPDATE 는 Read Committed 에서도 안전, Repeatable Read 는 'could not serialize access due to concurrent update' 로 중단되므로 앱이 다시 시도해야 함. 하네스: 같은 행에 차감 요청을 동시에(Burst.fire) 보내고 남은 수량 = 처음 수량 − 성공 응답 합인지 본다 (새 사유 lost_update). 2026-11-10 추가 — 알파 전.",
+  "avoid_terms": [
+    "Vlad Mihalcea"
+  ],
+  "hidden_terms": [
+    "갱신 손실",
+    "lost update",
+    "경쟁 조건",
+    "race condition"
+  ],
+  "accepted_fixes": [
+    "[복구] 조건부 원자 갱신 한 문장으로 확인과 차감을 함께 한다 (수량 = 수량 − n WHERE 수량 >= n, 바뀐 행 수가 0 이면 거절) — 함정: 읽어서 확인한 뒤 따로 UPDATE",
+    "[복구] 읽을 때 행을 잠근다 (SELECT … FOR UPDATE·비관적 잠금) — 조건: 그 값을 바꾸는 모든 경로가 같은 잠금을 씀",
+    "[복구] 버전 칸으로 읽은 판이 그대로인지 쓸 때 확인하고, 충돌하면 다시 시도하거나 충돌 응답을 준다 (낙관적 잠금) — 조건: 재시도 횟수 상한과 실패 응답을 정함 — 함정: 충돌 예외를 그대로 500 으로 돌려줌",
+    "[재발 방지] 정산 배치로 어긋남을 찾아 알린다 — 조건: 위 복구 중 하나와 함께 — 함정: 단독(이미 넘겨준 수량은 되돌리지 못함)"
+  ],
+  "source_literals": [
+    "balance = balance + 100.00",
+    "could not serialize access due to concurrent update",
+    "MySQL using Repeatable Read instead"
+  ],
+  "templates": [
+    "backend/java-spring-boot3-jpa"
+  ],
+  "feature": {
+    "business_need": "기존 상품(또는 포인트 계정·이벤트 좌석)에 남은 수량을 줄이는 차감 API 를 추가한다. 요청한 양만큼 줄이고 남은 수량을 응답하며, 남은 수량이 모자라면 거절한다. 대상별 남은 수량을 조회하는 API 도 둔다.",
+    "naive_impl": "대상 엔티티를 id 로 읽어 남은 수량이 충분한지 확인하고, 자바에서 뺀 값을 엔티티에 넣어 저장한다 (@Transactional 하나, 기본 격리 수준, 잠금·버전 칸 없음, JPA 변경 감지로 UPDATE).",
+    "hidden_requirement": "같은 대상에 동시에 들어온 차감이 하나도 사라지지 않아야 한다 — 남은 수량은 처음 수량에서 성공 응답을 받은 차감의 합만큼 줄고, 0 밑으로 내려가지 않는다.",
+    "trigger": "한정 수량 이벤트를 열면 같은 대상(인기 상품·공동 계정) 하나에 차감 요청이 같은 순간 수십 건씩 몰린다. 이벤트 시간대 요청 기록에서 같은 대상 id 가 거의 같은 시각에 반복되는 것을 봐야만 보인다.",
+    "why_naive_breaks": "두 요청이 같은 남은 수량을 읽고 각자 뺀 값을 쓰면 나중에 쓴 쪽이 먼저 쓴 차감을 덮는다 — 성공 응답은 둘 다 받았는데 수량은 한 번만 줄어 실제보다 많이 넘겨준다.",
+    "discoverable_by": [
+      "지난 이벤트 시간대 요청 기록 발췌 (대상 id·시각, 수십 줄)",
+      "이벤트 운영 계획 (대상·수량·오픈 시각)",
+      "기존 차감 코드 발췌"
+    ],
+    "accepted_designs": [
+      "[설계] 확인과 차감을 조건부 원자 갱신 한 문장으로 한다 (수량 = 수량 − n WHERE id = … AND 수량 >= n, 바뀐 행 수 0 이면 거절) — 함정: 읽어서 확인한 뒤 따로 UPDATE",
+      "[설계] 읽을 때 행을 잠그고 고친다 (SELECT … FOR UPDATE·비관적 잠금) — 조건: 그 수량을 바꾸는 모든 경로가 같은 잠금을 씀",
+      "[설계] 버전 칸으로 충돌을 감지하고 정해진 횟수까지 다시 시도한 뒤 안 되면 충돌 응답을 준다 (낙관적 잠금) — 함정: 충돌 예외를 그대로 500 으로 돌려줌"
+    ],
+    "stage2_symptom": "배포 뒤 첫 한정 수량 이벤트에서 성공 응답을 받은 건수가 처음 수량보다 많아, 받지 못할 고객에게 사과 안내를 보내야 했다. 이벤트가 아닌 날에는 수량이 맞는다.",
+    "stage2_evidence": [
+      "같은 대상의 차감 SQL 실행 기록과 시각",
+      "대상별 성공 응답 건수와 남은 수량 대조표",
+      "고객 문의 기록"
+    ],
+    "stage2_cause_terms": [
+      "같은 값을 읽고 각자 씀",
+      "먼저 쓴 차감을 덮어씀",
+      "차감 사라짐"
+    ],
+    "leak_terms": [
+      "갱신 손실",
+      "lost update",
+      "경쟁 조건",
+      "race condition",
+      "동시성",
+      "동시 차감",
+      "비관적",
+      "낙관적",
+      "FOR UPDATE",
+      "@Version",
+      "버전 칸",
+      "행 잠금",
+      "잠금",
+      "격리 수준",
+      "원자적"
+    ],
+    "trigger_terms": [
+      "같은 순간",
+      "동시에",
+      "몰린",
+      "몰려",
+      "수십 건",
+      "오픈 시각"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [
+      {
+        "kind": "stateful_target",
+        "note": "남은 수량을 가진 대상 엔티티(예: 상품·포인트 계정) — 이미 있는 엔티티, 시드 행, 숨은 케이스가 같은 행 하나에 차감을 몰아 보낼 행"
+      }
+    ],
+    "harness": [],
+    "reasons": [
+      "lost_update",
+      "server_error"
+    ]
+  }
+}

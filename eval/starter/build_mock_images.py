@@ -37,6 +37,7 @@ from typing import Any
 from eval.starter import python_verify
 from eval.starter.gradle_verify import case_ids, write_overlay
 from eval.starter.node_verify import layout_of
+from eval.starter.replay_contracts import _loose as loose_contract
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.starter.render import render_readme
 from task_spec.starter.static_check import Overlay
@@ -205,7 +206,8 @@ def load_run(run: Path, t: Template) -> dict[str, Any]:
         task, _ = build_task(ROOT / "data" / "feature_starters" / "delivery-audit")
         contract_file = ROOT / str(report["contract"])
     data = json.loads(contract_file.read_text("utf-8"))
-    contract = TaskContract.model_validate(data["contract"])
+    # 코드가 붙인 문장으로 200자를 넘은 제약 칸 — 파이프라인 안에서는 다시 검증하지 않는다 (회귀 검사와 같게 읽을 때만 자름)
+    contract = TaskContract.model_validate(loose_contract(data["contract"]))
     plan = HiddenPlan.model_validate(data["hidden_plan"])
     ov = run / "overlays"
     readme = (
@@ -219,7 +221,9 @@ def load_run(run: Path, t: Template) -> dict[str, Any]:
         "contract": contract,
         "plan": plan,
         "common_id": _common_id(task.task_id),
-        "revision": 1,
+        "revision": int(
+            report.get("revision") or 1
+        ),  # 같은 공통 과제의 다른 빌드는 판을 나눠 이미지 이름이 겹치지 않게
         "ontology_version": report.get("ontology_version") or "unknown",
         "readme": readme,
         "starter": _overlay("starter", ov / "starter"),

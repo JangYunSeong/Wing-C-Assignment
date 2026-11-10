@@ -129,3 +129,32 @@ def test_columns_follow_the_schema_quoting() -> None:
     assert 'INSERT INTO orders (id, "status") VALUES' in sql
     assert "RESTART WITH 251" in sql  # 따옴표 없는 id 는 그대로·재설정도 그대로
     assert not schema_problems(quoted, _seeded(), JAVA.manifest)
+
+
+def test_foreign_key_targets_are_inserted_first() -> None:
+    # 2026-11-10 목록 재료: 시드 순서(Order → Customer)대로 넣어 첫 INSERT 부터 참조 무결성 위반 — 시작 코드 기동 실패
+    c = _contract()
+    order, history = c["entities"][0], c["entities"][1]
+    history["fields"].append(
+        {"name": "orderId", "type": "integer", "required": True, "refs": ["r1"]}
+    )
+    history["foreign_keys"] = [f"orderId → {order['name']}"]
+    c["seed"] = [
+        {
+            "entity_id": history["entity_id"],
+            "rows": 3,
+            "groups": [{"first": 1, "last": 3, "values": {}}],
+        },
+        {
+            "entity_id": order["entity_id"],
+            "rows": 2,
+            "groups": [{"first": 1, "last": 2, "values": {"status": "READY"}}],
+        },
+    ]
+    sql = render_seed_sql(TaskContract.model_validate(c), JAVA.manifest, SCHEMA)
+    assert sql is not None
+    text = sql.content
+    assert text.index("INSERT INTO orders") < text.index("INSERT INTO order_history")
+    assert (
+        "\n(3, " in text and ", 1)" in text.split("\n(3, ")[1].split("\n")[0]
+    )  # 대상 2행 안에서 돌린다 (3 → 1)

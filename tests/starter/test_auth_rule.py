@@ -225,3 +225,33 @@ def test_rank_order_role_variant() -> None:
     probs = auth_problems(bad)
     assert any("above(requested·target)도 적는다" in p for p in probs)
     assert any("order 의 BOSS" in p for p in probs)
+
+
+def test_hidden_case_targets_no_requester_can_change_are_rejected() -> None:
+    # 2026-11-10 v19-be2: above=target 인데 hc1 버스트 대상을 맨 위 등급(MASTER)으로 둬 모든 요청이 403 — 숨은 요구를 못 쟀다
+    from task_spec.starter.auth_rule import unreachable_targets
+
+    c = _shop({**ROLE, "allowed": [], "order": ["CLERK", "MANAGER", "ADMIN"], "above": "target"})
+    c["entities"][-1]["fields"][3]["type"] = "enum(ADMIN|MANAGER|CLERK)"
+    fitted = _fit(c)
+    plan = _plan()
+    plan["cases"][0]["data"] = [
+        {"entity_id": "m3", "rows": 5, "initial": {"shopId": 7, "role": "ADMIN"}, "burst": True}
+    ]
+    [p] = unreachable_targets(fitted, HiddenPlan.model_validate(plan))
+    assert "hc1" in p and "role=ADMIN" in p and "CLERK, MANAGER" in p
+    plan["cases"][0]["data"][0]["initial"]["role"] = "MANAGER"
+    assert not unreachable_targets(fitted, HiddenPlan.model_validate(plan))
+    # 같은 등급도 통과(or_equal)면 맨 위도 바꿀 수 있다
+    eq = fitted.model_copy(
+        update={
+            "endpoints": [
+                fitted.endpoints[0].model_copy(
+                    update={"auth": fitted.endpoints[0].auth.model_copy(update={"or_equal": True})}  # type: ignore[union-attr]
+                ),
+                *fitted.endpoints[1:],
+            ]
+        }
+    )
+    plan["cases"][0]["data"][0]["initial"]["role"] = "ADMIN"
+    assert not unreachable_targets(eq, HiddenPlan.model_validate(plan))

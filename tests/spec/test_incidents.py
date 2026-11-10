@@ -190,7 +190,7 @@ def test_feature_tasks_pick_the_incident_the_sub_template_can_test(tmp_path: Pat
     fe = feature_incident(incs, "sw.frontend")
     assert fe is not None and fe.feature is not None and "frontend/react-vite-ts" in fe.templates
     assert fe.incident_id in {i.incident_id for i in incs.alternates["sw.frontend"]}
-    assert feature_incident(incs, "sw.backend") is incs["sw.backend"]  # 추가 사례가 없으면 기본
+    assert feature_incident(incs, "sw.backend") is incs["sw.backend"]  # 공고 없이 부르면 기본
     assert feature_incident(None, "sw.backend") is None
     # 추가 사례는 templates 가 있어야 한다 (없으면 어느 과제에서도 쓰이지 않는다)
     raw = json.loads((ROOT / "sw.frontend.stale-response.json").read_text("utf-8"))
@@ -244,3 +244,20 @@ def test_alternate_feature_seeds_are_well_formed() -> None:
             for ref in inc.templates:
                 codes = set(load_template(ref).manifest.reason_codes)
                 assert set(f.reasons) <= codes, (inc.incident_id, f.reasons)
+
+
+def test_backend_base_incident_stays_in_the_hash_pool() -> None:
+    """2026-11-10 백엔드 추가 사례 3건: 기본 사례도 templates 에 Java 템플릿을 적어 해시 배정 후보에 든다 — 빠지면 검증한
+    풀 교착 재료가 새 공고에 배정되지 않는다. 프론트 기본 사례는 templates 가 없어 그대로 빠진다."""
+    from task_spec.spec.incidents import feature_incident
+
+    incs = load_incidents(ROOT)
+    picked = {feature_incident(incs, "sw.backend", f"posting#{i}").incident_id for i in range(60)}  # type: ignore[union-attr]
+    assert picked == {
+        "pub:sw.backend:pool-hold-and-wait-deadlock",
+        "pub:sw.backend:list-query-per-row",
+        "pub:sw.backend:read-modify-write-lost-update",
+        "pub:sw.backend:retry-double-processing",
+    }
+    fe = {feature_incident(incs, "sw.frontend", f"posting#{i}").incident_id for i in range(60)}  # type: ignore[union-attr]
+    assert incs["sw.frontend"].incident_id not in fe

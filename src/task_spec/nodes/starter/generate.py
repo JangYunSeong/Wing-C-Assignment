@@ -52,6 +52,7 @@ from task_spec.starter.config_merge import merge_config
 from task_spec.starter.contract import SpecView, existing_endpoints
 from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
 from task_spec.starter.init_scripts import ensure_statements
+from task_spec.starter.java_imports import ensure_java_imports
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
 from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.seed_sql import render_seed_sql
@@ -215,8 +216,8 @@ def helper_block(
 def test_import_fix(
     m: TemplateManifest,
 ) -> Callable[[list[GeneratedFile]], tuple[list[GeneratedFile], list[str]]] | None:
-    """TypeScript 템플릿의 숨은·공개 테스트 — 빠진 vitest import 를 코드가 채운다 (Java 는 없음)."""
-    return None if is_java(m) else ensure_vitest_imports
+    """숨은·공개 테스트의 빠진 import 를 코드가 채운다 — TypeScript 는 vitest, Java 는 JDK 표준 이름 (starter/java_imports)."""
+    return ensure_java_imports if is_java(m) else ensure_vitest_imports
 
 
 def public_text(public: Overlay | None) -> str:

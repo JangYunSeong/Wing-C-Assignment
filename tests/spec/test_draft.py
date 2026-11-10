@@ -251,3 +251,23 @@ def test_check_flags_root_cause_revealed_in_visible_text() -> None:
     spaced = _out(scenario="가상의 회사에서 잠금  경합 이 의심된다.")  # 띄어쓰기만 다른 경우도
     assert any("핵심 원인 개념" in p for p in check(spaced, _ctx()))
     assert check(_out(), _ctx()) == []  # invariant 에만 있는 것은 괜찮다 (지원자에게 안 보임)
+
+
+def test_long_artifact_is_trimmed_by_lines_and_flagged() -> None:
+    # 2026-11-10 갱신 손실 재료: 자료를 3000자 넘게 써 스키마 위반 4번 — 코드가 줄 단위로 줄이고 사람 확인 (사용자 결정)
+    from task_spec.schemas.domain import ARTIFACT_MAX, ARTIFACT_TRIMMED, Artifact
+    from task_spec.spec.draft import trimmed_artifacts
+
+    long = "\n".join(f"2026-11-01 10:00:{i:02d} item=7 qty=-1 status=200" for i in range(200))
+    a = Artifact(artifact_id="a1", title="요청 기록 발췌", content=long, role="key")
+    assert len(a.content) <= ARTIFACT_MAX and a.content.endswith(ARTIFACT_TRIMMED)
+    kept = a.content.removesuffix(ARTIFACT_TRIMMED).rstrip().splitlines()
+    assert all(line in long.splitlines() for line in kept)  # 줄 중간에서 자르지 않는다
+    short = Artifact(artifact_id="a2", title="설정", content="x=1", role="support")
+    assert short.content == "x=1"
+
+    class Out:
+        artifacts = [a, short]
+        debug_stage = None
+
+    assert trimmed_artifacts(Out()) == ["a1"]

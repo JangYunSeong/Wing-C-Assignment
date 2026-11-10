@@ -22,6 +22,24 @@ DENIED = (401, 403)
 NEUTRAL = "grader"
 
 
+PER_REQUEST = "요청마다"
+# 요청 하나를 가리키는 헤더 — 이름이나 제약으로 (요청 번호·멱등 키·추적 id)
+_REQUEST_KEY = re.compile(
+    r"request[-_]?id|idempot|correlation[-_]?id|trace[-_]?id|요청\s*번호|멱등", re.I
+)
+
+
+def per_request(contract: TaskContract, header: str) -> bool:
+    """요청마다 새 값이어야 하는 헤더 (권한 칸 밖). 2026-11-10 retrydup-c: 요청 번호 X-Request-Id 를 도우미가 상수 하나로 줘
+    모든 공개·숨은 테스트가 같은 번호를 공유 — 명세대로 번호로 중복을 막은 허용 구현 d2 가 서로 다른 충전을 재요청으로 보고
+    다른 회원의 처음 결과를 돌려줘 떨어졌고, (회원·번호·금액)으로 느슨하게 막은 d1 만 통과했다."""
+    decl = [h for e in contract.endpoints for h in e.headers if h.name == header]
+    texts = [header, *(h.constraints or "" for h in decl)]
+    return any(_REQUEST_KEY.search(x) for x in texts) or any(
+        re.search(r"\buuid\b", h.constraints or "", re.I) for h in decl
+    )
+
+
 @dataclass(frozen=True)
 class HeaderValues:
     name: str
@@ -53,6 +71,11 @@ def header_values(contract: TaskContract) -> list[HeaderValues]:
             rule := ruled.get(name)
         ) is not None:  # 권한 칸에서 코드가 정한 요청자 행의 값 (auth_rule.fit_auth)
             out.append(HeaderValues(name, rule.ok_value, rule.denied_value, "권한 규칙"))
+            continue
+        if per_request(
+            contract, name
+        ):  # 요청마다 다른 값 — 상수 하나로 주면 모든 요청이 같은 요청이 된다
+            out.append(HeaderValues(name, None, None, PER_REQUEST))
             continue
         declared = _statuses(contract, name)
         value_rx = re.compile(
@@ -105,6 +128,8 @@ def header_problems(contract: TaskContract) -> list[str]:
         e.auth.header for e in contract.endpoints if e.auth is not None and e.auth.kind == "other"
     }
     for h in header_values(contract):
+        if h.source == PER_REQUEST:
+            continue
         if h.ok is not None or h.name in ruled or not _statuses(contract, h.name) & set(DENIED):
             continue  # 권한 칸(role·fixed)이 있으면 그쪽 검사가 말한다 (auth_rule.auth_problems)
         msg = (

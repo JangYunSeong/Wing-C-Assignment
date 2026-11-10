@@ -54,10 +54,17 @@ def feature_incident(
     if not incidents:
         return None
     template = TEMPLATE_FOR_SUB.get(sub)
+    # 기본 사례도 templates 에 그 템플릿을 적었으면 후보에 든다 — 2026-11-10 백엔드 추가 사례 3건: 기본 사례(풀 교착)가 빠지면
+    # 검증한 재료가 새 공고에 배정되지 않는다 (프론트 기본 사례는 jsdom 으로 시험할 수 없어 templates 가 비어 그대로 빠짐)
+    base = incidents.get(sub)
+    pool = [
+        *getattr(incidents, "alternates", {}).get(sub, []),
+        *([base] if base is not None else []),
+    ]
     cands = sorted(
         (
             inc
-            for inc in getattr(incidents, "alternates", {}).get(sub, [])
+            for inc in pool
             if template is not None and template in inc.templates and inc.feature is not None
         ),
         key=lambda inc: inc.incident_id,
@@ -65,7 +72,7 @@ def feature_incident(
     if not cands:
         return incidents.get(sub)
     if len(cands) == 1 or not posting_id:
-        return cands[0]
+        return base if base in cands else cands[0]  # 공고 없이 부르면 기본 사례 (예전과 같음)
     return cands[int(hashlib.sha256(posting_id.encode("utf-8")).hexdigest(), 16) % len(cands)]
 
 
