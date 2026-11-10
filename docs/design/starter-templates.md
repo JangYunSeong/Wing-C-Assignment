@@ -244,6 +244,32 @@ templates/<직군>/<스택>/CURRENT
    contract.ts 의 waitFor…() 가 계약의 요청 본문·경로 변수 타입까지 (match 조건에서 call.body.<필드> 를 바로 읽음), 템플릿 v2 에 MSW 2 문법 예시·MSW 1 import 차단.
    알파(재료당 공고 1개): 중복 제출 review(흔한 구현을 설명에 강제해야 함 — AI 첫 답이 대개 버튼을 막아 변별력은 약할 수 있음), 낙관적 갱신 review
    (흔한 구현 optimistic_not_rolled_back, 허용 구현 전부 통과). 실패한 실행마다 원인(테스트 쪽 조작·타입·문법)을 하나씩 막아 6~7회째에 도달 — B 평가 합계 약 $2.8.
+   템플릿 v3(2026-11-10, 이슈 #83 — v2 는 그대로): 알파 `0108be12`(기본 재료 multi-writer-local-db, 오프라인 초안·재연결 동기화, plan_contract v20, qwen)에서
+   허용 구현 3개를 포함한 모든 구현이 공개 4개·숨은 2개에서 HARNESS_ERR. 같은 산출물을 이 서버에서 다시 검증해 원인을 나눴다(LLM 호출 없음):
+   - v2 그대로 재현 → 결과가 알파 보고서와 같음. **IndexedDB 만 넣으면**(fake-indexeddb 6.2.6) 흔한 구현·d1·d2 가 pt1·pt2·pt4 통과 —
+     pt2~4 의 `요청이 오지 않음: POST /drafts` 도 원인은 IndexedDB 였다(테스트가 `online` 이벤트를 직접 보냈고, 앱이 저장소를 못 읽어 동기화할 것이 없었다).
+     이슈의 "재연결 도우미가 없어서"는 사실이 아님.
+   - pt3: 계약상 POST 본문에 id 가 없어 서버가 id 를 정하는데, 생성된 구현 4개 모두 로컬 UUID 를 서버 id 로 바꾸지 않고 DELETE·PUT 에 썼다(테스트가 맞음).
+     d1 에 id 반영만 손으로 넣은 변형은 v3 손 공개 테스트 4개(오프라인 저장→새로고침, 오프라인 생성·삭제·수정→재연결→서버 상태) 모두 통과, 원래 d1·d2·흔한 구현은 삭제·수정에서 실패.
+   - d3: 리더로 뽑히기 전(1초)과 새로고침 직후 입력·저장·삭제를 잠그는 설계 — 계약에 없는 '읽기 전용 탭'이라 테스트가 기다려도 새로고침 뒤 동작에서 막힘.
+   - **숨은 케이스 3개는 모두 '두 탭' 시나리오** — jsdom 에는 두 번째 탭·Web Locks(`navigator.locks` 없음 → d2 는 '잠금 획득'으로 넘어감)·SharedWorker 가 없어
+     하네스를 고쳐도 숨은 요구(단일 writer)를 시험할 수 없다. hc1 은 BroadcastChannel 메시지만 보내고 저장소에는 쓰지 않아, 저장소를 다시 읽는 허용 설계가 떨어지고
+     메시지를 그대로 반영하는 흔한 구현이 통과(뒤집힘). 의도한 사유도 셋 다 `stale_response_shown`(맞는 사유 코드가 없음). → 이 재료는 이 템플릿과 짝짓지 않는 것이 맞다 [미정 — 사용자 결정].
+   v3 내용: 응시용·채점용 설정에 fake-indexeddb(테스트마다 빈 IndexedDB·localStorage·sessionStorage), 하네스 `network.goOffline()/goOnline()/blocked()`
+   (navigator.onLine·offline/online 이벤트·끊긴 동안 fetch 거부), 목 서버 목록 `api.collection(path, opts)`·`api.serverState(path)`(서버 반영은 서버 상태로 판정),
+   경로 변수 이름 무관(`:id`=`:draftId`=`{draftId}`), 204 응답 본문 없음, 문서에 '이 템플릿에 없는 것'(두 번째 탭·Web Locks·Worker). 자체 점검 21개.
+   수리: manifest `repair_terms.grading_env` — 모든 구현이 같은 테스트에서 채점 환경 오류(jsdom 에 없는 API)면 다시 만들지 않고 '채점 환경 확인 필요'
+   (위 알파 결과를 v2 규칙에 넣으면 gen_public 재생성, v3 규칙은 재생성 없이 올림).
+   v3 알파 1회(2026-11-10 `fe-v3-opt`, 낙관적 갱신 명세 samsung#006 재사용, plan_contract v20 고정, gpt-4.1, $0.44) — failed. 하네스(자체 점검) 문제는 없음.
+   원인: 계약(v20)에 목록을 읽는 API·저장소가 없어(장바구니 화면 on_load '서버 요청 없음', API 는 PATCH 하나) 테스트가 `renderApp(경로, 초기 데이터)` 를
+   지어내고(TS2554) 구현은 샘플 항목을 코드에 박음 — 같은 명세의 v2 review 회차 계약에는 GET /api/cart-items 가 있었다. 수리 쪽 결함 둘: ⑤ 로 다시 만든
+   공개 테스트를 컴파일하지 않고 검증 → 모든 대상 compile_error → ① 이 시작 코드를 다시 만듦. 조치: 계약 검사 `_ui_data_source`(목록 화면의 처음 항목 출처 —
+   저장된 계약 85개 중 이 계약만 걸림), 다시 만든 채점 코드도 검증 전에 컴파일(`_regenerate`), 시작 코드 대상의 컴파일 오류가 모두 테스트 파일이면 그 생성기로.
+   2회차(`fe-v3-opt-r2`, 같은 설정, $0.24) — **review** (회차 0, 수리는 숨은 테스트 컴파일 1회). 계약 첫 답은 1회차와 같은 '목록 출처 없음'이었고 새 검사가 잡아
+   재요청에서 GET /api/cart-items 가 들어감. 사실 확인(손 변형, v3 검증기): 흔한 구현 + 되돌림만 → hc1 통과 · d1 − 되돌림만 → hc1 만 `optimistic_not_rolled_back` ·
+   손으로 짠 TanStack Query 허용 설계(onMutate 보관·onError 되돌림·onSettled 다시 읽기) → 공개·숨은 통과. 다만 그 설계가 시작 코드의 **기존 테스트**에서 떨어짐 —
+   목록 틀을 기다린 뒤 항목을 getBy 로 바로 찾는 꼴(항목이 한 박자 늦게 그려지는 구현을 깸, 저장된 시작 코드 테스트 19개 중 6개). 조치: React v3 `code_pitfalls`.
+   이 재료에는 오프라인·서버 상태가 없어 v3 새 도우미(network·collection)는 쓰이지 않았다 (확인은 맞는 재료가 생길 때).
    남은 것: 실제 브라우저(Playwright) 층.
 4. 백엔드 TypeScript Next.js — Route Handler·Server Action + Prisma (+ 프론트와 공유할 Node 빌드 이미지). NestJS 는 필요할 때.
 5. AI 엔지니어 Python 서빙.

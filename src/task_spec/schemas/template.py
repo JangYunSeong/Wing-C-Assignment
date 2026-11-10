@@ -317,6 +317,17 @@ class RepairTerms(Schema):
     # 빈 값이면 쓰지 않는다 (Java·Node 는 서버 쪽 예외 판별이 따로 있다). 2026-11-09 데이터 알파 3회차: 허용 구현의 SQL 오류를
     # '모든 구현이 공개 테스트 실패 — 테스트 의심'으로 짚어 공개 테스트만 두 번 다시 만들었다.
     impl_crash: str = ""
+    # 실패 메시지가 '채점 환경에 없는 기능'을 보이는 꼴 (예: jsdom 에 없는 브라우저 API) — 모든 구현이 같은 테스트에서 이 꼴로 떨어지면
+    # 테스트·구현을 다시 만들지 않고 '채점 환경 확인 필요'로 올린다. 빈 값이면 쓰지 않는다.
+    # 2026-11-10 프론트 알파 0108be12: `indexedDB is not defined` 로 모든 구현이 떨어졌는데 공개 테스트만 두 번 다시 만들었다.
+    grading_env: str = ""
+
+    @field_validator("impl_crash", "grading_env")
+    @classmethod
+    def _rx(cls, v: str) -> str:
+        if v:
+            re.compile(v)
+        return v
 
 
 class CodePitfall(Schema):

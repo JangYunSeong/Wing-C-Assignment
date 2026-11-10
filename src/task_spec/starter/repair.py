@@ -150,7 +150,20 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
     return list(out.values())
 
 
-def _starter(run: TargetRun) -> list[RepairAction]:
+def _starter(
+    run: TargetRun,
+    overlays: Mapping[str, Overlay] | None = None,
+    terms: RepairTerms | None = None,
+) -> list[RepairAction]:
+    # 컴파일 오류가 모두 공개·숨은 테스트 파일 안이면 시작 코드 탓이 아니다 — 그 파일을 쓴 생성기로 (참조 구현과 같은 규칙).
+    # 2026-11-10 프론트 알파 fe-v3-opt: 다시 만든 공개 테스트의 TS2554 를 '시작 코드 빌드 실패'로 짚어 시작 코드만 다시 만들었다.
+    if (
+        run.setup == "compile_error"
+        and overlays
+        and run.compile_errors
+        and all(_owner(e.path, run, overlays) in ("public", "hidden") for e in run.compile_errors)
+    ):
+        return _ref_setup(run, overlays, terms=terms)
     if run.setup != "ok":
         errs = "\n".join(f"- {e.path}:{e.line} {e.message}" for e in run.compile_errors[:12])
         return [
@@ -791,6 +804,35 @@ def _gate4(
     return actions, unresolved
 
 
+def _grading_env(runs: Sequence[TargetRun], terms: RepairTerms | None) -> list[str]:
+    """모든 구현이 같은 테스트에서 '채점 환경에 없는 기능' 오류(manifest repair_terms.grading_env)로 떨어지면 — 생성물이 아니라 템플릿
+    채점 환경 문제라 무엇을 다시 만들어도 같다. 2026-11-10 프론트 알파 0108be12: jsdom 에 IndexedDB 가 없어 허용 구현 3개·흔한 구현이
+    모두 `ReferenceError: indexedDB is not defined` 였는데 '테스트 의심'으로 공개 테스트를 두 번 다시 만들고 예산을 다 썼다."""
+    if terms is None or not terms.grading_env or len(runs) < 2:
+        return []
+    rx = re.compile(terms.grading_env)
+    names = sorted({(t.group, t.name) for r in runs for t in r.tests if t.result != "PASS"})
+    out: list[str] = []
+    for group, name in names:
+        msgs = [
+            next(
+                (
+                    t.message
+                    for t in r.tests
+                    if t.group == group and t.name == name and t.result != "PASS"
+                ),
+                None,
+            )
+            for r in runs
+        ]
+        if all(m is not None and rx.search(m) for m in msgs):
+            out.append(
+                f"채점 환경 확인 필요 — 구현 {len(runs)}개가 모두 {group} {name} 에서 채점 환경 오류: {_short(msgs[0] or '')} "
+                "(테스트·구현을 다시 만들지 않았다 — 템플릿 채점 환경에 그 기능이 있는지 확인)"
+            )
+    return out
+
+
 def assign(
     report: VerifyReport,
     plan: HiddenPlan,
@@ -809,7 +851,13 @@ def assign(
     if starter is None:
         res.unresolved.append("시작 코드 검증 결과가 없음")
         return res
-    if acts := _starter(starter):
+    if env := _grading_env(
+        [r for r in report.runs if r.kind not in ("starter", "starter_hidden") and r.setup == "ok"],
+        terms,
+    ):
+        res.unresolved += env  # 다시 만들 것이 없다 — 승인자에게 (review_flags)
+        return res
+    if acts := _starter(starter, overlays, terms):
         res.actions = acts
         return res
     acts, flags = _starter_public(starter, counts)

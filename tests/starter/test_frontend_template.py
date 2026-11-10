@@ -115,7 +115,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v2"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v3"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v1"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
@@ -453,4 +453,59 @@ def test_ui_element_action_reaches_contract_text_and_helper() -> None:
     assert (
         ts is not None
         and 'SEARCH_INPUT: "search-input", // 조작: 입력할 때마다 추천 요청' in ts.content
+    )
+
+
+def test_list_screen_without_a_data_source_is_sent_back() -> None:
+    """2026-11-10 프론트 알파 fe-v3-opt: 장바구니 화면에 목록을 읽는 API·저장소가 없어 테스트는 renderApp(경로, 초기 데이터) 를
+    지어내고(TS2554) 구현은 샘플 항목을 코드에 박았다 — 계약 단계에서 처음 항목의 출처를 적게 한다."""
+    from task_spec.starter.contract import _ui_data_source
+
+    base = _contract().model_dump()
+    base["screens"][0]["elements"].append(
+        {"test_id": "cart-item", "role": "item", "description": "항목", "refs": ["r1"]}
+    )
+    patch = dict(base["endpoints"][0]) | {"method": "PATCH", "path": "/api/cart-items/{cartItemId}"}
+    no_source = TaskContract.model_validate(base | {"endpoints": [patch]})
+    problems = _ui_data_source(no_source)
+    assert len(problems) == 1 and "/search" in problems[0] and "GET" in problems[0]
+    # 읽는 API 가 있거나, 화면에 브라우저 저장소가 있으면 통과
+    assert _ui_data_source(TaskContract.model_validate(base)) == []
+    stored = base | {"endpoints": [patch]}
+    stored["screens"] = [
+        base["screens"][0]
+        | {
+            "storage": [
+                {"name": "cart", "kind": "localStorage", "shape": "항목 배열", "refs": ["r1"]}
+            ]
+        }
+    ]
+    assert _ui_data_source(TaskContract.model_validate(stored)) == []
+
+
+def test_existing_test_must_wait_for_list_items_not_just_the_list() -> None:
+    """2026-11-10 v3 알파 r2 사실 확인: 시작 코드의 기존 테스트가 목록 틀을 기다린 뒤 항목을 getBy 로 바로 찾아, 템플릿의
+    TanStack Query 로 짠 허용 설계(항목이 한 박자 늦게 그려짐)가 기존 테스트에서만 떨어졌다."""
+    from task_spec.starter.static_check import _code_pitfalls
+
+    bad = (
+        "it('목록', async () => {\n"
+        "  render(<CartPage />);\n"
+        "  const list = await screen.findByTestId('cart-list');\n"
+        "  // 첫 항목\n"
+        "  const item = within(list).getByTestId('cart-item');\n"
+        "});\n"
+    )
+    good = bad.replace("within(list).getByTestId", "await within(list).findByTestId")
+    found = _code_pitfalls(
+        Overlay(kind="starter", files=(_f("src/cart/CartPage.test.tsx", bad),)), FE
+    )
+    assert (
+        len(found) == 1
+        and "findByTestId" in found[0].message
+        and "CartPage.test.tsx:3" in found[0].message
+    )
+    assert (
+        _code_pitfalls(Overlay(kind="starter", files=(_f("src/cart/CartPage.test.tsx", good),)), FE)
+        == []
     )
