@@ -24,8 +24,9 @@ async def test_lifecycle_pg() -> None:
     store = await PgBuildStore.open(url)
     key = CommonKey(f"test-{uuid.uuid4().hex[:8]}", "onto-test", "draft_task@1")
     row = await common.save_draft(key, _task(), [])
+    tag = f"t-{uuid.uuid4().hex[:8]}"  # 전달 대상 이름 — 실행마다 따로
     try:
-        await run_lifecycle(store, row.id)
+        await run_lifecycle(store, row.id, tag)
     finally:
         async with store._pool.connection() as conn:
             ids = "SELECT id FROM public.common_task_build WHERE common_id = %s"
@@ -40,6 +41,9 @@ async def test_lifecycle_pg() -> None:
             )
             await conn.execute(
                 "DELETE FROM public.common_task_build WHERE common_id = %s", (row.id,)
+            )
+            await conn.execute(
+                "DELETE FROM public.delivery_target WHERE name LIKE %s", (f"{tag}-%",)
             )
             await conn.execute(
                 "DELETE FROM public.common_task WHERE posting_id = %s", (key.posting_id,)

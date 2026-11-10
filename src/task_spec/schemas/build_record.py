@@ -29,6 +29,7 @@ from task_spec.schemas.package import (
 )
 
 DeliveryStatus = Literal["requested", "sent", "failed"]
+TARGET_NAME = r"^[a-z0-9][a-z0-9_.-]{0,62}$"
 _VARIANT = (
     r"^$|^[a-z0-9][a-z0-9_-]{0,39}$"  # 참조 구현 라벨 (naive-all · d1) — starter·hidden 은 빈 값
 )
@@ -125,6 +126,9 @@ class BuildArtifact(Schema):
     role: ArtifactRole
     files: list[ArtifactFile] = Field(min_length=1)  # SHA256SUMS 와 같은 목록
     image_id: str | None = Field(default=None, pattern=IMAGE_ID)
+    # 이 묶음을 만든 원본 — 빌드의 현재 outcome 과 같아야 등록·승인·전달된다 (수리 뒤 낡은 묶음 방지)
+    tree_sha256: str = Field(pattern=SHA256)
+    grader_sha256: str = Field(pattern=SHA256)
     created_at: datetime
 
     @model_validator(mode="after")
@@ -148,15 +152,21 @@ class BuildArtifact(Schema):
         return self
 
 
+class DeliveryTarget(Schema):
+    """`delivery_target` 행 — 보낼 곳 하나와 받을 수 있는 역할 하나. SFTP 에는 계정별 pull 권한이 없으므로 저장소가 막는다."""
+
+    name: str = Field(pattern=TARGET_NAME)  # 설정 키 — 주소·자격 증명은 넣지 않는다
+    role: ArtifactRole
+    created_at: datetime
+
+
 class Delivery(Schema):
     """`artifact_delivery` 행 — 보낸 기록 (레지스트리 pull 기록 대신). 이의 제기 때 '그 판의 그 파일'을 증명한다."""
 
     delivery_id: str = Field(pattern=r"^dl-[0-9a-f]{12}$")
     build_id: str = Field(pattern=BUILD_ID)
     role: ArtifactRole
-    target: str = Field(
-        min_length=1, max_length=200
-    )  # SFTP 대상 이름 (설정 키) — 자격 증명은 넣지 않는다
+    target: str = Field(pattern=TARGET_NAME)  # delivery_target.name — 주소·자격 증명은 넣지 않는다
     requested_by: str = Field(min_length=1)
     requested_at: datetime
     status: DeliveryStatus = "requested"

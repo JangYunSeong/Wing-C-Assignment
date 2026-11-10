@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from task_spec.schemas.package import CandidateDescriptor, EvalKit, GraderDescriptor
+from task_spec.schemas.package import CandidateDescriptor, EvalKit, GraderDescriptor, flag_id
 
 CID = "ct-0123456789ab"
 BID = f"{CID}-b1"
@@ -125,7 +125,12 @@ def _kit(**over: Any) -> dict[str, Any]:
         },
         "review_flags": ["가상 표시"],
         "review_decisions": [
-            {"flag": "가상 표시", "verdict": "confirmed", "reviewer": "reviewer-fake"}
+            {
+                "flag_id": flag_id("가상 표시"),
+                "flag": "가상 표시",
+                "verdict": "confirmed",
+                "reviewer": "reviewer-fake",
+            }
         ],
         **over,
     }

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -182,13 +183,29 @@ class KitAcceptance(Schema):
     text: str = Field(min_length=1)
 
 
-class ReviewDecision(Schema):
-    """검토 표시 1건에 대한 승인자 판단 — 과제를 믿을 근거."""
+def flag_id(text: str) -> str:
+    """검토 표시 문장의 짧은 id (sha256 앞 12자리). 같은 문장 = 같은 id — 화면·키트에서 표시를 가리키고, 다른 빌드의 같은 표시를 찾을 때 쓴다."""
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:12]
 
-    flag: str = Field(min_length=1)
+
+class ReviewDecision(Schema):
+    """검토 표시 1건에 대한 승인자 판단 — 과제를 믿을 근거. 표시는 `flag_id` 로 맞추고, 그때의 문장도 함께 남긴다."""
+
+    flag_id: str = Field(pattern=r"^[0-9a-f]{12}$")
+    flag: str = Field(min_length=1)  # 판단할 때 본 표시 문장 그대로
     verdict: ReviewVerdict
     note: str = ""
     reviewer: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _id_matches_text(self) -> ReviewDecision:
+        if flag_id(self.flag) != self.flag_id:
+            raise ValueError(f"flag_id {self.flag_id} 가 표시 문장과 맞지 않는다")
+        return self
+
+    @classmethod
+    def of(cls, flag: str, verdict: ReviewVerdict, reviewer: str, note: str = "") -> ReviewDecision:
+        return cls(flag_id=flag_id(flag), flag=flag, verdict=verdict, note=note, reviewer=reviewer)
 
 
 class KitImages(Schema):
@@ -228,8 +245,8 @@ class EvalKit(PackageHeader):
         if "starter-only" not in self.verification:
             raise ValueError("verification 에 starter-only(시작 코드 그대로) 결과가 없다")
         if not self.mock:
-            decided = {d.flag for d in self.review_decisions}
-            missing = [f for f in self.review_flags if f not in decided]
+            decided = {d.flag_id for d in self.review_decisions}
+            missing = [f for f in self.review_flags if flag_id(f) not in decided]
             if missing:
                 raise ValueError(f"승인자 판단이 없는 검토 표시: {missing}")
         return self

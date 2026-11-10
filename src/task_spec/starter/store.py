@@ -1,11 +1,17 @@
-"""공통 과제 빌드 저장소 — 빌드·오버레이 파일·전달 묶음·전달 기록 (#52·#85) [제안].
+"""공통 과제 빌드 저장소 — 빌드·오버레이 파일·전달 묶음·전달 대상·전달 기록 (#52·#85) [제안].
 
-테이블: `common_task_build` → `starter_file` · `build_artifact` → `artifact_delivery`. 묶음 파일은 `data/images/<build_id>/<role>/`.
+테이블: `common_task_build` → `starter_file` · `build_artifact` → `artifact_delivery` ← `delivery_target`.
+묶음 파일은 `<images_root>/<build_id>/<role>/` (`Settings.images_root` — 기본 `data/images`, 운영은 지원자 데이터와 다른 볼륨).
+
 규칙 (두 구현이 같은 함수로 확인한다):
-- 상태: pending → generating → verifying → review → approved → published (실패 failed). 수리는 generating 으로 되돌린다.
-- 오버레이 파일은 승인 전(pending·generating·verifying)에만 바꾼다. 승인된 빌드의 원본은 고정.
-- 승인은 review 에서만, 검토 표시마다 승인자 판단이 있어야 한다. 승인 자체는 그래프 interrupt 로 받은 결과를 적는 것 (불변식 9).
-- 묶음(역할 폴더)은 한 번 쓰면 바꾸지 않는다. 전달은 approved·published 빌드만, 첫 전달이 끝나면 published.
+- 상태: pending → generating → verifying → review → approved → published (실패 failed).
+  수리는 `reopen()` 으로만 verifying·review → generating — 그 빌드의 승인 전 묶음을 지우고 돌려준다 (파일 정리용).
+- 오버레이 파일은 pending·generating 에서만 바꾼다. 생성·검증 결과(outcome)는 generating·verifying 에서만 쓴다.
+- 묶음: 응시용·채점용은 review 에서, 평가 키트는 approved 에서(승인자 판단이 들어가므로) 등록한다.
+  묶음의 tree_sha256·grader_sha256 은 빌드의 현재 outcome 과 같아야 하고, 한 번 등록하면 바꾸지 않는다.
+- 승인은 review 에서만, 응시용·채점용 묶음이 현재 outcome 과 맞고 검토 표시마다 승인자 판단(flag_id)이 있어야 한다.
+  승인 자체는 그래프 interrupt 로 받은 결과를 적는 것 (불변식 9).
+- 전달은 approved·published 빌드만, 등록된 대상이 그 역할을 받을 때만. 첫 전달이 성공하면 published.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from task_spec.schemas.build_record import (
     BuildOutcome,
     BuildRecord,
     Delivery,
+    DeliveryTarget,
     StarterFile,
 )
 from task_spec.schemas.package import (
@@ -35,30 +42,35 @@ from task_spec.schemas.package import (
     ArtifactRole,
     ReviewDecision,
     VerifySummary,
+    flag_id,
 )
 from task_spec.spec.store import DDL as COMMON_TASK_DDL
 
-IMAGES_DIR = "images"
-
-# 바꿀 수 있는 다음 상태. approved 는 approve(), published 는 finish_delivery() 로만.
+# set_status 로 바꿀 수 있는 다음 상태. 수리(→ generating)는 reopen(), approved 는 approve(), published 는 finish_delivery().
 TRANSITIONS: dict[str, set[str]] = {
     "pending": {"generating", "failed"},
     "generating": {"verifying", "failed"},
-    "verifying": {"review", "generating", "failed"},
-    "review": {"generating", "failed"},
+    "verifying": {"review", "failed"},
+    "review": {"failed"},
     "approved": set(),
     "published": set(),
     "failed": set(),
 }
-_FILES_OPEN = ("pending", "generating", "verifying")
-_OUTCOME_OPEN = ("generating", "verifying", "review")
-_ARTIFACT_OPEN = ("verifying", "review", "approved")
+_FILES_OPEN = ("pending", "generating")
+_OUTCOME_OPEN = ("generating", "verifying")
+_REOPENABLE = ("verifying", "review")
+_ARTIFACT_OPEN: dict[str, tuple[str, ...]] = {
+    "candidate": ("review",),
+    "grader": ("review",),
+    "eval_kit": ("approved",),
+}
+_APPROVAL_NEEDS: tuple[ArtifactRole, ...] = ("candidate", "grader")
 _DELIVERABLE = ("approved", "published")
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.common_task_build (
     id text PRIMARY KEY,
-    common_id text NOT NULL REFERENCES public.common_task (id),
+    common_id text NOT NULL REFERENCES public.common_task (id) ON DELETE RESTRICT,
     seq integer NOT NULL CHECK (seq >= 1),
     status text NOT NULL DEFAULT 'pending' CHECK (status IN
         ('pending', 'generating', 'verifying', 'review', 'failed', 'approved', 'published')),
@@ -80,7 +92,7 @@ CREATE TABLE IF NOT EXISTS public.common_task_build (
     UNIQUE (common_id, seq)
 );
 CREATE TABLE IF NOT EXISTS public.starter_file (
-    build_id text NOT NULL REFERENCES public.common_task_build (id),
+    build_id text NOT NULL REFERENCES public.common_task_build (id) ON DELETE RESTRICT,
     kind text NOT NULL CHECK (kind IN ('starter', 'hidden', 'public_test', 'ref_naive', 'ref_accepted')),
     variant text NOT NULL DEFAULT '',
     path text NOT NULL,
@@ -90,47 +102,54 @@ CREATE TABLE IF NOT EXISTS public.starter_file (
     PRIMARY KEY (build_id, kind, variant, path)
 );
 CREATE TABLE IF NOT EXISTS public.build_artifact (
-    build_id text NOT NULL REFERENCES public.common_task_build (id),
+    build_id text NOT NULL REFERENCES public.common_task_build (id) ON DELETE RESTRICT,
     role text NOT NULL CHECK (role IN ('candidate', 'grader', 'eval_kit')),
     files jsonb NOT NULL,
     image_id text,
+    tree_sha256 text NOT NULL,
+    grader_sha256 text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (build_id, role),
     CHECK ((role = 'eval_kit') = (image_id IS NULL))
+);
+CREATE TABLE IF NOT EXISTS public.delivery_target (
+    name text PRIMARY KEY,
+    role text NOT NULL CHECK (role IN ('candidate', 'grader', 'eval_kit')),
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS public.artifact_delivery (
     id text PRIMARY KEY,
     build_id text NOT NULL,
     role text NOT NULL,
-    target text NOT NULL,
+    target text NOT NULL REFERENCES public.delivery_target (name) ON DELETE RESTRICT,
     requested_by text NOT NULL,
     requested_at timestamptz NOT NULL DEFAULT now(),
     status text NOT NULL DEFAULT 'requested' CHECK (status IN ('requested', 'sent', 'failed')),
     files jsonb NOT NULL,
     sent_at timestamptz,
     error text,
-    FOREIGN KEY (build_id, role) REFERENCES public.build_artifact (build_id, role)
+    FOREIGN KEY (build_id, role) REFERENCES public.build_artifact (build_id, role) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS artifact_delivery_build ON public.artifact_delivery (build_id);
 """
 
 
 class BuildRuleError(ValueError):
-    """저장소 규칙 위반 (상태·승인·불변)."""
+    """저장소 규칙 위반 (상태·승인·불변·전달 대상)."""
 
 
 # ── 경로 ──────────────────────────────────────────────────────────────
 
 
-def build_dir(data_dir: Path, build_id: str) -> Path:
-    """`<data_dir>/images/<build_id>` — build_id 패턴을 확인한 뒤에만 경로를 만든다."""
+def build_dir(images_root: Path, build_id: str) -> Path:
+    """`<images_root>/<build_id>` — build_id 패턴을 확인한 뒤에만 경로를 만든다."""
     if not re.match(BUILD_ID, build_id):
         raise BuildRuleError(f"build_id 형식이 아니다: {build_id!r}")
-    return data_dir / IMAGES_DIR / build_id
+    return images_root / build_id
 
 
-def role_dir(data_dir: Path, build_id: str, role: ArtifactRole) -> Path:
-    return build_dir(data_dir, build_id) / role
+def role_dir(images_root: Path, build_id: str, role: ArtifactRole) -> Path:
+    return build_dir(images_root, build_id) / role
 
 
 def archive_name(build_id: str, role: ArtifactRole) -> str:
@@ -149,21 +168,57 @@ def sha256sums(files: Iterable[ArtifactFile]) -> str:
 
 def check_transition(build: BuildRecord, new: BuildStatus) -> None:
     if new not in TRANSITIONS[build.status]:
-        raise BuildRuleError(f"{build.build_id}: {build.status} → {new} 은 허용되지 않는다")
+        hint = " (수리는 reopen)" if new == "generating" else ""
+        raise BuildRuleError(f"{build.build_id}: {build.status} → {new} 은 허용되지 않는다{hint}")
 
 
-def check_approval(build: BuildRecord, decisions: list[ReviewDecision]) -> None:
+def check_artifact_current(build: BuildRecord, artifact: BuildArtifact) -> None:
+    """묶음이 빌드의 현재 생성·검증 결과에서 나온 것인지 — 수리 뒤 낡은 묶음을 승인·전달하지 않게."""
+    o = build.outcome
+    if o is None:
+        raise BuildRuleError(f"{build.build_id}: 생성·검증 결과(outcome)가 없다")
+    if (artifact.tree_sha256, artifact.grader_sha256) != (o.tree_sha256, o.grader_sha256):
+        raise BuildRuleError(
+            f"{build.build_id}/{artifact.role}: 묶음이 현재 결과와 다르다 (tree·grader 해시)"
+        )
+
+
+def check_artifact_open(build: BuildRecord, artifact: BuildArtifact) -> None:
+    _require_status(build, _ARTIFACT_OPEN[artifact.role], f"{artifact.role} 묶음 등록")
+    check_artifact_current(build, artifact)
+
+
+def check_approval(
+    build: BuildRecord, decisions: list[ReviewDecision], artifacts: list[BuildArtifact]
+) -> None:
     if build.status != "review":
         raise BuildRuleError(f"{build.build_id}: review 상태에서만 승인 (지금 {build.status})")
     if build.outcome is None:
         raise BuildRuleError(f"{build.build_id}: 생성·검증 결과(outcome)가 없다")
-    decided = {d.flag for d in decisions}
-    missing = [f for f in build.outcome.review_flags if f not in decided]
-    if missing:
-        raise BuildRuleError(f"{build.build_id}: 승인자 판단이 없는 검토 표시 {len(missing)}건")
-    unknown = sorted(decided - set(build.outcome.review_flags))
-    if unknown:
-        raise BuildRuleError(f"{build.build_id}: 없는 검토 표시에 대한 판단 {len(unknown)}건")
+    by_role = {a.role: a for a in artifacts}
+    for role in _APPROVAL_NEEDS:
+        if role not in by_role:
+            raise BuildRuleError(
+                f"{build.build_id}: {role} 묶음이 없다 — 승인할 이미지를 먼저 등록"
+            )
+        check_artifact_current(build, by_role[role])
+    flags = {flag_id(f) for f in build.outcome.review_flags}
+    decided = {d.flag_id for d in decisions}
+    if len(flags - decided):
+        raise BuildRuleError(
+            f"{build.build_id}: 승인자 판단이 없는 검토 표시 {len(flags - decided)}건"
+        )
+    if len(decided - flags):
+        raise BuildRuleError(
+            f"{build.build_id}: 없는 검토 표시에 대한 판단 {len(decided - flags)}건"
+        )
+
+
+def check_target(target: DeliveryTarget | None, name: str, role: ArtifactRole) -> None:
+    if target is None:
+        raise BuildRuleError(f"등록되지 않은 전달 대상: {name}")
+    if target.role != role:
+        raise BuildRuleError(f"전달 대상 {name} 은 {target.role} 만 받는다 ({role} 요청)")
 
 
 def _require(build: BuildRecord | None, build_id: str) -> BuildRecord:
@@ -197,6 +252,8 @@ class BuildRepo(Protocol):
 
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord: ...
 
+    async def reopen(self, build_id: str) -> list[BuildArtifact]: ...
+
     async def save_outcome(self, build_id: str, outcome: BuildOutcome) -> BuildRecord: ...
 
     async def put_files(self, build_id: str, files: list[StarterFile]) -> None: ...
@@ -212,6 +269,12 @@ class BuildRepo(Protocol):
     async def put_artifact(self, artifact: BuildArtifact) -> None: ...
 
     async def artifacts(self, build_id: str) -> list[BuildArtifact]: ...
+
+    async def add_target(
+        self, name: str, role: ArtifactRole, at: datetime | None = None
+    ) -> DeliveryTarget: ...
+
+    async def targets(self) -> list[DeliveryTarget]: ...
 
     async def request_delivery(
         self,
@@ -236,6 +299,7 @@ class InMemoryBuildStore:
         self._builds: dict[str, BuildRecord] = {}
         self._files: dict[tuple[str, str, str, str], StarterFile] = {}
         self._artifacts: dict[tuple[str, str], BuildArtifact] = {}
+        self._targets: dict[str, DeliveryTarget] = {}
         self._deliveries: dict[str, Delivery] = {}
 
     def _put(self, build: BuildRecord, **update: Any) -> BuildRecord:
@@ -271,6 +335,15 @@ class InMemoryBuildStore:
         check_transition(build, status)
         return self._put(build, status=status)
 
+    async def reopen(self, build_id: str) -> list[BuildArtifact]:
+        build = _require(self._builds.get(build_id), build_id)
+        _require_status(build, _REOPENABLE, "수리(reopen)")
+        removed = [a for (b, _), a in self._artifacts.items() if b == build_id]
+        for a in removed:
+            del self._artifacts[(build_id, a.role)]
+        self._put(build, status="generating")
+        return sorted(removed, key=lambda a: a.role)
+
     async def save_outcome(self, build_id: str, outcome: BuildOutcome) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         _require_status(build, _OUTCOME_OPEN, "결과 저장")
@@ -299,7 +372,7 @@ class InMemoryBuildStore:
         self, build_id: str, reviewer: str, at: datetime, decisions: list[ReviewDecision]
     ) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
-        check_approval(build, decisions)
+        check_approval(build, decisions, await self.artifacts(build_id))
         return self._put(
             build,
             status="approved",
@@ -310,7 +383,7 @@ class InMemoryBuildStore:
 
     async def put_artifact(self, artifact: BuildArtifact) -> None:
         build = _require(self._builds.get(artifact.build_id), artifact.build_id)
-        _require_status(build, _ARTIFACT_OPEN, "묶음 등록")
+        check_artifact_open(build, artifact)
         key = (artifact.build_id, artifact.role)
         if key in self._artifacts:
             raise BuildRuleError(
@@ -323,6 +396,21 @@ class InMemoryBuildStore:
             (a for (b, _), a in self._artifacts.items() if b == build_id), key=lambda a: a.role
         )
 
+    async def add_target(
+        self, name: str, role: ArtifactRole, at: datetime | None = None
+    ) -> DeliveryTarget:
+        got = self._targets.get(name)
+        if got is not None:
+            if got.role != role:
+                raise BuildRuleError(f"전달 대상 {name} 은 이미 {got.role} 용이다")
+            return got
+        t = DeliveryTarget(name=name, role=role, created_at=at or datetime.now(UTC))
+        self._targets[name] = t
+        return t
+
+    async def targets(self) -> list[DeliveryTarget]:
+        return sorted(self._targets.values(), key=lambda t: t.name)
+
     async def request_delivery(
         self,
         build_id: str,
@@ -333,9 +421,11 @@ class InMemoryBuildStore:
     ) -> Delivery:
         build = _require(self._builds.get(build_id), build_id)
         _require_status(build, _DELIVERABLE, "전달")
+        check_target(self._targets.get(target), target, role)
         artifact = self._artifacts.get((build_id, role))
         if artifact is None:
             raise BuildRuleError(f"{build_id}/{role}: 등록된 묶음이 없다")
+        check_artifact_current(build, artifact)
         d = Delivery(
             delivery_id=_new_delivery_id(),
             build_id=build_id,
@@ -435,6 +525,8 @@ class PgBuildStore:
             role=r["role"],
             files=[ArtifactFile.model_validate(x) for x in r["files"]],
             image_id=r["image_id"],
+            tree_sha256=r["tree_sha256"],
+            grader_sha256=r["grader_sha256"],
             created_at=r["created_at"],
         )
 
@@ -453,12 +545,22 @@ class PgBuildStore:
             error=r["error"],
         )
 
+    @staticmethod
+    def _target(r: dict[str, Any]) -> DeliveryTarget:
+        return DeliveryTarget(name=r["name"], role=r["role"], created_at=r["created_at"])
+
     async def _locked(self, cur: Any, build_id: str) -> BuildRecord:
         await cur.execute(
             "SELECT * FROM public.common_task_build WHERE id = %s FOR UPDATE", (build_id,)
         )
         r = await cur.fetchone()
         return _require(self._build(r) if r else None, build_id)
+
+    async def _artifacts_of(self, cur: Any, build_id: str) -> list[BuildArtifact]:
+        await cur.execute(
+            "SELECT * FROM public.build_artifact WHERE build_id = %s ORDER BY role", (build_id,)
+        )
+        return [self._artifact(r) for r in await cur.fetchall()]
 
     # ── 빌드 ──
     async def new_build(
@@ -510,6 +612,22 @@ class PgBuildStore:
             )
             r = await cur.fetchone()
         return self._build(r)  # type: ignore[arg-type]
+
+    async def reopen(self, build_id: str) -> list[BuildArtifact]:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            _require_status(await self._locked(cur, build_id), _REOPENABLE, "수리(reopen)")
+            removed = await self._artifacts_of(cur, build_id)
+            # 승인 전이라 전달 기록이 없다 — 있으면 FK(RESTRICT)가 막는다
+            await cur.execute("DELETE FROM public.build_artifact WHERE build_id = %s", (build_id,))
+            await cur.execute(
+                "UPDATE public.common_task_build SET status = 'generating' WHERE id = %s",
+                (build_id,),
+            )
+        return removed
 
     async def save_outcome(self, build_id: str, outcome: BuildOutcome) -> BuildRecord:
         async with (
@@ -579,7 +697,8 @@ class PgBuildStore:
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
-            check_approval(await self._locked(cur, build_id), decisions)
+            build = await self._locked(cur, build_id)
+            check_approval(build, decisions, await self._artifacts_of(cur, build_id))
             await cur.execute(
                 "UPDATE public.common_task_build SET status = 'approved', approved_by = %s, "
                 "approved_at = %s, review_decisions = %s WHERE id = %s RETURNING *",
@@ -595,16 +714,18 @@ class PgBuildStore:
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
-            build = await self._locked(cur, artifact.build_id)
-            _require_status(build, _ARTIFACT_OPEN, "묶음 등록")
+            check_artifact_open(await self._locked(cur, artifact.build_id), artifact)
             await cur.execute(
-                "INSERT INTO public.build_artifact (build_id, role, files, image_id, created_at) "
-                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (build_id, role) DO NOTHING RETURNING role",
+                "INSERT INTO public.build_artifact (build_id, role, files, image_id, tree_sha256, "
+                "grader_sha256, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (build_id, role) DO NOTHING RETURNING role",
                 (
                     artifact.build_id,
                     artifact.role,
                     Jsonb([f.model_dump(mode="json") for f in artifact.files]),
                     artifact.image_id,
+                    artifact.tree_sha256,
+                    artifact.grader_sha256,
                     artifact.created_at,
                 ),
             )
@@ -615,11 +736,30 @@ class PgBuildStore:
 
     async def artifacts(self, build_id: str) -> list[BuildArtifact]:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            return await self._artifacts_of(cur, build_id)
+
+    # ── 전달 대상 ──
+    async def add_target(
+        self, name: str, role: ArtifactRole, at: datetime | None = None
+    ) -> DeliveryTarget:
+        t = DeliveryTarget(name=name, role=role, created_at=at or datetime.now(UTC))  # 이름 검증
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT * FROM public.build_artifact WHERE build_id = %s ORDER BY role", (build_id,)
+                "INSERT INTO public.delivery_target (name, role, created_at) VALUES (%s, %s, %s) "
+                "ON CONFLICT (name) DO NOTHING",
+                (t.name, t.role, t.created_at),
             )
+            await cur.execute("SELECT * FROM public.delivery_target WHERE name = %s", (name,))
+            got = self._target(await cur.fetchone())  # type: ignore[arg-type]
+        if got.role != role:
+            raise BuildRuleError(f"전달 대상 {name} 은 이미 {got.role} 용이다")
+        return got
+
+    async def targets(self) -> list[DeliveryTarget]:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM public.delivery_target ORDER BY name")
             rows = await cur.fetchall()
-        return [self._artifact(r) for r in rows]
+        return [self._target(r) for r in rows]
 
     # ── 전달 ──
     async def request_delivery(
@@ -635,18 +775,29 @@ class PgBuildStore:
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
-            _require_status(await self._locked(cur, build_id), _DELIVERABLE, "전달")
-            await cur.execute(
-                "SELECT files FROM public.build_artifact WHERE build_id = %s AND role = %s",
-                (build_id, role),
+            build = await self._locked(cur, build_id)
+            _require_status(build, _DELIVERABLE, "전달")
+            await cur.execute("SELECT * FROM public.delivery_target WHERE name = %s", (target,))
+            t = await cur.fetchone()
+            check_target(self._target(t) if t else None, target, role)
+            artifact = next(
+                (a for a in await self._artifacts_of(cur, build_id) if a.role == role), None
             )
-            a = await cur.fetchone()
-            if a is None:
+            if artifact is None:
                 raise BuildRuleError(f"{build_id}/{role}: 등록된 묶음이 없다")
+            check_artifact_current(build, artifact)
             await cur.execute(
                 "INSERT INTO public.artifact_delivery (id, build_id, role, target, requested_by, "
                 "requested_at, files) VALUES (%s, %s, %s, %s, %s, COALESCE(%s, now()), %s) RETURNING *",
-                (_new_delivery_id(), build_id, role, target, requested_by, at, Jsonb(a["files"])),
+                (
+                    _new_delivery_id(),
+                    build_id,
+                    role,
+                    target,
+                    requested_by,
+                    at,
+                    Jsonb([f.model_dump(mode="json") for f in artifact.files]),
+                ),
             )
             r = await cur.fetchone()
         return self._delivery(r)  # type: ignore[arg-type]
