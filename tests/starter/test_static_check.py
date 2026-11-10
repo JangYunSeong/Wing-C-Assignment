@@ -639,3 +639,19 @@ def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:
         assert bool(got) is bad, (content, got)
         # 허용 구현이 이것만으로 재요청에도 못 고치면 그 설계를 빼는 기존 장치(build._voided)가 알아보게 같은 말
         assert all(HARNESS_OVERRIDE in p.message for p in got)
+
+
+def test_datasource_settings_not_in_the_template_are_rejected() -> None:
+    # 2026-11-10 v19-be: 고정 H2 URL 로 테스트 컨텍스트끼리 DB 를 나눠 써 schema.sql 이 두 번 돌아 기동 실패
+    from task_spec.starter.static_check import _datasource_config
+
+    fixed = "spring:\n  datasource:\n    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1\n  sql:\n    init:\n      mode: always\n"
+    plain = "spring:\n  jpa:\n    hibernate:\n      ddl-auto: none\n  sql:\n    init:\n      mode: always\n"
+    for content, bad in ((fixed, True), (plain, False)):
+        o = Overlay(
+            kind="starter",
+            files=(GeneratedFile(path="src/main/resources/application.yml", content=content),),
+        )
+        got = _datasource_config(o, JAVA)
+        assert bool(got) is bad, got
+        assert not got or "spring.datasource.url" in got[0].message

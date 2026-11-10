@@ -346,6 +346,51 @@ _CODE_OVERRIDES = (
 )
 
 
+# 어느 DB 에 붙는지 정하는 키 — 풀 크기(hikari.*)는 운영 값 검사(_operating_values·_harness_overrides)가 본다
+_DATASOURCE_KEYS = frozenset(
+    f"spring.datasource.{k}"
+    for k in (
+        "url",
+        "jdbc-url",
+        "name",
+        "generate-unique-name",
+        "driver-class-name",
+        "username",
+        "password",
+    )
+)
+
+
+def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
+    """구현·시작 코드가 템플릿이 정하지 않은 데이터소스 설정(spring.datasource.*)을 씀 — 템플릿은 컨텍스트마다 새 메모리 DB.
+    2026-11-10 v19-be: 시작 코드가 url 을 jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1 로 고정해 하네스 자체 시험(다른 테스트 컨텍스트)이
+    같은 DB 에 schema.sql·data.sql 을 다시 돌려 Table already exists·PK 위반으로 기동 실패 (2026-11-09 d3 도 같은 설정)."""
+    if not is_java(t.manifest):
+        return []
+    base = _config_map(
+        (rel, (t.project / rel).read_text("utf-8", errors="ignore"))
+        for rel in t.files("project")
+        if rel.endswith(_CONFIG_SUFFIX)
+    )
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if not f.path.endswith(_CONFIG_SUFFIX):
+            continue
+        keys = sorted(
+            k for k in _config_map([(f.path, f.content)]) if k in _DATASOURCE_KEYS and k not in base
+        )
+        if keys:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"{o.name} 설정 {f.path} 에 템플릿에 없는 데이터소스 설정 {', '.join(keys)} — 템플릿은 테스트 컨텍스트마다 새 메모리 DB 를 쓴다. "
+                    "고정 URL(예: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1)은 컨텍스트끼리 DB 를 나눠 써 schema.sql·data.sql 이 두 번 돌아 "
+                    "기동이 실패한다 — spring.datasource 설정은 쓰지 않는다",
+                )
+            )
+    return out
+
+
 def _code_overrides(o: Overlay, t: Template) -> list[StaticProblem]:
     """구현이 코드로 운영 값(연결 풀·데이터소스·요청 스레드)을 만들거나 바꿈 — 설정 키를 바꾸는 것(_harness_overrides)과 같은 우회."""
     if not is_java(t.manifest):
@@ -1769,6 +1814,7 @@ def static_check(
             res.problems += _code_overrides(o, template)
             res.problems += _code_pitfalls(o, template)
             res.problems += _script_imports(o, template, contract)
+            res.problems += _datasource_config(o, template)
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
