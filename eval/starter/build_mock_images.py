@@ -219,7 +219,9 @@ def load_run(run: Path, t: Template) -> dict[str, Any]:
         "contract": contract,
         "plan": plan,
         "common_id": _common_id(task.task_id),
-        "revision": int(report.get("revision") or 1),  # 같은 공통 과제의 다른 빌드는 판을 나눠 이미지 이름이 겹치지 않게
+        "revision": int(
+            report.get("revision") or 1
+        ),  # 같은 공통 과제의 다른 빌드는 판을 나눠 이미지 이름이 겹치지 않게
         "ontology_version": report.get("ontology_version") or "unknown",
         "readme": readme,
         "starter": _overlay("starter", ov / "starter"),

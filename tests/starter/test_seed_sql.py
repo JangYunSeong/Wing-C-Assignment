@@ -155,4 +155,6 @@ def test_foreign_key_targets_are_inserted_first() -> None:
     assert sql is not None
     text = sql.content
     assert text.index("INSERT INTO orders") < text.index("INSERT INTO order_history")
-    assert "\n(3, " in text and ", 1)" in text.split("\n(3, ")[1].split("\n")[0]  # 대상 2행 안에서 돌린다 (3 → 1)
+    assert (
+        "\n(3, " in text and ", 1)" in text.split("\n(3, ")[1].split("\n")[0]
+    )  # 대상 2행 안에서 돌린다 (3 → 1)
