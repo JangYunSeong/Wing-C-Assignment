@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -193,8 +194,40 @@ def evidence_ok(value: HarnessValue, quote: str, texts: Iterable[str]) -> bool:
     return evidence_check(value, quote, texts) != "bad"
 
 
+# 단위가 붙은 수 — 조절값 단위(이름 끝 _ms·_s)로 환산해 맞춰 본다
+_TIMED = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])", re.I)
+_UNIT_MS = {
+    "ms": 1.0,
+    "밀리초": 1.0,
+    "초": 1000.0,
+    "s": 1000.0,
+    "sec": 1000.0,
+    "분": 60000.0,
+    "min": 60000.0,
+}
+
+
+def param_unit(name: str) -> str | None:
+    """조절값 이름의 시간 단위 — `…_ms` 는 ms, `…_s` 는 s, 그 밖은 없음."""
+    return "ms" if name.endswith("_ms") else "s" if name.endswith("_s") else None
+
+
+def _converted(quote: str, unit: str) -> set[float]:
+    """인용 속 단위가 붙은 수를 조절값 단위로 — 정수 조절값이 받을 수 있게 반올림·올림 후보까지.
+    2026-11-10 nplus1-e: 'p50 은 11.4ms' 로 query_delay_ms=12, '목표는 500ms' 로 request_timeout_s=1 을 냈는데
+    인용 안에 12·1 이 그대로 없다고 거절했다 (정수 조절값이라 반올림·초 단위 올림이 맞다)."""
+    out: set[float] = set()
+    for raw, u in _TIMED.findall(quote):
+        n = _number(raw)
+        if n is None:
+            continue
+        x = n * _UNIT_MS[u.lower()] / (1.0 if unit == "ms" else 1000.0)
+        out |= {x, float(round(x)), float(math.ceil(x))}
+    return out
+
+
 def evidence_check(
-    value: HarnessValue, quote: str, texts: Iterable[str]
+    value: HarnessValue, quote: str, texts: Iterable[str], unit: str | None = None
 ) -> Literal["ok", "ambiguous", "bad"]:
     """`evidence_ok` 의 자세한 판정. 백분율·시각은 값 후보에서 빼고, 남은 후보가 여럿이면 ambiguous
     ("1개: 38% 2개: 41% … 4개 이상: 7%" 를 인용하면 1·2·3·4 아무것이나 근거가 된다 — 알파 테스트 2026-11-07)."""
@@ -206,6 +239,8 @@ def evidence_check(
         return "ok" if all(float(v) in numbers for v in value) else "bad"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if float(value) not in numbers:
+            if unit is not None and float(value) in _converted(q, unit):
+                return "ok" if len(_TIMED.findall(q)) == 1 else "ambiguous"
             return "bad"
         return "ok" if len(numbers) == 1 else "ambiguous"
     return "ok" if str(value).lower() in q.lower() else "bad"
@@ -275,7 +310,7 @@ def _harness(
         seen = extract_values(p, spec.visible_texts)
         quote = plan.evidence.get(p.name)
         cited = (
-            evidence_check(value, quote, spec.visible_texts)
+            evidence_check(value, quote, spec.visible_texts, param_unit(p.name))
             if quote and quote.strip() != NO_EVIDENCE
             else "bad"
         )

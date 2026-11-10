@@ -709,3 +709,22 @@ def test_trap_fix_follows_each_acceptance_criterion_with_several_hidden_requirem
     )
     fixed, notes = fit_traps(plan, spec)
     assert [c.trap_id for c in fixed.cases] == ["t1", "t2", "t2"] and len(notes) == 2
+
+
+def test_timed_evidence_accepts_unit_conversion_and_rounding() -> None:
+    # 2026-11-10 nplus1-e: '왕복 p50은 11.4ms' → query_delay_ms=12, '목표는 500ms' → request_timeout_s=1 을 거절했다
+    from task_spec.starter.contract import evidence_check, param_unit
+
+    texts = [
+        "단일 SELECT 왕복 p50은 11.4ms 이고",
+        "목록 API 응답 목표는 500ms 이며 1초를 넘으면 이탈한다",
+    ]
+    assert param_unit("query_delay_ms") == "ms" and param_unit("request_timeout_s") == "s"
+    assert param_unit("pool_size") is None
+    assert evidence_check(12, "단일 SELECT 왕복 p50은 11.4ms", texts, "ms") == "ok"
+    assert evidence_check(1, "목록 API 응답 목표는 500ms", texts, "s") == "ok"
+    assert evidence_check(1, "1초를 넘으면 이탈한다", texts, "s") == "ok"  # 조사가 붙은 단위
+    assert evidence_check(3, "목록 API 응답 목표는 500ms", texts, "s") == "bad"  # 환산해도 다른 값
+    assert (
+        evidence_check(12, "단일 SELECT 왕복 p50은 11.4ms", texts) == "bad"
+    )  # 단위 없는 조절값은 예전처럼
