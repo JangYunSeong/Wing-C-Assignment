@@ -1,0 +1,104 @@
+{
+  "incident_id": "pub:sw.backend:list-query-per-row",
+  "sub": "sw.backend",
+  "title": "N+1 query problem with JPA and Hibernate",
+  "org": "Vlad Mihalcea (기술 블로그)",
+  "url": "https://vladmihalcea.com/n-plus-1-query-problem/",
+  "published": "2020-03-17 (2026-11-10 원문 확인)",
+  "source_lang": "en",
+  "symptom": "목록 화면이 운영에서만 몇 초씩 걸리고 가끔 시간 초과가 난다. 개발 환경에서는 빠르고, DB 의 느린 쿼리 기록에는 해당 시간대 쿼리가 하나도 없다.",
+  "naive_fix": "근거 없이 DB 서버를 키우거나 인덱스를 더하거나, 응답 시간 한도를 늘린다.",
+  "root_cause": "목록을 한 번 조회한 뒤 응답을 만들면서 항목마다 연관 데이터를 따로 읽는다 — ORM 의 지연 로딩이 반복문 안에서 항목 하나당 쿼리를 하나씩 더 낸다. 원문은 하나하나는 느린 쿼리 기록에 걸리지 않을 만큼 빠르지만 모두 합치면 응답이 느려진다고 한다. 즉시 로딩으로 바꿔도 조인 없이 조회하면 같은 일이 생긴다.",
+  "why_naive_fails": "쿼리 하나하나는 빠르므로 인덱스·DB 증설로는 줄지 않는다. 시간이 드는 곳은 쿼리 수 × DB 왕복 시간이라 목록이 커지거나 DB 가 멀어질수록 다시 터진다. 한도를 늘리면 느린 응답을 감출 뿐이다.",
+  "key_insight": "느린 쿼리가 없는데 응답이 느리면 쿼리의 '수'를 센다 — 요청 하나에 같은 모양의 쿼리가 항목 수만큼 반복되는지 본다.",
+  "deep_structure": "목록 하나를 만들 때 항목마다 원격 저장소를 따로 부르면 응답 시간이 항목 수 × 왕복 시간이 된다 — 왕복 수를 항목 수와 무관하게 일정하게 묶어야 한다.",
+  "surface": [
+    "주문 목록과 고객 이름 → 게시글 목록과 작성자·댓글 수, 상품 목록과 판매자",
+    "ORM 지연 로딩 → 항목마다 내부 API·캐시 호출",
+    "관계형 DB → 원격 키-값 저장소"
+  ],
+  "tech": [
+    "Java",
+    "Spring Boot",
+    "JPA/Hibernate"
+  ],
+  "verified": true,
+  "notes": "원문은 사고 사후 분석이 아니라 JPA/Hibernate 기술 글이다 — 'each individual additional query runs sufficiently fast to not trigger the slow query log', 'The larger the value of N, the more queries will be executed'. 고친 방법으로 JOIN FETCH·조인 SQL 을 든다 (엔티티 그래프·묶음 조회는 다루지 않음 — 허용 설계의 묶음 조회는 Hibernate 문서의 batch fetching 에 기댄다). 하네스: 지연 주입(GraderJdbcHarness.queryDelayMs)으로 운영 DB 왕복 지연을 재현하고 응답 시간 한도(request_timeout) 안인지 본다. 2026-11-10 추가 — 알파 전.",
+  "avoid_terms": [
+    "Vlad Mihalcea",
+    "Hypersistence"
+  ],
+  "hidden_terms": [
+    "N+1",
+    "지연 로딩",
+    "lazy loading",
+    "fetch join"
+  ],
+  "accepted_fixes": [
+    "[복구] 목록과 연관 데이터를 한 번에 읽는다 (조인 조회·fetch join·필요한 칸만 고르는 조회) — 함정: 컬렉션을 fetch join 하면서 페이지를 나눠 메모리에서 자르기",
+    "[복구] 연관 데이터를 목록의 id 묶음으로 한 번 더 읽어 쿼리 수를 항목 수와 무관하게 만든다 (IN 조회·묶음 로딩) — 조건: 묶음 크기가 한 번에 보여 주는 항목 수 이상",
+    "[진단] 요청 하나에 실행된 SQL 을 세어 같은 모양의 쿼리가 항목 수만큼 반복되는지 확인한다 — 함정: 느린 쿼리 기록만 보기"
+  ],
+  "source_literals": [
+    "slow query log",
+    "The larger the value of N"
+  ],
+  "templates": [
+    "backend/java-spring-boot3-jpa"
+  ],
+  "feature": {
+    "business_need": "기존 주문(또는 게시글·예약)에 대해, 한 화면에 여러 건을 보여 주는 목록 조회 API 를 추가한다. 항목마다 그 건에 딸린 정보(고객 이름, 담긴 상품 수 등)를 함께 내려 주고, 최신순으로 한 번에 정해진 건수까지 돌려준다.",
+    "naive_impl": "대상 엔티티 목록을 리포지토리로 조회한 뒤, 응답 DTO 를 만드는 반복문에서 항목마다 연관 엔티티(고객·상품 목록)를 getter 로 꺼내 쓴다 (연관 관계는 기본 지연 로딩 그대로, 조인 조회 없음).",
+    "hidden_requirement": "목록 한 번을 조회하는 데 드는 DB 왕복 수가 항목 수와 무관하게 일정해야 한다 — 운영 DB 의 왕복 지연에서도 목록 응답이 응답 시간 한도 안에 끝난다.",
+    "trigger": "운영 DB 는 애플리케이션과 다른 구역에 있어 쿼리 한 번의 왕복 지연이 개발 환경보다 훨씬 크고, 목록은 한 번에 수십~수백 건을 보여 준다. 운영 DB 왕복 지연 지표와 목록 응답 시간 한도 문서를 봐야만 보인다.",
+    "why_naive_breaks": "항목마다 연관 데이터를 따로 읽으므로 목록 한 번에 쿼리가 항목 수만큼 더 나가고, 응답 시간이 항목 수 × 왕복 지연이 되어 운영 지연에서 한도를 넘는다.",
+    "discoverable_by": [
+      "운영 DB 왕복 지연 지표",
+      "목록 화면 응답 시간 한도 문서",
+      "화면이 한 번에 보여 주는 건수 설정"
+    ],
+    "accepted_designs": [
+      "[설계] 목록과 딸린 정보를 조인 조회 한 번으로 읽는다 (fetch join·필요한 칸만 고르는 DTO 조회) — 함정: 컬렉션을 fetch join 하면서 건수를 메모리에서 자르기",
+      "[설계] 딸린 정보를 목록 id 묶음으로 한 번 더 읽어 합친다 (IN 조회·묶음 로딩) — 조건: 묶음 크기가 한 번에 돌려주는 건수 이상"
+    ],
+    "stage2_symptom": "배포 뒤 목록 화면이 운영에서만 몇 초씩 걸리고, 건수가 많은 고객에게서 시간 초과가 난다. DB 서버 자원은 여유 있고 느린 쿼리 기록은 비어 있다.",
+    "stage2_evidence": [
+      "요청 하나에서 실행된 SQL 기록",
+      "API 응답 시간 분포",
+      "DB 느린 쿼리 기록"
+    ],
+    "stage2_cause_terms": [
+      "항목마다 추가 조회",
+      "쿼리 수가 건수에 비례",
+      "연관 데이터 개별 조회"
+    ],
+    "leak_terms": [
+      "N+1",
+      "N + 1",
+      "지연 로딩",
+      "lazy",
+      "fetch join",
+      "페치 조인",
+      "EntityGraph",
+      "엔티티 그래프",
+      "batch size",
+      "쿼리 수",
+      "쿼리 개수"
+    ],
+    "trigger_terms": [
+      "왕복",
+      "다른 구역",
+      "응답 시간 한도",
+      "시간 한도",
+      "지연 지표",
+      "수백 건"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [],
+    "reasons": [
+      "request_timeout"
+    ]
+  }
+}

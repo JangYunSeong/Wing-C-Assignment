@@ -48,6 +48,7 @@
   "hibernate_sequence"
  ],
  "task_pattern": null,
+ "templates": ["backend/java-spring-boot3-jpa"],
  "feature": {
   "business_need": "기존 상태 변경 API(예: 주문·배송 상태 변경)에 변경 시도마다 감사 기록(요청자·시각·이전 상태·요청 상태·결과)을 남기고, 대상별 기록을 최신순으로 조회하는 API 를 추가한다. 성공한 시도와 실패한 시도를 모두 남긴다.",
   "naive_impl": "상태 변경 트랜잭션 안에서 감사 기록을 별도 트랜잭션(전파 옵션으로 새 트랜잭션 열기·별도 커넥션·하위 트랜잭션으로 도는 ID 생성기)으로 저장해, 상태 변경이 롤백돼도 기록이 남게 한다.",
