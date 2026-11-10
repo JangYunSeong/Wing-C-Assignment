@@ -677,3 +677,35 @@ def test_case_trap_id_is_fixed_from_the_hidden_acceptance_criterion() -> None:
     fixed, notes = fit_traps(wrong, spec)
     assert {c.trap_id for c in fixed.cases} == {trap} and len(notes) == len(plan.cases)
     assert fit_traps(fixed, spec) == (fixed, [])  # 맞으면 그대로
+
+
+def test_trap_fix_follows_each_acceptance_criterion_with_several_hidden_requirements() -> None:
+    """숨은 요구가 여럿이면 케이스마다 그 ac_id 의 숨은 요구로 — 명세의 다른 숨은 요구를 적은 것은 고치지 않는다(검사가 알린다)."""
+    from task_spec.starter.contract import fit_traps
+
+    spec = SpecView(
+        req_ids=("r1",),
+        public_ac_ids=("p1",),
+        hidden_acs={"h1": "t1", "h2": "t2"},
+        trap_ids=("t1", "t2"),
+        visible_texts=(),
+    )
+    base = HiddenPlan.model_validate(_plan())
+    proto = base.cases[0]
+    plan = base.model_copy(
+        update={
+            "cases": [
+                proto.model_copy(
+                    update={"case_id": "hc1", "ac_id": "h1", "trap_id": "lost_update"}
+                ),
+                proto.model_copy(
+                    update={"case_id": "hc2", "ac_id": "h2", "trap_id": "pool_exhausted"}
+                ),
+                proto.model_copy(
+                    update={"case_id": "hc3", "ac_id": "h1", "trap_id": "t2"}
+                ),  # 명세의 다른 숨은 요구
+            ]
+        }
+    )
+    fixed, notes = fit_traps(plan, spec)
+    assert [c.trap_id for c in fixed.cases] == ["t1", "t2", "t2"] and len(notes) == 2

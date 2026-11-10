@@ -13,6 +13,7 @@ from task_spec.starter.py_helpers import command_name, flag, py_type
 from task_spec.starter.render import contract_markdown, render_params
 from task_spec.starter.static_check import (
     Overlay,
+    future_input_days,
     py_harness_members,
     static_check,
     unknown_py_harness_members,
@@ -522,3 +523,69 @@ def test_crash_cases_must_not_treat_unreadable_output_as_pass() -> None:
     assert len(got(skip)) == 1 and "'unreadable'" in got(skip)[0]
     assert len(got(either)) == 1
     assert got(strict) == []
+
+
+def test_tests_must_not_write_later_day_folders_before_running() -> None:
+    """2026-11-10 알파 10회차: 9/2 폴더를 9/1 실행 전에 써 두어, 받은 폴더를 모두 읽는 허용 구현이 떨어짐 (손 구현으로 재현)."""
+    early = (
+        "from harness.grader import workspace\n"
+        "from cases.contract import run_pipeline_run\n\n\n"
+        "def test_hc2() -> None:\n"
+        "    ws = workspace()\n"
+        "    ws.write_csv('raw/2026-09-01/batch-01.csv', [{'a': 1}])\n"
+        "    ws.write_csv('raw/2026-09-02/batch-01.csv', [{'a': 1}])\n"
+        "    assert run_pipeline_run(date='2026-09-01', raw_dir=ws.path('raw'), out=ws.path('out')).ok\n"
+        "    assert run_pipeline_run(date='2026-09-02', raw_dir=ws.path('raw'), out=ws.path('out')).ok\n"
+    )
+    got = future_input_days(
+        [GeneratedFile(path="grading/cases/test_hc2.py", content=early)], "숨은 테스트"
+    )
+    assert len(got) == 1 and "2026-09-02(실행 2026-09-01 전)" in got[0]
+    in_order = early.replace(
+        "    ws.write_csv('raw/2026-09-02/batch-01.csv', [{'a': 1}])\n    assert run_pipeline_run(date='2026-09-01'",
+        "    assert run_pipeline_run(date='2026-09-01'",
+    ).replace(
+        "    assert run_pipeline_run(date='2026-09-02'",
+        "    ws.write_csv('raw/2026-09-02/batch-01.csv', [{'a': 1}])\n    assert run_pipeline_run(date='2026-09-02'",
+    )
+    assert future_input_days([GeneratedFile(path="t.py", content=in_order)], "x") == []
+
+
+def test_read_csv_arguments_in_copy_options_are_caught() -> None:
+    """2026-11-10 알파 11회차: COPY … FROM ? (…, ALL_VARCHAR true) — 1.5.6 'Unrecognized option' (stack_notes 가 표 함수라고 안 적었다)."""
+
+    def hits(code: str) -> list[str]:
+        ref = Overlay(
+            kind="ref_accepted",
+            files=(GeneratedFile(path="pipeline/run.py", content=code),),
+            label="d1",
+        )
+        return [
+            p.message
+            for p in static_check(
+                [ref], template=DE, plan=_plan(), spec=_spec(), contract=_contract(), seed=None
+            ).problems
+            if "되풀이되는 실수" in p.message
+        ]
+
+    assert any(
+        "read_csv" in m
+        for m in hits(
+            "con.execute(\"COPY t FROM ? (HEADER, DELIMITER ',', ALL_VARCHAR true)\", [p])\n"
+        )
+    )
+    assert (
+        hits('con.execute("SELECT * FROM read_csv(?, header = true, all_varchar = true)", [p])\n')
+        == []
+    )
+
+
+def test_command_path_must_be_where_the_starter_can_write() -> None:
+    """2026-11-10 알파 12회차: 계약이 batch/daily_sales_summary.py 로 정해 첫 답 통과 → 시작 코드가 '쓸 수 없는 경로'로 실패."""
+    from task_spec.starter.contract import _command_paths
+
+    assert _command_paths(_contract(), DE.manifest) == []  # pipeline/run.py
+    d = _contract().model_dump()
+    d["endpoints"][0]["path"] = "batch/daily_sales_summary.py"
+    got = _command_paths(TaskContract.model_validate(d), DE.manifest)
+    assert len(got) == 1 and "pipeline/**/*.py" in got[0] and "pipeline/run.py" in got[0]

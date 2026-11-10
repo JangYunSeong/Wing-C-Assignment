@@ -68,9 +68,11 @@ class ModelOverride:
 
     def get(self, task: str, version: int | None = None) -> PromptTemplate:
         t = self.base.get(task, version or (self.version if task == "draft_feature_task" else None))
-        # 템플릿별 프롬프트(gen_hidden_react 등)는 기본 이름(gen_hidden)의 지정을 따른다
+        # 템플릿별 프롬프트(gen_hidden_react · gen_hidden_py 등)는 기본 이름(gen_hidden)의 지정을 따른다
         model = (
-            self.per_task.get(task) or self.per_task.get(task.removesuffix("_react")) or self.model
+            self.per_task.get(task)
+            or self.per_task.get(task.removesuffix("_react").removesuffix("_py"))
+            or self.model
         )
         if not model:
             return t

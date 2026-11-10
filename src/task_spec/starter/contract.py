@@ -22,6 +22,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Literal
 
 from task_spec.schemas.build import (
@@ -39,6 +40,7 @@ from task_spec.starter.auth_rule import auth_flags, auth_problems
 from task_spec.starter.header_values import header_problems
 from task_spec.starter.seed_rows import case_rows_problems, seed_problems
 from task_spec.starter.state_rule import legacy_rule, state_problems
+from task_spec.starter.templates import glob_match
 
 
 @dataclass(frozen=True)
@@ -554,6 +556,48 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
     return problems
 
 
+_STYLE_WORDS = {
+    r"^[a-z][a-z0-9_]*$": "snake_case — 소문자·숫자·밑줄 (예 payment_id, run_date)",
+    r"^[a-z][A-Za-z0-9]*$": "camelCase — 소문자로 시작, 밑줄·하이픈 없이 (예 paymentId, runDate)",
+}
+
+
+def field_style(rx: str) -> str:
+    """필드 이름 규칙을 말로 — 정규식만 주면 작은 모델이 읽지 못한다 (2026-11-10 gpt-5.4-nano: camelCase·--run-date 를 재요청에도 반복)."""
+    return _STYLE_WORDS.get(rx, f"정규식 {rx}")
+
+
+def suggest_field(name: str, rx: str) -> str | None:
+    """규칙에 맞는 이름 제안 — 앞의 하이픈을 떼고 낱말을 나눠 snake_case·camelCase 중 규칙에 맞는 쪽 (못 맞추면 None)."""
+    parts = [w.lower() for w in re.split(r"[-_\s.]+|(?<=[a-z0-9])(?=[A-Z])", name.lstrip("-")) if w]
+    if not parts:
+        return None
+    for cand in ("_".join(parts), parts[0] + "".join(w[:1].upper() + w[1:] for w in parts[1:])):
+        if re.fullmatch(rx, cand):
+            return cand
+    return None
+
+
+def _command_paths(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
+    """명령(메서드 없는 엔드포인트) 경로가 시작 코드가 파일을 만들 수 있는 곳(manifest fill_slots.starter)인가 — 아니면 시작 코드가 진입점을
+    만들지 못해 생성이 실패한다. 2026-11-10 데이터 알파 12회차: 계약이 batch/daily_sales_summary.py 로 정해 첫 답 그대로 통과했고, 시작 코드가
+    '쓸 수 없는 경로'로 재요청에도 실패해 빌드가 시작도 못 했다 (앞 11회는 모두 pipeline/ 아래)."""
+    slots = manifest.fill_slots.get("starter") or []
+    if not slots:
+        return []
+    out: list[str] = []
+    for e in contract.endpoints:
+        if e.method is not None or glob_match(e.path, slots):
+            continue
+        suffix = PurePosixPath(e.path).suffix
+        near = [g for g in slots if suffix and g.endswith(suffix)] or slots
+        out.append(
+            f"명령 {e.endpoint_id} 경로 {e.path!r} 는 시작 코드가 파일을 만들 수 없는 곳 — {', '.join(near)} 안에 둔다 "
+            f"(예: {near[0].replace('**/', '').replace('*', 'run')})"
+        )
+    return out
+
+
 def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
     problems: list[str] = []
     if contract.interface_kind not in manifest.interfaces:
@@ -594,7 +638,10 @@ def _naming(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
         }
     )
     if bad_fields:
-        problems.append(f"필드 이름이 템플릿 이름 규칙과 다름: {', '.join(bad_fields)}")
+        fixes = [f"{n} → {sug}" if (sug := suggest_field(n, rx.field)) else n for n in bad_fields]
+        problems.append(
+            f"필드 이름이 템플릿 이름 규칙과 다름 (필드는 {field_style(rx.field)}): {', '.join(fixes)} — 그 이름으로 바꿔 적는다"
+        )
     bad_headers = sorted(
         {
             f.name
@@ -1062,6 +1109,7 @@ def check_contract(
     problems = _ids(contract, plan)
     problems += _coverage(contract, plan, spec)
     problems += _naming(contract, manifest)
+    problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _leaks(contract, spec, seed)
     problems += _ui_actions(contract)

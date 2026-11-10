@@ -946,6 +946,7 @@ def _hidden_cases(
     out += unknown_py_harness_members(cases, t.hidden / "harness", "숨은 테스트")
     out += unknown_py_keywords(cases, t.hidden / "harness", helper, "숨은 테스트")
     out += unrun_input_days(cases, "숨은 테스트")
+    out += future_input_days(cases, "숨은 테스트")
     out += unreadable_as_pass(cases, "숨은 테스트")
     out += guessed_names(cases, contract, "숨은 테스트")
     out += type_escapes(cases, "숨은 테스트")
@@ -1380,6 +1381,86 @@ def unrun_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
     return out
 
 
+def future_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+    """Python 테스트 함수가 실행 날짜보다 **뒤** 날짜 폴더를 그 실행 전에 미리 씀 — 실제로는 아직 받지 않은 입력이라, 공개 계약에 없는 요구
+    ('실행 날짜보다 뒤 폴더는 읽지 않는다')를 시험하게 된다. 2026-11-10 데이터 알파 10회차: hc1·hc2 가 9/2 폴더를 9/1 실행 전에 써 두어,
+    받은 폴더를 모두 읽는 허용 구현(손 구현으로 재현)이 떨어졌다. 줄 순서로 본다 — 날짜·경로가 변수인 함수는 보지 않는다."""
+    out: list[str] = []
+    for f in cases:
+        if not f.path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(f.content)
+        except SyntaxError:
+            continue
+        commands: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").rsplit(".", 1)[-1] == "contract"
+            ):
+                commands |= {
+                    al.asname or al.name for al in node.names if al.name.startswith("run_")
+                }
+        if not commands:
+            continue
+        for fn in tree.body:
+            if not (
+                isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and fn.name.startswith("test")
+            ):
+                continue
+            events: list[tuple[int, str, str]] = []  # (줄, write|run, 날짜)
+            unknown = False
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr in _WRITERS
+                    and node.args
+                ):
+                    a0 = node.args[0]
+                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                        events += [
+                            (node.lineno, "write", m.group(1))
+                            for m in _DAY.finditer(a0.value)
+                            if f"{m.group(1)}/" in a0.value
+                        ]
+                    else:
+                        unknown = True
+                elif isinstance(node.func, ast.Name) and node.func.id in commands:
+                    for kw in node.keywords:
+                        v = kw.value
+                        if (
+                            isinstance(v, ast.Constant)
+                            and isinstance(v.value, str)
+                            and _DAY.fullmatch(v.value)
+                        ):
+                            events.append((node.lineno, "run", v.value))
+                        elif kw.arg and "date" in kw.arg and not isinstance(v, ast.Constant):
+                            unknown = True
+            if unknown:
+                continue
+            if any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(fn)):
+                continue  # 반복문 안은 줄 순서가 실행 순서가 아니다
+            written: set[str] = set()
+            early: set[tuple[str, str]] = set()
+            for _, kind, day in sorted(events):
+                if kind == "write":
+                    written.add(day)
+                else:
+                    early |= {(w, day) for w in written if w > day}
+            if early:
+                pairs = ", ".join(f"{w}(실행 {r} 전)" for w, r in sorted(early)[:4])
+                out.append(
+                    f"{label} {f.path} 의 {fn.name} 가 실행 날짜보다 뒤 날짜 폴더를 그 실행 전에 씀: {pairs} — 입력은 받은 순서대로, "
+                    "날짜 폴더는 그 날짜를 실행하기 직전에 쓴다. 미리 두면 공개 계약에 없는 '뒤 폴더는 읽지 않는다'를 시험하게 되어 "
+                    "받은 폴더를 모두 읽는 허용 구현이 떨어진다"
+                )
+    return out
+
+
 def _compares(expr: ast.expr, values: set[str], op: type[ast.cmpop]) -> bool:
     return (
         isinstance(expr, ast.Compare)
@@ -1593,6 +1674,7 @@ def _public_cases(
     out += unknown_py_harness_members(cases, t.hidden / "harness", "공개 테스트")
     out += unknown_py_keywords(cases, t.hidden / "harness", helper, "공개 테스트")
     out += unrun_input_days(cases, "공개 테스트")
+    out += future_input_days(cases, "공개 테스트")
     out += unreadable_as_pass(cases, "공개 테스트")
     out += guessed_names(cases, contract, "공개 테스트")
     out += type_escapes(cases, "공개 테스트")
