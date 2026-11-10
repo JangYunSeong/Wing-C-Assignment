@@ -1165,6 +1165,34 @@ def _ui_load_and_background(contract: TaskContract) -> list[str]:
     return out
 
 
+# 항목 여러 개를 보여 주는 요소 — 처음 항목이 어디서 오는지 계약에 있어야 테스트가 그 항목을 줄 수 있다
+LIST_ROLES = frozenset({"list", "item", "listbox", "option", "row", "table", "grid", "listitem"})
+
+
+def _ui_data_source(contract: TaskContract) -> list[str]:
+    """ui 계약: 목록을 보여 주는 화면인데 처음 항목이 어디서 오는지 없음 — 읽는 API(GET)·만드는 API(POST)·브라우저 저장소·브라우저 입력 환경
+    중 아무것도 없으면 테스트는 처음 항목을 줄 방법이 없어 하네스에 없는 인자를 지어내고(renderApp(경로, 초기 데이터)), 구현은 샘플 항목을
+    코드에 박는다. 2026-11-10 프론트 알파 fe-v3-opt(plan_contract v20): 장바구니 화면 on_load '서버 요청 없음'·API 는 PATCH 하나."""
+    if contract.interface_kind != "ui":
+        return []
+    if any(e.method in ("GET", "POST") for e in contract.endpoints) or any(
+        f.kind == "browser" for f in contract.fixtures
+    ):
+        return []
+    empty = [
+        sc.route
+        for sc in contract.screens
+        if not sc.storage and any(el.role in LIST_ROLES for el in sc.elements)
+    ]
+    if not empty:
+        return []
+    return [
+        f"목록을 보여 주는 화면 {', '.join(empty)} 의 처음 항목이 어디서 오는지 계약에 없음 (읽는 API·브라우저 저장소·입력 환경이 없음) — "
+        "화면에 들어올 때 목록을 읽는 서버 API(GET, 이미 있는 API 면 existing)를 endpoints 와 on_load 에 적거나, 브라우저 저장소(storage)와 "
+        "그 처음 내용(fixtures kind=browser)을 적는다. 테스트는 그 API 응답·저장소로만 처음 항목을 줄 수 있다"
+    ]
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -1183,6 +1211,7 @@ def check_contract(
     problems += _leaks(contract, spec, seed)
     problems += _ui_actions(contract)
     problems += _ui_load_and_background(contract)
+    problems += _ui_data_source(contract)
     if "file" in manifest.interfaces:
         problems += _file_fixtures(contract)
     harness_problems, gaps, flags = _harness(plan, spec, manifest)

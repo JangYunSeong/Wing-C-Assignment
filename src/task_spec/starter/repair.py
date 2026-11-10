@@ -150,7 +150,20 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
     return list(out.values())
 
 
-def _starter(run: TargetRun) -> list[RepairAction]:
+def _starter(
+    run: TargetRun,
+    overlays: Mapping[str, Overlay] | None = None,
+    terms: RepairTerms | None = None,
+) -> list[RepairAction]:
+    # 컴파일 오류가 모두 공개·숨은 테스트 파일 안이면 시작 코드 탓이 아니다 — 그 파일을 쓴 생성기로 (참조 구현과 같은 규칙).
+    # 2026-11-10 프론트 알파 fe-v3-opt: 다시 만든 공개 테스트의 TS2554 를 '시작 코드 빌드 실패'로 짚어 시작 코드만 다시 만들었다.
+    if (
+        run.setup == "compile_error"
+        and overlays
+        and run.compile_errors
+        and all(_owner(e.path, run, overlays) in ("public", "hidden") for e in run.compile_errors)
+    ):
+        return _ref_setup(run, overlays, terms=terms)
     if run.setup != "ok":
         errs = "\n".join(f"- {e.path}:{e.line} {e.message}" for e in run.compile_errors[:12])
         return [
@@ -809,26 +822,33 @@ def _gate4(
     return actions, unresolved
 
 
-# 채점 환경에 없는 브라우저 기능 — 컴파일(tsc)은 타입 선언으로 통과하고 실행 때만 없다 (jsdom 미구현).
-# 2026-11-10 v20-fe: React 템플릿 v2 하네스에 IndexedDB 가 없어 허용 구현까지 모두 같은 예외 → 수리가 공개 테스트를
-# '테스트 의심' 으로 다시 만들다 예산을 다 썼다 (원인이 테스트가 아니라 고쳐지지 않는다, 이슈 #83).
-_ENV_MISSING = re.compile(r"ReferenceError: (\w+) is not defined|Not implemented: ([\w.]+)")
-
-
-def _missing_env(runs: Sequence[TargetRun]) -> list[str]:
-    """준비된 구현 **모두**(2개 이상)의 테스트에서 나온, 채점 환경에 없는 기능 이름 — 구현·테스트를 다시 만들어도 안 고쳐진다."""
-    if len(runs) < 2:
+def _grading_env(runs: Sequence[TargetRun], terms: RepairTerms | None) -> list[str]:
+    """모든 구현이 같은 테스트에서 '채점 환경에 없는 기능' 오류(manifest repair_terms.grading_env)로 떨어지면 — 생성물이 아니라 템플릿
+    채점 환경 문제라 무엇을 다시 만들어도 같다. 2026-11-10 프론트 알파 0108be12: jsdom 에 IndexedDB 가 없어 허용 구현 3개·흔한 구현이
+    모두 `ReferenceError: indexedDB is not defined` 였는데 '테스트 의심'으로 공개 테스트를 두 번 다시 만들고 예산을 다 썼다."""
+    if terms is None or not terms.grading_env or len(runs) < 2:
         return []
-    seen: list[set[str]] = []
-    for r in runs:
-        names = {
-            a or b
-            for x in r.tests
-            if x.result == "HARNESS_ERR"
-            for a, b in _ENV_MISSING.findall(x.message or "")
-        }
-        seen.append(names)
-    return sorted(set.intersection(*seen))
+    rx = re.compile(terms.grading_env)
+    names = sorted({(t.group, t.name) for r in runs for t in r.tests if t.result != "PASS"})
+    out: list[str] = []
+    for group, name in names:
+        msgs = [
+            next(
+                (
+                    t.message
+                    for t in r.tests
+                    if t.group == group and t.name == name and t.result != "PASS"
+                ),
+                None,
+            )
+            for r in runs
+        ]
+        if all(m is not None and rx.search(m) for m in msgs):
+            out.append(
+                f"채점 환경 확인 필요 — 구현 {len(runs)}개가 모두 {group} {name} 에서 채점 환경 오류: {_short(msgs[0] or '')} "
+                "(테스트·구현을 다시 만들지 않았다 — 템플릿 채점 환경에 그 기능이 있는지 확인)"
+            )
+    return out
 
 
 def assign(
@@ -849,7 +869,13 @@ def assign(
     if starter is None:
         res.unresolved.append("시작 코드 검증 결과가 없음")
         return res
-    if acts := _starter(starter):
+    if env := _grading_env(
+        [r for r in report.runs if r.kind not in ("starter", "starter_hidden") and r.setup == "ok"],
+        terms,
+    ):
+        res.unresolved += env  # 다시 만들 것이 없다 — 승인자에게 (review_flags)
+        return res
+    if acts := _starter(starter, overlays, terms):
         res.actions = acts
         return res
     acts, flags = _starter_public(starter, counts)
@@ -881,13 +907,6 @@ def assign(
             actions += _ref_setup(run, overlays, boot_note, terms)
             continue
         ready.append(run)
-    if missing := _missing_env(ready):
-        # 생성기를 다시 부르지 않고 사람에게 — 템플릿 하네스를 고칠 일
-        res.unresolved.append(
-            f"채점 환경 확인 필요: 모든 구현({', '.join(r.target for r in ready)})의 테스트가 채점 환경에 없는 기능 "
-            f"{', '.join(missing)} 에서 멈춤 — 템플릿 하네스가 이 과제가 쓰는 브라우저 기능을 지원하는지 확인한다 (생성물 재생성 안 함)"
-        )
-        return res
     shared = _shared_note(ready, overlays, shared_paths)
     ambiguous, skip = _contract_ambiguity(ready, starter, shared)
     res.unresolved += ambiguous

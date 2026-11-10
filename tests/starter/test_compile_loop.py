@@ -177,3 +177,89 @@ async def test_errors_outside_the_implementation_are_not_sent_back() -> None:
     out, backend = await _build(compiler)
     assert out.status == "failed" and len(compiler.parts) == 1
     assert backend.calls.count("gen_starter") == 1
+
+
+PUBLIC_JAVA = "src/test/java/com/example/service/publictests/OrderHistoryPublicTest.java"
+
+
+async def test_regenerated_public_tests_are_compiled_before_the_next_verify() -> None:
+    """2026-11-10 프론트 알파 fe-v3-opt: ⑤ 로 다시 만든 공개 테스트가 컴파일되지 않은 채 검증에 들어가 모든 대상이 compile_error →
+    ① 이 시작 코드를 다시 만들었다. 다시 만든 채점 코드도 처음처럼 컴파일하고 오류는 그 파일을 쓴 생성기로."""
+    from tests.starter.test_repair import _run, _t
+
+    every_ref_fails_pt1 = _one_case(
+        _run(
+            "naive-all",
+            "ref_naive",
+            _t("hidden", "hc1", "ASSERT", "pool_acquire_timeout", "32"),
+            _t("public", "pt1", "ASSERT", None, "expected 200 but was 404"),
+        ),
+        _run(
+            "d1",
+            "ref_accepted",
+            _t("hidden", "hc1"),
+            _t("public", "pt1", "ASSERT", None, "expected 200 but was 404"),
+        ),
+    )
+    verifier = ScriptedVerifier(every_ref_fails_pt1, _one_case(NAIVE_OK, D1_OK))
+    pub_err = CompileError(
+        path=PUBLIC_JAVA, line=9, message="cannot find symbol", detail="symbol: method seed"
+    )
+    compiler = ScriptedCompiler([], [pub_err], [])  # 처음 · ⑤ 뒤 · 재요청 뒤
+    llm, backend = _llm()
+    out = await build_and_repair(
+        _inputs(),
+        (D1,),
+        llm=llm,
+        prompts=PROMPTS,
+        ontology_version="onto-test",
+        verifier=verifier,
+        compiler=compiler,
+    )
+    assert out.status == "review"
+    assert [(r.gate, r.target, r.result) for r in out.repairs] == [
+        ("⑤", "gen_public", "regenerated"),
+        ("compile", "gen_public", "regenerated"),
+    ]
+    assert len(compiler.seen) == 3 and backend.calls.count("gen_public") == 3
+    assert backend.calls.count("gen_starter") == 1  # 시작 코드는 탓하지 않는다
+    public_calls = [u for name, u in backend.users if name == "gen_public"]
+    assert "symbol: method seed" in public_calls[2]
+
+
+def test_starter_compile_errors_inside_test_files_go_to_the_test_generator() -> None:
+    """같은 알파: 모든 오류가 공개 테스트 파일 안인데 '시작 코드 빌드 실패'(①)로 시작 코드를 다시 만들었다."""
+    from task_spec.schemas import GeneratedFile, TargetRun, VerifyReport
+    from task_spec.starter.repair import assign
+    from tests.starter.test_repair import MISSED, OVERLAYS, PLAN2, PUBLIC_TEST
+
+    def report(path: str) -> VerifyReport:
+        return VerifyReport(
+            runs=[
+                TargetRun.model_validate(
+                    {
+                        "target": "starter",
+                        "kind": "starter",
+                        "setup": "compile_error",
+                        "compile_errors": [
+                            {
+                                "path": path,
+                                "line": 16,
+                                "message": "TS2554: Expected 0-1 arguments, but got 2.",
+                            }
+                        ],
+                    }
+                )
+            ]
+        )
+
+    public = Overlay(
+        kind="public_test", files=(GeneratedFile(path=PUBLIC_JAVA, content=PUBLIC_TEST),)
+    )
+    overlays = dict(OVERLAYS) | {"public": public}
+    plan = assign(report(PUBLIC_JAVA), PLAN2, overlays, MISSED)
+    assert [(a.generator, a.compile) for a in plan.actions] == [("gen_public", True)]
+    assert "TS2554" in plan.actions[0].note
+    # 시작 코드 파일의 오류는 그대로 시작 코드
+    plan = assign(report(ORDER_JAVA), PLAN2, overlays, MISSED)
+    assert [(a.generator, a.gate) for a in plan.actions] == [("gen_starter", "①")]

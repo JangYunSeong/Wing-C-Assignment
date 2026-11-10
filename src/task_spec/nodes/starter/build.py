@@ -417,7 +417,7 @@ async def build_and_repair(
             return None
         return r.overlay
 
-    def absorb(fix: ImplFix) -> None:
+    def absorb(fix: ImplFix | CompileFix) -> None:
         for r in fix.results:
             note_static(r)
             out.provenance += r.provenance
@@ -571,13 +571,41 @@ async def _regenerate(
     took,  # type: ignore[no-untyped-def]
     drop,  # type: ignore[no-untyped-def]
     compiler: TestCompiler | None = None,
-    absorb: Callable[[ImplFix], None] | None = None,
+    absorb: Callable[[ImplFix | CompileFix], None] | None = None,
 ) -> bool:
     """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
     시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
     notes = {a.key: f"검증 실패 (게이트 {a.gate}) — {a.note}" for a in actions}
     for a in actions:  # 컴파일 수리는 따로 센다 (RepairAction.budget_key)
         out.regen_counts[a.budget_key] = out.regen_counts.get(a.budget_key, 0) + 1
+
+    async def tests_compile() -> bool:
+        """다시 만든 채점 코드(숨은·공개 테스트)도 구현에 쓰기 전에 컴파일 — 처음 만들 때(compile_and_fix)와 같은 루프.
+        2026-11-10 프론트 알파 fe-v3-opt: ⑤ 로 다시 만든 공개 테스트가 컴파일되지 않은 채 검증에 들어가, 모든 대상이 compile_error →
+        ① 이 시작 코드를 다시 만들었고 그 시작 코드도 같은 공개 테스트 오류로 '컴파일 실패'가 됐다."""
+        test_compile = getattr(compiler, "compile_tests", None)
+        if compiler is None or test_compile is None:
+            return True
+        fix = await compile_and_fix(b, out.overlays[HIDDEN], out.overlays.get(PUBLIC), compiler, kw)
+        if absorb is not None:  # 재요청 결과의 provenance·수리 이력 (ImplFix 와 같은 칸)
+            absorb(fix)
+        else:
+            for r in fix.results:
+                out.provenance += r.provenance
+                out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
+            out.repairs += fix.repairs
+        out.overlays[HIDDEN] = fix.hidden
+        if fix.public is not None:
+            out.overlays[PUBLIC] = fix.public
+        if fix.errors:
+            e = fix.errors[0]
+            out.review_flags.append(
+                f"다시 만든 채점 코드 컴파일 실패 (재요청 {len(fix.repairs)}회 뒤, 오류 {len(fix.errors)}건): "
+                f"{e.path}:{e.line} {e.message} {e.detail}".strip()[:300]
+            )
+            return False
+        return True
+
     starter = out.overlays[STARTER]
     public = out.overlays.get(PUBLIC)
     if (
@@ -593,7 +621,10 @@ async def _regenerate(
         ]
         if new_public is None:
             return False
-        out.overlays[PUBLIC] = public = new_public
+        out.overlays[PUBLIC] = new_public
+        if not await tests_compile():
+            return False
+        public = out.overlays[PUBLIC]
     if "gen_starter" in notes:
         new = took(
             await gen_starter(b, note=notes["gen_starter"], previous=starter, public=public, **kw)  # type: ignore[arg-type]
@@ -677,6 +708,8 @@ async def _regenerate(
             out.overlays[label] = new
             if label != HIDDEN:
                 remade.append(label)
+    if "gen_hidden" in notes and out.overlays.get(HIDDEN) is not None and not await tests_compile():
+        return False
     if (
         compiler is not None and absorb is not None and remade
     ):  # 다시 만든 참조 구현도 검증 전에 컴파일
