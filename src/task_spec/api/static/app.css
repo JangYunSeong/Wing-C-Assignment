@@ -354,3 +354,28 @@ td.num { text-align: right; }
 .banner.risk { background: var(--risk-soft); }
 .banner.info { background: var(--info-soft); }
 .banner strong { font-size: 14px; }
+
+/* ── 빌드 화면 (builds.html) ───────── */
+.top-nav { margin-left: auto; display: flex; gap: 4px; }
+.top-nav a { color: var(--muted); text-decoration: none; font-size: 13px; padding: 6px 10px; border-radius: var(--r-ctl); }
+.top-nav a:hover { color: var(--ink); background: var(--sunk); }
+.top-nav a[aria-current="page"] { color: var(--ink); font-weight: 700; background: var(--sunk); box-shadow: inset 0 -2px 0 var(--accent); }
+.recent button[aria-current="true"] .recent-name { color: var(--accent-ink); }
+.pill.b-review { color: var(--accent-ink); background: var(--accent-soft); }
+.pill.b-approved, .pill.b-published { color: var(--ok); background: var(--ok-soft); }
+.pill.b-generating, .pill.b-verifying, .pill.b-pending { color: var(--info); background: var(--info-soft); }
+.pill.b-failed { color: var(--risk); background: var(--risk-soft); }
+.faint { color: var(--faint); font-size: 12px; }
+.good { color: var(--ok); font-weight: 700; }
+.bad { color: var(--risk); font-weight: 700; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; color: var(--muted); }
+.kv b { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
+.bflags { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.bflags li { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: start; font-size: 13px; padding: 8px 10px; border-radius: var(--r-ctl); background: var(--sunk); border: 1px solid var(--line); }
+.bflags li p { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .bflags li { grid-template-columns: auto minmax(0, 1fr); } .bflags li p { grid-column: 1 / -1; } }
+.art { display: flex; flex-direction: column; gap: 8px; }
+.art h4 { font-size: 13.5px; font-weight: 700; margin: 0; }
+td.hash { white-space: nowrap; }
+td.hash .copy { margin-left: 6px; }
+.top-nav + .top-meta { margin-left: 0; }

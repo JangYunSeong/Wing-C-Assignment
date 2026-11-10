@@ -57,9 +57,10 @@ def create_app(
         common_store = await CommonTaskStore.open(
             app.state.settings.database_url.get_secret_value()
         )
-        # 공통 과제 빌드 저장소 — 지원자 README 등 공개 정보 조회 (#85)
-        build_store = await PgBuildStore.open(app.state.settings.database_url.get_secret_value())
-        app.state.builds = build_store
+        # 공통 과제 빌드·전달 묶음 저장소 (#85) — 테이블은 여기서 만든다. 묶음 파일은 settings.images_root
+        app.state.builds = await PgBuildStore.open(
+            app.state.settings.database_url.get_secret_value()
+        )
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때
@@ -89,7 +90,7 @@ def create_app(
                 await app.state.ontology.close()
                 await store.close()
                 await common_store.close()
-                await build_store.close()
+                await app.state.builds.close()
 
     app = FastAPI(title="task-spec", lifespan=lifespan)
     if settings is not None:

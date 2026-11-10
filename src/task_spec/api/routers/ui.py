@@ -1,6 +1,6 @@
 """임시 화면 (과제 명세 작업대) — GET /ui/ [제안: 2026-11-04 사용자 요청, 내부 시험용].
 
-정적 파일 세 개(index.html·app.css·app.js)만 내준다. 화면은 기존 API(/postings·/runs)만 부르고 새 데이터 경로를 만들지 않는다.
+정적 파일 세 개(index.html·app.css·app.js)만 내준다. 화면은 기존 API(/postings·/runs·/builds)만 부르고 새 데이터 경로를 만들지 않는다.
 경로 조작을 막으려고 디렉터리를 통째로 마운트하지 않고 정해 둔 파일만 돌려준다. UI_ENABLED=false 면 404.
 인증은 아직 없다 — 운영에서는 nginx Basic 인증 뒤에 둔다 (docs/deploy.md) [TODO(auth)].
 """
@@ -23,6 +23,8 @@ FILES: dict[str, str] = {
     "index.html": "text/html; charset=utf-8",
     "app.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "builds.html": "text/html; charset=utf-8",  # 공통 과제 빌드 화면 (/builds API 만 부른다)
+    "builds.js": "text/javascript; charset=utf-8",
 }
 
 

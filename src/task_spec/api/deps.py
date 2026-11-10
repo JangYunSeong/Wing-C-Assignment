@@ -77,6 +77,7 @@ PostingsDep = Annotated[PostingsContext, Depends(get_postings)]
 
 
 def get_builds(request: Request) -> BuildRepo:
+    """공통 과제 빌드 저장소 — lifespan 이 연다 (테스트는 InMemoryBuildStore 를 app.state.builds 에)."""
     store = getattr(request.app.state, "builds", None)
     if store is None:
         raise ServiceUnavailable("빌드 저장소가 준비되지 않았습니다 (DB 미연결)")

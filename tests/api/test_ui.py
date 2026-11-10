@@ -22,6 +22,18 @@ async def test_ui_serves_only_listed_files(make_client: AppFactory) -> None:
         assert r.status_code == 404, bad
 
 
+async def test_ui_builds_page_uses_build_apis_only(make_client: AppFactory) -> None:
+    client = await make_client()
+    page = await client.get("/ui/builds.html")
+    assert page.status_code == 200 and 'src="builds.js"' in page.text
+    assert 'href="builds.html"' in (await client.get("/ui/")).text  # 작업대에서 오갈 수 있게
+    js = (await client.get("/ui/builds.js")).text
+    assert "/builds?limit=" in js and "/artifacts" in js and "/delivery-targets" in js
+    # 숨은 계획·테스트 본문은 API 가 내주지 않는다 — 화면도 그 칸을 기대하지 않는다
+    for hidden in ("hidden_plan", "intended_reason", "contract", "content"):
+        assert hidden not in js, hidden
+
+
 async def test_ui_disabled_returns_404(make_client: AppFactory) -> None:
     client = await make_client(ui_enabled=False)
     for path in ("/", "/ui", "/ui/", "/ui/app.js"):
