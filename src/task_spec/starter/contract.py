@@ -425,30 +425,56 @@ def contract_fields(contract: TaskContract) -> list[tuple[str, ContractField]]:
     return _fields(contract)
 
 
-def contract_text(contract: TaskContract) -> str:
-    """계약에서 지원자에게 보이는 글 전부 + 식별자를 낱말로 푼 것 (숨은 요구 핵심어 검사용)."""
-    parts: list[str] = []
+def contract_places(contract: TaskContract) -> list[tuple[str, str]]:
+    """(자리, 글) — 계약에서 지원자에게 보이는 글 전부 + 식별자를 낱말로 푼 것. 숨은 요구 핵심어가 어디에 나왔는지 짚을 때 쓴다.
+    2026-11-11 재측정 토큰 갱신: 누설 검사가 낱말('재사용')만 알려 줘 계약 답 3개가 모두 같은 자리(오류 응답 설명)에 같은 말을 넣었다."""
+    out: list[tuple[str, str]] = []
     for e in contract.endpoints:
-        parts += [e.path, _words(e.path), e.summary]
-        parts += [r.description for r in e.responses]
+        api = f"API {e.method or e.endpoint_id} {e.path}"
+        out += [(f"{api} 경로", f"{e.path} {_words(e.path)}"), (f"{api} 요약", e.summary)]
+        out += [(f"{api} 응답 {r.status} 설명", r.description) for r in e.responses]
     for m in contract.entities:
-        parts += [m.name, _words(m.name), *m.relations]
-    for _, f in _fields(contract):
-        parts += [f.name, _words(f.name), f.type, f.constraints or ""]
-    for fx in contract.fixtures:
-        parts += [fx.summary, fx.content]
+        out += [(f"엔티티 {m.name}", f"{m.name} {_words(m.name)}")]
+        out += [(f"엔티티 {m.name} 관계", r) for r in m.relations]
+    for where, f in _fields(contract):
+        out += [
+            (f"{where} 필드 {f.name}", f"{f.name} {_words(f.name)} {f.type} {f.constraints or ''}")
+        ]
+    for i, fx in enumerate(contract.fixtures, 1):
+        out += [(f"시드 파일 {i} 요약", fx.summary), (f"시드 파일 {i} 내용", fx.content)]
     for sc in contract.screens:
-        parts += [sc.route, sc.summary]
-        parts += [
-            f"{el.test_id} {_words(el.test_id)} {el.description} {el.action or ''}"
+        out += [(f"화면 {sc.route}", f"{sc.route} {sc.summary}")]
+        out += [
+            (
+                f"화면 {sc.route} 요소 {el.test_id}",
+                f"{el.test_id} {_words(el.test_id)} {el.description} {el.action or ''}",
+            )
             for el in sc.elements
         ]
-        parts += [f"{k.name} {k.shape}" for k in sc.storage]
+        out += [(f"화면 {sc.route} 저장소 {k.name}", f"{k.name} {k.shape}") for k in sc.storage]
     for s in contract.seed:
-        parts += s.rules
-        parts += [f"{k} {v}" for g in s.groups for k, v in g.values.items()]
-    parts += [t.checks for t in contract.public_tests]
-    return "\n".join(p for p in parts if p)
+        out += [(f"시드 {s.entity_id} 규칙", r) for r in s.rules]
+        out += [
+            (f"시드 {s.entity_id} 값 {k}", f"{k} {v}")
+            for g in s.groups
+            for k, v in g.values.items()
+        ]
+    out += [(f"공개 테스트 {t.test_id}", t.checks) for t in contract.public_tests]
+    return [(w, t) for w, t in out if t and t.strip()]
+
+
+def contract_text(contract: TaskContract) -> str:
+    """계약에서 지원자에게 보이는 글 전부 + 식별자를 낱말로 푼 것 (숨은 요구 핵심어 검사용)."""
+    return "\n".join(t for _, t in contract_places(contract))
+
+
+def _quote(text: str, term: str, width: int = 30) -> str:
+    """글에서 term 이 나온 곳 앞뒤 width 글자."""
+    i = text.lower().find(term.lower())
+    if i < 0:
+        return " ".join(text.split())[: width * 2]
+    s = " ".join(text[max(0, i - width) : i + len(term) + width].split())
+    return ("…" if i > width else "") + s + ("…" if i + len(term) + width < len(text) else "")
 
 
 def element_refs(contract: TaskContract) -> dict[str, list[str]]:
@@ -759,13 +785,19 @@ def hidden_terms(seed: FeatureSeed | None, spec: SpecView) -> list[str]:
 
 
 def _leaks(contract: TaskContract, spec: SpecView, seed: FeatureSeed | None) -> list[str]:
-    shown = find_terms(hidden_terms(seed, spec), contract_text(contract))
+    places = contract_places(contract)
+    shown = find_terms(hidden_terms(seed, spec), "\n".join(t for _, t in places))
     if not shown:
         return []
+    where = []
+    for term in shown:
+        hits = [(w, t) for w, t in places if find_terms([term], t)]
+        at = "; ".join(f'{w}: "{_quote(t, term)}"' for w, t in hits[:2])
+        where.append(f"{term} ({at})" if at else term)
     return [
         "숨은 요구·운영 조건을 드러내는 말이 공개 계약(경로·필드·설명·시드·공개 테스트)에 나옴: "
-        + ", ".join(shown)
-        + " — 계약은 '무엇을'만, 숨은 요구와 운영 조건은 담지 않는다"
+        + ", ".join(where)
+        + " — 그 자리에서 이 말을 빼거나 업무 말로 바꾼다. 계약은 '무엇을'만, 숨은 요구와 운영 조건은 담지 않는다"
     ]
 
 

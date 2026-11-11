@@ -12,6 +12,8 @@ from typing import Literal
 
 from task_spec.schemas.build import ContractResponse, GeneratedFile, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.field_types import FieldType
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.hidden_helpers import method_name
 from task_spec.starter.tables import spring_snake
 
@@ -127,7 +129,9 @@ def render_ts_contract(
         "}",
     ]
     names = {m.entity_id: _ident(m.name) for m in contract.entities}
-    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities}
+    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities} | {
+        m.entity_id: _ident(m.name) for m in contract.entities
+    }  # 필드 타입에 엔티티 id(m2[]) 를 써도 (스모크 예시와 같게)
     lines += ["", "/** 계약 데이터 모양 (entities) — 응답 본문의 타입 */"]
     for m in contract.entities:
         lines.append(f"export interface {names[m.entity_id]} {{")
@@ -226,7 +230,9 @@ def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> Gene
     if language != "typescript" or manifest.public_helper is None or not contract.screens:
         return None  # Java·Python 템플릿은 켜지 않는다 (백엔드는 2단계에서 타입 대응표로)
     names = {m.entity_id: _ident(m.name) for m in contract.entities}
-    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities}
+    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities} | {
+        m.entity_id: _ident(m.name) for m in contract.entities
+    }  # 필드 타입에 엔티티 id(m2[]) 를 써도 (스모크 예시와 같게)
     lines = [
         "// 이 과제의 공개 계약에서 빌드 파이프라인이 만든 타입 — 손으로 고치지 않는다 (잠김).",
         "// 서버 응답은 이 타입으로 읽는다: `const data: <Api>Ok = await res.json();` — 같은 이름의 타입을 다시 정의하지 않는다.",
@@ -267,18 +273,6 @@ def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> Gene
     return GeneratedFile(path=APP_TYPES, content="\n".join(lines) + "\n")
 
 
-_SCALAR = {
-    **dict.fromkeys(
-        ("string", "text", "uuid", "date", "datetime", "date-time", "time", "email", "url"),
-        "string",
-    ),
-    **dict.fromkeys(("integer", "int", "long", "number", "float", "double", "decimal"), "number"),
-    **dict.fromkeys(("boolean", "bool"), "boolean"),
-    **dict.fromkeys(("array", "list"), "unknown[]"),
-    **dict.fromkeys(("object", "map", "json"), "Record<string, unknown>"),
-}
-
-
 def _ident(name: str) -> str:
     out = re.sub(r"[^A-Za-z0-9_$]", "", name)
     return out if out and not out[0].isdigit() else f"T{out}"
@@ -288,22 +282,36 @@ def _prop(name: str) -> str:
     return name if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else _ts(name)
 
 
+_TS_SCALAR = {
+    "string": "string",
+    "datetime": "string",
+    "date": "string",
+    "time": "string",
+    "integer": "number",
+    "number": "number",
+    "boolean": "boolean",
+    "object": "Record<string, unknown>",
+}
+
+
 def ts_type(t: str, entities: dict[str, str]) -> str:
-    """계약 필드 형식 → TypeScript 타입. 모르는 형식은 unknown (막지 않는다)."""
-    t = t.strip()
-    if t.endswith("[]"):
-        inner = ts_type(t[:-2], entities)
-        return f"({inner})[]" if "|" in inner else f"{inner}[]"
-    m = re.fullmatch(r"(?:array|list)\s*<\s*(.+?)\s*>", t, re.I)
-    if m:
-        return ts_type(m.group(1) + "[]", entities)
-    m = re.fullmatch(r"enum\s*\((.+)\)", t, re.I)
-    if m:
-        values = [v.strip() for v in re.split(r"[|,]", m.group(1)) if v.strip()]
-        return " | ".join(_ts(v) for v in values) or "string"
-    if _ident(t) in entities:
-        return entities[_ident(t)]
-    return _SCALAR.get(t.lower(), "unknown")
+    """계약 필드 형식 → TypeScript 타입. 모르는 형식은 unknown (막지 않는다). 해석은 field_types (스모크 예시 값과 같은 해석)."""
+    return _ts_of(parse_field(t), entities)
+
+
+def _ts_of(ft: FieldType, entities: dict[str, str]) -> str:
+    if ft.kind == "list":
+        inner = _ts_of(ft.items[0], entities)
+        out = f"({inner})[]" if "|" in inner else f"{inner}[]"
+    elif ft.kind == "enum":
+        out = " | ".join(_ts(v) for v in ft.values) or "string"
+    elif ft.kind == "union":
+        out = " | ".join(dict.fromkeys(_ts_of(o, entities) for o in ft.items))
+    elif ft.kind == "ref":
+        out = entities.get(_ident(ft.name), "unknown")
+    else:
+        out = _TS_SCALAR.get(ft.kind, "unknown")
+    return f"{out} | null" if ft.nullable and out != "unknown" else out
 
 
 def _body_type(r: ContractResponse, names: dict[str, str], entities: dict[str, str]) -> str:

@@ -832,7 +832,17 @@ def _gate3(
     regen_counts: Mapping[str, int],
     terms: RepairTerms | None = None,
     hits: Sequence[str] = (),
+    family: Collection[str] = (),
 ) -> tuple[list[RepairAction], list[str]]:
+    """흔한 구현의 숨은 케이스 결과로 숨은 테스트·흔한 구현을 고친다.
+    family: 재료가 정한 이 숨은 요구의 사유들(FeatureSeed.reasons) — 흔한 구현이 의도한 사유 대신 같은 묶음의 다른 사유로 떨어져도
+    함정을 잡은 것으로 본다. 2026-11-11 재측정 오프라인: 첫 재연결 500 에서 흔한 구현은 메모를 겹치지 않고 잃었다(lost) — hc2(duplicated)를
+    세 번 다시 만들게 할 일이 아니다. 대신 의도한 사유가 어느 케이스에서도 안 보이면 승인자 표시로 남긴다."""
+    fam = set(family)
+
+    def same(intended: str, got: str | None) -> bool:
+        return got == intended or (got is not None and got in fam and intended in fam)
+
     passed = [
         c
         for c in plan.cases
@@ -842,7 +852,7 @@ def _gate3(
     # 그 함정을 못 잰 것이니 흔한 구현을 다시 만들지 않는다. 2026-11-09 v19-loop1: 흔한 구현(따로 둔 AuditService 의 REQUIRES_NEW)이
     # hc2·hc3·hc4 를 rollback_left_success 로 떨어졌는데 hc1 만 통과해 흔한 구현을 다시 만들었고, 다시 만든 판은 REQUIRES_NEW 를
     # 같은 클래스 안에서 불러(프록시를 안 거쳐 무효) 함정을 잃고 숨은 케이스를 모두 통과했다.
-    intended = {c.intended_reason for c in plan.cases}
+    intended = {c.intended_reason for c in plan.cases} | fam
     traps = {c.trap_id for c in passed}
     shows_trap = any(
         c.trap_id in traps
@@ -904,9 +914,10 @@ def _gate3(
         if c.trap_id in traps
         and (r := run.case(c.case_id)) is not None
         and r.result == "ASSERT"
-        and r.reason == c.intended_reason
+        and same(c.intended_reason, r.reason)
     )
     flags: list[str] = []
+    substituted: list[tuple[str, str, str]] = []  # (케이스, 의도한 사유, 대신 관찰한 사유)
     settled = caught and regen_counts.get("gen_hidden", 0) >= 1
     out: list[RepairAction] = []
     for c in plan.cases:
@@ -933,16 +944,34 @@ def _gate3(
                         "단언하지 않는다 — 그러면 올바른 구현이 떨어진다 (2026-11-07 알파 5회차).",
                     )
                 )
+            elif r.reason != c.intended_reason and same(c.intended_reason, r.reason):
+                substituted.append((c.case_id, c.intended_reason, r.reason or ""))
             elif r.reason != c.intended_reason:
                 got = r.reason or "사유 표시 없음"
+                call = (terms or RepairTerms()).reason_call
+                if r.reason is None and r.result == "ASSERT":
+                    # 사유 없는 단언에서 먼저 떨어짐 — 그 단언이 함정의 결과인지 준비 확인인지 갈래를 짚는다 (2026-11-11 재측정 오프라인 hc2:
+                    # '서버에 3건 이상'(사유 없음)에서 흔한 구현이 메모를 잃어 2건 — 사유가 붙은 중복 단언까지 가지 못했다)
+                    where = f"({r.at}) " if r.at else ""
+                    own = ", ".join(sorted(fam)) if fam else c.intended_reason
+                    note = (
+                        f"숨은 케이스 {c.case_id} 가 흔한 구현에서 사유 표시 없는 단언 {where}에서 먼저 실패했다: {_short(r.message)} — "
+                        f"이 단언이 숨은 요구 {c.trap_id} 를 어긴 결과(이 요구의 사유: {own})를 보는 것이면 그 단언에 맞는 사유를 {call} 로 붙이고, "
+                        "기능 준비 확인이면 흔한 구현도 지나가게 쓴다 (흔한 구현이 잃거나 늘리는 값을 준비 단계에서 단언하지 않는다). "
+                        f"의도한 실패({c.intended_reason})를 가장 먼저 확인하는 단언 순서로."
+                    )
+                else:
+                    note = (
+                        f"숨은 케이스 {c.case_id} 가 흔한 구현에서 의도한 사유({c.intended_reason}) 대신 {got} 로 실패했다: "
+                        f"{_short(r.message)} — 의도한 실패를 가장 먼저 확인하는 단언 순서로, 사유는 {call} 로 붙인다."
+                    )
                 out.append(
                     RepairAction(
                         "gen_hidden",
                         "",
                         "③",
                         f"{c.case_id} 사유 {got} ≠ 의도 {c.intended_reason} ({run.target})",
-                        f"숨은 케이스 {c.case_id} 가 흔한 구현에서 의도한 사유({c.intended_reason}) 대신 {got} 로 실패했다: "
-                        f"{_short(r.message)} — 의도한 실패를 가장 먼저 확인하는 단언 순서로, 사유는 {(terms or RepairTerms()).reason_call} 로 붙인다.",
+                        note,
                     )
                 )
         elif r.result != "PASS":  # ③' 지킨 숨은 요구의 케이스는 통과해야 한다
@@ -955,6 +984,17 @@ def _gate3(
                     f"숨은 요구 {c.trap_id} 를 지킨 구현({run.target})이 {c.case_id} 에서 실패했다: {_short(r.message)} "
                     "— 케이스가 다른 숨은 요구에 기대지 않게 한다.",
                 )
+            )
+    seen = {
+        r.reason
+        for c in plan.cases
+        if (r := run.case(c.case_id)) is not None and r.result == "ASSERT" and r.reason
+    }
+    for cid, want, got in substituted:
+        if want not in seen:
+            flags.append(
+                f"숨은 케이스 {cid} 는 흔한 구현({run.target})을 {want} 대신 {got} 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "
+                f"{want} 를 확인하는 케이스가 없다 (사람 확인)"
             )
     return out, flags
 
@@ -1104,6 +1144,7 @@ def assign(
     shared_paths: Collection[str] = (),
     terms: RepairTerms | None = None,
     fix_markers: Sequence[str] = (),
+    feature_reasons: Collection[str] = (),
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
@@ -1179,7 +1220,13 @@ def assign(
         if run.kind == "ref_naive":
             hits = marker_hits(overlays.get(run.target), fix_markers)
             acts, flags = _gate3(
-                run, plan, missed_traps.get(run.target, set()), counts, terms, hits
+                run,
+                plan,
+                missed_traps.get(run.target, set()),
+                counts,
+                terms,
+                hits,
+                feature_reasons,
             )
             actions += acts
             res.unresolved += [f for f in flags if f.startswith(MATERIAL_VERDICT)]

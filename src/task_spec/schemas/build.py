@@ -711,7 +711,8 @@ class RepairRecord(Schema):
     gate: str = Field(min_length=1)  # 예: "③" · "contract" · "static"
     target: GeneratorName
     reason: str = Field(min_length=1, max_length=300)  # 사유 코드·케이스 id
-    result: Literal["regenerated", "failed", "skipped"]
+    # kept-previous: 숨은 테스트 수리에서 일부 케이스가 재요청 뒤에도 문제가 남아 이전 파일을 그대로 둠 (예산은 쓴 것으로 센다)
+    result: Literal["regenerated", "failed", "skipped", "kept-previous"]
 
 
 class BuildState(BaseModel):

@@ -163,7 +163,7 @@ def vitest_results(
     """vitest JSON 보고서 → 파일마다 결과 하나 (첫 실패를 대표로) — 판정은 채점용 이미지의 grade 와 같은 코드."""
     texts = {f.path: f.content for f in hidden.files} if hidden is not None else None
     rows = judge.vitest_results(
-        report, work, layout_of(t), t.manifest.hidden_rules.case_id_pattern, texts
+        report, work, layout_of(t), t.manifest.hidden_rules.case_id_pattern, texts, locate=True
     )
     return [TestResult.model_validate(r) for r in rows]
 

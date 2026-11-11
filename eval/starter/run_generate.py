@@ -53,6 +53,26 @@ OUT = ROOT / "data" / "eval" / "build"
 VERSION = "smoke"
 
 
+REJECTED_MAX_FILES = 200  # 버린 생성 출력을 남길 때 상한 — 파일 수 · 파일 하나 글자 수
+REJECTED_MAX_CHARS = 200_000
+
+
+def write_rejected(rejected: list[Any], root: Path) -> list[str]:
+    """채택하지 않은 생성 출력(문제가 남은 답)을 root/<라벨>-<n>/ 에 — 원인 확인용, data/ 아래(git 밖). 남긴 폴더 이름 목록.
+    2026-11-11 재측정 gen-item: 숨은 테스트 재생성이 '케이스 id 가 여러 파일에 나옴'으로 실패했는데 그 출력이 남지 않아 원인을 코드로만 짐작했다."""
+    names: list[str] = []
+    left = REJECTED_MAX_FILES
+    for n, o in enumerate(rejected, 1):
+        if left <= 0:
+            break
+        name = f"{o.label or o.kind}-{n}"
+        files = [f for f in o.files if len(f.content) <= REJECTED_MAX_CHARS][:left]
+        left -= len(files)
+        _write(type(o)(kind=o.kind, files=tuple(files), label=o.label), root / name)
+        names.append(name)
+    return names
+
+
 def usage_by_prompt(provenance: list[Any]) -> dict[str, dict[str, Any]]:
     """프롬프트별 호출·재시도·토큰(입력·출력·그중 추론)·비용 — 출력 상한에 어디서 걸리는지 리포트에서 바로 보게 (2026-11-09:
     빈 응답이 본문이 아니라 추론 토큰 폭주였음을 따로 재야 알았다). 실패한 호출도 provenance 가 있으면 들어간다."""
@@ -279,6 +299,8 @@ async def run_loop(
         "repairs": [r.model_dump() for r in res.repairs],
         "review_flags": res.review_flags,
         "adjustments": res.adjustments,
+        "static_retries": res.static_retries,
+        "rejected": write_rejected(res.rejected, out / "rejected"),
         "verify": [[_run_row(r) for r in rep.runs] for rep in res.reports],
         "verify_failures": [
             [{r.target: [t.model_dump() for t in r.tests if t.result != "PASS"]} for r in rep.runs]
