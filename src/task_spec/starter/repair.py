@@ -705,7 +705,10 @@ def _test_defect(msgs: Mapping[str, str], terms: RepairTerms | None) -> list[str
 
 
 def _hidden_broken(
-    runs: Sequence[TargetRun], plan: HiddenPlan, terms: RepairTerms | None = None
+    runs: Sequence[TargetRun],
+    plan: HiddenPlan,
+    terms: RepairTerms | None = None,
+    regen_counts: Mapping[str, int] | None = None,
 ) -> list[RepairAction]:
     """숨은 케이스가 판정까지 못 감(테스트 자체 예외·결과 없음) — **구현끼리 비교해** 탓을 정한다.
 
@@ -713,7 +716,11 @@ def _hidden_broken(
     - 일부 구현에서만 그러고 나머지는 판정까지 가면(통과·단언 실패) 그 구현 탓 → `gen_naive`/`gen_accepted`.
       예: 그 구현만 계약과 다른 응답 모양(목록 대신 `{content: …}` 페이지 객체)을 돌려 숨은 테스트가 파싱하다 예외.
     준비된 구현이 하나뿐이면 비교할 수 없어 숨은 테스트 탓 (예전과 같음).
+    - 이미 다시 만든 허용 구현이 또 혼자 판정까지 못 가면(다른 구현은 판정까지 감) 숨은 테스트가 한 구현 방식에 기댄 것을 한 번 의심
+      (게이트 ④·⑤ 의 '설계 모순 의심'과 같은 예산). 2026-11-11 fe8 오프라인 hc2: 첫 요청을 붙잡은 채 두 번째를 기다려, 하나씩 보내는
+      허용 설계만 시간 초과로 떨어질 수 있었다 — 게이트 ④ 는 단언 실패만 보므로 여기서 받는다.
     """
+    counts = regen_counts or {}
     out: list[RepairAction] = []
     for c in plan.cases:
         bad = [
@@ -757,6 +764,38 @@ def _hidden_broken(
             )
             continue
         fine = ", ".join(r.target for r in runs if all(r is not b for b, _ in bad))
+        again = next(
+            (
+                (r, x)
+                for r, x in bad
+                if r.kind == "ref_accepted"
+                and counts.get(f"gen_accepted:{r.target}", 0) >= 1
+                and counts.get(f"gen_hidden{DESIGN_SUFFIX}", 0) == 0
+            ),
+            None,
+        )
+        if again is not None:
+            # 테스트를 의심하는 회차에는 이 케이스의 다른 구현(흔한 구현 등)을 다시 만들지 않는다 — 고친 테스트로 다음 회차에 다시 비교한다
+            r, x = again
+            what = (
+                "실행되지 않았다"
+                if x is None
+                else f"단언이 아닌 예외로 끝났다: {_short(x.message)}"
+            )
+            out.append(
+                RepairAction(
+                    "gen_hidden",
+                    "",
+                    "④",
+                    f"다시 만든 {r.target} 만 {c.case_id} 테스트 예외 — 설계와 모순 의심",
+                    f"허용 설계 구현({r.target})을 다시 만들어도 숨은 케이스 {c.case_id} 가 이 구현에서만 {what} — 다른 구현({fine})은 "
+                    "판정까지 갔다. 숨은 테스트가 한 구현 방식(요청을 보내는 순서·시점, 앞 응답을 받은 뒤 다음 요청을 보내는지 등)에 기대어 "
+                    "기다리지 않는지 본다: 응답하지 않은 요청을 붙잡은 채 다음 요청을 기다리지 말고 먼저 응답할 요청에 응답하며, 요청의 순서·횟수가 "
+                    "설계마다 다르면 서버 상태로 판정한다. 흔한 구현은 계속 의도한 사유로 실패해야 한다.",
+                    budget=DESIGN_SUFFIX,
+                )
+            )
+            continue
         for r, x in bad:
             what = (
                 "실행되지 않았다"
@@ -1135,7 +1174,7 @@ def assign(
     # 숨은 게이트는 공개 테스트를 통과한 구현만 믿는다 — 공개 요구가 깨진 구현의 숨은 결과는 그 결함 탓일 수 있다
     # (2026-11-08: 시작 코드 결함으로 두 구현이 같은 500 을 내자 흔한 구현이 '의도한 사유'로 실패한 것처럼 보였다)
     judged = [r for r in ready if r.target in trusted]
-    actions += _hidden_broken(judged, plan, terms)
+    actions += _hidden_broken(judged, plan, terms, counts)
     for run in judged:
         if run.kind == "ref_naive":
             hits = marker_hits(overlays.get(run.target), fix_markers)

@@ -38,6 +38,7 @@ from task_spec.starter.contract import (
     check_contract,
     field_style,
     fit_covers,
+    fit_forms,
     fit_traps,
     hidden_terms,
     timed_hints,
@@ -332,6 +333,11 @@ def fit_output(
     covered, cover_notes = fit_covers(out.contract, spec)
     out = out.model_copy(update={"contract": covered})
     notes += cover_notes
+    formed, form_notes = fit_forms(
+        out.contract
+    )  # 폼 입력란·제출 버튼 — 폼이 적은 제출 요청의 칸에서
+    out = out.model_copy(update={"contract": formed})
+    notes += form_notes
     trapped, trap_notes = fit_traps(
         out.hidden_plan, spec
     )  # 사유 코드를 적은 trap_id → 숨김 수용 기준의 숨은 요구
