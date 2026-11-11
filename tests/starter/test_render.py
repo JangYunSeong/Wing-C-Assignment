@@ -73,7 +73,7 @@ def test_public_tests_listed_only_when_given() -> None:
 def test_template_with_unknown_slot_or_empty_value_is_an_error(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    tpl = root / JAVA / "v1" / "README.tpl.md"
+    tpl = root / JAVA / "v2" / "README.tpl.md"  # CURRENT
     tpl.write_text(tpl.read_text("utf-8") + "\n{{hidden_requirement}}\n", "utf-8")
     with pytest.raises(RenderError, match="hidden_requirement"):
         render_readme(_approved(), _contract_with_list(), load_template(JAVA, root=root))

@@ -14,7 +14,8 @@ from tests.starter.test_contract import BACKEND_SEED, _plan
 from tests.starter.test_plan_contract import _task
 from tests.starter.test_render import _approved, _contract_with_list
 
-JAVA = load_template("backend/java-spring-boot3-jpa")
+# 뼈대 없는 v1 로 고정 — 이 파일·생성 테스트의 예시 오버레이는 뼈대 전 모양이다 (뼈대 검사는 test_skeleton.py, CURRENT v2)
+JAVA = load_template("backend/java-spring-boot3-jpa", 1)
 PKG = "src/main/java/com/example/service"
 CASES = "src/test/java/com/example/service/grading/cases"
 PLAN = HiddenPlan.model_validate(
