@@ -4,6 +4,8 @@ GET  /builds[?common_id=]        : 공통 과제의 빌드 목록 (없으면 최
 GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수
 GET  /builds/{build_id}/artifacts: 역할별 묶음 파일(이름·sha256·크기)·image_id
 GET  /builds/{build_id}/deliveries: 전달 기록
+GET  /builds/{build_id}/readme   : 지원자 README 본문(응시용 이미지 작업 경로의 README.md 와 같음) + README 검토 표시 —
+                                   지원자에게 보이는 공개 정보라 본문을 내준다. 검사·검증을 마친 빌드(review·approved·published)만
 GET  /delivery-targets · POST /delivery-targets : 전달 대상(이름 → 받을 수 있는 역할 하나)
 
 응답에 넣지 않는 것: 계약 원문·숨은 계획(HiddenPlan)·오버레이 파일 본문(특히 참조 구현) — 사용자별 권한이 없으므로
@@ -20,7 +22,8 @@ from fastapi import APIRouter, Path, Query
 from pydantic import BaseModel, Field
 
 from task_spec.api.deps import BuildsDep
-from task_spec.api.errors import BuildNotFound, BuildRuleViolation
+from task_spec.api.errors import BuildNotFound, BuildRuleViolation, ReadmeNotAvailable
+from task_spec.schemas.build import BuildStatus
 from task_spec.schemas.build_record import TARGET_NAME, BuildRecord, Delivery, DeliveryTarget
 from task_spec.schemas.package import (
     BUILD_ID,
@@ -31,6 +34,7 @@ from task_spec.schemas.package import (
     VerifySummary,
     flag_id,
 )
+from task_spec.starter.render import README
 from task_spec.starter.store import BuildRepo, BuildRuleError, TaskLabel
 
 router = APIRouter(tags=["builds"])
@@ -72,6 +76,19 @@ class ArtifactView(BaseModel):
     files: list[ArtifactFile]
     image_id: str | None = None
     created_at: datetime
+
+
+class ReadmeView(BaseModel):
+    build_id: str
+    status: BuildStatus
+    path: str
+    sha256: str
+    size: int
+    content: str
+    review_flags: list[FlagView]  # README 에서 나온 검토 표시 — 승인자가 판단할 것
+
+
+_README_READABLE: tuple[BuildStatus, ...] = ("review", "approved", "published")
 
 
 class TargetIn(BaseModel):
@@ -148,6 +165,31 @@ async def list_artifacts(build_id: BuildIdPath, store: BuildsDep) -> list[Artifa
 async def list_deliveries(build_id: BuildIdPath, store: BuildsDep) -> list[Delivery]:
     await _build(store, build_id)
     return await store.deliveries(build_id)
+
+
+@router.get("/builds/{build_id}/readme")
+async def get_readme(build_id: BuildIdPath, store: BuildsDep) -> ReadmeView:
+    b = await _build(store, build_id)
+    if b.status not in _README_READABLE:
+        raise ReadmeNotAvailable(build_id, f"상태 {b.status}")
+    readme = await store.readme(build_id)
+    if readme is None:
+        raise ReadmeNotAvailable(build_id, "저장한 README 없음")
+    verdicts = {d.flag_id: d.verdict for d in b.review_decisions}
+    flags = [
+        FlagView(flag_id=flag_id(f), text=f, verdict=verdicts.get(flag_id(f)))
+        for f in (b.outcome.review_flags if b.outcome else [])
+        if f.startswith(README)
+    ]
+    return ReadmeView(
+        build_id=build_id,
+        status=b.status,
+        path=readme.path,
+        sha256=readme.sha256,
+        size=readme.size,
+        content=readme.content,
+        review_flags=flags,
+    )
 
 
 @router.get("/delivery-targets")

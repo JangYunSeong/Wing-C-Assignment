@@ -7,11 +7,11 @@ from pathlib import Path
 import httpx
 
 from task_spec.api.app import create_app
-from task_spec.schemas.build_record import StarterFile
+from task_spec.schemas.build_record import README_PATH, StarterFile
 from task_spec.schemas.package import flag_id
 from task_spec.starter.store import InMemoryBuildStore, TaskLabel
 from tests.api.conftest import make_settings
-from tests.starter.test_build_store import AT, FLAG, H_OLD, _artifact, _outcome
+from tests.starter.test_build_store import AT, FLAG, H_NEW, H_OLD, _artifact, _outcome
 
 CID = "ct-0123456789ab"
 SECRET = "가상 참조 구현 본문 SECRET-REF"
@@ -111,3 +111,43 @@ async def test_no_store_is_503(tmp_path: Path) -> None:
     async with await _client(tmp_path, None) as c:
         r = await c.get("/delivery-targets")
         assert r.status_code == 503 and r.json()["error"]["code"] == "service_unavailable"
+
+
+README_FLAG = f"{README_PATH} 에 운영 조건을 드러내는 말: 가상어 — 승인된 명세 문장에서 나옴"
+
+
+async def test_readme(tmp_path: Path) -> None:
+    async with await _client(tmp_path, None) as c:
+        assert (await c.get(f"/builds/{CID}-b1/readme")).status_code == 503  # 저장소 미연결
+    store = InMemoryBuildStore()
+    bid = (await store.new_build(CID, "onto-test", AT)).build_id
+    await store.set_status(bid, "generating")
+    readme = StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n")
+    await store.put_files(
+        bid, [readme, StarterFile.of(bid, "ref_accepted", "S.java", SECRET, "d1")]
+    )
+    async with await _client(tmp_path, store) as c:
+        assert (await c.get(f"/builds/{CID}-b9/readme")).status_code == 404
+        r = await c.get(f"/builds/{bid}/readme")
+        assert (
+            r.status_code == 404 and r.json()["error"]["code"] == "readme_not_available"
+        )  # 검증 전
+
+        await store.set_status(bid, "verifying")
+        flags = ["가상 다른 검토 표시", README_FLAG]
+        await store.save_outcome(bid, _outcome(H_NEW).model_copy(update={"review_flags": flags}))
+        await store.set_status(bid, "review")
+        r = await c.get(f"/builds/{bid}/readme")
+        body = r.json()
+        assert r.status_code == 200 and body["content"] == "# 가상 과제\n"
+        assert body["sha256"] == readme.sha256
+        assert [f["text"] for f in body["review_flags"]] == [README_FLAG]  # README 표시만
+        assert SECRET not in r.text  # 다른 파일 본문은 내주지 않는다
+
+
+async def test_readme_missing(tmp_path: Path) -> None:
+    store = InMemoryBuildStore()
+    bid = await _review_build(store)
+    async with await _client(tmp_path, store) as c:
+        r = await c.get(f"/builds/{bid}/readme")
+        assert r.status_code == 404 and "저장한 README 없음" in r.json()["error"]["message"]

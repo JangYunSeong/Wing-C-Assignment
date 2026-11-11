@@ -2,7 +2,7 @@
 
 - 빌드 1건 = 공통 과제 판(`common_task.id` = `ct-…`, 판마다 새 id) 위의 시작 코드·숨은 테스트·참조 구현 생성 1회.
   같은 판을 다시 빌드하면 새 빌드(`-b2`)다 — 다시 빌드한 이미지는 `image_id` 가 달라지므로 승인된 빌드의 파일은 바꾸지 않는다.
-- 오버레이 본문은 `starter_file` 에만. 그래프 State(`BuildState`)에는 `FileRef`(본문 없음)만.
+- 오버레이 본문은 `starter_file` 에만. 지원자 README(`kind='readme'`, 코드가 렌더)도 같은 곳 — 승인자가 보고, 지원자에게 보인 문장 기록이 된다. 그래프 State(`BuildState`)에는 `FileRef`(본문 없음)만.
 - 전달은 승인(시작 코드 승인 — 그래프 interrupt 로 받은 결과)된 빌드만. 승인은 검토 표시마다 승인자 판단이 있어야 한다.
 """
 
@@ -29,6 +29,9 @@ from task_spec.schemas.package import (
 )
 
 DeliveryStatus = Literal["requested", "sent", "failed"]
+# 저장하는 파일 종류 — 생성기 오버레이(FileKind) + 코드가 렌더한 지원자 README (응시용 작업 경로에 들어간다)
+StoredFileKind = FileKind | Literal["readme"]
+README_PATH = "README.md"
 TARGET_NAME = r"^[a-z0-9][a-z0-9_.-]{0,62}$"
 _VARIANT = (
     r"^$|^[a-z0-9][a-z0-9_-]{0,39}$"  # 참조 구현 라벨 (naive-all · d1) — starter·hidden 은 빈 값
@@ -78,10 +81,10 @@ class BuildRecord(Schema):
 
 
 class StarterFile(Schema):
-    """`starter_file` 행 — 오버레이 원본 (템플릿에 더하거나 바꾼 파일만). 이미지는 이것으로 다시 만든다."""
+    """`starter_file` 행 — 오버레이 원본 (템플릿에 더하거나 바꾼 파일만)·렌더한 README. 이미지는 이것으로 다시 만든다."""
 
     build_id: str = Field(pattern=BUILD_ID)
-    kind: FileKind
+    kind: StoredFileKind
     variant: str = Field(
         default="", pattern=_VARIANT
     )  # ref_* 는 참조 구현마다 같은 경로가 있으므로 라벨로 나눈다
@@ -98,6 +101,8 @@ class StarterFile(Schema):
         is_ref = self.kind in ("ref_naive", "ref_accepted")
         if is_ref != bool(self.variant):
             raise ValueError("variant 는 ref_* 에만, ref_* 에는 반드시")
+        if self.kind == "readme" and p != README_PATH:
+            raise ValueError(f"readme 경로는 {README_PATH} 만: {p!r}")
         data = self.content.encode("utf-8")
         if hashlib.sha256(data).hexdigest() != self.sha256 or len(data) != self.size:
             raise ValueError(f"{p}: sha256·size 가 본문과 다르다")
@@ -105,7 +110,7 @@ class StarterFile(Schema):
 
     @classmethod
     def of(
-        cls, build_id: str, kind: FileKind, path: str, content: str, variant: str = ""
+        cls, build_id: str, kind: StoredFileKind, path: str, content: str, variant: str = ""
     ) -> StarterFile:
         data = content.encode("utf-8")
         return cls(

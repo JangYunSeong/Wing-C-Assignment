@@ -6,6 +6,8 @@
   2. 이미지를 `localhost/task/<build_id>-<역할>` 로 이름만 붙이고(image_id 그대로) 역할마다 저장(zstd -3)해
      `<images_root>/<build_id>/<역할>/` 에 descriptor(json, schemas/package.py 로 검증)·SHA256SUMS 와 함께 둔다.
   3. 묶음 행을 등록한다 — tree_sha256·grader_sha256 이 빌드 결과와 같아야 저장소가 받는다.
+  지원자 README 는 응시용 이미지의 작업 경로에서 꺼내(지원자가 받는 문장 그대로) `starter_file`(kind=readme)과
+  응시용 폴더 README.md 에 같은 본문으로 둔다 — 승인에는 저장한 README 가 있어야 한다.
 
 같은 공통 과제에 같은 시작 코드(tree_sha256)의 빌드가 이미 묶음까지 있으면 건너뛴다. review 에서 묶음이 없으면 묶음만 다시.
 공통 과제 행(FK)이 먼저 있어야 한다 — 평가용 명세는 register_mock_common 으로 등록한 뒤 다시 만든 이미지를 넣는다.
@@ -30,10 +32,16 @@ import psycopg
 
 from eval.starter.build_mock_images import grader_sha256, load_run, template_of
 from eval.starter.register_mock_common import dsn
-from eval.starter.split_delivery import save_image, sha256
+from eval.starter.split_delivery import extract_readme, save_image, sha256
 from task_spec.config import Settings
 from task_spec.schemas.build import RepairRecord
-from task_spec.schemas.build_record import BuildArtifact, BuildOutcome, BuildRecord, StarterFile
+from task_spec.schemas.build_record import (
+    README_PATH,
+    BuildArtifact,
+    BuildOutcome,
+    BuildRecord,
+    StarterFile,
+)
 from task_spec.schemas.package import (
     ArtifactFile,
     ArtifactRole,
@@ -140,6 +148,8 @@ async def import_one(
         context / f"{cid}-r{t['revision']}" / "grader"
     )
     revision = await common_revision(conninfo, cid)
+    c = t["candidate"]
+    readme = extract_readme(c["image_id"], c["workspace"])
 
     build = next(
         (
@@ -157,7 +167,13 @@ async def import_one(
     if build is None:
         build = await store.new_build(cid, labels["ontology_version"])
         await store.set_status(build.build_id, "generating")
-        await store.put_files(build.build_id, overlay_files(build.build_id, item))
+        await store.put_files(
+            build.build_id,
+            [
+                *overlay_files(build.build_id, item),
+                StarterFile.of(build.build_id, "readme", README_PATH, readme),
+            ],
+        )
         await store.save_outcome(
             build.build_id,
             BuildOutcome(
@@ -175,6 +191,8 @@ async def import_one(
         build = await store.set_status(build.build_id, "review")
     elif build.status != "review":
         raise SystemExit(f"{build.build_id}: {build.status} — review 빌드에만 묶음을 붙인다")
+    else:  # README 를 저장하기 전에 적재한 빌드 — 이미 있으면 같은 본문이어야 한다
+        await store.put_readme(StarterFile.of(build.build_id, "readme", README_PATH, readme))
 
     header = {
         "mock": True,
@@ -188,8 +206,10 @@ async def import_one(
         "tree_sha256": tree,
         "title": t.get("title"),
     }
-    c = t["candidate"]
     cdir, cimg = pack(root, build, "candidate", c)
+    (cdir / README_PATH).write_text(
+        readme, "utf-8"
+    )  # 이미지를 열지 않고 보여 줄 수 있게 — SHA256SUMS 에 들어간다
     cand = CandidateDescriptor(
         **header,
         image=cimg,
