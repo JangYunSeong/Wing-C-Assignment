@@ -100,7 +100,11 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
     starter = Overlay(
         kind="starter",
         files=(
-            _f("src/App.tsx", "export default function App() { return <div />; }\n"),
+            # 뼈대 라우트를 남긴 App (v10~ 은 코드 뼈대 — static_check._skeleton_kept)
+            _f(
+                "src/App.tsx",
+                'export default function App() { return <Route path="/search" element={<SearchPage />} />; }\n',
+            ),
             _f("src/api/products.ts", starter_extra or "export const x = 1;\n"),
         ),
     )
@@ -115,7 +119,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v8"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v11"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v1"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
