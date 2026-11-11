@@ -54,3 +54,14 @@ def test_smoke_example_follows_the_same_parse() -> None:
     assert value("string | string[]") == "가상 x"
     assert parse("enum(A|B)").kind == "enum" and parse("array<A|B>").kind == "list"
     assert parse("(a)|(b)").kind == "union"
+
+
+def test_entity_with_spaces_is_found_the_same_way() -> None:
+    """엔티티 이름 'Daily Sales' 를 필드 타입 DailySales 로 쓰면 앱 타입은 엔티티, 스모크 예시는 글자로 갈렸다 — 같은 기준으로 찾는다."""
+    c = _contract()
+    c["entities"][0]["name"] = "Daily Sales"
+    contract = TaskContract.model_validate(c)
+    ents = {e.name.replace(" ", ""): e.name.replace(" ", "") for e in contract.entities}
+    assert ts_type("DailySales", ents) == "DailySales"
+    f = ContractField(name="x", type="DailySales", required=True, refs=["r1"])
+    assert isinstance(_Examples(contract).value(f), dict)

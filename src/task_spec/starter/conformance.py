@@ -28,7 +28,7 @@ from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.field_types import FieldType, non_null
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.templates import is_java, is_python
-from task_spec.starter.ts_helpers import msw_path
+from task_spec.starter.ts_helpers import _ident, msw_path
 
 CONFORM_DIR = "__conform__"
 CONFORM_TEST = f"{CONFORM_DIR}/conform.test.tsx"
@@ -43,9 +43,12 @@ def type_kind(t: str) -> str:
 
 class _Examples:
     def __init__(self, contract: TaskContract) -> None:
-        self.by_key = {e.entity_id: e for e in contract.entities} | {
-            e.name: e for e in contract.entities
-        }
+        # 앱 계약 타입(ts_helpers)과 같은 기준 — id·이름 원문에 기호를 뗀 이름도 (엔티티 'Daily Sales' 를 필드 타입 DailySales 로 쓸 때)
+        self.by_key = (
+            {e.entity_id: e for e in contract.entities}
+            | {e.name: e for e in contract.entities}
+            | {_ident(e.name): e for e in contract.entities}
+        )
         self._depth = 0
 
     def entity(self, key: str) -> dict[str, Any]:
