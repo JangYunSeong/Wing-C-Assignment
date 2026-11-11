@@ -90,6 +90,18 @@ def test_fixture_refs_ids_and_leaks_are_checked() -> None:
         manifest=_no_rows_manifest(),
     )
     assert any("숨은 요구" in p and "풀" in p for p in res.problems), res.problems
+    # 걸린 말이 나온 자리를 짚는다 — 2026-11-11 재측정 토큰 갱신: 낱말만 알려 줘 계약 답 3개가 같은 자리에 같은 말을 넣었다
+    leaked = next(p for p in res.problems if "숨은 요구" in p)
+    assert '시드 파일 1 내용: "커넥션 풀 8개로 시작"' in leaked, leaked
+
+
+def test_contract_text_is_the_places_joined() -> None:
+    from task_spec.starter.contract import contract_places, contract_text
+
+    contract = TaskContract.model_validate(_cli_contract(fixtures=FIXTURES))
+    places = contract_places(contract)
+    assert contract_text(contract) == "\n".join(t for _, t in places)
+    assert any(w.startswith("시드 파일 1") for w, _ in places)
 
 
 def test_fixtures_and_setup_are_shown_where_they_belong() -> None:
