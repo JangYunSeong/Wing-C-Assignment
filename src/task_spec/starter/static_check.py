@@ -45,6 +45,8 @@ from task_spec.starter.hidden_helpers import (
 )
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
+from task_spec.starter.skeleton import APP, ENDPOINTS, PAGES, endpoint_fns, page_names
+from task_spec.starter.skeleton import routes as skeleton_routes
 from task_spec.starter.tables import (
     contract_tables,
     declared_tables,
@@ -653,6 +655,67 @@ _JSON_INLINE = re.compile(
     r"|(?<!request)(?<!req)\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … } — 요청 본문(request.json())은 빼고
 )
 _TYPES_IMPORT = re.compile(r"""from\s+['"](?:\.{1,2}/)+(?:[\w-]+/)*contract-types['"]""")
+
+
+def _split_params(params: str) -> list[str]:
+    """매개변수 목록 → 이름들 — 타입 안의 쉼표({ a: string; b: number }·Record<a, b>)는 나누지 않는다."""
+    names, depth, cur = [], 0, ""
+    for ch in params + ",":
+        if ch in "{<([":
+            depth += 1
+        elif ch in "}>)]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            name = re.split(r"[?:=]", cur.strip(), maxsplit=1)[0].strip()
+            if name:
+                names.append(name)
+            cur = ""
+        else:
+            cur += ch
+    return names
+
+
+def _skeleton_kept(
+    o: Overlay, template: Template, contract: TaskContract | None
+) -> list[StaticProblem]:
+    """코드 뼈대(docs/design/code-skeleton.md)를 유지했는가 — 이 오버레이가 쓴 뼈대 파일만 본다 (쓰지 않은 파일은 시작 코드·뼈대 판).
+    API 호출 함수의 이름·매개변수, 화면 컴포넌트 이름, App.tsx 의 화면 경로 → 컴포넌트 라우트."""
+    if contract is None or not template.manifest.skeleton:
+        return []
+    written = {f.path: f.content for f in o.files}
+    msgs: list[str] = []
+    if ENDPOINTS in written:
+        text = written[ENDPOINTS]
+        for fn in endpoint_fns(contract):
+            m = re.search(
+                rf"export\s+(?:async\s+)?function\s+{re.escape(fn.name)}\s*\(([^)]*(?:\{{[^}}]*\}}[^)]*)*)\)",
+                text,
+            )
+            if m is None:
+                msgs.append(
+                    f"{ENDPOINTS} 에 계약 API 호출 함수 {fn.name} 가 없음 (이름을 바꾸지 않는다)"
+                )
+            elif tuple(_split_params(m.group(1))) != fn.params:
+                msgs.append(
+                    f"{ENDPOINTS} 의 {fn.name} 매개변수가 뼈대와 다름: ({', '.join(_split_params(m.group(1)))}) — 뼈대는 ({', '.join(fn.params)})"
+                )
+    names = page_names(contract)
+    for sc in contract.screens:
+        path = f"{PAGES}/{names[sc.screen_id]}.tsx"
+        if path in written and not re.search(
+            rf"export\s+default\s+function\s+{names[sc.screen_id]}\b", written[path]
+        ):
+            msgs.append(
+                f"{path} 가 화면 컴포넌트 {names[sc.screen_id]} 를 export default 하지 않음 (이름을 바꾸지 않는다)"
+            )
+    if APP in written:
+        for route, comp in skeleton_routes(contract):
+            if f'path="{route}"' not in written[APP] or f"<{comp}" not in written[APP]:
+                msgs.append(
+                    f"{APP} 에 뼈대 라우트 {route} → {comp} 가 없음 (화면 경로·컴포넌트를 유지한다)"
+                )
+    rule = " — 코드 뼈대: 함수·컴포넌트 이름과 매개변수, 화면 라우트는 그대로 두고 몸통만 채운다 (도우미 함수·파일은 더해도 된다)"
+    return [StaticProblem(o.target, m + rule) for m in msgs]
 
 
 def _contract_types_usage(
@@ -2139,6 +2202,7 @@ def static_check(
             res.problems += _script_imports(o, template, contract)
             res.problems += _datasource_config(o, template)
             res.problems += _contract_types_usage(o, template, contract)
+            res.problems += _skeleton_kept(o, template, contract)
             res.problems += _java_test_pitfalls(
                 o, template, template.manifest.seed_sql.path if template.manifest.seed_sql else None
             )

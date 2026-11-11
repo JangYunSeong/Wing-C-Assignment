@@ -1,0 +1,248 @@
+# 템플릿 frontend/react-vite-ts v1 — 프론트엔드 기능 과제 (starter-templates §2 [제안] React + TypeScript + Vite + Vitest·Testing Library + MSW).
+# 실제 브라우저 없이 jsdom 에서 돈다. 숨은 테스트는 하네스(hidden/harness — 서버 API 를 붙잡았다 테스트가 정한 순서로 응답)로
+# 응답 순서·실패·연결 끊김을 만들고, 화면은 역할·이름·test id(공개 계약)로만 조작·판정한다.
+# 여러 탭·Web Locks·SharedWorker·서비스 워커처럼 실제 브라우저가 필요한 함정은 이 템플릿 밖 (Playwright 층 — 다음 단계).
+# v2 (2026-11-09, v1 병합 뒤): 하네스 byTestId(범위, id) · 사유별 작성법(중복 요청·낙관적 갱신 — 허용 설계가 모두 통과하게) · 문서(경로 변수가 있는 화면은
+# SCREEN.X({...}) 함수, 목록 항목 안 요소 찾기). v1 은 병합된 그대로 둔다 (§6.1 템플릿 vN 불변).
+# v3 (2026-11-10, 이슈 #83 — 프론트 알파 0108be12 오프라인 초안·재연결 동기화에서 모든 구현이 `indexedDB is not defined`):
+# IndexedDB(fake-indexeddb 6.2.6, 응시용·채점용 설정 모두, 테스트마다 빈 저장소 — localStorage·sessionStorage 도) ·
+# 하네스 network.goOffline/goOnline · 목 서버 목록 api.collection/serverState (서버 반영은 서버 상태로 판정) · 경로 변수 이름 무관 ·
+# 204 응답 본문 없음 · 수리 repair_terms.grading_env (모든 구현이 채점 환경 오류면 다시 만들지 않고 '채점 환경 확인 필요').
+# v4 (2026-11-10, v3 병합 뒤 — v3 는 그대로): 프론트 재료 4건(토큰 갱신 동시성·사용자 전환 뒤 이전 데이터·이어 붙인 목록 중복·오프라인 재전송 부분 실패)의
+# 실패 사유 코드 6개와 작성법, 하네스 api.once(다음 한 번만 다른 응답 — collection 의 일부 요청만 실패시킬 때)·call.headers(요청 헤더 — 다시 보낸 요청의 토큰).
+# v5 (2026-11-10, v4 병합 뒤 — v4 는 그대로, 프론트 알파 fe7·fe7b·fe7c 재료 7건 공고 하나씩): 하네스 textsByRole(범위·역할 어느 순서로든) · 다시 방문은 앱 안 이동(문서) · stack_notes(숫자 입력란은 입력 중 빈 값 허용 ·
+# 기존 테스트는 화면을 라우터 안에서) · code_pitfalls(라우터 없이 화면 그리는 기존 테스트) · 작성법(되돌아갈 값은 실패한 변경 바로 전 값 · 요청 수는 누르기 전에 센다) ·
+# repair_terms.test_context(모든 구현이 기존 테스트를 같은 '라우터·Provider 밖' 오류로 깨면 시작 코드 테스트를 다시).
+# v6 (2026-11-10, v5 병합 뒤 — v5 는 그대로): 하네스 타입 — api.once·always·calls 의 본문은 Body(칸 이름으로 읽음), api.serverState<T>(path) 가 계약 타입 배열
+# (v5 문서 예시 `(c) => c.body.text === 'B'` 가 unknown 이라 컴파일되지 않았고, serverState 결과를 `as 계약타입[]` 로 바꾸면 TS2352 — 알파 fe7d-offline 컴파일 재요청 4번 실패).
+# 실패 사유 retry_new_key (재료 '중복 제출'을 '다시 보낼 때 같은 요청 번호'로 바꿈 — 2026-11-10).
+# v7 (2026-11-11, 응답 순서 cf4 — 공개 테스트가 '서버'를 치고 조건 없이 먼저 온 요청('서')에 응답해 지난 응답을 무시하는 허용 구현만 떨어짐):
+# 하네스 waitForCall 을 match 없이 부르면 취소되지 않은 붙잡힌 요청이 하나여야 한다 — 여럿이면 'match 로 고른다' 오류 (모호한 기다림을 테스트 결함으로 드러냄).
+# v10 (2026-11-11, docs/design/code-skeleton.md): 코드 뼈대 — 계약에서 src/api/endpoints.ts(API 호출 함수)·src/pages/<화면>Page.tsx·src/App.tsx
+#   라우트를 코드가 먼저 쓰고 생성기는 몸통만 (이름·시그니처·라우트 유지). 하네스·의존성은 v9 와 같다.
+# v9 (2026-11-11, 프론트 알파 fea 낙관적 갱신): 하네스가 변경 뒤 재조회(테스트가 응답한 GET 과 같은 요청)에 지금 서버 상태로 대신 응답한다
+#   (grader-api.ts v9 — 성공 뒤 목록을 다시 받는 올바른 구현이 확정 값을 옛 값으로 가져 떨어졌다). 테스트가 그 요청을 기다리면 응답하지 않는다.
+# v8 (2026-11-11, v7 병합 뒤 — v7 은 그대로, 프론트 알파 fe8 토큰·로그아웃·오프라인 실패):
+# 하네스 api.contract — contract.ts 가 계약의 성공 상태·test id 를 알리고, 상태를 주지 않은 응답(respond(본문)·always·once·collection)은
+# 계약의 성공 상태로 (v7 까지 200 — 계약이 201 인 생성 API 에서 `res.status === 201` 로 확인하는 허용 구현만 떨어짐) ·
+# textsByRole 범위를 계약 test id(TestId — contract.ts 의 TID)로도 (글자 test id 두 개는 받지 않음) · collection 의 toItem·items 가 계약 타입 ·
+# 요청이 오지 않아 기다림이 끝나면 응답하지 않은 채 붙잡힌 요청을 함께 알림 (첫 요청을 붙잡은 채 두 번째를 기다려 하나씩 보내는 구현이 시간 초과) ·
+# match 없는 기다림의 모호함은 서로 다른 요청이 둘 이상일 때만 (같은 요청 여럿은 한 응답이 모두에 — 알파 fe9-token) ·
+# stack_notes·code_pitfalls: 화면 이동은 라우터로 (window.location 이동은 jsdom 에서 주소가 안 바뀜 — 알파 fe9-token).
+template_id: frontend/react-vite-ts
+version: 10
+skeleton: true
+stack:
+  language: TypeScript
+  language_version: "5.8"
+  framework: React 18 + Vite 6 (React Router 6 · TanStack Query 5 · Zustand 5 · MSW 2), Vitest 3 + Testing Library
+  framework_version: "18.3"
+  build_tool: npm
+  build_tool_version: "11"
+interfaces: [ui]
+workspace: /workspace
+commands:
+  build: npm run build
+  test: npm test
+  hidden_test: npx vitest run --config src/__grading__/harness/vitest.grading.config.ts
+  run: npm run dev
+  test_compile: npx tsc --noEmit
+naming:
+  path: '^/[a-z0-9/\-]*(?:(?::[A-Za-z][A-Za-z0-9]*|\{[A-Za-z][A-Za-z0-9]*\})[a-z0-9/\-]*)*$'
+  entity: '^[A-Z][A-Za-z0-9]*$'
+  field: '^[a-z][A-Za-z0-9]*$'
+  test_id: '^[a-z][a-z0-9-]*$'
+  table:
+    style: none
+# DB 행을 바꾸는 과제가 아님 — 시드·행 배정 대신 입력 환경(fixtures: 서버 API 응답 모양)과 숨은 케이스 setup
+seed_rows: false
+fill_slots:
+  starter:
+    - src/**/*.ts
+    - src/**/*.tsx
+    - src/**/*.css
+    - docs/**
+  public_test:
+    - src/__public__/**/*.test.ts
+    - src/__public__/**/*.test.tsx
+    - src/__public__/**/*.ts
+  hidden:
+    - src/__grading__/cases/**/*.test.ts
+    - src/__grading__/cases/**/*.test.tsx
+    - src/__grading__/cases/**/*.ts
+    - src/__grading__/grader-params.json
+  ref:
+    - src/**/*.ts
+    - src/**/*.tsx
+    - src/**/*.css
+# 어느 오버레이도 덮어쓸 수 없다 — 의존성은 템플릿이 정한 것만 (React Router·TanStack Query·Zustand 포함)
+locked:
+  - package.json
+  - package-lock.json
+  - vite.config.ts
+  - tsconfig.json
+  - index.html
+  - src/main.tsx
+  - public/mockServiceWorker.js
+# hidden 외의 오버레이는 쓸 수 없다 (채점 하네스·케이스 자리)
+reserved:
+  - src/__grading__/**
+hidden_layout:
+  harness: src/__grading__/harness
+  selftest: src/__grading__/selftest
+  cases: src/__grading__/cases
+  params: src/__grading__/grader-params.json
+# 계약 도우미 — 코드가 계약에서 쓴다 (starter/ts_helpers.py): test id·화면 경로·API 상수, routeContract(), waitFor<API>()
+hidden_helper:
+  path: src/__grading__/cases/contract.ts
+  package: cases
+  features: [contract_registry]
+public_helper:
+  path: src/__public__/contract.ts
+  package: public
+  features: [contract_registry]
+# 생성기 프롬프트 — Java 하네스에 묶인 gen_* 대신 프론트엔드판 (prompts/gen_*_react/)
+prompt_tasks:
+  gen_hidden: gen_hidden_react
+  gen_public: gen_public_react
+  gen_starter: gen_starter_react
+  gen_naive: gen_naive_react
+  gen_accepted: gen_accepted_react
+# 수리 안내 문구의 스택 이름 (starter/repair.py — 기본은 Java 문구)
+repair_terms:
+  # 모든 구현이 시작 코드의 같은 기존 테스트를 이 꼴로 깨면 테스트가 화면을 라우터·Provider 없이 그린 것 — 계약 모호가 아니라 시작 코드 테스트를 다시 (starter/repair.py)
+  test_context: 'may be used only in the context of a <Router>|useNavigate\(\) may be used only|No QueryClient set|useQueryClient must be used'
+  # 모든 구현이 같은 테스트에서 이 꼴로 떨어지면 채점 환경(jsdom)에 없는 기능 — 다시 만들지 않고 '채점 환경 확인 필요' (starter/repair.py)
+  grading_env: '\bReferenceError: (?:indexedDB|IDB[A-Za-z]+|BroadcastChannel|SharedWorker|Worker|ServiceWorker|WebSocket|EventSource|IntersectionObserver|ResizeObserver|PerformanceObserver|requestIdleCallback|caches|Notification) is not defined|\bError: Not implemented: |\b(?:matchMedia|scrollTo|scrollIntoView) is not a function'
+  # 하네스가 짚은 테스트 결함 (v7) — 어느 구현에서든 이 꼴이면 구현이 아니라 그 테스트를 다시 만든다
+  test_defect: '붙잡힌 \w+ \S+ 요청이 \d+개 — match 로'
+  reason_call: reason(code, 설명)
+  public_helper: contract.ts
+  feature_first: >-
+    기능이 동작했는지 먼저 확인한다: 정상 응답을 보내 화면에 결과가 보이는 것을 (사유 없이) 단언한 뒤 숨은 요구를 시험하고,
+    '없다'만이 아니라 있어야 할 화면 결과도 확인한다. 요청은 contract.ts 의 waitFor…() 로 붙잡고 응답은 계약 형식 그대로 보낸다.
+limits:
+  max_files: 60
+  max_file_bytes: 100000
+  max_total_bytes: 600000
+  allow_dependency_changes: false
+image:
+  template_layer: [project/]
+  grader_only: [hidden/, manifest.yaml, README.tpl.md]
+  grader_only_dependencies: []   # 하네스는 MSW·Testing Library 등 응시용 의존성과 같은 것만 쓴다
+hidden_rules:
+  # 숨은·공개 테스트는 하네스·계약 도우미(./contract)·테스트 도구만 — 지원자 구현 내부(src/...)를 import 하지 않는다 (공개 계약인 화면으로만 판정).
+  # 상위 폴더(../) import 는 하네스 진입점만 허용 (숨은: ../harness/grader, 공개: ../__grading__/harness/grader)
+  forbidden_imports:
+    - '^\s*import\s+[^;]*from\s+[''"]\.\./(?!harness/grader[''"]|__grading__/harness/grader[''"])'
+  reason_patterns:
+    - '\breason\(\s*[''"]([a-z0-9_]+)[''"]'
+  case_id_pattern: '\bhc\d{1,2}\b'
+  # jest-dom 매처는 expect(값, 메시지) 의 메시지를 버리고 AssertionError 도 아닌 Error 로 끝난다 — 사유가 사라진다 (2026-11-09 vitest 3.2 로 확인)
+  reason_not_on:
+    - '\.(?:not\.)?(?:toBeInTheDocument|toHaveTextContent|toBeVisible|toHaveAttribute|toBeDisabled|toBeEnabled|toHaveValue|toBeChecked|toHaveClass|toHaveFocus|toHaveStyle|toBeEmptyDOMElement|toHaveAccessibleName|toHaveAccessibleDescription|toHaveDisplayValue|toContainElement|toContainHTML|toHaveRole|toBeRequired|toBeInvalid|toBeValid|toHaveFormValues|toBePartiallyChecked|toHaveErrorMessage|toHaveDescription|toHaveSelection)\s*\('
+  reason_not_on_note: >-
+    jest-dom 매처(toBeInTheDocument·toHaveTextContent 등)는 expect 의 메시지를 버려 사유가 사라진다 — 값을 꺼내 기본 매처(toBe·toEqual·toHaveLength·toContain)로
+    단언하고 거기에 reason(...) 을 붙인다. 예: expect(textsByRole('option'), reason(...)).toEqual([...]),
+    expect(screen.queryByRole('alert'), reason(...)).toBe(null), expect(byTestId(TID.X).textContent, reason(...)).toBe('...')
+# 템플릿에 없는 라이브러리 import — 의존성은 바꿀 수 없으므로 생성기가 쓰면 컴파일 전에 재요청
+unavailable_imports:
+  # MSW 1 문법 — 템플릿은 MSW 2 (http·HttpResponse). 2026-11-09 알파: 시작 코드 테스트가 rest 로 써 컴파일 실패
+  - '^\s*import\s+\{[^}]*\b(?:rest|RestRequest|ResponseComposition|RestContext)\b[^}]*\}\s*from\s+[''"]msw[''"]'
+  - '^\s*import\s+[^;]*from\s+[''"](?:axios|lodash|lodash-es|swr|redux|@reduxjs/toolkit|react-redux|jotai|recoil|mobx|styled-components|@emotion/[a-z-]+)[''"/]'
+# 이 스택에서 쓰는 법 — 모든 생성기 입력에 붙는다 (함정과 무관한 사실)
+stack_notes:
+  - >-
+    숫자 입력란(수량 등)은 입력하는 동안 빈 값을 허용한다 — 입력 상태는 글자로 두고 저장·요청할 때 검사한다. 빈 값을 무시하거나 1 로 바꾸면 지우고 다시 칠 수 없다
+    (값 '2' 를 지우고 '3' 을 치면 '23'·'13' 이 된다). 2026-11-10 알파: 허용 구현 두 개가 이 실수로 공개·숨은 테스트에서 떨어짐.
+  - >-
+    화면 컴포넌트가 useNavigate·useParams·Link 를 쓸 수 있으므로 기존 테스트는 화면을 라우터 안에서 그린다 (`render(<MemoryRouter initialEntries={['/경로']}><화면 /></MemoryRouter>)`,
+    TanStack Query 를 쓰면 QueryClientProvider 도). 라우터 없이 화면을 그린 기존 테스트는 구현이 이동 기능을 넣는 순간 깨진다.
+  - >-
+    화면 이동은 라우터로 한다 (useNavigate · <Navigate>) — `window.location.assign·replace·href =` 는 채점 환경(jsdom)에서 주소가 바뀌지 않는다
+    ('Not implemented: navigation'). 화면 밖 모듈(API 래퍼 등)은 로그인 상태를 지우거나 이벤트·저장소 상태로 알리고, 화면이 그것을 보고 이동한다.
+    2026-11-11 알파 fe9-token: 허용·흔한 구현이 모두 갱신 실패 뒤 window.location.assign('/login') 으로 옮기려다 로그인 화면이 안 보여 공개 테스트에서 떨어짐.
+# 이 스택에서 생성 모델이 되풀이하는 실수 — 시작 코드·참조 구현(테스트 포함)에서 찾으면 실행 전에 재요청 (static_check._code_pitfalls)
+code_pitfalls:
+  # 기존 테스트가 목록 틀을 기다린 뒤 항목을 바로(getBy) 찾음 — 항목을 그리는 시점은 구현마다 다르다 (TanStack Query 는 한 박자 늦다).
+  # 2026-11-10 v3 알파 fe-v3-opt-r2 사실 확인: 손으로 짠 TanStack Query 허용 설계가 공개·숨은 테스트는 통과하고 이 기존 테스트에서만 떨어짐
+  # (저장된 시작 코드 테스트 19개 중 6개가 이 꼴 — 지원자가 템플릿의 TanStack Query 를 쓰면 기존 테스트를 깬 것처럼 보인다).
+  - pattern: 'const (\w+) = await (?:screen\.)?findBy\w+\([^;]*\);\s*\n(?:\s*//[^\n]*\n)*\s*(?:const \w+ = )?within\(\1\)\.(?:getBy|getAllBy)\w+'
+    fix: >-
+      목록 틀(list)이 보여도 항목은 아직 없을 수 있다 — 데이터를 읽어 그리는 시점은 구현마다 다르다 (TanStack Query 등).
+      테스트에서 항목은 `await within(목록).findByTestId(…)`·`await screen.findAllByTestId(…)` 로 기다린다.
+  # 기존 테스트가 화면(…Page·…Screen)을 라우터 없이 그림 — 구현이 useNavigate 를 쓰면 'may be used only in the context of a <Router>' 로 깨진다.
+  # 2026-11-10 알파 fe7b-user: 참조 구현 두 개가 모두 시작 코드의 기존 테스트 두 개를 이 오류로 깸.
+  # 라우터 밖에서 주소를 직접 바꿈 — jsdom 은 이동하지 않는다 (2026-11-11 알파 fe9-token: 두 구현 모두 공개 pt3 에서 로그인 화면이 안 보임)
+  - pattern: '\b(?:window\.)?location\.(?:assign|replace)\(|\b(?:window\.)?location\.href\s*=(?!=)'
+    fix: >-
+      화면 이동은 라우터로 한다 (useNavigate · <Navigate>). window.location.assign·replace·href = 는 채점 환경(jsdom)에서 주소가 바뀌지 않는다.
+      화면 밖 모듈(API 래퍼 등)은 로그인 상태를 지우거나 상태·이벤트로 알리고, 화면이 그것을 보고 navigate 한다.
+  - pattern: 'render\(\s*<[A-Z]\w*(?:Page|Screen)\b'
+    unless: 'MemoryRouter|BrowserRouter|createMemoryRouter|RouterProvider|<App\b'
+    fix: >-
+      화면 컴포넌트를 테스트에서 그릴 때는 라우터 안에서 그린다 — `render(<MemoryRouter initialEntries={['/경로']}><화면 /></MemoryRouter>)`
+      (react-router-dom 의 MemoryRouter, TanStack Query 를 쓰는 화면이면 QueryClientProvider 로도 감싼다).
+harness_params: []
+failure_reasons:
+  - code: stale_response_shown
+    description: 먼저 보낸 요청의 응답이 늦게 와 최신 입력의 화면을 덮음
+    log_patterns: ['\[reason:stale_response_shown\]']
+    how: 같은 API 를 두 번 이상 부르게 입력하고 waitFor…() 로 둘 다 붙잡은 뒤 나중 요청부터 respond 해 최신 목록이 보이는 것을 (사유 없이) 확인하고, 먼저 요청을 나중에 respond. 사유는 "최신 입력의 화면이 그대로인지" 단언에
+  - code: stale_error_shown
+    description: 대체된(이미 지난) 요청의 실패가 최신 화면에 오류로 보임
+    log_patterns: ['\[reason:stale_error_shown\]']
+    how: 앞 입력의 요청을 붙잡아 둔 채 글자를 더 입력해 나중 요청을 respond(최신 목록이 보이는 것을 사유 없이 확인)한 뒤, 붙잡아 둔 앞 요청을 fail(500) 또는 networkError. 사유는 "오류 알림이 없고 목록이 그대로인지" 단언에
+  - code: cleared_result_reappears
+    description: 입력을 지우거나 닫은 뒤 늦게 온 응답이 결과를 다시 띄움
+    log_patterns: ['\[reason:cleared_result_reappears\]']
+    how: 먼저 한 입력으로 요청·응답해 목록이 보이는 것을 (사유 없이) 확인하고, 글자를 더 입력해 생긴 새 요청을 waitFor…() 로 붙잡아 둔 채 입력을 모두 지운 뒤(목록이 닫힌 것 확인) 그 붙잡은 요청에 respond. 지운 뒤의 새 요청(빈 입력)을 기다리지 않는다 — 빈 입력에 요청하지 않는 구현도 맞다. 사유는 "결과가 다시 보이지 않는지" 단언에
+  - code: duplicate_request
+    description: 한 번의 조작(제출·클릭)에 같은 요청이 두 번 이상 나감
+    log_patterns: ['\[reason:duplicate_request\]']
+    how: 먼저 한 번 제출해 응답하고 결과가 보이는 것을 (사유 없이) 확인한 뒤, before = api.calls(그 API) 수를 새 제출 버튼을 누르기 **전에** 세고, 새 제출 요청을 waitFor…() 로 붙잡아 둔 채 같은 조작을 다시 한다(막힌 버튼도 그냥 누름). 사유는 "늘어난 요청 수가 1인지" 단언에. 그 뒤 붙잡은 요청에 respond 해 결과가 한 번만 보이는지도 본다
+  - code: optimistic_not_rolled_back
+    description: 서버 실패 뒤 화면에 먼저 반영한 변경이 되돌려지지 않음
+    log_patterns: ['\[reason:optimistic_not_rolled_back\]']
+    how: 먼저 한 번 바꿔 성공 응답을 주고 바뀐 값이 보이는 것을 (사유 없이) 확인한 뒤, 같은 방향으로 한 번 더 바꿔(예 1→2 성공 뒤 2→3) 그 요청을 waitFor…() 로 붙잡아 fail(500). 사유는 "실패 뒤 화면 값이 실패한 변경 바로 전 값(예 2)인지" 단언에 — 계획의 숫자를 그대로 쓰지 않는다. 화면이 먼저 바뀌는지는 단언하지 않는다 (공개 요구 몫)
+  - code: duplicate_refresh
+    description: 한 번의 만료에 토큰 갱신 요청이 두 번 이상 나감
+    log_patterns: ['\[reason:duplicate_refresh\]']
+    how: 계약 storage 모양대로 만료된 접근 토큰·갱신 토큰을 renderApp 전에 브라우저 저장소에 넣고, 화면이 처음에 부르는 데이터 API 요청을 waitFor…() 로 모두 붙잡아 둔 뒤 차례로 respond(401). 그 뒤 갱신 API 요청을 waitFor…() 로 하나 붙잡고 flush() 한 다음 api.calls(갱신 API) 수를 센다. 사유는 "갱신 요청이 하나인지" 단언에. 데이터 API 가 하나뿐인 화면에서는 시험하지 않는다 (동시 요청이 둘 이상이어야 드러난다)
+  - code: session_lost
+    description: 갱신할 수 있는데도 로그인이 풀리거나(로그인 화면) 데이터 요청이 실패로 끝남
+    log_patterns: ['\[reason:session_lost\]']
+    how: duplicate_refresh 와 같은 준비에서 첫 갱신 요청에 새 토큰으로 respond 하고, 그 뒤 같은 갱신 토큰으로 온 갱신 요청이 있으면 401 (이미 쓴 갱신 토큰 — 서버가 재사용으로 거절). 다시 보낸 데이터 요청은 call.headers 의 새 접근 토큰을 확인하고(사유 없이) respond. 사유는 "로그인 화면이 아니고 데이터가 보이는지" 단언에
+  - code: other_user_data_shown
+    description: 로그아웃·다른 사용자 로그인 뒤 이전 사용자의 데이터가 화면에 보임
+    log_patterns: ['\[reason:other_user_data_shown\]']
+    how: 사용자 A 로 로그인해 A 의 목록에 respond 하고 보이는 것을 (사유 없이) 확인한 뒤, 로그아웃하고 사용자 B 로 로그인. B 의 목록 요청을 waitFor…() 로 붙잡아 둔 채(응답하지 않음) A 의 항목 이름이 화면에 없는지 단언 — 사유는 여기에. 그 뒤 B 의 목록에 respond 해 B 의 항목만 보이는지도 본다. B 의 목록 요청이 언제 나가는지는 계약의 on_load 대로 (요청을 기다리지 않는 구현이 있으면 화면만 본다)
+  - code: duplicate_item_shown
+    description: 이어 붙인 목록에 같은 항목이 두 번 보임
+    log_patterns: ['\[reason:duplicate_item_shown\]']
+    how: 첫 묶음 요청에 respond 해 항목이 보이는 것을 (사유 없이) 확인한 뒤, 서버 쪽에 새 항목이 앞에 더해졌다고 보고 '더 보기' 요청을 waitFor…() 로 붙잡아 그 요청의 쿼리로 응답을 정한다 — 쪽 번호(offset)로 왔으면 앞으로 밀린 묶음(첫 묶음의 끝 항목이 다시 들어 있음), 계약의 기준(커서)으로 왔으면 그 기준 다음 항목들. 사유는 "화면 항목의 id(이름)가 서로 다른지" 단언에 (textsByRole 로 읽어 중복 수를 센다)
+  - code: offline_change_lost
+    description: 연결이 끊긴 동안 한 변경이 다시 연결된 뒤에도 서버에 반영되지 않음
+    log_patterns: ['\[reason:offline_change_lost\]']
+    how: 그 API 를 api.collection 으로 두고 network.goOffline() → 변경 여럿 → api.once 로 그중 하나의 다시 보내기만 fail(500) 준비 → network.goOnline() → 서버 상태가 더 바뀌지 않을 때까지 waitFor → 다시 network.goOffline()·goOnline() (계약의 재시도 시점이 다르면 그대로). 사유는 "모든 변경이 서버 상태에 있는지" 단언에 (순서는 보지 않고 정렬해 비교)
+  - code: offline_change_duplicated
+    description: 다시 보내며 이미 반영된 변경이 서버에 두 번 반영됨
+    log_patterns: ['\[reason:offline_change_duplicated\]']
+    how: offline_change_lost 와 같은 순서로 두 번째 재연결까지 한 뒤, 사유는 "서버 상태에 같은 변경이 하나씩만 있는지" 단언에 (값마다 개수를 센다). 실패시킨 것 말고 성공한 변경이 다시 오면 중복이다
+  - code: retry_new_key
+    description: 응답을 못 받은 제출을 다시 보낼 때 새 요청 번호를 써 서버가 같은 작업을 두 번 처리함
+    log_patterns: ['\[reason:retry_new_key\]']
+    how: 먼저 한 번 제출해 성공 응답을 주고 결과를 (사유 없이) 확인한다. 입력을 바꿔 새로 제출한 요청을 waitFor…() 로 붙잡아 networkError() 하고 오류 알림을 (사유 없이) 확인한 뒤 같은 조작으로 다시 제출해 온 요청을 붙잡는다. 사유는 "다시 온 요청의 요청 번호 헤더(call.headers 의 소문자 이름)가 끊긴 요청의 것과 같은지" 단언에
+  - code: contract_mismatch
+    description: 요청 형식(메서드·경로·쿼리·본문)이 계약과 다름
+    log_patterns: ['\[reason:contract_mismatch\]']
+    how: api.waitForCall 의 call.query·call.body 를 계약과 비교. 사유는 그 비교 단언에
+# 허용 설계가 이 스택에서 성립하는 조건 (spec-to-code §4.2) — 손 예시 search-autocomplete-react REPORT §6.3 실험에서.
+stack_conditions:
+  - 효과 정리 함수에서 AbortController.abort() 로 이전 요청을 끊으면, 끊긴 요청의 AbortError 는 오류로 보여 주지 않는다 (사용자 조작으로 끊은 것이지 실패가 아니다).
+  - 새 요청을 보낼 때만 이전 요청을 끊는 구현은 입력을 지우거나 닫을 때 남은 요청을 놓친다 — 지움·닫힘·화면을 떠날 때도 진행 중인 요청을 무효로 한다.
+  - 응답을 반영하기 전에 그 응답이 지금 입력(검색어·선택)에 대한 것인지 대조하면 순서와 무관하게 맞다 (요청 번호·현재 값 ref).
+  - 토큰 갱신을 한 번으로 묶으려면 진행 중인 갱신(Promise)을 하나만 두고 401 을 받은 요청이 모두 그것을 기다린다 — 갱신 중 표시(boolean)만 두면 그동안 온 401 이 버려지거나 따로 갱신한다.
+  - 사용자 데이터 캐시(TanStack Query·Zustand)는 로그아웃 때 비우거나 키에 사용자를 넣는다 — 다음 사용자가 로그인한 뒤 비우면 그 사이에 이전 데이터가 보인다.
+  - 같은 작업의 재시도는 같은 요청 번호로 한다 — 번호는 요청마다가 아니라 작업을 처음 제출할 때 만들어 두고, 성공한 뒤의 새 작업에 새로 만든다.
+  - 오프라인 대기열은 항목마다 성공을 확인한 뒤 지운다 — 한꺼번에 보내고 한꺼번에 지우거나 남기면 일부 실패에서 잃거나 두 번 보낸다.
