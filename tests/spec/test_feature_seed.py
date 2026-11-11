@@ -719,3 +719,19 @@ def test_patch_terms_and_paths() -> None:
         "제목·공개 요구·공개 수용 기준이 구현 방법을 지시함 (캐시, 락) — '무엇을'만"
     ) == ["캐시", "락"]
     assert problem_terms("행동 기준이 역량 x 의 수행준거를 하나도 인용하지 않음") == []
+
+
+def test_missing_artifact_role_is_support_not_a_schema_violation() -> None:
+    """2026-11-11 명세 알파: 자료 하나의 role 누락으로 답 전체가 스키마 위반 — 재요청 기회를 날렸다(하루 5번). support 로 받고
+    핵심·방해 자료 수는 자료 목록 검사가 본다. 출력 스키마에는 그대로 필수로 보인다."""
+    from task_spec.schemas import Artifact, DraftFeatureOutputV5
+
+    a = Artifact.model_validate({"artifact_id": "a1", "title": "가상 자료", "content": "가상 본문"})
+    assert a.role == "support"
+    schema = DraftFeatureOutputV5.model_json_schema()["$defs"]["Artifact"]
+    assert "role" in schema["required"]
+    d = _v2draft()
+    for art in d["artifacts"]:
+        art.pop("role", None)
+    out = DraftFeatureOutputV2.model_validate(d)  # 스키마 위반이 아니다
+    assert {x.role for x in out.artifacts} == {"support"}

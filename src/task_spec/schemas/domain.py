@@ -283,6 +283,15 @@ class Artifact(Schema):
     content: str = Field(min_length=1, max_length=ARTIFACT_MAX)
     role: Literal["key", "support", "distractor"]
 
+    @model_validator(mode="before")
+    @classmethod
+    def _missing_role_is_support(cls, data: object) -> object:
+        """role 이 빠진 LLM 답은 support 로 받는다 — 하나만 빠져도 답 전체가 스키마 위반으로 버려지고 재요청 기회까지 날아갔다
+        (2026-11-11 명세 알파, 하루 5번). 출력 스키마에는 그대로 필수로 보인다. key·distractor 가 모자라면 자료 목록 검사가 다시 묻는다."""
+        if isinstance(data, dict) and data.get("role") in (None, ""):
+            return {**data, "role": "support"}
+        return data
+
     @field_validator("content", mode="before")
     @classmethod
     def _fit_length(cls, v: object) -> object:
