@@ -6,6 +6,9 @@ GET  /builds/{build_id}/artifacts: 역할별 묶음 파일(이름·sha256·크�
 GET  /builds/{build_id}/deliveries: 전달 기록
 GET  /builds/{build_id}/readme   : 지원자 README 본문(응시용 이미지 작업 경로의 README.md 와 같음) + README 검토 표시 —
                                    지원자에게 보이는 공개 정보라 본문을 내준다. 검사·검증을 마친 빌드(review·approved·published)만
+GET  /builds/{build_id}/facilitator: 진행자(응시 플랫폼) 보기 — 요청하면 주는 자료(제목·본문), 질문 답(주제·매칭 낱말·구체·모호한 답),
+                                   1단계 제출 뒤 공개할 2단계. 자료 역할·reveals·숨은 요구·허용 설계는 응답 모델에 없다 (starter/facilitator.py).
+                                   진행자 서버용 — 통째로 지원자 화면에 내리지 않는다. README 와 같은 상태의 빌드만
 GET  /delivery-targets · POST /delivery-targets : 전달 대상(이름 → 받을 수 있는 역할 하나)
 
 응답에 넣지 않는 것: 계약 원문·숨은 계획(HiddenPlan)·오버레이 파일 본문(특히 참조 구현) — 사용자별 권한이 없으므로
@@ -22,7 +25,12 @@ from fastapi import APIRouter, Path, Query
 from pydantic import BaseModel, Field
 
 from task_spec.api.deps import BuildsDep
-from task_spec.api.errors import BuildNotFound, BuildRuleViolation, ReadmeNotAvailable
+from task_spec.api.errors import (
+    BuildNotFound,
+    BuildRuleViolation,
+    FacilitatorNotAvailable,
+    ReadmeNotAvailable,
+)
 from task_spec.schemas.build import BuildStatus
 from task_spec.schemas.build_record import TARGET_NAME, BuildRecord, Delivery, DeliveryTarget
 from task_spec.schemas.package import (
@@ -34,6 +42,7 @@ from task_spec.schemas.package import (
     VerifySummary,
     flag_id,
 )
+from task_spec.starter.facilitator import FacilitatorView, facilitator_view
 from task_spec.starter.render import README
 from task_spec.starter.store import BuildRepo, BuildRuleError, TaskLabel
 
@@ -190,6 +199,17 @@ async def get_readme(build_id: BuildIdPath, store: BuildsDep) -> ReadmeView:
         content=readme.content,
         review_flags=flags,
     )
+
+
+@router.get("/builds/{build_id}/facilitator")
+async def get_facilitator(build_id: BuildIdPath, store: BuildsDep) -> FacilitatorView:
+    b = await _build(store, build_id)
+    if b.status not in _README_READABLE:
+        raise FacilitatorNotAvailable(build_id, f"상태 {b.status}")
+    task = await store.task(b.common_id)
+    if task is None:
+        raise FacilitatorNotAvailable(build_id, "공통 과제 명세 없음")
+    return facilitator_view(b.common_id, task)
 
 
 @router.get("/delivery-targets")

@@ -71,6 +71,16 @@ class ReadmeNotAvailable(DomainError):
         super().__init__(f"지원자 README 를 볼 수 없습니다 ({reason}): {build_id}")
 
 
+class FacilitatorNotAvailable(DomainError):
+    """진행자 보기를 줄 수 없음 — 검사·검증을 마치지 않은 빌드이거나 공통 과제 명세가 없다."""
+
+    code = "facilitator_not_available"
+    status_code = 404
+
+    def __init__(self, build_id: str, reason: str) -> None:
+        super().__init__(f"진행자 자료를 볼 수 없습니다 ({reason}): {build_id}")
+
+
 class UiDisabled(DomainError):
     code = "not_found"
     status_code = 404
