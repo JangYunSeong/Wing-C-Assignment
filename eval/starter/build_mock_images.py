@@ -132,8 +132,14 @@ def stack_for(t: Template) -> Stack:
 
 
 def template_of(run: Path) -> Template:
-    """빌드 폴더의 직군 → 템플릿 (직군이 없는 손 예시 루프는 Java)."""
+    """빌드 폴더의 직군 → 템플릿 (직군이 없는 손 예시 루프는 Java). 알파가 판을 고정했으면(report.template_pinned,
+    run_alpha --template-version) 그 판 — 빌드·검증한 판과 이미지·저장 기록(template_ref)이 같게 (2026-11-11: v2 로 돈 백엔드 빌드가
+    CURRENT v1 로 기록될 뻔했다)."""
     report = json.loads((run / "report.json").read_text("utf-8"))
+    pinned = report.get("template_pinned")
+    if isinstance(pinned, str) and "@v" in pinned:
+        tid, ver = pinned.rsplit("@v", 1)
+        return load_template(tid, int(ver))
     sub = report.get("sub")
     return (select_template(sub) if sub else None) or load_template(JAVA_TEMPLATE)
 

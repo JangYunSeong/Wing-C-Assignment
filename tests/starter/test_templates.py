@@ -34,8 +34,8 @@ def java():  # type: ignore[no-untyped-def]
 
 
 def test_java_template_is_registered_and_clean(java) -> None:  # type: ignore[no-untyped-def]
-    assert JAVA in available() and current_version(JAVA) == 1
-    assert java.manifest.ref == f"{JAVA}@v1"
+    assert JAVA in available() and current_version(JAVA) == 2
+    assert java.manifest.ref == f"{JAVA}@v2"
     assert check_template(java) == []
     assert "build.gradle" in java.files("project")
     assert {"GraderSupport.java", "GraderJdbcHarness.java", "GraderParams.java"} <= set(
@@ -187,7 +187,7 @@ def test_candidate_image_must_not_hold_harness_or_manifest(java) -> None:  # typ
 def test_check_template_catches_layer_rule_violations(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    manifest = root / JAVA / "v1" / "manifest.yaml"
+    manifest = root / JAVA / "v2" / "manifest.yaml"
     text = manifest.read_text("utf-8")
     manifest.write_text(
         text.replace("template_layer: [project/]", "template_layer: [project/, hidden/]").replace(
@@ -204,8 +204,8 @@ def test_check_template_catches_layer_rule_violations(tmp_path: Path) -> None:
 def test_check_template_catches_missing_harness_and_locked(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    shutil.rmtree(root / JAVA / "v1" / "hidden" / "selftest")
-    (root / JAVA / "v1" / "project" / "settings.gradle").unlink()
+    shutil.rmtree(root / JAVA / "v2" / "hidden" / "selftest")
+    (root / JAVA / "v2" / "project" / "settings.gradle").unlink()
     problems = check_template(load_template(JAVA, root=root))
     assert any("selftest" in p for p in problems)
     assert any("settings.gradle" in p for p in problems)

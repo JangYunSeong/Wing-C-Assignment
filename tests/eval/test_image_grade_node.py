@@ -97,7 +97,7 @@ def test_mock_image_builder_picks_stack_and_writes_node_grade_config(tmp_path: P
 
     for sub, ref in (
         ("sw.frontend", "frontend/react-vite-ts@v11"),
-        ("sw.backend", "backend/java-spring-boot3-jpa@v1"),
+        ("sw.backend", "backend/java-spring-boot3-jpa@v2"),
     ):
         run = tmp_path / sub
         run.mkdir()
@@ -107,6 +107,15 @@ def test_mock_image_builder_picks_stack_and_writes_node_grade_config(tmp_path: P
     hand.mkdir()
     (hand / "report.json").write_text("{}", "utf-8")
     assert b.template_of(hand).manifest.ref.startswith("backend/java")  # 직군 없는 손 예시 루프
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    (pinned / "report.json").write_text(
+        json.dumps({"sub": "sw.backend", "template_pinned": "backend/java-spring-boot3-jpa@v1"}),
+        "utf-8",
+    )
+    assert (
+        b.template_of(pinned).manifest.ref == "backend/java-spring-boot3-jpa@v1"
+    )  # 알파가 고정한 판
     fe = load_template("frontend/react-vite-ts")
     assert b.stack_for(fe) is b.NODE and "bookworm" in b.NODE.base
     cfg = b.node_config(
