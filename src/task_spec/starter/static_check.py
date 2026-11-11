@@ -208,13 +208,18 @@ def _paths(o: Overlay, t: Template) -> list[StaticProblem]:
         out.append(StaticProblem(o.target, msg))
     lim = m.limits
     if lim is not None:
+        # 코드가 계약에서 결정적으로 쓰는 시드 파일(seed_sql)은 크기 상한에서 뺀다 — 상한은 LLM 이 쓴 파일을 막는 장치이고, 시드 행 수는
+        # 계약이 막는다 (SeedRule.rows ≤ 5000). 2026-11-11 N+1 백엔드 알파: 숨은 케이스 댓글 1050행(코드가 2100행으로 나눔) 시드로
+        # data.sql 이 100000B 를 넘어 시작 코드 생성 실패 — 생성기가 고칠 수 없는 파일이다.
+        coded = {m.seed_sql.path} if m.seed_sql is not None else set()
+        sized = [f for f in o.files if f.path not in coded]
         if len(o.files) > lim.max_files:
             out.append(
                 StaticProblem(
                     o.target, f"{o.name} 파일 수 {len(o.files)} 가 상한 {lim.max_files} 를 넘음"
                 )
             )
-        big = [f.path for f in o.files if len(f.content.encode()) > lim.max_file_bytes]
+        big = [f.path for f in sized if len(f.content.encode()) > lim.max_file_bytes]
         if big:
             out.append(
                 StaticProblem(
@@ -222,7 +227,7 @@ def _paths(o: Overlay, t: Template) -> list[StaticProblem]:
                     f"{o.name} 파일이 크기 상한 {lim.max_file_bytes}B 를 넘음: {', '.join(big)}",
                 )
             )
-        total = sum(len(f.content.encode()) for f in o.files)
+        total = sum(len(f.content.encode()) for f in sized)
         if total > lim.max_total_bytes:
             out.append(
                 StaticProblem(
