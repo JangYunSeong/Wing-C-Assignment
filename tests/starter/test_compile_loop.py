@@ -265,8 +265,9 @@ def test_starter_compile_errors_inside_test_files_go_to_the_test_generator() -> 
     assert [(a.generator, a.gate) for a in plan.actions] == [("gen_starter", "①")]
 
 
-def test_previous_hidden_file_is_kept_only_for_judged_cases_of_gate_3_and_4() -> None:
-    """#102 검토: 이전 파일 유지가 모든 숨은 테스트 수리에 켜져 있었다 — setup·static 수리, 테스트 예외로 끝난 케이스는 이전 파일이 깨졌다."""
+def test_previous_hidden_file_is_kept_only_when_every_accepted_impl_passed() -> None:
+    """#102 검토: 이전 파일 유지는 게이트 ③·③' 이고 허용 구현이 모두 통과한 케이스만 — 허용 구현을 떨어뜨린 케이스(④)를 남기면
+    다음 회차에 같은 실패가 되풀이된다 (2026-11-11 재검증 오프라인 hc1)."""
     from task_spec.nodes.starter.build import BuildOutcome, _keepable_cases
     from task_spec.schemas import TargetRun, VerifyReport
     from task_spec.starter.repair import RepairAction
@@ -283,15 +284,20 @@ def test_previous_hidden_file_is_kept_only_for_judged_cases_of_gate_3_and_4() ->
         VerifyReport(
             runs=[
                 run("naive-all", "ref_naive", "PASS", "HARNESS_ERR"),
-                run("d1", "ref_accepted", "PASS", "PASS"),
+                run("d1", "ref_accepted", "PASS", "ASSERT"),
+                run("d2", "ref_accepted", "PASS", "PASS"),
             ]
         )
     )
-    hidden = lambda gate: RepairAction("gen_hidden", "", gate, "가상 사유", "가상 수정 요청")  # noqa: E731
-    assert _keepable_cases([hidden("③"), hidden("③'"), hidden("④")], out) == {
+
+    def hidden(gate: str) -> RepairAction:
+        return RepairAction("gen_hidden", "", gate, "가상 사유", "가상 수정 요청")
+
+    assert _keepable_cases([hidden("③"), hidden("③'")], out) == {
         "hc1"
-    }  # hc2 는 예외로 끝남
-    assert _keepable_cases([hidden("③④")], out) == {"hc1"}  # 합친 게이트
+    }  # hc2 는 허용 구현 d1 이 실패
+    assert _keepable_cases([hidden("③"), hidden("④")], out) == frozenset()
+    assert _keepable_cases([hidden("③④")], out) == frozenset()
     assert _keepable_cases([hidden("③"), hidden("setup")], out) == frozenset()
     assert _keepable_cases([hidden("static")], out) == frozenset()
     assert (
