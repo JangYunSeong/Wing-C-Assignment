@@ -714,6 +714,8 @@ def main() -> None:
                         "seconds": g["seconds"],
                         "setup": (g["result"] or {}).get("setup"),
                         "summary": (g["result"] or {}).get("summary"),
+                        "cases": (g["result"] or {}).get("cases")
+                        or [],  # 케이스별 결과 — 빌드 화면 '테스트' 절
                     }
                     for name, g in x.get("grades", {}).items()
                 },

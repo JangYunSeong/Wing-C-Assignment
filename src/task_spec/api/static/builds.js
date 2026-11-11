@@ -1,6 +1,6 @@
 /* 공통 과제 빌드 — 임시 화면 (api/routers/ui.py 가 /ui/builds.html 로 내준다).
-   기존 API(/builds · /builds/{id} · /artifacts · /deliveries · /delivery-targets)만 부른다.
-   API 는 계약·숨은 계획·테스트 본문을 내주지 않으므로 이 화면에도 없다. */
+   기존 API(/builds · /builds/{id} · /cases · /artifacts · /deliveries · /delivery-targets)만 부른다.
+   '테스트' 절은 문제를 쓸지 정하는 승인자용 — 숨은 케이스의 상황·통과 조건·의도한 사유·허용 설계와 대상별 결과 (테스트 코드는 없다). */
 "use strict";
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -99,6 +99,60 @@ function verificationTable(v) {
   return `<div class="tbl-wrap"><table><thead><tr><th>대상</th><th class="num">숨은</th><th class="num">공개</th><th>기대</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+/* 테스트 — 케이스마다 무엇을 확인하나 + 대상별 결과 (✓ 통과 · ✗ 실패 사유). 시작 코드·흔한 구현은 숨은 케이스에서 떨어져야 한다 */
+function casesBlock(c) {
+  if (!c) return `<p class="placeholder">테스트 정보를 읽지 못했습니다.</p>`;
+  const targets = Object.keys(c.results).sort((a, b) => {
+    const r = (n) => (n === "starter-only" ? 0 : n.startsWith("naive") ? 1 : 2);
+    return r(a) - r(b) || a.localeCompare(b);
+  });
+  const hasResults = targets.some((t) => c.results[t].length);
+  const cell = (t, cs) => {
+    const r = (c.results[t] || []).find((x) => x.id === cs.id || x.id.toLowerCase().startsWith(cs.id));
+    if (!r) return `<td class="faint">–</td>`;
+    const want = cs.kind === "hidden" && expectOf(t).fail ? false : true; // 시작 코드·흔한 구현은 숨은 케이스에서 떨어져야
+    const good = t === "starter-only" && cs.kind === "public" ? true : r.passed === want;
+    const intended = !r.passed && cs.intended_reason && r.reason === cs.intended_reason;
+    const label = r.passed ? "✓" : `✗${r.reason ? ` ${esc(r.reason)}` : ""}${intended ? " (의도)" : ""}`;
+    return `<td class="${good ? "good" : "bad"}" title="${esc(r.message || "")}">${label}</td>`;
+  };
+  const head = `<tr><th>케이스</th><th>무엇을 확인하나</th>${hasResults ? targets.map((t) => `<th>${esc(t)}<br><span class="faint">${expectOf(t).label}</span></th>`).join("") : ""}</tr>`;
+  const rows = c.cases
+    .map((cs) => {
+      const what =
+        cs.kind === "hidden"
+          ? `${esc(cs.scenario || "")}<br><b>통과:</b> ${esc(cs.expect)}${cs.intended_reason ? `<br><span class="faint">의도한 실패 사유</span> <span class="mono">${esc(cs.intended_reason)}</span>` : ""}${cs.setup.length ? `<br><span class="faint">하네스 준비: ${esc(cs.setup.join(" · "))}</span>` : ""}`
+          : esc(cs.expect);
+      return `<tr id="case-${esc(cs.id)}"><td><b class="mono">${esc(cs.id)}</b><br><span class="faint">${cs.kind === "hidden" ? "숨은" : "공개"} · ${esc(cs.ac_id)}${cs.trap_id ? ` · ${esc(cs.trap_id)}` : ""}</span></td>
+        <td>${what}</td>${hasResults ? targets.map((t) => cell(t, cs)).join("") : ""}</tr>`;
+    })
+    .join("");
+  // 계약 케이스 id 와 맞지 않는 결과 (Java 공개 테스트는 클래스 이름 — 예: AuditLogDescendingOrderTest)
+  const known = (id) => c.cases.some((cs) => id === cs.id || id.toLowerCase().startsWith(cs.id));
+  const others = [...new Set(targets.flatMap((t) => c.results[t].map((r) => r.id)).filter((id) => !known(id)))];
+  const otherRows = others
+    .map((id) => {
+      const kind = targets.map((t) => c.results[t].find((r) => r.id === id)).find(Boolean)?.kind || "";
+      return `<tr><td><b class="mono">${esc(id)}</b><br><span class="faint">${kind === "hidden" ? "숨은" : "공개"} · 계약 id 없음</span></td><td class="faint">–</td>${targets
+        .map((t) => {
+          const r = c.results[t].find((x) => x.id === id);
+          return r ? `<td class="${r.passed ? "good" : "bad"}" title="${esc(r.message || "")}">${r.passed ? "✓" : `✗${r.reason ? ` ${esc(r.reason)}` : ""}`}</td>` : `<td class="faint">–</td>`;
+        })
+        .join("")}</tr>`;
+    })
+    .join("");
+  const acs = [...c.acceptance_hidden.map((a) => ["숨김", a]), ...c.acceptance_public.map((a) => ["공개", a])]
+    .map(([k, a]) => `<li><span class="mono">${esc(a.ac_id)}</span> <span class="faint">${k}${a.trap_id ? ` · ${esc(a.trap_id)}` : ""}</span> ${esc(a.text)}</li>`)
+    .join("");
+  const designs = c.accepted_designs
+    .map((d) => `<li><span class="mono">${esc(d.design_id)}</span> ${esc(d.summary)}<br><span class="faint">${esc(d.conditions)}</span></li>`)
+    .join("");
+  return `<div class="tbl-wrap"><table><thead>${head}</thead><tbody>${rows}${otherRows}</tbody></table></div>
+    ${hasResults ? "" : `<p class="placeholder">이 빌드는 케이스별 결과를 저장하기 전에 적재돼 결과 칸이 없습니다.</p>`}
+    <div class="eyebrow">수용 기준</div><ul class="bflags">${acs || "<li>없음</li>"}</ul>
+    <div class="eyebrow">허용 설계 (통과로 인정하는 구현 방향)</div><ul class="bflags">${designs || "<li>없음</li>"}</ul>`;
+}
+
 function flagsBlock(flags) {
   if (!flags.length) return `<p class="placeholder">검토 표시가 없습니다.</p>`;
   return `<ul class="bflags">${flags
@@ -149,8 +203,9 @@ async function show(id) {
   el.innerHTML = `<div class="sheet-head"><p class="placeholder">읽는 중…</p></div>`;
   try {
     const enc = encodeURIComponent(id);
-    const [b, arts, ds, targets] = await Promise.all([
+    const [b, cases, arts, ds, targets] = await Promise.all([
       api(`/builds/${enc}`),
+      api(`/builds/${enc}/cases`).catch(() => null),
       api(`/builds/${enc}/artifacts`),
       api(`/builds/${enc}/deliveries`),
       api("/delivery-targets"),
@@ -165,12 +220,13 @@ async function show(id) {
         <div class="meta"><span class="mono">${esc(b.build_id)}</span><span>${esc(b.template_ref || "–")}</span><span>만든 시각 ${when(b.created_at)}</span>
         ${b.approved_by ? `<span>승인 ${esc(b.approved_by)} · ${when(b.approved_at)}</span>` : ""}</div></div>
         <div class="right">${pill(b.status)}</div></div>
-      <nav class="jump" aria-label="빌드 안에서 이동"><a href="#" data-jump="b-verify">검증</a><a href="#" data-jump="b-flags">검토 표시</a><a href="#" data-jump="b-arts">이미지 묶음</a><a href="#" data-jump="b-deliv">전달</a></nav>
+      <nav class="jump" aria-label="빌드 안에서 이동"><a href="#" data-jump="b-verify">검증</a><a href="#" data-jump="b-cases">테스트</a><a href="#" data-jump="b-flags">검토 표시</a><a href="#" data-jump="b-arts">이미지 묶음</a><a href="#" data-jump="b-deliv">전달</a></nav>
       <section class="block" id="b-verify"><div class="block-head"><h3>검증 결과</h3><span class="aside">채점용 이미지로 채점한 구현별 통과 수</span></div>
         ${verificationTable(b.verification)}
         <div class="kv"><span>오버레이 파일</span><b>${esc(files)}</b><span>수리</span><b>${b.repairs}건</b>
         <span>시작 코드 해시</span><b class="mono">${esc((b.tree_sha256 || "–").slice(0, 16))}</b><span>채점 내용 해시</span><b class="mono">${esc((b.grader_sha256 || "–").slice(0, 16))}</b>
         <span>온톨로지</span><b class="mono">${esc(b.ontology_version)}</b></div></section>
+      <section class="block" id="b-cases"><div class="block-head"><h3>테스트</h3><span class="aside">문제를 쓸지 정할 때 — 케이스마다 무엇을 확인하고 누가 통과했나 (칸에 마우스를 올리면 실패 메시지)</span></div>${casesBlock(cases)}</section>
       <section class="block" id="b-flags"><div class="block-head"><h3>검토 표시</h3><span class="aside">승인 전에 표시마다 승인자 판단이 필요합니다 · ${decided}/${b.review_flags.length} 판단</span></div>${flagsBlock(b.review_flags)}</section>
       <section class="block" id="b-arts"><div class="block-head"><h3>이미지 묶음</h3><span class="aside">받는 곳별 폴더 — 응시용은 응시 환경, 채점용은 채점 서버로만</span></div>${artifactsBlock(arts)}</section>
       <section class="block" id="b-deliv"><div class="block-head"><h3>전달</h3></div>${deliveriesBlock(ds, targets)}</section>`;

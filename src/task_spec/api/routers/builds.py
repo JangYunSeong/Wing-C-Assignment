@@ -9,10 +9,14 @@ GET  /builds/{build_id}/readme   : 지원자 README 본문(응시용 이미지 �
 GET  /builds/{build_id}/facilitator: 진행자(응시 플랫폼) 보기 — 요청하면 주는 자료(제목·본문), 질문 답(주제·매칭 낱말·구체·모호한 답),
                                    1단계 제출 뒤 공개할 2단계. 자료 역할·reveals·숨은 요구·허용 설계는 응답 모델에 없다 (starter/facilitator.py).
                                    진행자 서버용 — 통째로 지원자 화면에 내리지 않는다. README 와 같은 상태의 빌드만
+GET  /builds/{build_id}/cases      : 승인자 보기 — 문제를 쓸지 정하는 사람이 보는 테스트 정보 (2026-11-11 사용자): 숨은 케이스(무엇을
+                                   하고 무엇이면 통과·의도한 실패 사유)·공개 테스트(무엇을 확인)·숨김·공개 수용 기준·허용 설계·대상별 케이스 결과.
+                                   테스트 코드·참조 구현 본문은 없다. 숨은 요구 그 자체라 지원자·평가 쪽 UI 에 내주지 않는다
 GET  /delivery-targets · POST /delivery-targets : 전달 대상(이름 → 받을 수 있는 역할 하나)
 
-응답에 넣지 않는 것: 계약 원문·숨은 계획(HiddenPlan)·오버레이 파일 본문(특히 참조 구현) — 사용자별 권한이 없으므로
-응답 모델에 칸 자체가 없다. 승인은 그래프 interrupt 로만 받고(불변식 9), 전달 요청은 승인 경로와 함께 추가한다.
+응답에 넣지 않는 것: 계약 원문·숨은 계획 원문(조절값·시드 행)·오버레이 파일 본문(특히 참조 구현·테스트 코드) — 응답 모델에 칸 자체가 없다.
+예외는 /cases: 문제를 쓸지 정하는 승인자에게 숨은 케이스의 상황·통과 조건·의도한 사유와 허용 설계를 보인다 [확정: 2026-11-11 사용자].
+사용자별 권한이 아직 없으므로(nginx 기본 인증뿐, docs/deploy.md §5) 이 화면·API 는 내부 승인자만 접근한다는 전제다. 승인은 그래프 interrupt 로만 받고(불변식 9), 전달 요청은 승인 경로와 함께 추가한다.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from task_spec.api.deps import BuildsDep
 from task_spec.api.errors import (
     BuildNotFound,
     BuildRuleViolation,
+    CasesNotAvailable,
     FacilitatorNotAvailable,
     ReadmeNotAvailable,
 )
@@ -38,6 +43,7 @@ from task_spec.schemas.package import (
     COMMON_ID,
     ArtifactFile,
     ArtifactRole,
+    CaseResult,
     ReviewVerdict,
     VerifySummary,
     flag_id,
@@ -210,6 +216,90 @@ async def get_facilitator(build_id: BuildIdPath, store: BuildsDep) -> Facilitato
     if task is None:
         raise FacilitatorNotAvailable(build_id, "공통 과제 명세 없음")
     return facilitator_view(b.common_id, task)
+
+
+class CaseView(BaseModel):
+    """케이스 하나 — 숨은 케이스는 상황·통과 조건·의도한 실패 사유, 공개 테스트는 확인하는 것."""
+
+    id: str
+    kind: str  # hidden · public
+    ac_id: str
+    trap_id: str | None = None
+    scenario: str | None = None
+    expect: str
+    intended_reason: str | None = None
+    setup: list[str] = Field(default_factory=list)
+
+
+class AcceptanceView(BaseModel):
+    ac_id: str
+    text: str
+    trap_id: str | None = None
+
+
+class DesignView(BaseModel):
+    design_id: str
+    summary: str
+    conditions: str
+    trap_ids: list[str]
+
+
+class BuildCasesView(BaseModel):
+    build_id: str
+    status: BuildStatus
+    cases: list[CaseView]
+    acceptance_hidden: list[AcceptanceView]
+    acceptance_public: list[AcceptanceView]
+    accepted_designs: list[DesignView]
+    results: dict[str, list[CaseResult]]  # 검증 대상 → 케이스별 결과 (예전 빌드는 비어 있음)
+
+
+@router.get("/builds/{build_id}/cases")
+async def get_cases(build_id: BuildIdPath, store: BuildsDep) -> BuildCasesView:
+    b = await _build(store, build_id)
+    if b.status not in _README_READABLE or b.outcome is None:
+        raise CasesNotAvailable(build_id, f"상태 {b.status}")
+    plan, contract = b.outcome.hidden_plan, b.outcome.contract
+    task = await store.task(b.common_id)
+    cases = [
+        CaseView(
+            id=c.case_id,
+            kind="hidden",
+            ac_id=c.ac_id,
+            trap_id=c.trap_id,
+            scenario=c.scenario,
+            expect=c.expect,
+            intended_reason=c.intended_reason,
+            setup=list(c.setup),
+        )
+        for c in plan.cases
+    ] + [
+        CaseView(id=t.test_id, kind="public", ac_id=t.ac_id, expect=t.checks)
+        for t in contract.public_tests
+    ]
+    return BuildCasesView(
+        build_id=build_id,
+        status=b.status,
+        cases=cases,
+        acceptance_hidden=[
+            AcceptanceView(ac_id=a.ac_id, text=a.text, trap_id=a.trap_id)
+            for a in (task.acceptance_hidden if task else [])
+        ],
+        acceptance_public=[
+            AcceptanceView(ac_id=a.ac_id, text=a.text)
+            for a in (task.acceptance_public if task else [])
+        ],
+        accepted_designs=[
+            DesignView(
+                design_id=d.design_id,
+                summary=d.summary,
+                conditions=d.conditions,
+                trap_ids=list(d.trap_ids),
+            )
+            for d in (task.accepted_designs if task else [])
+        ],
+        results={name: list(v.cases) for name, v in b.outcome.verification.items()},
+    )
 
 
 @router.get("/delivery-targets")

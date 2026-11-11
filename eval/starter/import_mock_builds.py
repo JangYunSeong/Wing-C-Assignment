@@ -82,9 +82,28 @@ def repairs_of(run: Path, builds_root: Path) -> list[RepairRecord]:
     return [RepairRecord.model_validate({**x, "reason": str(x["reason"])[:300]}) for x in raw or []]
 
 
+def case_results(cases: Any) -> list[dict[str, Any]]:
+    """result.json cases[] → CaseResult 모양 (id·kind·passed·reason·message 앞 300자)."""
+    out: list[dict[str, Any]] = []
+    for c in cases or []:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        msg = c.get("message")
+        out.append(
+            {
+                "id": str(c["id"])[:120],
+                "kind": str(c.get("kind") or "hidden")[:20],
+                "passed": bool(c.get("passed")),
+                "reason": (str(c["reason"])[:80] if c.get("reason") else None),
+                "message": (" ".join(str(msg).split())[:300] if msg else None),
+            }
+        )
+    return out
+
+
 def summaries(verification: dict[str, Any]) -> dict[str, VerifySummary]:
     return {
-        name: VerifySummary.model_validate(v["summary"])
+        name: VerifySummary.model_validate({**v["summary"], "cases": case_results(v.get("cases"))})
         for name, v in verification.items()
         if v.get("summary")
     }
