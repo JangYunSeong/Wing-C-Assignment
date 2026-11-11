@@ -359,3 +359,21 @@ class JudgeTrapsOutput(Schema):
         max_length=5,
         description="상황·자료·행동 기준 사이 수치·사실이 안 맞는 곳",
     )
+
+
+class FieldFixInput(Schema):
+    """명세 칸 부분 수리 (prompts/fix_feature_fields) — 검사에 걸린 칸의 글만 고친다 (spec/patch.py). 공고·재료 글만 — 지원자 문서 없음."""
+
+    fields: str = Field(min_length=1)  # "[경로] 글" 줄 묶음 — 고칠 칸들
+    rules: str = Field(min_length=1)  # "- 칸들: 빼야 할 말 — 이유" 줄 묶음
+
+
+class FixedField(Schema):
+    path: str = Field(min_length=1, max_length=80, description="입력의 [경로] 그대로")
+    text: str = Field(
+        min_length=1, max_length=2000, description="고쳐 쓴 글 — 빼야 할 말과 같은 뜻의 말 없이"
+    )
+
+
+class FieldFixOutput(Schema):
+    fields: list[FixedField] = Field(min_length=1, max_length=20)

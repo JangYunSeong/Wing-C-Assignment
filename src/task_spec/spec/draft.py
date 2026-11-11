@@ -113,6 +113,9 @@ class DraftResult:
     provenance_id: str | None = None  # 채택한 답의 provenance
     incident_id: str | None = None  # 프롬프트에 실제로 넣은 공개 사례
     first_problems: list[str] = field(default_factory=list)  # 첫 답의 검증 실패 사유 (평가용)
+    patched: list[str] = field(
+        default_factory=list
+    )  # 부분 수리(spec/patch.py)로 풀린 문제 (평가·승인 화면용)
     fail_reasons: list[str] = field(
         default_factory=list
     )  # LLM 실패 사유 (필드 위치·오류 종류만, 원문 없음)
@@ -578,6 +581,7 @@ async def draft_task(
     checker: Callable[[Any, DraftContext], list[str]] = check,
     repairer: Callable[[Any, DraftContext], tuple[Any, bool]] = repair,
     shuffler: Callable[[Any, str], Any] = shuffle_artifacts,
+    patch: bool = False,
 ) -> DraftResult:
     """생성 → 검증 → 1회 재요청 → 고쳐 쓰기. 공통 과제(draft_task)·확장 슬롯(draft_slot)·기능형(draft_feature_task,
     checker/repairer/shuffler 를 spec/feature.py 것으로)이 같이 쓴다."""
@@ -640,6 +644,23 @@ async def draft_task(
         res.flags.append(FLAG_DRAFT_FAILED)
         return res
     out, problems, res.provenance_id = best
+    if problems and patch:
+        # 걸린 칸만 고쳐 다시 검사 (spec/patch.py) — 재요청은 전체를 다시 써 같은 문장을 또 넣었다 (2026-11-11 명세 알파)
+        from task_spec.spec.patch import fix_fields
+
+        fixed, left, prov = await fix_fields(
+            out,
+            problems,
+            llm=llm,
+            prompts=prompts,
+            ontology_version=ctx.ontology_version,
+            checker=lambda o: checker(o, ctx) + (extra_check(o) if extra_check else []),
+        )
+        if prov is not None:
+            res.provenance.append(prov)
+        if fixed is not None:
+            res.patched = [p for p in problems if p not in left]
+            out, problems = fixed, left
     if problems:
         out, res.anchors_ok = repairer(out, ctx)
         res.flags.append(FLAG_DRAFT_INVALID + "; ".join(problems))

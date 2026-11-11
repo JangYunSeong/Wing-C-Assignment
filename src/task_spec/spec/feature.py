@@ -1024,6 +1024,7 @@ async def draft_feature_task(
             checker=cast(Any, check_feature),
             repairer=cast(Any, repair_feature),
             shuffler=cast(Any, shuffle_feature),
+            patch=True,
         )
     inc = ctx.incident
     if inc is None or inc.feature is None:
@@ -1053,6 +1054,7 @@ async def draft_feature_task(
         checker=cast(Any, check_feature),
         repairer=cast(Any, repair_feature),
         shuffler=fill_then_shuffle,
+        patch=True,
     )
     res.incident_id = inc.incident_id
     res.seed = seed
