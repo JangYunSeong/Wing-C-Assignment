@@ -94,6 +94,9 @@ class RepairPlan:
     flags: list[str] = field(
         default_factory=list
     )  # 막지 않는 표시 (승인자에게) — 예: 같은 사유·문구의 단언
+    # 채점에서 뺄 숨은 케이스 — 다시 만든 뒤에도 흔한 구현이 통과하고 같은 숨은 요구를 다른 케이스가 의도한 사유로 잡는 것
+    # (변별하지 못함) [확정: 2026-11-11 사용자 — 사람 확인 표시만 하던 것을 코드가 뺀다]
+    weak: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -833,7 +836,7 @@ def _gate3(
     terms: RepairTerms | None = None,
     hits: Sequence[str] = (),
     family: Collection[str] = (),
-) -> tuple[list[RepairAction], list[str]]:
+) -> tuple[list[RepairAction], list[str], list[str]]:
     """흔한 구현의 숨은 케이스 결과로 숨은 테스트·흔한 구현을 고친다.
     family: 재료가 정한 이 숨은 요구의 사유들(FeatureSeed.reasons) — 흔한 구현이 의도한 사유 대신 같은 묶음의 다른 사유로 떨어져도
     함정을 잡은 것으로 본다. 2026-11-11 재측정 오프라인: 첫 재연결 500 에서 흔한 구현은 메모를 겹치지 않고 잃었다(lost) — hc2(duplicated)를
@@ -867,21 +870,29 @@ def _gate3(
         ids = ", ".join(c.case_id for c in passed)
         found = ", ".join(hits)
         if regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0:
-            return [
-                RepairAction(
-                    "gen_naive",
-                    run.target,
-                    "③",
-                    f"흔한 구현이 {ids} 통과 — 정답 장치({found})를 씀 ({run.target})",
-                    f"이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치({found})를 썼다 — 그 장치를 빼고 입력의 흔한 구현 "
-                    "설명대로만 쓴다 (설명에 없는 방어 코드·정리 함수의 무시 표시·취소·묶음 조회 등을 더하지 않는다).",
-                    budget=TRAP_SUFFIX,
-                )
-            ], []
-        return [], [
-            f"{MATERIAL_VERDICT}흔한 구현({run.target})이 다시 만든 뒤에도 허용 설계의 장치({found})를 써 숨은 케이스 {ids} 를 통과 — "
-            "AI 흔한 구현이 기본으로 정답을 쓰므로 이 함정은 AI 첫 답을 가르지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
-        ]
+            return (
+                [
+                    RepairAction(
+                        "gen_naive",
+                        run.target,
+                        "③",
+                        f"흔한 구현이 {ids} 통과 — 정답 장치({found})를 씀 ({run.target})",
+                        f"이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치({found})를 썼다 — 그 장치를 빼고 입력의 흔한 구현 "
+                        "설명대로만 쓴다 (설명에 없는 방어 코드·정리 함수의 무시 표시·취소·묶음 조회 등을 더하지 않는다).",
+                        budget=TRAP_SUFFIX,
+                    )
+                ],
+                [],
+                [],
+            )
+        return (
+            [],
+            [
+                f"{MATERIAL_VERDICT}흔한 구현({run.target})이 다시 만든 뒤에도 허용 설계의 장치({found})를 써 숨은 케이스 {ids} 를 통과 — "
+                "AI 흔한 구현이 기본으로 정답을 쓰므로 이 함정은 AI 첫 답을 가르지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
+            ],
+            [],
+        )
     if (
         passed
         and not shows_trap
@@ -893,19 +904,25 @@ def _gate3(
         # 흔한 구현이 틀렸으면 사유 불일치도 그 탓일 수 있다 (같은 재실행의 hc2 record_missing).
         ids = ", ".join(c.case_id for c in passed)
         traps = ", ".join(sorted({c.trap_id for c in passed}))
-        return [
-            RepairAction(
-                "gen_naive",
-                run.target,
-                "③",
-                f"흔한 구현이 {ids} 통과 — 흔한 구현을 먼저 다시 ({run.target})",
-                f"이 흔한 구현은 숨은 요구 {traps} 를 어기는 구현이어야 하는데 숨은 케이스 {ids} 를 통과했다 — 입력의 흔한 구현 설명을 "
-                "구조 그대로 따르지 않았다. 설명이 말하는 그 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)를 그대로 쓰고, "
-                "더 안전한 방식으로 바꾸지 않는다.",
-                budget=TRAP_SUFFIX,
-            )
-        ], []
-    # 함정을 다른 케이스가 이미 잡는데 숨은 테스트를 다시 만든 뒤에도 흔한 구현이 통과하는 케이스 — 변별하지 못하는 케이스로 표시만.
+        return (
+            [
+                RepairAction(
+                    "gen_naive",
+                    run.target,
+                    "③",
+                    f"흔한 구현이 {ids} 통과 — 흔한 구현을 먼저 다시 ({run.target})",
+                    f"이 흔한 구현은 숨은 요구 {traps} 를 어기는 구현이어야 하는데 숨은 케이스 {ids} 를 통과했다 — 입력의 흔한 구현 설명을 "
+                    "구조 그대로 따르지 않았다. 설명이 말하는 그 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)를 그대로 쓰고, "
+                    "더 안전한 방식으로 바꾸지 않는다.",
+                    budget=TRAP_SUFFIX,
+                )
+            ],
+            [],
+            [],
+        )
+    # 함정을 다른 케이스가 이미 잡는데 숨은 테스트를 다시 만든 뒤에도 흔한 구현이 통과하는 케이스 — 변별하지 못하므로 채점에서 뺀다
+    # (RepairPlan.weak → build 가 숨은 계획·숨은 테스트에서 지운다) [확정: 2026-11-11 사용자]. 2026-11-11 풀 교착 hc2: 요청 하나로
+    # 잘못된 전이의 실패 기록을 봐 흔한 구현도 통과 — 함정(동시 요청에서 커넥션 고갈)이 터지는 조건을 재현하지 않았다.
     # 2026-11-10 gen-item2: hc1·hc2·hc3 이 의도한 사유로 잡는 t1 을 hc4(record_missing)가 다시 만든 뒤에도 못 잡아 예산을 다 쓰고
     # 루프가 failed — 허용 구현 3개는 숨은 케이스 4개를 모두 통과했다 (흔한 구현의 함정은 기록 누락이 아니라 연결 고갈).
     caught = sorted(
@@ -917,6 +934,7 @@ def _gate3(
         and same(c.intended_reason, r.reason)
     )
     flags: list[str] = []
+    weak: list[str] = []  # 채점에서 뺄 케이스 (변별하지 못함)
     substituted: list[tuple[str, str, str]] = []  # (케이스, 의도한 사유, 대신 관찰한 사유)
     settled = caught and regen_counts.get("gen_hidden", 0) >= 1
     out: list[RepairAction] = []
@@ -926,9 +944,11 @@ def _gate3(
             continue
         if c.trap_id in missed:
             if r.result == "PASS" and settled:
+                weak.append(c.case_id)
                 flags.append(
                     f"숨은 케이스 {c.case_id} 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현({run.target})이 통과 — 같은 숨은 요구 {c.trap_id} 는 "
-                    f"{', '.join(caught)} 가 의도한 사유로 잡는다. {c.case_id} 는 흔한 구현과 올바른 구현을 가르지 않는다 (채점에서 뺄지 사람 확인)"
+                    f"{', '.join(caught)} 가 의도한 사유로 잡는다. {c.case_id} 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 뺐다 "
+                    f"(무엇을 확인했나: {c.expect[:120]})"
                 )
             elif r.result == "PASS":
                 out.append(
@@ -996,7 +1016,7 @@ def _gate3(
                 f"숨은 케이스 {cid} 는 흔한 구현({run.target})을 {want} 대신 {got} 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "
                 f"{want} 를 확인하는 케이스가 없다 (사람 확인)"
             )
-    return out, flags
+    return out, flags, weak
 
 
 def _gate4(
@@ -1219,7 +1239,7 @@ def assign(
     for run in judged:
         if run.kind == "ref_naive":
             hits = marker_hits(overlays.get(run.target), fix_markers)
-            acts, flags = _gate3(
+            acts, flags, weak = _gate3(
                 run,
                 plan,
                 missed_traps.get(run.target, set()),
@@ -1231,6 +1251,7 @@ def assign(
             actions += acts
             res.unresolved += [f for f in flags if f.startswith(MATERIAL_VERDICT)]
             res.flags += [f for f in flags if not f.startswith(MATERIAL_VERDICT)]
+            res.weak += [w for w in weak if w not in res.weak]
     accepted = [r for r in judged if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Literal, Protocol
 
@@ -20,6 +21,7 @@ from task_spec.llm import LLMClient
 from task_spec.nodes.starter.generate import (
     BuildInputs,
     GenResult,
+    case_owner,
     gen_accepted,
     gen_hidden,
     gen_naive,
@@ -28,7 +30,7 @@ from task_spec.nodes.starter.generate import (
 )
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import AcceptedDesign, CompileError, Provenance, VerifyReport
-from task_spec.schemas.build import RepairRecord
+from task_spec.schemas.build import HiddenPlan, RepairRecord
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
 from task_spec.starter.hidden_helpers import render_persistence_check
@@ -339,6 +341,10 @@ class BuildOutcome:
     snapshots: list[dict[str, Overlay]] = field(
         default_factory=list
     )  # 검증한 회차마다 그때의 오버레이 (평가·디버깅용)
+    # 채점에서 뺀 숨은 케이스와 그 뒤의 숨은 계획 — 변별하지 못하는 케이스 (RepairPlan.weak) [확정: 2026-11-11 사용자].
+    # 저장·이미지는 hidden_plan 을 쓴다 (없으면 입력의 계획 그대로).
+    dropped_cases: list[str] = field(default_factory=list)
+    hidden_plan: HiddenPlan | None = None
 
     @property
     def cost_usd(self) -> float:
@@ -566,6 +572,8 @@ async def build_and_repair(
             len(plan.unresolved),
         )
         if plan.passed:
+            if plan.weak:
+                _drop_cases(out, b, plan.weak)
             out.status = "review"
             return out
         blocked = [
@@ -586,6 +594,23 @@ async def build_and_repair(
         if not await _regenerate(plan.actions, out, b, by_id, kw, took, drop, compiler, absorb):
             return out
     return out
+
+
+def _drop_cases(out: BuildOutcome, b: BuildInputs, ids: Sequence[str]) -> None:
+    """변별하지 못하는 숨은 케이스를 채점에서 뺀다 — 숨은 계획에서 지우고 그 케이스만의 숨은 테스트 파일도 지운다 (공용 파일은 둔다).
+    같은 숨은 요구는 다른 케이스가 의도한 사유로 잡으므로(repair._gate3) 숨은 요구마다 케이스가 하나 이상 남는다."""
+    drop = set(ids)
+    rx = re.compile(b.template.manifest.hidden_rules.case_id_pattern)
+    all_ids = [c.case_id for c in b.plan.cases]
+    hidden = out.overlays[HIDDEN]
+    out.overlays[HIDDEN] = replace(
+        hidden, files=tuple(f for f in hidden.files if case_owner(f, rx, all_ids) not in drop)
+    )
+    out.hidden_plan = b.plan.model_copy(
+        update={"cases": [c for c in b.plan.cases if c.case_id not in drop]}
+    )
+    out.dropped_cases = sorted(drop)
+    logger.info("build dropped weak cases=%s", ",".join(sorted(drop)))
 
 
 KEEP_GATES = frozenset(

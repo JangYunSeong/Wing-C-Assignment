@@ -624,3 +624,39 @@ def test_hidden_files_with_the_same_name_are_renamed_per_case() -> None:
     assert "class RollbackLeftSuccessHc3Test" in renamed.content and "hc3" in renamed.content
     ts = rename_for_case(GeneratedFile(path="src/__hidden__/sync.test.tsx", content="x"), "hc3", {})
     assert ts.path == "src/__hidden__/sync.hc3.test.tsx"
+
+
+def test_weak_case_is_dropped_from_plan_and_hidden_tests() -> None:
+    """변별하지 못하는 숨은 케이스를 채점에서 뺀다 — 숨은 계획과 그 케이스만의 파일을 지우고, 다른 케이스·공용 파일은 둔다
+    [확정: 2026-11-11 사용자]."""
+    from task_spec.nodes.starter.build import HIDDEN, BuildOutcome, _drop_cases
+    from task_spec.schemas import GeneratedFile
+
+    first = PLAN.cases[0]
+    b = _inputs(
+        plan=PLAN.model_copy(update={"cases": [first, first.model_copy(update={"case_id": "hc2"})]})
+    )
+    ids = [c.case_id for c in b.plan.cases]
+    keep_id, drop_id = ids[0], ids[1]
+    out = BuildOutcome(status="review")
+    out.overlays[HIDDEN] = Overlay(
+        kind="hidden",
+        files=(
+            GeneratedFile(
+                path=f"cases/{keep_id}.java", content=f'@DisplayName("{keep_id} 동시 요청")'
+            ),
+            GeneratedFile(
+                path=f"cases/{drop_id}.java", content=f'@DisplayName("{drop_id} 실패 기록")'
+            ),
+            GeneratedFile(path="cases/Common.java", content="// 공용 도우미"),
+        ),
+    )
+    _drop_cases(out, b, [drop_id])
+    assert out.dropped_cases == [drop_id]
+    assert out.hidden_plan is not None and [c.case_id for c in out.hidden_plan.cases] == [
+        i for i in ids if i != drop_id
+    ]
+    assert [f.path for f in out.overlays[HIDDEN].files] == [
+        f"cases/{keep_id}.java",
+        "cases/Common.java",
+    ]
