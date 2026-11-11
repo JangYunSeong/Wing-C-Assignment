@@ -103,3 +103,11 @@ def test_inputs_carry_the_fault_rule_and_the_approved_faults() -> None:
     assert hidden_ac_line(h).splitlines()[1] == (
         '  실패 지정 (승인됨 — 이 기준의 숨은 케이스 faults 로 옮긴다): 주문 상태 변경 — 항목 "SHIPPED" 처음 1번 → 503 응답'
     )
+
+
+def test_status_below_400_means_network_failure() -> None:
+    """LLM 이 연결 실패를 0 으로 적어 스키마 위반으로 재시도를 날렸다 — 400 미만·빈 값은 연결 실패(None)로 받는다."""
+    for v in (0, "", 200, None):
+        assert HiddenFault(operation="가상 저장", item="가상B", status=v).status is None  # type: ignore[arg-type]
+        assert Fault(endpoint="e1", status=v).status is None  # type: ignore[arg-type]
+    assert HiddenFault(operation="가상 저장", item="가상B", status=503).status == 503

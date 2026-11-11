@@ -336,6 +336,15 @@ class HiddenFault(Schema):
     times: int = Field(default=1, ge=1, le=3)  # 그 항목의 처음 몇 번
     status: int | None = Field(default=None, ge=400, le=599)  # 오류 응답 상태 — 없으면 연결 실패
 
+    @field_validator("status", mode="before")
+    @classmethod
+    def _no_status_is_network_failure(cls, v: object) -> object:
+        """400 미만·빈 값(0·"")은 '연결 실패'(None)로 받는다 — LLM 이 연결 실패를 0 으로 적어 스키마 위반으로 재시도를 날렸다
+        (2026-11-11 오프라인 명세 v8)."""
+        if v in (None, "", 0) or (isinstance(v, int) and not isinstance(v, bool) and v < 400):
+            return None
+        return v
+
 
 class HiddenAcceptance(Schema):
     """숨김 수용 기준 1건 (채점용) — 숨은 요구(trap) 하나에 연결."""
