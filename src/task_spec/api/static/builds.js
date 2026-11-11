@@ -142,10 +142,10 @@ function casesBlock(c) {
     })
     .join("");
   const acs = [...c.acceptance_hidden.map((a) => ["숨김", a]), ...c.acceptance_public.map((a) => ["공개", a])]
-    .map(([k, a]) => `<li><span class="mono">${esc(a.ac_id)}</span> <span class="faint">${k}${a.trap_id ? ` · ${esc(a.trap_id)}` : ""}</span> ${esc(a.text)}</li>`)
+    .map(([k, a]) => `<li><span class="mono">${esc(a.ac_id)}</span><span class="faint">${k}${a.trap_id ? ` · ${esc(a.trap_id)}` : ""}</span><p>${esc(a.text)}</p></li>`)
     .join("");
   const designs = c.accepted_designs
-    .map((d) => `<li><span class="mono">${esc(d.design_id)}</span> ${esc(d.summary)}<br><span class="faint">${esc(d.conditions)}</span></li>`)
+    .map((d) => `<li><span class="mono">${esc(d.design_id)}</span><span class="faint">${esc(d.trap_ids.join(", "))}</span><p>${esc(d.summary)}<br><span class="faint">${esc(d.conditions)}</span></p></li>`)
     .join("");
   return `<div class="tbl-wrap"><table><thead>${head}</thead><tbody>${rows}${otherRows}</tbody></table></div>
     ${hasResults ? "" : `<p class="placeholder">이 빌드는 케이스별 결과를 저장하기 전에 적재돼 결과 칸이 없습니다.</p>`}
