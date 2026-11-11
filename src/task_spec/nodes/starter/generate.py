@@ -82,6 +82,10 @@ class GenResult:
     adjustments: list[str] = field(
         default_factory=list
     )  # 코드가 고친 것 (starter/init_scripts.py) — 승인 화면에
+    # 숨은 테스트 수리에서 재요청 뒤에도 문제가 남아 이전 파일을 그대로 둔 케이스 → 그 문제 (승인 화면·수리 기록 kept-previous)
+    kept: dict[str, list[str]] = field(default_factory=dict)
+    # 채택하지 않은(문제가 남은) 생성 출력 — 산출물로만 남긴다 (git 밖, 원인 확인용)
+    rejected: list[Overlay] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -701,6 +705,29 @@ def repair_targets(
     return [i for i in ids if i in named] or list(ids)
 
 
+def case_note(
+    note: str | None,
+    cid: str,
+    files: Sequence[GeneratedFile],
+    rx: re.Pattern[str],
+    ids: Sequence[str],
+) -> str | None:
+    """케이스 하나에 넘길 수정 요청 — 다른 케이스만 가리키는 줄은 뺀다 (케이스 id 또는 그 케이스 파일 경로로, repair_targets 와 같은 기준).
+    어느 케이스도 가리키지 않는 줄은 모든 케이스에 간다.
+    2026-11-11 재측정 gen-item: 'hc1 통과; hc3 통과; hc4 통과' 문구를 세 케이스 모두에 그대로 넘겨, 케이스 파일마다 다른 케이스 id 를
+    적었다 — 케이스별 재요청 뒤에도 남아 합친 뒤 '케이스 id 가 여러 파일에 나옴'으로 숨은 테스트 수리 전체가 실패했다."""
+    if not note:
+        return note
+    owners = {f.path: o for f in files if (o := case_owner(f, rx, ids)) is not None}
+    kept = []
+    for line in note.split("\n"):
+        named = {i for i in rx.findall(line) if i in ids}
+        named |= {o for path, o in owners.items() if path in line}
+        if not named or cid in named:
+            kept.append(line)
+    return "\n".join(kept) if kept else note
+
+
 def rename_for_case(
     f: GeneratedFile, cid: str, taken: Mapping[str, GeneratedFile]
 ) -> GeneratedFile:
@@ -736,9 +763,12 @@ async def gen_hidden(
     ontology_version: str,
     note: str | None = None,
     previous: Overlay | None = None,
+    keep_previous: bool = False,
 ) -> GenResult:
     """숨은 테스트 — 케이스마다 따로 (동시에) 부르고 합친다. 입력 계획에는 그 케이스만 보이고, 도우미·조절값은 계획 전체로 코드가 쓴다.
     수리(previous)는 사유가 가리키는 케이스만 그 케이스의 이전 파일로 다시 만들고, 다른 케이스 파일은 그대로 둔다.
+    keep_previous: 이전 파일이 판정까지 간 수리(게이트 ③~⑤)면, 재요청 뒤에도 문제가 남은 케이스는 이전 파일을 그대로 둔다
+    (컴파일 수리는 이전 파일 자체가 깨졌으니 False — 남기면 같은 오류가 되풀이된다).
     2026-11-09 (사용자 결정): 한 번에 모든 케이스를 쓰면 한 케이스의 문제로 숨은 테스트 전체를 다시 만들어, 맞던 케이스도 바뀔 수 있다."""
     m = b.template.manifest
     params = render_params(b.plan, m)
@@ -764,7 +794,7 @@ async def gen_hidden(
             llm=llm,
             prompts=prompts,
             ontology_version=ontology_version,
-            note=note,
+            note=case_note(note, cid, before, rx, ids),
             previous=Overlay(kind="hidden", files=tuple(prev)) if prev else None,
             prompt_name=m.prompt_tasks.get("gen_hidden"),
             fix=test_import_fix(m),
@@ -772,23 +802,46 @@ async def gen_hidden(
 
     parts: list[GenResult] = list(await asyncio.gather(*(one(c) for c in targets)))
     res = GenResult(task="gen_hidden")
-    for r in parts:
+    for cid, r in zip(targets, parts, strict=True):
         res.provenance += r.provenance
         res.errors += r.errors
         res.fail_reasons += r.fail_reasons
-        res.first_problems += r.first_problems
-        res.flags += [f for f in r.flags if f.startswith(FLAG_FAILED)]
+        res.first_problems += [f"{cid}: {p}" for p in r.first_problems]
+        res.flags += [
+            f.replace("gen_hidden: ", f"gen_hidden({cid}): ", 1)
+            for f in r.flags
+            if f.startswith((FLAG_FAILED, FLAG_INVALID))
+        ]
     if any(r.overlay is None for r in parts):
         return res
     kept = [f for f in before if case_owner(f, rx, ids) not in targets]
     files = {f.path: f for f in kept}
+    unfixed: list[str] = []
     for cid, r in zip(targets, parts, strict=True):
+        if r.problems:
+            # 재요청 뒤에도 문제가 남은 답은 합치지 않는다 — 합치면 문제를 안은 채 다른 케이스까지 막는다 (2026-11-11 gen-item).
+            # 수리(이전 파일이 판정까지 간 것)면 그 케이스는 이전 파일을 그대로 두고 표시만, 아니면 실패로 드러낸다.
+            res.rejected.append(
+                Overlay(kind="hidden", files=r.overlay.files, label=f"gen_hidden-{cid}")  # type: ignore[union-attr]
+            )
+            prev = [f for f in before if case_owner(f, rx, ids) == cid]
+            if (
+                keep_previous
+                and prev
+                and not b.check(Overlay(kind="hidden", files=tuple(prev)), cases={cid})
+            ):
+                res.kept[cid] = list(r.problems)
+                files.update({f.path: f for f in prev})
+                continue
+            unfixed += [f"{cid}: {p}" for p in r.problems]
+            continue
         for f in r.overlay.files:  # type: ignore[union-attr]
             if f.path in files and case_owner(files[f.path], rx, ids) not in (None, cid):
                 f = rename_for_case(f, cid, files)
             files[f.path] = f
     res.overlay = Overlay(kind="hidden", files=(*files.values(), *code_written))
-    res.problems = b.check(res.overlay)  # 합친 뒤 계획 전체로 (케이스 누락·두 파일에 같은 케이스)
+    # 합친 뒤 계획 전체로 (케이스 누락·두 파일에 같은 케이스) + 합치지 않은 케이스의 남은 문제
+    res.problems = unfixed + [p for p in b.check(res.overlay) if p not in unfixed]
     if res.problems:
         res.flags.append(FLAG_INVALID + "gen_hidden: " + "; ".join(res.problems))
     logger.info(

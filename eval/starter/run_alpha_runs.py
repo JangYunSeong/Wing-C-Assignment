@@ -26,7 +26,7 @@ from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client
 from eval.starter.gradle_verify import write_overlay as _write
-from eval.starter.run_generate import PinnedVersions, _run_row, usage_by_prompt
+from eval.starter.run_generate import PinnedVersions, _run_row, usage_by_prompt, write_rejected
 from eval.starter.run_paper import template_for
 from eval.starter.verifiers import verifier_for
 from task_spec.nodes.starter.build import build_and_repair
@@ -177,7 +177,7 @@ async def main() -> None:
             lo = out / f"loop-{n}"
             t0 = time.monotonic()
             g = verifier_for(template, lo / "builds", keep_code=True)
-            res = await build_and_repair(b, designs, verifier=g, compiler=g, **kw)  # type: ignore[arg-type]
+            res = built = await build_and_repair(b, designs, verifier=g, compiler=g, **kw)  # type: ignore[arg-type]
             seconds = round(time.monotonic() - t0, 1)
             spent += res.cost_usd
             worst = max(worst, res.cost_usd)
@@ -195,6 +195,8 @@ async def main() -> None:
                 "regen_counts": res.regen_counts,
                 "repairs": [r.model_dump() for r in res.repairs],
                 "review_flags": res.review_flags,
+                "static_retries": built.static_retries,
+                "rejected": write_rejected(built.rejected, lo / "rejected"),
                 "usage": usage_by_prompt(res.provenance),
                 "verify": [[_run_row(r) for r in rep.runs] for rep in res.reports],
             }

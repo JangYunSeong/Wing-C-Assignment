@@ -333,6 +333,9 @@ class BuildOutcome:
     # 생성기 첫 답에 정적 검사가 잡은 문제 (재요청으로 고쳤어도) — 검사가 실제로 일했는지 사후에 확인하려고.
     # 2026-11-09 데이터 알파 재검증: 보고서에 남지 않아 8회 동안 검사가 무엇을 잡았는지 알 수 없었다.
     static_retries: list[str] = field(default_factory=list)
+    rejected: list[Overlay] = field(
+        default_factory=list
+    )  # 채택하지 않은 생성 출력 (산출물로만, git 밖)
     snapshots: list[dict[str, Overlay]] = field(
         default_factory=list
     )  # 검증한 회차마다 그때의 오버레이 (평가·디버깅용)
@@ -342,7 +345,9 @@ class BuildOutcome:
         return round(sum(p.cost_usd or 0.0 for p in self.provenance), 4)
 
 
-def _record(a: RepairAction, result: Literal["regenerated", "failed", "skipped"]) -> RepairRecord:
+def _record(
+    a: RepairAction, result: Literal["regenerated", "failed", "skipped", "kept-previous"]
+) -> RepairRecord:
     reason = f"{a.label}: {a.reason}" if a.label else a.reason
     return RepairRecord(gate=a.gate, target=a.generator, reason=reason[:300], result=result)
 
@@ -412,6 +417,14 @@ async def build_and_repair(
         note_static(r)
         out.provenance += r.provenance
         out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
+        out.rejected += r.rejected
+        for cid, probs in r.kept.items():
+            out.review_flags.append(
+                f"숨은 케이스 {cid} 를 다시 만들지 못해 이전 파일을 그대로 둠 (재요청 뒤에도): "
+                + "; ".join(p[:160] for p in probs[:2])
+            )
+        if r.overlay is not None and not r.ok:
+            out.rejected.append(r.overlay)
         if r.overlay is None or not r.ok:
             out.review_flags.append(
                 f"{r.task} 생성 실패: " + "; ".join([*r.problems, *r.fail_reasons][:3])
@@ -670,7 +683,14 @@ async def _regenerate(
     jobs: list[tuple[str, object]] = []
     if "gen_hidden" in notes:
         hidden_prev = out.overlays[HIDDEN]
-        jobs.append((HIDDEN, gen_hidden(b, note=notes["gen_hidden"], previous=hidden_prev, **kw)))  # type: ignore[arg-type]
+        hidden_job = gen_hidden(
+            b,
+            note=notes["gen_hidden"],
+            previous=hidden_prev,
+            keep_previous=True,
+            **kw,  # type: ignore[arg-type]
+        )
+        jobs.append((HIDDEN, hidden_job))
     for label, o in refs:
         if o.kind == "ref_naive":
             key = f"gen_naive:{label}"
@@ -726,10 +746,14 @@ async def _regenerate(
         compiler is not None and absorb is not None and remade
     ):  # 다시 만든 참조 구현도 검증 전에 컴파일
         await _compile_refs(out, b, by_id, kw, compiler, absorb, remade)
+    kept = any(isinstance(r, GenResult) and r.task == "gen_hidden" and r.kept for r in results)
     for a in actions:
         if a.generator in ("gen_starter", "gen_public"):
             continue
         label = HIDDEN if a.generator == "gen_hidden" else a.label
         ok = label in dict(jobs) and out.overlays.get(label) is not None
-        out.repairs.append(_record(a, "regenerated" if ok and ok_all else "failed"))
+        result = "regenerated" if ok and ok_all else "failed"
+        if result == "regenerated" and a.generator == "gen_hidden" and kept:
+            result = "kept-previous"
+        out.repairs.append(_record(a, result))  # type: ignore[arg-type]
     return ok_all

@@ -13,6 +13,7 @@ from typing import Any
 from task_spec.llm import Completion, FakeBackend
 from task_spec.llm.backend import Usage
 from task_spec.nodes.starter.generate import (
+    FLAG_INVALID,
     BuildInputs,
     accepted_input,
     existing_apis,
@@ -547,6 +548,63 @@ async def test_hidden_repair_regenerates_only_the_named_case() -> None:
         f"- {HC1_PATH}:12 cannot find symbol", prev.files, rx, ["hc1", "hc2"]
     ) == ["hc1"]
     assert repair_targets("단언 순서를 바꾼다", prev.files, rx, ["hc1", "hc2"]) == ["hc1", "hc2"]
+
+
+def test_case_note_keeps_only_lines_for_that_case() -> None:
+    """2026-11-11 재측정 gen-item: 'hc1 통과; hc3 통과; hc4 통과' 를 세 케이스에 그대로 넘겨 케이스 파일마다 다른 케이스 id 를 적었다."""
+    from task_spec.nodes.starter.generate import case_note
+    from task_spec.schemas import GeneratedFile
+
+    files = (
+        GeneratedFile(path=HC1_PATH, content=HC1),
+        GeneratedFile(path=HC2_PATH, content=HC2),
+    )
+    rx = re.compile(r"\bhc\d{1,2}\b")
+    note = (
+        "흔한 구현이 hc1 통과\n흔한 구현이 hc2 통과\n공통: 사유는 Reasons.as 로\n"
+        + f"- {HC2_PATH}:12 cannot find symbol"
+    )
+    one = case_note(note, "hc1", files, rx, ["hc1", "hc2"])
+    assert (
+        one == "흔한 구현이 hc1 통과\n공통: 사유는 Reasons.as 로"
+    )  # 다른 케이스 id·그 케이스 파일 경로 줄은 뺀다
+    two = case_note(note, "hc2", files, rx, ["hc1", "hc2"])
+    assert "hc1" not in two and HC2_PATH in two and "공통" in two
+    assert case_note(None, "hc1", files, rx, ["hc1"]) is None
+
+
+async def test_hidden_repair_keeps_previous_file_when_problem_remains() -> None:
+    """재요청 뒤에도 문제가 남은 케이스는 합치지 않는다 — 판정까지 간 수리면 이전 파일을 그대로, 아니면 실패로 드러낸다."""
+    from task_spec.schemas import GeneratedFile
+
+    b = _two_cases()
+    prev = Overlay(
+        kind="hidden",
+        files=(
+            GeneratedFile(path=HC1_PATH, content=HC1),
+            GeneratedFile(path=HC2_PATH, content=HC2),
+        ),
+    )
+    bad = HC2 + "\n// hc1 과 달리\n"  # 두 번 다 다른 케이스 id
+    fixed1 = HC1.replace("버스트 %d", "고친 버스트 %d")
+    note = "흔한 구현이 hc1 통과\n흔한 구현이 hc2 통과"
+
+    def fake() -> FakeBackend:
+        return FakeBackend().push(
+            _files((HC1_PATH, fixed1)), _files((HC2_PATH, bad)), _files((HC2_PATH, bad))
+        )
+
+    res = await _gen(gen_hidden, fake(), b, note=note, previous=prev, keep_previous=True)
+    assert res.ok, res.problems
+    files = {f.path: f.content for f in res.overlay.files}  # type: ignore[union-attr]
+    assert files[HC1_PATH] == fixed1 and files[HC2_PATH] == HC2  # hc2 는 이전 파일
+    assert list(res.kept) == ["hc2"] and "다른 케이스 id" in res.kept["hc2"][0]
+    assert [o.label for o in res.rejected] == ["gen_hidden-hc2"]
+    assert any(f.startswith(FLAG_INVALID + "gen_hidden(hc2)") for f in res.flags)
+    # 컴파일 수리(keep_previous=False)는 이전 파일이 깨졌을 수 있다 — 실패로 드러낸다
+    res = await _gen(gen_hidden, fake(), b, note=note, previous=prev)
+    assert not res.ok and any(p.startswith("hc2: ") for p in res.problems)
+    assert res.kept == {} and [o.label for o in res.rejected] == ["gen_hidden-hc2"]
 
 
 def test_hidden_files_with_the_same_name_are_renamed_per_case() -> None:
