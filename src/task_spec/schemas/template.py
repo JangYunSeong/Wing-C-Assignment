@@ -269,6 +269,10 @@ class HiddenHelper(Schema):
     )  # 예: src/test/java/com/example/service/grading/cases/ContractCase.java
     package: str = Field(min_length=1)
     class_name: str = Field(default="ContractCase", pattern=r"^[A-Z][A-Za-z0-9]*$")
+    # 코드가 만드는 도우미가 쓰는 하네스 기능 (그 기능이 있는 템플릿 판만 켠다). contract_registry: React v8+ — contract.ts 가
+    # api.contract 로 계약의 성공 상태·test id 를 알리고 TID 를 TestId 로 (2026-11-11 프론트 알파 fe8: 상태를 주지 않은 respond 가 200 이라
+    # 계약이 201 인 생성 API 에서 허용 구현만 떨어짐 · textsByRole('listitem', TID.X) 가 컴파일되지 않음).
+    features: list[Literal["contract_registry"]] = Field(default_factory=list)
 
 
 class TemplateLimits(Schema):

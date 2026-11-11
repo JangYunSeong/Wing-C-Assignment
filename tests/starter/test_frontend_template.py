@@ -115,7 +115,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v7"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v8"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v1"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
@@ -452,8 +452,42 @@ def test_ui_element_action_reaches_contract_text_and_helper() -> None:
     ts = render_ts_contract(c, FE.manifest, "hidden")
     assert (
         ts is not None
-        and 'SEARCH_INPUT: "search-input", // 조작: 입력할 때마다 추천 요청' in ts.content
+        and 'SEARCH_INPUT: "search-input" as TestId, // 조작: 입력할 때마다 추천 요청' in ts.content
     )
+
+
+def test_contract_helper_tells_harness_success_status_and_test_ids() -> None:
+    """2026-11-11 프론트 알파 fe8: 상태를 주지 않은 respond(본문)이 200 이라 계약이 201 인 생성 API 에서 `res.status === 201` 로
+    확인하는 허용 구현만 떨어졌고, textsByRole('listitem', TID.X) 가 컴파일되지 않았다 — v8 은 contract.ts 가 하네스에 계약을 알린다."""
+    from task_spec.starter.ts_helpers import render_ts_contract
+
+    base = _contract().model_dump()
+    post = dict(base["endpoints"][0]) | {
+        "endpoint_id": "e2",
+        "method": "POST",
+        "path": "/api/memos/{memoId}/copies",
+        "query": [],
+        "request": [_field("content")],
+        "responses": [
+            {"status": 201, "description": "만듦", "body": [_field("id")]},
+            {"status": 409, "description": "충돌", "body": [_field("code")]},
+        ],
+    }
+    c = TaskContract.model_validate(base | {"endpoints": [*base["endpoints"], post]})
+    for audience in ("hidden", "public"):
+        ts = render_ts_contract(c, FE.manifest, audience)
+        assert ts is not None
+        assert "type CallHandle, type TestId }" in ts.content
+        assert 'SEARCH_INPUT: "search-input" as TestId,' in ts.content
+        assert '    "GET /api/products/suggest": 200,' in ts.content
+        assert '    "POST /api/memos/:memoId/copies": 201,' in ts.content
+        assert "  testIds: Object.values(TID)," in ts.content
+    # 하네스에 api.contract 가 없는 판(v7)은 예전 그대로
+    old = render_ts_contract(c, load_template("frontend/react-vite-ts", 7).manifest, "hidden")
+    assert (
+        old is not None and "api.contract" not in old.content and "type TestId" not in old.content
+    )
+    assert 'SEARCH_INPUT: "search-input",' in old.content
 
 
 def test_list_screen_without_a_data_source_is_sent_back() -> None:
@@ -637,9 +671,19 @@ def test_all_refs_breaking_an_existing_test_outside_the_router_blame_the_starter
     )
 
 
-def test_textsbyrole_scope_overload_is_in_the_v5_harness() -> None:
-    src = (FE.hidden / "harness" / "grader-ui.tsx").read_text("utf-8")
+def test_textsbyrole_scope_overload_is_in_the_harness() -> None:
+    src = (
+        load_template("frontend/react-vite-ts", 5).hidden / "harness" / "grader-ui.tsx"
+    ).read_text("utf-8")
     assert "export function textsByRole(scope: HTMLElement, role: string): string[];" in src
+    # v8: 범위를 계약 test id(TestId)로도 — 글자 test id 두 개는 받지 않는다 (2026-11-11 알파 fe8-token)
+    src = (FE.hidden / "harness" / "grader-ui.tsx").read_text("utf-8")
+    assert (
+        "export function textsByRole(role: string, scope: HTMLElement | TestId): string[];" in src
+    )
+    assert (
+        "export function textsByRole(scope: HTMLElement | TestId, role: string): string[];" in src
+    )
 
 
 def test_test_checks_array_contains_vitest_imports_and_selector_guesses() -> None:
@@ -703,6 +747,214 @@ def test_form_without_its_fields_is_sent_back() -> None:
         },
     ]
     assert _ui_form_fields(TaskContract.model_validate(base)) == []
+
+
+def _login_contract(
+    action: str | None, request: list[dict[str, Any]], extra: list[dict[str, Any]] = ()
+) -> TaskContract:
+    base = _contract().model_dump()
+    login = dict(base["endpoints"][0]) | {
+        "endpoint_id": "e2",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "query": [],
+        "request": request,
+        "responses": [{"status": 200, "description": "로그인", "body": [_field("token")]}],
+    }
+    base["endpoints"] = [*base["endpoints"], login]
+    base["screens"] = [
+        *base["screens"],
+        {
+            "screen_id": "s2",
+            "route": "/login",
+            "summary": "로그인",
+            "elements": [
+                {
+                    "test_id": "login-form",
+                    "role": "form",
+                    "description": "로그인 폼(아이디, 비밀번호 입력 및 로그인 버튼)",
+                    "action": action,
+                    "refs": ["r1"],
+                },
+                *extra,
+            ],
+            "refs": ["r1"],
+        },
+    ]
+    return TaskContract.model_validate(base)
+
+
+def test_form_fields_are_filled_from_the_request_it_sends() -> None:
+    """2026-11-11 알파 fe8-user: 로그인 폼(조작 'POST /api/auth/login', 요청 칸 username·password)에 입력란도 버튼도 없어 계약 답 3개가
+    모두 막혔다 — 폼이 적은 제출 요청의 칸에서 코드가 입력란·제출 버튼을 채운다."""
+    from task_spec.starter.contract import _ui_form_fields, fit_forms
+
+    action = "로그인 버튼 클릭 시 POST /api/auth/login 요청, 성공하면 /orders 로 이동"
+    c = _login_contract(
+        action,
+        [
+            _field("username"),
+            _field("password"),
+            _field("requestId"),
+            _field("loggedAt", "datetime"),
+        ],
+    )
+    assert _ui_form_fields(c) != []
+    fitted, notes = fit_forms(c)
+    els = {el.test_id: el for el in fitted.screens[1].elements}
+    assert [el.test_id for el in fitted.screens[1].elements] == [
+        "login-form",
+        "login-form-username",
+        "login-form-password",
+        "login-form-submit",
+    ]  # 앱이 만드는 요청 번호·시각은 입력란이 아니다
+    assert (
+        els["login-form-username"].role == "textbox" and els["login-form-password"].role == "input"
+    )
+    assert els["login-form-submit"].role == "button" and els["login-form-submit"].action == action
+    assert all(el.refs == ["r1"] and el.action for el in fitted.screens[1].elements)
+    assert len(notes) == 2 and _ui_form_fields(fitted) == []
+    assert fitted.screens[0] == c.screens[0]  # 폼 없는 화면은 그대로
+    # 다시 돌려도 같다 (결정적·멱등)
+    assert fit_forms(fitted) == (fitted, [])
+
+
+def test_form_without_a_request_body_becomes_a_button_and_unknown_requests_are_asked_back() -> None:
+    from task_spec.starter.contract import _ui_form_fields, fit_forms
+
+    # 본문 없는 요청을 보내는 폼 — 입력란이 필요 없다: 버튼이 없으면 같은 test id 의 버튼으로
+    c = _login_contract("클릭하면 POST /api/auth/login", [])
+    fitted, notes = fit_forms(c)
+    assert [(el.test_id, el.role) for el in fitted.screens[1].elements] == [
+        ("login-form", "button")
+    ]
+    assert notes and _ui_form_fields(fitted) == []
+    # 버튼이 따로 있으면 폼은 묶음(region)으로 — test id 는 그대로 (다른 곳이 가리킬 수 있다)
+    btn = {
+        "test_id": "login-go",
+        "role": "button",
+        "description": "로그인",
+        "action": "클릭하면 POST /api/auth/login",
+        "refs": ["r1"],
+    }
+    fitted, _ = fit_forms(_login_contract("클릭하면 POST /api/auth/login", [], [btn]))
+    assert [(el.test_id, el.role) for el in fitted.screens[1].elements] == [
+        ("login-form", "region"),
+        ("login-go", "button"),
+    ]
+    # 다른 요청을 적은 폼·요청 칸이 모두 앱이 채우는 칸인 폼은 그대로 — 검사가 그 요청과 칸을 짚어 다시 묻는다
+    c = _login_contract("제출하면 POST /api/auth/refresh", [_field("username")])
+    assert fit_forms(c) == (c, [])
+    assert "폼 요소의 조작(action)에 제출할 때 나가는 요청을" in _ui_form_fields(c)[0]
+    c = _login_contract("클릭하면 POST /api/auth/login", [_field("refreshToken")])
+    assert fit_forms(c) == (c, [])
+    assert (
+        "login-form 는 POST /api/auth/login 를 보낸다 — 요청 칸 refreshToken"
+        in _ui_form_fields(c)[0]
+    )
+
+
+def test_form_without_a_named_request_uses_the_only_write_api() -> None:
+    """2026-11-10 fe7c-user: 조작이 '제출하면 로그인 요청을 보내고…' 로 메서드·경로가 없었다 — 본문을 받는 변경 API 가 하나뿐이면 그것.
+    경로 변수(화면·API)는 앱이 채우므로 입력란이 아니다."""
+    from task_spec.starter.contract import fit_forms
+
+    c = _login_contract("입력 후 제출하면 로그인 요청", [_field("userId"), _field("password")])
+    fitted, _ = fit_forms(c)
+    assert [el.test_id for el in fitted.screens[1].elements] == [
+        "login-form",
+        "login-form-user-id",
+        "login-form-password",
+        "login-form-submit",
+    ]
+    base = c.model_dump()
+    base["endpoints"].append(
+        base["endpoints"][1] | {"endpoint_id": "e3", "path": "/api/auth/other"}
+    )
+    two = TaskContract.model_validate(base)
+    assert fit_forms(two) == (two, [])  # 변경 API 가 둘이면 짐작하지 않는다
+    base = c.model_dump()
+    base["screens"][1]["route"] = "/sites/:siteId/login"
+    base["endpoints"][1]["request"] = [_field("siteId"), _field("password")]
+    fitted, _ = fit_forms(TaskContract.model_validate(base))
+    assert [el.test_id for el in fitted.screens[1].elements][1:] == [
+        "login-form-password",
+        "login-form-submit",
+    ]
+
+
+def test_form_fitting_edges_particles_several_forms_cap_and_names() -> None:
+    """리뷰 2026-11-11: 경로 뒤 한글 조사 · 한 화면의 폼 둘 · 요소 30개 상한 · 영문이 없는 칸 이름."""
+    from task_spec.starter.contract import fit_forms
+
+    # 'POST /api/auth/login으로' — 조사를 경로로 먹지 않는다
+    c = _login_contract("제출하면 POST /api/auth/login으로 요청.", [_field("username")])
+    fitted, _ = fit_forms(c)
+    assert [el.test_id for el in fitted.screens[1].elements] == [
+        "login-form",
+        "login-form-username",
+        "login-form-submit",
+    ]
+    # 폼 둘 — 첫 폼을 채워도 둘째 폼도 채운다 (폼마다 그 폼의 요소로 본다)
+    base = c.model_dump()
+    base["endpoints"].append(
+        base["endpoints"][1]
+        | {"endpoint_id": "e3", "path": "/api/auth/signup", "request": [_field("email")]}
+    )
+    base["screens"][1]["elements"].append(
+        {
+            "test_id": "signup-form",
+            "role": "form",
+            "description": "가입",
+            "action": "제출하면 POST /api/auth/signup",
+            "refs": ["r1"],
+        }
+    )
+    fitted, _ = fit_forms(TaskContract.model_validate(base))
+    ids = {el.test_id for el in fitted.screens[1].elements}
+    assert {
+        "login-form-username",
+        "login-form-submit",
+        "signup-form-email",
+        "signup-form-submit",
+    } <= ids
+    # 요소 30개 상한 — 넘기지 않는다 (입력란이 있고 버튼만 없는 화면)
+    full = c.model_dump()
+    full["screens"][1]["elements"] += [
+        {
+            "test_id": f"login-note-{i}",
+            "role": "textbox",
+            "description": "칸",
+            "action": "입력",
+            "refs": ["r1"],
+        }
+        for i in range(29)
+    ]
+    capped, _ = fit_forms(TaskContract.model_validate(full))
+    assert len(capped.screens[1].elements) == 30
+    # 영문이 없는 칸 이름은 입력란으로 만들지 않는다 (test id 가 '-' 로 끝나지 않게)
+    odd = _login_contract("제출하면 POST /api/auth/login", [_field("username")])
+    req = odd.endpoints[1].request[0].model_copy(update={"name": "아이디"})
+    login = odd.endpoints[1].model_copy(update={"request": [req]})
+    odd = odd.model_copy(update={"endpoints": [odd.endpoints[0], login]})
+    assert fit_forms(odd) == (odd, [])
+
+
+def test_moving_screens_with_window_location_is_sent_back() -> None:
+    """2026-11-11 알파 fe9-token: 허용·흔한 구현이 모두 window.location.assign('/login') 으로 옮기려다 jsdom 에서 주소가 안 바뀜."""
+    from task_spec.starter.static_check import _code_pitfalls
+
+    for bad in (
+        "window.location.assign('/login');",
+        "location.replace('/login')",
+        "window.location.href = '/login';",
+    ):
+        files = (_f("src/api/auth.ts", bad),)
+        found = _code_pitfalls(Overlay(kind="ref_accepted", files=files), FE)
+        assert any("라우터로" in p.message for p in found), bad
+    ok = "if (window.location.href === '/x') navigate('/login');"
+    files = (_f("src/api/auth.ts", ok),)
+    assert not _code_pitfalls(Overlay(kind="ref_accepted", files=files), FE)
 
 
 def test_v6_harness_types_bodies_and_server_state() -> None:
