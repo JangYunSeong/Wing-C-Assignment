@@ -662,3 +662,18 @@ def test_v6_prompt_loads_with_v5_schema() -> None:
     v6 = _REG.get("draft_feature_task", 6)
     assert v6.output_model.__name__ == "DraftFeatureOutputV5"
     assert "answer 는 모든 추가 요구에 쓴다" in v6.system
+
+
+async def test_hidden_faults_stay_only_when_the_material_uses_them() -> None:
+    """명세의 실패 지정(숨김 수용 기준 faults)은 재료가 fault_by 를 쓸 때만 — 출력 스키마가 이전 판 프롬프트에도 보여 LLM 이 채울 수 있다."""
+    d = _v2draft()
+    d["acceptance_hidden"][0]["faults"] = [
+        {"operation": "가상 저장", "item": "가상B", "status": 503}
+    ]
+    fake = FakeBackend().push(Completion(json.dumps(d, ensure_ascii=False)))
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V2())  # type: ignore[arg-type]
+    task = apply_feature(_skeleton(), res)
+    assert task.acceptance_hidden[0].faults == []  # 배송 감사 재료는 fault_by 없음
+    item = dataclasses.replace(res, seed=BACKEND.feature.model_copy(update={"fault_by": "item"}))  # type: ignore[union-attr]
+    task = apply_feature(_skeleton(), item)
+    assert task.acceptance_hidden[0].faults[0].item == "가상B"

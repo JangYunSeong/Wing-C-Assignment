@@ -539,6 +539,34 @@ def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     return problems
 
 
+# 실패를 순번으로 정하는 말 — 재료가 fault_by="item" 일 때만 본다 ('첫 재연결'·'메모 B 의 첫 전송' 같은 정상 글은 걸리지 않게 수·서수만)
+ORDINAL_FAULT = re.compile(
+    r"(?:처음|앞|먼저 온|최초)\s*\d+\s*(?:건|개|번|회)|\d+\s*번째\s*(?:요청|전송|호출|저장)"
+    r"|(?:두|세|네|다섯)\s*번째\s*(?:요청|전송|호출|저장)"
+)
+
+
+def check_hidden_faults(out: DraftFeatureOutput, seed: FeatureSeed | None) -> list[str]:
+    """숨김 수용 기준의 실패 지정 — 재료가 fault_by="item"(같은 경로로 여러 건을 보내는 흐름)이면 기준마다 항목 내용으로 정한 실패가
+    있어야 하고, 기준 글이 순번으로 실패를 정하면 안 된다 [확정: 2026-11-11 사용자 — 명세에서 정해 사람이 승인]."""
+    if seed is None or seed.fault_by != "item":
+        return []
+    out_: list[str] = []
+    for h in out.acceptance_hidden:
+        if not h.faults:
+            out_.append(
+                f"숨김 수용 기준 {h.ac_id} 에 실패 지정(faults)이 없음 — 이 숨은 요구는 같은 동작으로 여러 건을 보내므로 어느 항목의 "
+                "요청이 실패하는지 항목 내용으로 정한다 (예: operation='점검 메모 저장', item='메모B', times=1, status=503)"
+            )
+        m = ORDINAL_FAULT.search(h.text)
+        if m:
+            out_.append(
+                f"숨김 수용 기준 {h.ac_id} 가 실패를 순번으로 정함('{m.group(0)}') — 하나씩 보내는 구현과 한꺼번에 보내는 구현에서 "
+                "다른 요청이 실패한다. 실패할 항목을 내용으로 적고 faults 에 같은 값을 넣는다"
+            )
+    return out_
+
+
 def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다."""
     # 이슈형 공통 규칙 (제목·상황·산출물·1단계 자료 목록의 노출 검사, 1단계 관찰 행동 id 포함)
@@ -591,6 +619,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     if out.max_clarifications > len(out.clarifications):
         problems.append("max_clarifications 가 추가 요구 수보다 큼")
     problems += check_hints(out, ctx)
+    problems += check_hidden_faults(out, ctx.incident.feature if ctx.incident is not None else None)
 
     # 2단계
     bad = [t for t in dbg.trap_ids if t not in traps]
@@ -895,7 +924,13 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
             "behavioral_anchors": out.behavioral_anchors if res.anchors_ok else None,
             "requirements": list(out.requirements),
             "acceptance_public": list(out.acceptance_public),
-            "acceptance_hidden": list(out.acceptance_hidden),
+            # 실패 지정은 재료가 쓰는 숨은 요구에서만 — 출력 스키마가 프롬프트 본문에 들어가 이전 판에도 이 칸이 보인다
+            "acceptance_hidden": [
+                h
+                if res.seed is not None and res.seed.fault_by is not None
+                else h.model_copy(update={"faults": []})
+                for h in out.acceptance_hidden
+            ],
             "clarifications": list(out.clarifications),
             "max_clarifications": out.max_clarifications,
             "accepted_designs": list(out.accepted_designs),

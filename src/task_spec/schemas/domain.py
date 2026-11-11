@@ -323,12 +323,27 @@ class PublicAcceptance(Schema):
     text: str = Field(min_length=1, max_length=300)
 
 
+class HiddenFault(Schema):
+    """숨김 수용 기준의 실패 지정 — 채점 때 하네스가 어느 요청을 실패시키는지, **순번이 아니라 항목 내용으로** (업무 말).
+    [확정: 2026-11-11 사용자] 명세에 두고 사람이 승인한다 — 과제 코드 단계(plan_contract)는 이것을 계약 API·요청 칸에 옮기기만 하고
+    코드가 같은 값인지 대조한다. 2026-11-11 재측정 오프라인: '처음 2건 503' 같은 순번 지정이 하나씩 보내는 허용 설계와 한꺼번에 보내는
+    구현에서 다르게 소비돼 판정이 갈렸다."""
+
+    operation: str = Field(
+        min_length=1, max_length=80
+    )  # 실패시킬 동작 — 공개 요구의 말로 (예: 점검 메모 저장)
+    item: str = Field(min_length=1, max_length=80)  # 실패할 항목을 가리키는 내용 값 (예: 메모B)
+    times: int = Field(default=1, ge=1, le=3)  # 그 항목의 처음 몇 번
+    status: int | None = Field(default=None, ge=400, le=599)  # 오류 응답 상태 — 없으면 연결 실패
+
+
 class HiddenAcceptance(Schema):
     """숨김 수용 기준 1건 (채점용) — 숨은 요구(trap) 하나에 연결."""
 
     ac_id: str = Field(pattern=r"^h\d{1,2}$")
     trap_id: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=400)
+    faults: list[HiddenFault] = Field(default_factory=list, max_length=4)  # 실패 지정 (비면 없음)
 
 
 class Clarification(Schema):

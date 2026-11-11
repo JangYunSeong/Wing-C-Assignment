@@ -310,10 +310,7 @@ def fit_fk_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
 
 
 def fit_output(
-    out: PlanContractOutput,
-    manifest: TemplateManifest,
-    spec: SpecView,
-    seed: FeatureSeed | None = None,
+    out: PlanContractOutput, manifest: TemplateManifest, spec: SpecView
 ) -> tuple[PlanContractOutput, list[str]]:
     """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다."""
@@ -346,23 +343,22 @@ def fit_output(
     )  # 사유 코드를 적은 trap_id → 숨김 수용 기준의 숨은 요구
     out = out.model_copy(update={"hidden_plan": trapped})
     notes += trap_notes
-    unfaulted, fault_notes = fit_faults(out.hidden_plan, seed)
+    unfaulted, fault_notes = fit_faults(out.hidden_plan, spec)
     out = out.model_copy(update={"hidden_plan": unfaulted})
     notes += fault_notes
     return out, notes
 
 
-def fit_faults(plan: HiddenPlan, seed: FeatureSeed | None) -> tuple[HiddenPlan, list[str]]:
-    """실패 지정(HiddenCase.faults)은 재료가 fault_by 로 쓰겠다고 한 재료에서만 — 나머지 재료는 LLM 이 채워도 뺀다.
-    출력 스키마가 프롬프트 본문에 들어가 이전 프롬프트 판에도 이 칸이 보인다 — 뺀 그대로면 다른 재료의 계약·숨은 테스트는 전과 같다."""
-    if seed is not None and seed.fault_by is not None:
-        return plan, []
-    dropped = [c.case_id for c in plan.cases if c.faults]
+def fit_faults(plan: HiddenPlan, spec: SpecView) -> tuple[HiddenPlan, list[str]]:
+    """실패 지정(HiddenCase.faults)은 명세의 숨김 수용 기준에 승인된 실패 지정이 있는 케이스에서만 — 나머지는 LLM 이 채워도 뺀다
+    (무엇을 실패시킬지는 명세가 정한다). 출력 스키마가 프롬프트 본문에 들어가 이전 프롬프트 판에도 이 칸이 보인다 — 뺀 그대로면
+    실패 지정이 없는 명세의 계약·숨은 테스트는 전과 같다."""
+    dropped = [c.case_id for c in plan.cases if c.faults and c.ac_id not in spec.hidden_faults]
     if not dropped:
         return plan, []
-    cases = [c.model_copy(update={"faults": []}) for c in plan.cases]
+    cases = [c.model_copy(update={"faults": []}) if c.case_id in dropped else c for c in plan.cases]
     return plan.model_copy(update={"cases": cases}), [
-        f"실패 지정 뺌 ({', '.join(dropped)}) — 이 재료는 실패를 항목으로 지정하지 않음 (FeatureSeed.fault_by 없음)"
+        f"실패 지정 뺌 ({', '.join(dropped)}) — 명세의 숨김 수용 기준에 승인된 실패 지정이 없음"
     ]
 
 
@@ -412,7 +408,7 @@ async def plan_contract(
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
         raw = out
-        out, notes = fit_output(out, manifest, spec, seed)
+        out, notes = fit_output(out, manifest, spec)
         check = check_contract(
             out.contract, out.hidden_plan, spec, manifest, seed, first_answer=attempt == 0
         )
