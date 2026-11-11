@@ -42,7 +42,7 @@ task:                                  # common_tasks·verification_tasks·slots
   track: common | claim_verification | extension_slot
   task_kind: incident | feature        # 공통 과제 유형. feature는 track=common에만 (슬롯·경험 검증 과제는 incident)
   parent_task_id: ...                  # 경험 검증 문항이 이어 쓰는 공통 과제
-  slots: [task, ...]                   # 확장 슬롯 (최대 6, 각 항목 track=extension_slot). 공통 과제에만 둔다 — 스키마 검증 없음
+  slots: [task, ...]                   # 확장 슬롯 (최대 6, 각 항목 track=extension_slot). 공통 과제에만 둔다 [확정] — 스키마 검증은 아직 없음 [제안]
   slot_id: ...                         # 지원자별 확장 문항이 가리키는 슬롯
   link_text: "..."                     # 지원자에게 보이는 연결 문구 — 숫자·가명화 토큰·원문 베끼기·과제 정답 개념 없음 (생성 단계 검사)
 
@@ -120,7 +120,7 @@ task:                                  # common_tasks·verification_tasks·slots
 | 선택 경로만 고른 공고 역량을 승인자가 겹침으로 올리기 (`promote_overlap`)                                   | [제안: 2026-11-06]     | P1 `ApprovalDecision` 주석 (태그 없이 날짜만)                                                     |
 | revise에서 공통 과제 유형 바꾸기 (`approval.task_kind`, 대상 common·all)                          | [제안: 2026-11-06]     | P1 `ApprovalDecision` 주석 (태그 없이 날짜만)                                                     |
 | 기능형(`task_kind=feature`)은 공통 과제(`track=common`)에만, 기능형 전용 칸은 incident에서 비어 있어야 함     | [확정: 2026-11-06 사용자] | P1 `TaskItem` 검증 규칙                                                                      |
-| 확장 슬롯(`slots`)은 공통 과제에만 둔다                                                           | [제안]                 | P1 스키마가 강제하지 않음(최대 6만) — 규칙으로 두려면 P1 검증 추가 필요                                            |
+| 확장 슬롯(`slots`)이 공통 과제(`track=common`)에만 있도록 스키마 검증 추가 | [제안] | 슬롯을 공통 과제에 둔다는 결정은 위 [확정: 2026-11-03] 행. 지금 P1 스키마는 최대 6개만 강제한다 — 이 행은 그 검증을 더하자는 제안
 | 연결 문구(`link_text`)에 숫자·가명화 토큰·원문 베끼기·정답 개념 없음                                        | [제안]                 | P1 생성 단계 검사 `spec/questions.py` (스키마 검증 아님), 실패 시 1회 재요청 후 기본 문구                         |
 
 
