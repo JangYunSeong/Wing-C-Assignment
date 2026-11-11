@@ -175,6 +175,13 @@ def seed_block(inc: PublicIncident) -> str:
     ]
     if f.task_shape == "analysis":
         lines.append("과제 형태: analysis (구현 대신 재실행 가능한 분석 코드와 결과)")
+    if f.fault_by == "item":
+        lines.append(
+            "실패 지정 (숨김 수용 기준마다 필수): 이 숨은 요구는 같은 동작으로 여러 건을 보낸다 — acceptance_hidden 마다 faults 에 "
+            "채점 때 어느 항목의 요청이 실패하는지 항목 내용으로 적는다 {operation: 공개 요구에 나온 동작의 말, item: 그 항목을 가리키는 값, "
+            "times: 그 항목의 처음 몇 번, status: 오류 상태(없으면 연결 실패)}. 기준 글도 항목으로 쓰고 '처음 N건'·'두 번째 요청' 같은 "
+            "순번은 쓰지 않는다. 정확한 실패 항목은 숨김 수용 기준에만 — 상황·요구·자료에는 운영 조건 그대로(간헐적 실패) 둔다"
+        )
     return "\n".join(lines)
 
 

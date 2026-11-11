@@ -79,3 +79,27 @@ def test_hidden_test_input_says_which_request_fails_by_content() -> None:
     )
     assert "몇 번째 요청인지로 정하지 않는다" in text
     assert "모든 요청의 처음 2번 → 연결 실패" in fault_text(Fault(endpoint="e2", times=2))
+
+
+def test_inputs_carry_the_fault_rule_and_the_approved_faults() -> None:
+    """명세 재료 글에 '실패 지정' 줄(재료가 켰을 때만), 계약 입력의 숨김 수용 기준 줄에 승인된 실패 지정."""
+    import json
+    from pathlib import Path
+
+    from task_spec.nodes.starter.plan_contract import hidden_ac_line
+    from task_spec.schemas.incident import PublicIncident
+    from task_spec.spec.feature import seed_block
+
+    raw = json.loads(
+        (
+            Path(__file__).parents[2] / "incidents/public_v1/sw.frontend.offline-replay.json"
+        ).read_text("utf-8")
+    )
+    inc = PublicIncident.model_validate(raw)
+    assert "실패 지정 (숨김 수용 기준마다 필수)" in seed_block(inc)
+    off = inc.model_copy(update={"feature": inc.feature.model_copy(update={"fault_by": None})})  # type: ignore[union-attr]
+    assert "실패 지정" not in seed_block(off)
+    h = HiddenAcceptance(ac_id="h1", trap_id="t1", text="가상 기준", faults=[APPROVED])
+    assert hidden_ac_line(h).splitlines()[1] == (
+        '  실패 지정 (승인됨 — 이 기준의 숨은 케이스 faults 로 옮긴다): 주문 상태 변경 — 항목 "SHIPPED" 처음 1번 → 503 응답'
+    )

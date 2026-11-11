@@ -114,6 +114,7 @@
     "reasons": [
       "offline_change_lost",
       "offline_change_duplicated"
-    ]
+    ],
+    "fault_by": "item"
   }
 }

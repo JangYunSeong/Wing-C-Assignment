@@ -29,6 +29,7 @@ from task_spec.schemas import (
     TaskContract,
     TaskItem,
 )
+from task_spec.schemas.domain import HiddenAcceptance
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import fit_auth
 from task_spec.starter.contract import (
@@ -270,10 +271,7 @@ def plan_input(
         acceptance_public="\n".join(f"{a.ac_id} {a.text}" for a in task.acceptance_public) or NONE,
         deliverables="\n".join(f"- {d}" for d in task.deliverables) or NONE,
         traps="\n".join(f"{t.trap_id} {t.description}" for t in task.traps) or NONE,
-        acceptance_hidden="\n".join(
-            f"{h.ac_id} ({h.trap_id}) {h.text}" for h in task.acceptance_hidden
-        )
-        or NONE,
+        acceptance_hidden="\n".join(hidden_ac_line(h) for h in task.acceptance_hidden) or NONE,
         materials="\n\n".join(f"[{a.artifact_id}] {a.title}\n{a.content}" for a in task.artifacts)
         or NONE,
         clarifications="\n".join(
@@ -307,6 +305,17 @@ def fit_fk_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
             fks.append(fk)
         entities.append(m.model_copy(update={"foreign_keys": fks}) if fks != m.foreign_keys else m)
     return (contract.model_copy(update={"entities": entities}), notes) if notes else (contract, [])
+
+
+def hidden_ac_line(h: HiddenAcceptance) -> str:
+    """숨김 수용 기준 한 줄 + 승인된 실패 지정 (계약 단계가 그 케이스 faults 로 옮긴다 — 코드가 같은 값인지 대조)."""
+    lines = [f"{h.ac_id} ({h.trap_id}) {h.text}"]
+    for f in h.faults:
+        what = f"{f.status} 응답" if f.status is not None else "연결 실패"
+        lines.append(
+            f'  실패 지정 (승인됨 — 이 기준의 숨은 케이스 faults 로 옮긴다): {f.operation} — 항목 "{f.item}" 처음 {f.times}번 → {what}'
+        )
+    return "\n".join(lines)
 
 
 def fit_output(
