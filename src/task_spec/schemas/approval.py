@@ -1,4 +1,4 @@
-"""사람 승인 결정 (pipeline-graph 스킬 "승인", context.md §6 approval 필드)."""
+"""사람 승인 결정 (pipeline-graph 스킬 "승인", docs/design/task-spec-schema.md approval 필드)."""
 
 from __future__ import annotations
 

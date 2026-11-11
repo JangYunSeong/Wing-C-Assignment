@@ -2,10 +2,11 @@
 
 > 항상 로드되는 **규칙·불변식** SSOT. 구현 사연·파일 열거는 넣지 않는다.
 > 설계 출처: 온톨로지 레포 `JangYunSeong/job-competency-ontology` 이슈 #59(레포 분리 가이드라인)
-> · #59 댓글(프롬프트 관리) · `context.md` §2·§4.6·§6·§7.
+> · #59 댓글(프롬프트 관리) · `context.md` §2·§4.6·§7 (§6 명세 스키마는 2026-11-11 P1 `docs/design/task-spec-schema.md` 로 옮김).
 
 | 찾는 것 | 위치 |
 |---|---|
+| 과제 명세 스키마 (SSOT) | `docs/design/task-spec-schema.md` |
 | 파이프라인 그래프·State·노드 경계 | `.claude/skills/pipeline-graph/SKILL.md` |
 | API 레이어 규칙 | `.claude/skills/fastapi-service/SKILL.md` |
 | 프롬프트 버전·조립·provenance | `.claude/skills/prompt-registry/SKILL.md` |
@@ -18,7 +19,7 @@
 ## 목적
 
 이력서·자기소개서 + 공고 + 온톨로지 → **과제 명세(task_spec)** → **사람 승인**.
-명세 스키마는 온톨로지 레포 `context.md` §6 이 SSOT 다. 승인 없이 명세가 확정되는 경로는 만들지 않는다
+명세 스키마는 이 레포 `docs/design/task-spec-schema.md` 가 SSOT 다 (코드 `schemas/domain.py` 와 같은 PR 에서 고친다). 승인 없이 명세가 확정되는 경로는 만들지 않는다
 (AI 기본법 고영향 AI — 사람이 최종 판단, `context.md` §7).
 
 ## 스택

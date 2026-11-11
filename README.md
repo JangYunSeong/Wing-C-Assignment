@@ -3,7 +3,7 @@
 이력서 + 채용 공고 + 직무 역량 온톨로지를 받아 **과제 명세(task_spec)** 초안을 만들고,
 **사람이 승인해야만** 확정하는 서비스입니다. FastAPI(인터페이스) 위에서 LangGraph 파이프라인이 돕니다.
 
-- 명세 스키마의 기준: 온톨로지 레포 `JangYunSeong/job-competency-ontology` 의 `context.md` §6
+- 명세 스키마의 기준: 이 레포 `docs/design/task-spec-schema.md` (2026-11-11 온톨로지 레포 `context.md` §6 에서 옮김)
 - 고영향 AI(AI 기본법)로 다루므로 최종 판단은 사람이 합니다. 승인 없이 명세가 확정되는 경로는 없습니다.
 - 규칙·불변식 전체는 [`CLAUDE.md`](CLAUDE.md) 에 있습니다. 이 README 는 개요와 실행 방법만 다룹니다.
 
