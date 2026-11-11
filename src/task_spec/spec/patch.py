@@ -104,10 +104,39 @@ def problem_terms(problem: str) -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
+# 추가 요구 하나를 id 로 짚는 메시지 — 그 추가 요구의 모호한 답 칸만 (spec/feature.py check_hints)
+_CLAR_HINT = re.compile(
+    r"^추가 요구 (?P<cid>\w+) 의 모호한 답에 숨은 요구를 드러내는 말: (?P<terms>.+)$"
+)
+
+
+def _clar_hint_target(out: Any, problem: str) -> Target | None:
+    m = _CLAR_HINT.match(problem.strip())
+    if m is None:
+        return None
+    for i, c in enumerate(out.clarifications):
+        if c.clarification_id == m.group("cid") and getattr(c, "answer_hint", None):
+            terms = tuple(t.strip() for t in m.group("terms").split(",") if t.strip())
+            return Target(
+                f"clarifications[{i}].answer_hint", c.answer_hint, terms, problem.split(":", 1)[0]
+            )
+    return None
+
+
 def targets(out: Any, problems: list[str]) -> list[Target]:
     """고칠 칸 — 문제마다 그 검사가 보는 칸 중 걸린 낱말이 든 칸. 같은 칸은 낱말을 모은다."""
     found: dict[str, Target] = {}
     for p in problems:
+        hint = _clar_hint_target(out, p)
+        if hint is not None:
+            old = found.get(hint.path)
+            found[hint.path] = Target(
+                hint.path,
+                hint.text,
+                tuple(dict.fromkeys([*(old.terms if old else ()), *hint.terms])),
+                hint.why,
+            )
+            continue
         rule = next((groups for head, groups in RULES if p.startswith(head)), None)
         terms = problem_terms(p)
         if rule is None or not terms:

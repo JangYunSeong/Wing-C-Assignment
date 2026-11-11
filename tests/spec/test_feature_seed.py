@@ -735,3 +735,15 @@ def test_missing_artifact_role_is_support_not_a_schema_violation() -> None:
         art.pop("role", None)
     out = DraftFeatureOutputV2.model_validate(d)  # 스키마 위반이 아니다
     assert {x.role for x in out.artifacts} == {"support"}
+
+
+def test_patch_targets_the_vague_answer_of_the_named_clarification() -> None:
+    """2026-11-11 명세(로그아웃): '추가 요구 c3 의 모호한 답에 숨은 요구를 드러내는 말: 캐시 키' — 그 추가 요구의 모호한 답 칸만 고친다."""
+    from task_spec.spec.patch import targets
+
+    d = _v2draft()
+    d["clarifications"][1]["answer_hint"] = "기존 화면은 경로를 캐시 키로 써서 응답을 저장합니다."
+    out = DraftFeatureOutputV2.model_validate(d)
+    i, cid = 1, out.clarifications[1].clarification_id
+    tg = targets(out, [f"추가 요구 {cid} 의 모호한 답에 숨은 요구를 드러내는 말: 캐시 키"])
+    assert [(t.path, t.terms) for t in tg] == [(f"clarifications[{i}].answer_hint", ("캐시 키",))]
