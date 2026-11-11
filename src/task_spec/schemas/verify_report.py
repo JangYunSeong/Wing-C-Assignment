@@ -27,6 +27,8 @@ class TestResult(Schema):
     result: ResultClass
     reason: str | None = None  # 실패 사유 코드 (`[reason:…]`) — 템플릿 failure_reasons
     message: str = Field(default="", max_length=400)  # 실패 메시지 앞부분
+    # 실패한 줄 (테스트 파일:줄, 프론트 vitest 스택에서) — 과제 생성 검증의 수리 안내에만 쓴다. 채점 결과물에는 넣지 않는다
+    at: str = Field(default="", max_length=300)
 
 
 class CompileError(Schema):

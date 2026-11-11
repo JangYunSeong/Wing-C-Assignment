@@ -81,6 +81,14 @@ def clean_message(text: str) -> str:
     return " ".join(text.split())[:400]
 
 
+def _line_in(stack: str, path: str) -> int | None:
+    """스택에서 그 테스트 파일이 나온 첫 줄 번호 (`at …/hc2.test.tsx:66:7`)."""
+    if not path:
+        return None
+    m = re.search(re.escape(path) + r":(\d+):\d+", stack)
+    return int(m.group(1)) if m else None
+
+
 def is_assertion(message: str) -> bool:
     """단언 실패인가 — AssertionError(기본 매처)·jest-dom 매처(`Error: expect(…)`)·사유 태그. 그 밖(요소 못 찾음·요청 안 옴·예외)은 아님."""
     head = strip_ansi(message).lstrip()
@@ -132,9 +140,12 @@ def vitest_results(
     layout: Mapping[str, str],
     case_pattern: str,
     texts: Mapping[str, str] | None = None,
+    locate: bool = False,
 ) -> list[dict[str, Any]]:
     """vitest JSON 보고서 → 파일마다 결과 하나 (첫 실패를 대표로): {group, name, result, reason, message}.
-    texts: 경로 → 파일 본문 (describe 제목에 케이스 id 가 없을 때) — 없으면 work 아래 파일을 읽는다."""
+    texts: 경로 → 파일 본문 (describe 제목에 케이스 id 가 없을 때) — 없으면 work 아래 파일을 읽는다.
+    locate: 실패 행에 at(테스트 파일:줄 — 스택에서 그 파일의 첫 줄)을 더한다. 과제 생성 검증의 수리 안내용이라 채점(grade)은 끈다 —
+    채점 결과물에 숨은 테스트 파일·줄을 넣지 않고, 메시지로 비교하는 수리 판정(_signature·_test_defect)도 그대로 둔다."""
     case_rx = re.compile(case_pattern)
     out: list[dict[str, Any]] = []
     for f in sorted(report.get("testResults", []), key=lambda x: str(x.get("name", ""))):
@@ -172,15 +183,16 @@ def vitest_results(
         raw = str((first.get("failureMessages") or [""])[0])
         msg = clean_message(raw)
         reason = _REASON.search(strip_ansi(raw))
-        out.append(
-            {
-                "group": group,
-                "name": name,
-                "result": "ASSERT" if is_assertion(raw) else "HARNESS_ERR",
-                "reason": reason.group(1) if reason else None,
-                "message": clean_message(f"{first.get('title', '')} — {msg}") if msg else "",
-            }
-        )
+        row = {
+            "group": group,
+            "name": name,
+            "result": "ASSERT" if is_assertion(raw) else "HARNESS_ERR",
+            "reason": reason.group(1) if reason else None,
+            "message": clean_message(f"{first.get('title', '')} — {msg}") if msg else "",
+        }
+        if locate and (line := _line_in(strip_ansi(raw), str(f.get("name", "")))) is not None:
+            row["at"] = f"{rel}:{line}"
+        out.append(row)
     return out
 
 

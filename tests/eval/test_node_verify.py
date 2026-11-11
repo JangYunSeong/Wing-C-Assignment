@@ -129,3 +129,16 @@ def test_vitest_report_becomes_one_result_per_file_with_case_ids_and_reasons() -
     assert got[("selftest", "__grading__/selftest/harness.selftest.test.tsx")].result == "PASS"
     assert got[("public", "pt1")].result == "PASS"
     assert got[("existing", "App.test.tsx")].result == "HARNESS_ERR"
+
+
+def test_failed_line_is_a_separate_field_only_for_build_verification() -> None:
+    """실패한 줄(at)은 수리 안내용 칸 — 메시지에 붙이지 않는다. 채점(grade, locate 끔)에는 넣지 않는다 (숨은 테스트 파일·줄)."""
+    from eval.starter import image_grade_node as judge
+
+    path = "src/__grading__/cases/hc2.test.tsx"
+    stack = f"AssertionError: expected 2 to be greater than or equal to 3\n    at {WORK / path}:66:7\n    at file:///x/chunk-hooks.js:155:11"
+    report = {"testResults": [_file(path, [_t("hc2 재연결", "중복 없음", stack)])]}
+    got = vitest_results(report, WORK, FE, None)[0]
+    assert got.at == f"{path}:66" and "66" not in got.message
+    grade = judge.vitest_results(report, WORK, {"cases": "src/__grading__/cases"}, r"\bhc\d{1,2}\b")
+    assert "at" not in grade[0]

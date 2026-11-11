@@ -252,7 +252,7 @@ def test_broken_or_missing_hidden_case_is_assigned_by_comparing_implementations(
             _t("hidden", "hc2", "ASSERT", "record_missing", "실패 기록 없음"),
             "의도한 사유(rollback_left_success) 대신 record_missing",  # 2026-11-07 스모크
         ),
-        (_t("hidden", "hc2", "ASSERT", None, "expected 1 but was 0"), "대신 사유 표시 없음"),
+        (_t("hidden", "hc2", "ASSERT", None, "expected 1 but was 0"), "사유 표시 없는 단언"),
     ],
 )
 def test_gate3_naive_must_fail_for_the_intended_reason(hc2: dict[str, Any], needle: str) -> None:
@@ -1077,3 +1077,37 @@ def test_harness_diagnosed_test_defect_goes_straight_to_the_test() -> None:
     # 패턴이 없는 템플릿은 지금 규칙 그대로 (그 구현)
     plan = assign(report, PLAN2, OVERLAYS, MISSED, {})
     assert [a.key for a in plan.actions] == ["gen_naive:naive-all"]
+
+
+def test_gate3_accepts_another_reason_of_the_same_hidden_need_and_flags_the_gap() -> None:
+    """2026-11-11 재측정 오프라인: 흔한 구현이 중복(duplicated) 대신 손실(lost)로 떨어졌다 — 재료가 정한 같은 숨은 요구의 사유면 인정,
+    다만 의도한 사유를 확인하는 케이스가 없으면 승인자 표시."""
+    hc2 = _t("hidden", "hc2", "ASSERT", "record_missing", "실패 기록 없음")
+    report = _report(
+        _run("naive-all", "ref_naive", GOOD_NAIVE[0], hc2), _run("d1", "ref_accepted", *GOOD_ACC)
+    )
+    family = ("pool_acquire_timeout", "rollback_left_success", "record_missing")
+    plan = assign(report, PLAN2, OVERLAYS, MISSED, {}, feature_reasons=family)
+    assert plan.actions == []
+    assert any(
+        "hc2" in f and "rollback_left_success 대신 record_missing" in f and "사람 확인" in f
+        for f in plan.flags
+    ), plan.flags
+    # 묶음 밖 사유는 지금처럼 숨은 테스트를 다시
+    plan = assign(report, PLAN2, OVERLAYS, MISSED, {}, feature_reasons=("pool_acquire_timeout",))
+    assert _keys(plan) == ["gen_hidden"]
+
+
+def test_gate3_unreasoned_assert_names_the_line_and_the_two_ways() -> None:
+    """사유 없는 단언에서 먼저 떨어지면 그 줄(at)과 갈래(함정 결과면 사유를, 준비 확인이면 흔한 구현도 지나가게)를 수정 요청에."""
+    hc2 = _t("hidden", "hc2", "ASSERT", None, "expected 2 to be greater than or equal to 3")
+    hc2["at"] = "src/__grading__/cases/hc2.test.tsx:66"
+    report = _report(
+        _run("naive-all", "ref_naive", GOOD_NAIVE[0], hc2), _run("d1", "ref_accepted", *GOOD_ACC)
+    )
+    family = ("rollback_left_success", "record_missing")
+    plan = assign(report, PLAN2, OVERLAYS, MISSED, {}, feature_reasons=family)
+    note = plan.actions[0].note
+    assert "(src/__grading__/cases/hc2.test.tsx:66)" in note
+    assert "이 요구의 사유: record_missing, rollback_left_success" in note
+    assert "준비 확인이면 흔한 구현도 지나가게" in note
