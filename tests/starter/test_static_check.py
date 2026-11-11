@@ -133,6 +133,9 @@ def test_limits() -> None:
     big = [_f(f"{PKG}/Big.java", "x" * 100_001)]
     assert _has(_run(_overlays(starter=many)).for_target("gen_starter"), "파일 수 61", "상한 60")
     assert _has(_run(_overlays(starter=big)).for_target("gen_starter"), "크기 상한")
+    # 코드가 계약에서 쓰는 시드 파일(data.sql)은 크기 상한에서 뺀다 — 2026-11-11 N+1 백엔드: 시드 2천여 행으로 100000B 초과
+    seed = [_f("src/main/resources/data.sql", "INSERT INTO t VALUES (1);\n" * 5000)]
+    assert not _has(_run(_overlays(starter=seed)).for_target("gen_starter"), "크기 상한")
 
 
 def test_hidden_terms_in_public_code_names_and_comments() -> None:

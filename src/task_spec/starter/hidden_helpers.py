@@ -259,7 +259,7 @@ def render_contract_case(
     if not is_java(manifest):  # TypeScript 템플릿 — contract.ts (starter/ts_helpers.py)
         from task_spec.starter.ts_helpers import render_ts_contract
 
-        return render_ts_contract(contract, manifest, audience)
+        return render_ts_contract(contract, manifest, audience, plan)
     rule = manifest.hidden_helper if audience == "hidden" else manifest.public_helper
     if rule is None:
         return None

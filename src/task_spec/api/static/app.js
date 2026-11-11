@@ -717,6 +717,8 @@ function renderFeatureTask(t) {
   const clar = t.clarifications || [];
   const hidden = t.acceptance_hidden || [];
   const designs = t.accepted_designs || [];
+  // 실패 지정 (승인 대상) — 채점 때 어느 항목의 요청을 몇 번 실패시키는지. 순번이 아니라 항목 내용으로 정한다
+  const faultList = (fs) => (fs && fs.length ? `<div class="note">실패 지정: ${fs.map((f) => `${esc(f.operation)} — <span class="mono">${esc(f.item)}</span> 처음 ${f.times}번 → ${f.status ? esc(String(f.status)) + " 응답" : "연결 실패"}`).join(" · ")}</div>` : "");
   const concepts = (obs) => (obs || []).filter((o) => o.kind === "first_mention_of").map((o) => `<span class="chip">${esc(o.value)}</span>`).join("");
   return `<div class="task">
     <h3 class="task-title">${esc(t.title || "(서술 없음 — 결정적 골격만)")}</h3>
@@ -740,7 +742,7 @@ function renderFeatureTask(t) {
         <div><div class="block-head"><span class="eyebrow">자료 (1단계)</span><span class="only-approver">역할·본문은 승인자에게만 보임</span></div>${artsList(arts)}</div>
         <div><div class="block-head"><span class="eyebrow">숨은 요구</span><span class="only-approver">승인자에게만 보임</span></div>
           ${idList(t.traps || [], "trap_id", (x) => `${esc(x.description)}<span class="why">${esc(x.why_ai_fails)}</span>`)}
-          ${hidden.length ? `<span class="eyebrow">숨김 수용 기준 (채점)</span>${idList(hidden, "ac_id", (x) => `<span class="mono">${esc(x.trap_id)}</span> ${esc(x.text)}`)}` : ""}
+          ${hidden.length ? `<span class="eyebrow">숨김 수용 기준 (채점)</span>${idList(hidden, "ac_id", (x) => `<span class="mono">${esc(x.trap_id)}</span> ${esc(x.text)}${faultList(x.faults)}`)}` : ""}
           ${designs.length ? `<span class="eyebrow">허용 설계</span>${idList(designs, "design_id", (x) => `${esc(x.summary)} <span class="mono">${esc((x.trap_ids || []).join(", "))}</span><span class="why">${esc(x.conditions)}</span>`)}` : ""}
         </div>
       </div>`

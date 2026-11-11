@@ -16,9 +16,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
-from task_spec.schemas.build import Entity
+from task_spec.schemas.build import Endpoint, Entity
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import requester_rows
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.seed_sql import _insert_fields, default_value
 
 PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 행 수 — 숨은 범위·작은 id 밖
@@ -146,6 +147,32 @@ def _scope_gap_problems(contract: TaskContract) -> list[str]:
     return out
 
 
+def _returns_any_list(e: Endpoint) -> bool:
+    """성공 응답에 목록이 있는가 (무엇의 목록이든) — returns X[] 이거나 본문에 목록 칸."""
+    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    if ok is None:
+        return False
+    if ok.returns and ok.returns.endswith("[]"):
+        return True
+    return any(parse_field(f.type).kind == "list" for f in ok.body)
+
+
+def _lists_entity(e: Endpoint, m: Entity) -> bool:
+    """성공 응답이 그 엔티티의 목록인가 — returns 가 `m1[]`·`이름[]` 이거나, 본문에 그 엔티티의 목록 칸(`{items: m1[]}`)이 있다.
+    다른 것의 목록(멤버 한 행을 찾아 그 감사 기록을 돌려주는 API)은 아니다 — 경로 변수로 그 엔티티 한 행을 찾는다."""
+    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    if ok is None:
+        return False
+    keys = {m.entity_id, m.name}
+    if ok.returns and ok.returns.endswith("[]") and ok.returns[:-2] in keys:
+        return True
+    for f in ok.body:
+        ft = parse_field(f.type)
+        if ft.kind == "list" and ft.items[0].kind == "ref" and ft.items[0].name in keys:
+            return True
+    return False
+
+
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
     """경로 변수로 한 행을 찾는데 여러 행 그룹이 그 필드를 모두 같은 값으로 고정 — 조회가 여러 건이 된다.
 
@@ -162,15 +189,30 @@ def _lookup_key_problems(contract: TaskContract) -> list[str]:
             m = entities.get(s.entity_id)
             if m is None:
                 continue
+            if _lists_entity(e, m):
+                # 그 엔티티의 목록 API — 같은 경로 변수 값(프로젝트의 게시글들)이 여러 행에 있는 것이 정상. 2026-11-11 N+1 알파:
+                # GET /projects/{projectId}/board/posts(m1[]) 를 '한 행을 찾는 API' 로 짚어 계약을 다시 요청했다.
+                # 길드 감사(GET …/members/{memberId}/audit — 감사 기록 목록)는 멤버 한 행을 찾으므로 계속 본다
+                continue
             keys = params if set(params) <= {f.name for f in m.fields} else []
             for (
                 g
             ) in s.groups:  # 필드가 아닌 경로 변수({memberId} → id 등)가 있으면 그게 행마다 다르다
                 if keys and g.last > g.first and all(k in g.values for k in keys):
+                    # 갈래 둘 — 2026-11-11 N+1 알파: 목록 API 응답을 한 건의 칸으로 적은 계약에 '값을 뺀다' 만 줘서 다시 요청해도
+                    # 응답 모양을 고치지 않았다 (진짜 원인은 목록 표시가 없는 응답)
                     msg = (
-                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.path} 로 한 행을 찾는 "
-                        f"{', '.join(keys)} 가 모든 행에서 같음 — 여러 건 조회 오류. "
-                        f"{keys[-1]} 는 values 에서 뺀다 (코드가 행마다 다른 값을 넣는다)"
+                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.method or ''} {e.path} 를 {', '.join(keys)} 로 한 행을 찾는 "
+                        f"API 로 적었는데 {', '.join(keys)} 가 모든 행에서 같음 — 여러 건 조회 오류. "
+                        + (
+                            f'목록을 돌려주는 API 면 성공 응답을 returns "{s.entity_id}[]" ({m.name} 목록)으로 적는다. '
+                            f"한 행을 찾는 API 면 {keys[-1]} 는 values 에서 뺀다"
+                            # 목록 표시가 없는 GET 만 — 변경 요청(PATCH 등)은 목록 API 가 아니고, 이미 다른 것의 목록을 돌려주는 GET
+                            # (길드 감사 …/members/{memberId}/audit — 감사 기록)은 경로로 멤버 한 행을 찾는다
+                            if e.method == "GET" and not _returns_any_list(e)
+                            else f"{keys[-1]} 는 values 에서 뺀다"
+                        )
+                        + " (코드가 행마다 다른 값을 넣는다)"
                     )
                     if msg not in out:
                         out.append(msg)

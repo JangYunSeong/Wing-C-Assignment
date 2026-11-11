@@ -70,14 +70,21 @@ task:                                  # common_tasks·verification_tasks·slots
   traps:                               # 경험자만 걸리는 함정 (온톨로지 context.md §4.3)
     - {trap_id, description, why_ai_fails}
   artifacts:                           # 요청 시 공개 자료 (지원자에게는 목록만, 요청한 것만 내용 공개)
-    - {artifact_id, title, content, role: key|support|distractor}   # role은 승인자·채점용
+    - {artifact_id, title, content, role: key|support|distractor}   # role은 승인자·채점용 — LLM 이 빠뜨리면 support 로 받는다 (key·distractor 수는 검사가 본다)
   max_requests: 1~12
   source_incident: critical_incident_id      # 부서 결정적 사건 — 수집 전에는 비어 있음
 
   # 기능 개발형(task_kind=feature) 전용 — incident에서는 비어 있어야 한다
   requirements: [{req_id: r#, text}]         # 공개 요구 — '무엇을'만, 최대 6
   acceptance_public: [{ac_id, text}]         # 공개 수용 기준, 최대 6
-  acceptance_hidden: [{ac_id: h#, trap_id, text}]   # 숨김 수용 기준 (채점용, 숨은 요구 하나에 연결), 최대 8
+  acceptance_hidden:                          # 숨김 수용 기준 (채점용, 숨은 요구 하나에 연결), 최대 8
+    - ac_id: h#
+      trap_id: ...
+      text: ...
+      items: ["<테스트가 만들 항목>", ...]      # 실패 지정이 있을 때 2개 이상, 서로 다른 짧은 이름 (최대 8)
+      faults:                                 # 실패 지정 — 순번이 아니라 항목 내용으로, 최대 4 (비면 없음)
+        - {operation: "<실패시킬 동작, 공개 요구의 말>", item: "<items 중 하나>", times: 1~3, status: 400~599|null(연결 실패)}
+                                              # 실패하지 않는 항목이 items 에 하나 이상 남아야 한다
   clarifications:                            # 물으면 공개할 추가 요구·제약, 최대 6
     - {clarification_id, topic, answer, answer_hint, reveals: [trap_id], match_terms}
   max_clarifications: 1~6
@@ -121,6 +128,9 @@ task:                                  # common_tasks·verification_tasks·slots
 | revise에서 공통 과제 유형 바꾸기 (`approval.task_kind`, 대상 common·all)                          | [제안: 2026-11-06]     | P1 `ApprovalDecision` 주석 (태그 없이 날짜만)                                                     |
 | 기능형(`task_kind=feature`)은 공통 과제(`track=common`)에만, 기능형 전용 칸은 incident에서 비어 있어야 함     | [확정: 2026-11-06 사용자] | P1 `TaskItem` 검증 규칙                                                                      |
 | 확장 슬롯(`slots`)이 공통 과제(`track=common`)에만 있도록 스키마 검증 추가 | [제안] | 슬롯을 공통 과제에 둔다는 결정은 위 [확정: 2026-11-03] 행. 지금 P1 스키마는 최대 6개만 강제한다 — 이 행은 그 검증을 더하자는 제안
+| 숨김 수용 기준의 실패 지정(`acceptance_hidden[].faults`) — 순번(처음 N건)이 아니라 항목 내용으로 정해 명세에 두고 사람이 승인한다. 과제 코드 단계는 계약 API·요청 칸에 옮기기만 하고 코드가 같은 값인지 대조 | [확정: 2026-11-11 사용자] | 재측정 오프라인: 순번 지정이 보내는 방식(하나씩/한꺼번에)마다 다르게 소비됨. 재료 `FeatureSeed.fault_by="item"` 이면 필수 |
+| 실패 지정이 있는 숨김 수용 기준은 테스트가 만들 항목(`items`, 2개 이상)을 나열하고, 실패 항목은 그중 하나 — 실패하지 않는 항목이 남아야 한다 | [확정: 2026-11-11 사용자] | 재배정 명세(오프라인): item 을 '대기 중인 점검 메모'(항목 전체)로 적어 '그 항목만 실패'가 성립하지 않음 |
+| 자료 `role` 이 빠진 LLM 답은 support 로 받는다 — 답 전체를 버리지 않고, 핵심·방해 자료 수는 자료 목록 검사가 판정 | [제안] | 명세 알파: 자료 하나의 role 누락으로 답 전체가 스키마 위반, 하루 5번 재요청 기회를 날림 |
 | 연결 문구(`link_text`)에 숫자·가명화 토큰·원문 베끼기·정답 개념 없음                                        | [제안]                 | P1 생성 단계 검사 `spec/questions.py` (스키마 검증 아님), 실패 시 1회 재요청 후 기본 문구                         |
 
 

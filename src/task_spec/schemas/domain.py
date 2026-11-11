@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -283,6 +283,15 @@ class Artifact(Schema):
     content: str = Field(min_length=1, max_length=ARTIFACT_MAX)
     role: Literal["key", "support", "distractor"]
 
+    @model_validator(mode="before")
+    @classmethod
+    def _missing_role_is_support(cls, data: object) -> object:
+        """role 이 빠진 LLM 답은 support 로 받는다 — 하나만 빠져도 답 전체가 스키마 위반으로 버려지고 재요청 기회까지 날아갔다
+        (2026-11-11 명세 알파, 하루 5번). 출력 스키마에는 그대로 필수로 보인다. key·distractor 가 모자라면 자료 목록 검사가 다시 묻는다."""
+        if isinstance(data, dict) and data.get("role") in (None, ""):
+            return {**data, "role": "support"}
+        return data
+
     @field_validator("content", mode="before")
     @classmethod
     def _fit_length(cls, v: object) -> object:
@@ -323,12 +332,42 @@ class PublicAcceptance(Schema):
     text: str = Field(min_length=1, max_length=300)
 
 
+class HiddenFault(Schema):
+    """숨김 수용 기준의 실패 지정 — 채점 때 하네스가 어느 요청을 실패시키는지, **순번이 아니라 항목 내용으로** (업무 말).
+    [확정: 2026-11-11 사용자] 명세에 두고 사람이 승인한다 — 과제 코드 단계(plan_contract)는 이것을 계약 API·요청 칸에 옮기기만 하고
+    코드가 같은 값인지 대조한다. 2026-11-11 재측정 오프라인: '처음 2건 503' 같은 순번 지정이 하나씩 보내는 허용 설계와 한꺼번에 보내는
+    구현에서 다르게 소비돼 판정이 갈렸다."""
+
+    operation: str = Field(
+        min_length=1, max_length=80
+    )  # 실패시킬 동작 — 공개 요구의 말로 (예: 점검 메모 저장)
+    item: str = Field(min_length=1, max_length=80)  # 실패할 항목을 가리키는 내용 값 (예: 메모B)
+    times: int = Field(default=1, ge=1, le=3)  # 그 항목의 처음 몇 번
+    status: int | None = Field(default=None, ge=400, le=599)  # 오류 응답 상태 — 없으면 연결 실패
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _no_status_is_network_failure(cls, v: object) -> object:
+        """400 미만·빈 값(0·"")은 '연결 실패'(None)로 받는다 — LLM 이 연결 실패를 0 으로 적어 스키마 위반으로 재시도를 날렸다
+        (2026-11-11 오프라인 명세 v8)."""
+        if v in (None, "", 0) or (isinstance(v, int) and not isinstance(v, bool) and v < 400):
+            return None
+        return v
+
+
 class HiddenAcceptance(Schema):
     """숨김 수용 기준 1건 (채점용) — 숨은 요구(trap) 하나에 연결."""
 
     ac_id: str = Field(pattern=r"^h\d{1,2}$")
     trap_id: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=400)
+    # 테스트가 만들 항목 (실패 지정이 있을 때 2개 이상, 서로 다른 짧은 이름 — 예: 메모A·메모B·메모C). 실패 지정의 item 은 이 중 하나이고
+    # 실패하지 않는 항목이 하나 이상 있어야 '그 항목만 실패'가 성립한다. 2026-11-11 재배정 명세(오프라인): item 을 '대기 중인 점검 메모'처럼
+    # 항목 전체로 적어 사실상 '모든 메모의 처음 2번 실패'가 됐다.
+    items: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(
+        default_factory=list, max_length=8
+    )
+    faults: list[HiddenFault] = Field(default_factory=list, max_length=4)  # 실패 지정 (비면 없음)
 
 
 class Clarification(Schema):

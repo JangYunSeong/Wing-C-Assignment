@@ -34,10 +34,10 @@ from task_spec.schemas.build import (
     TaskContract,
     UiElement,
 )
-from task_spec.schemas.domain import TaskItem
+from task_spec.schemas.domain import HiddenFault, TaskItem
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.template import HarnessParam, TemplateManifest
-from task_spec.spec.feature import find_terms
+from task_spec.spec.feature import ORDINAL_FAULT, find_terms
 from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
 from task_spec.starter.feasibility import feasibility_problems
 from task_spec.starter.header_values import header_problems
@@ -61,6 +61,8 @@ class SpecView:
     ] = ()  # 먼저 말할 개념 (1·2단계 first_mention_of) — 계약에 나오면 안 됨
     # 지원자에게 처음부터 보이는 명세 글 — 제목·상황·공개 요구·공개 수용 기준 (여기 나온 API 는 계약에 있어야 함)
     public_texts: tuple[str, ...] = ()
+    # 숨김 수용 기준 ac_id → 승인된 실패 지정 (HiddenAcceptance.faults) — 숨은 케이스가 같은 값으로 옮겼는지 대조
+    hidden_faults: dict[str, tuple[HiddenFault, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_task(cls, task: TaskItem) -> SpecView:
@@ -81,6 +83,7 @@ class SpecView:
                 *(r.text for r in task.requirements),
                 *(a.text for a in task.acceptance_public),
             ),
+            hidden_faults={h.ac_id: tuple(h.faults) for h in task.acceptance_hidden if h.faults},
         )
 
 
@@ -1525,6 +1528,48 @@ def _ui_form_fields(contract: TaskContract) -> list[str]:
     return out
 
 
+def _faults(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[str]:
+    """숨은 케이스의 실패 지정(HiddenCase.faults) — 계약에 있는 API·그 요청 본문 칸인지, 그리고 명세에서 승인된 실패 지정
+    (숨김 수용 기준 faults: 동작·항목·횟수·상태)을 같은 값으로 옮겼는지 [확정: 2026-11-11 사용자 — 무엇을 실패시킬지는 명세가 정하고
+    이 단계는 API·칸에 연결만]. 승인된 지정이 있는 케이스는 시나리오도 순번으로 실패를 정하면 안 된다 (2026-11-11 재측정 오프라인)."""
+    by_id = {e.endpoint_id: e for e in contract.endpoints}
+    out: list[str] = []
+    for c in plan.cases:
+        for f in c.faults:
+            e = by_id.get(f.endpoint)
+            if e is None:
+                out.append(f"숨은 케이스 {c.case_id} 의 실패 지정 API {f.endpoint} 가 계약에 없음")
+                continue
+            names = {x.name for x in e.request}
+            bad = sorted(set(f.when) - names)
+            if bad:
+                out.append(
+                    f"숨은 케이스 {c.case_id} 의 실패 지정이 {e.method or ''} {e.path} 요청 본문에 없는 칸으로 고름: {', '.join(bad)} "
+                    f"(요청 본문 칸: {', '.join(sorted(names)) or '없음'})"
+                )
+        approved = spec.hidden_faults.get(c.ac_id, ())
+        for hf in approved:
+            if not any(
+                hf.item in {str(v) for v in f.when.values()}
+                and f.times == hf.times
+                and f.status == hf.status
+                for f in c.faults
+            ):
+                what = f"{hf.status} 응답" if hf.status is not None else "연결 실패"
+                out.append(
+                    f"숨은 케이스 {c.case_id} 가 숨김 수용 기준 {c.ac_id} 의 승인된 실패 지정을 옮기지 않음: '{hf.operation}' 의 "
+                    f"항목 '{hf.item}' 처음 {hf.times}번 → {what} — 그 동작의 계약 API 를 endpoint 로, 항목을 가리키는 요청 본문 칸을 "
+                    f"when 에 (값 '{hf.item}' 그대로), times·status 도 같게 faults 에 넣는다"
+                )
+        m = ORDINAL_FAULT.search(" ".join([c.scenario, c.expect, *c.setup])) if approved else None
+        if m:
+            out.append(
+                f"숨은 케이스 {c.case_id} 시나리오가 실패를 순번으로 정함('{m.group(0)}') — 승인된 실패 지정대로 항목 내용으로 적는다 "
+                "(하나씩 보내는 구현과 한꺼번에 보내는 구현에서 다른 요청이 실패한다)"
+            )
+    return out
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -1551,6 +1596,7 @@ def check_contract(
     harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest, seed)
+    problems += _faults(contract, plan, spec)
     problems += feasibility_problems(plan, manifest)
     if manifest.seed_rows:
         problems += seed_problems(contract)

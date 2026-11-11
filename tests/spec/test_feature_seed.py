@@ -176,12 +176,12 @@ async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.Mon
     spec = (await draft(_state("run-a", approval=revise)))["spec"]
     task = spec.common_tasks[0]
     assert task.task_kind == "feature" and task.traps[0].trap_id == "t1"
-    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@6+{feature_ref(BACKEND)}"
+    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@9+{feature_ref(BACKEND)}"
     assert FLAG_SEED_UNREVIEWED in task.review_flags
 
 
 def test_current_feature_prompt_is_v6() -> None:
-    assert _REG.get("draft_feature_task").ref == "draft_feature_task@6"
+    assert _REG.get("draft_feature_task").ref == "draft_feature_task@9"
 
 
 def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
@@ -662,3 +662,88 @@ def test_v6_prompt_loads_with_v5_schema() -> None:
     v6 = _REG.get("draft_feature_task", 6)
     assert v6.output_model.__name__ == "DraftFeatureOutputV5"
     assert "answer 는 모든 추가 요구에 쓴다" in v6.system
+
+
+async def test_hidden_faults_stay_only_when_the_material_uses_them() -> None:
+    """명세의 실패 지정(숨김 수용 기준 faults)은 재료가 fault_by 를 쓸 때만 — 출력 스키마가 이전 판 프롬프트에도 보여 LLM 이 채울 수 있다."""
+    d = _v2draft()
+    d["acceptance_hidden"][0]["faults"] = [
+        {"operation": "가상 저장", "item": "가상B", "status": 503}
+    ]
+    fake = FakeBackend().push(Completion(json.dumps(d, ensure_ascii=False)))
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V2())  # type: ignore[arg-type]
+    task = apply_feature(_skeleton(), res)
+    assert task.acceptance_hidden[0].faults == []  # 배송 감사 재료는 fault_by 없음
+    item = dataclasses.replace(res, seed=BACKEND.feature.model_copy(update={"fault_by": "item"}))  # type: ignore[union-attr]
+    task = apply_feature(_skeleton(), item)
+    assert task.acceptance_hidden[0].faults[0].item == "가상B"
+
+
+async def test_leak_left_after_retry_is_fixed_in_that_field_only() -> None:
+    """2026-11-11 명세 알파(로그아웃): 재요청에서도 상황에 운영 조건 낱말을 그대로 다시 썼다 — 걸린 칸의 글만 고쳐 다시 검사한다."""
+    from task_spec.spec.draft import FLAG_DRAFT_INVALID
+    from task_spec.spec.patch import targets
+
+    leaky = _v2draft()
+    leaky["scenario"] = "가상의 물류 회사에서 마감 직전 동시 요청이 몰린다. " + leaky["scenario"]
+    fixed_scenario = _v2draft()["scenario"]
+    patch = {"fields": [{"path": "scenario", "text": fixed_scenario}]}
+    fake = FakeBackend().push(
+        Completion(json.dumps(leaky, ensure_ascii=False)),
+        Completion(json.dumps(leaky, ensure_ascii=False)),  # 재요청도 같은 말
+        Completion(json.dumps(patch, ensure_ascii=False)),  # 부분 수리: 상황만
+    )
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V2())  # type: ignore[arg-type]
+    assert res.output is not None and res.output.scenario == fixed_scenario
+    assert any("운영 조건을 드러내는 말" in p for p in res.patched)
+    assert not [f for f in res.flags if f.startswith(FLAG_DRAFT_INVALID)]
+    assert res.output.title == leaky["title"]  # 다른 칸은 그대로
+    assert [p.prompt for p in res.provenance][-1] == "fix_feature_fields@1"
+    # 고칠 칸은 검사가 보는 칸 중 걸린 낱말이 든 칸만 — 추가 요구 답은 운영 조건 검사가 보지 않는다
+    tg = targets(
+        res.output.model_copy(update={"scenario": leaky["scenario"]}),
+        [
+            "운영 조건을 드러내는 말이 1단계 제목·상황·공개 요구·공개 수용 기준에 나옴: 동시 요청 — 상황은 …"
+        ],
+    )
+    assert [t.path for t in tg] == ["scenario"] and tg[0].terms == ("동시 요청",)
+
+
+def test_patch_terms_and_paths() -> None:
+    from task_spec.spec.patch import problem_terms
+
+    assert problem_terms(
+        "운영 조건을 드러내는 말이 1단계 …에 나옴: 번갈아, 공용 기기 — 상황은 …"
+    ) == ["번갈아", "공용 기기"]
+    assert problem_terms(
+        "제목·공개 요구·공개 수용 기준이 구현 방법을 지시함 (캐시, 락) — '무엇을'만"
+    ) == ["캐시", "락"]
+    assert problem_terms("행동 기준이 역량 x 의 수행준거를 하나도 인용하지 않음") == []
+
+
+def test_missing_artifact_role_is_support_not_a_schema_violation() -> None:
+    """2026-11-11 명세 알파: 자료 하나의 role 누락으로 답 전체가 스키마 위반 — 재요청 기회를 날렸다(하루 5번). support 로 받고
+    핵심·방해 자료 수는 자료 목록 검사가 본다. 출력 스키마에는 그대로 필수로 보인다."""
+    from task_spec.schemas import Artifact, DraftFeatureOutputV5
+
+    a = Artifact.model_validate({"artifact_id": "a1", "title": "가상 자료", "content": "가상 본문"})
+    assert a.role == "support"
+    schema = DraftFeatureOutputV5.model_json_schema()["$defs"]["Artifact"]
+    assert "role" in schema["required"]
+    d = _v2draft()
+    for art in d["artifacts"]:
+        art.pop("role", None)
+    out = DraftFeatureOutputV2.model_validate(d)  # 스키마 위반이 아니다
+    assert {x.role for x in out.artifacts} == {"support"}
+
+
+def test_patch_targets_the_vague_answer_of_the_named_clarification() -> None:
+    """2026-11-11 명세(로그아웃): '추가 요구 c3 의 모호한 답에 숨은 요구를 드러내는 말: 캐시 키' — 그 추가 요구의 모호한 답 칸만 고친다."""
+    from task_spec.spec.patch import targets
+
+    d = _v2draft()
+    d["clarifications"][1]["answer_hint"] = "기존 화면은 경로를 캐시 키로 써서 응답을 저장합니다."
+    out = DraftFeatureOutputV2.model_validate(d)
+    i, cid = 1, out.clarifications[1].clarification_id
+    tg = targets(out, [f"추가 요구 {cid} 의 모호한 답에 숨은 요구를 드러내는 말: 캐시 키"])
+    assert [(t.path, t.terms) for t in tg] == [(f"clarifications[{i}].answer_hint", ("캐시 키",))]

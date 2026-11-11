@@ -95,6 +95,10 @@ class FeatureSeed(Schema):
     # 그 조절값을 자료의 어느 운영 조건에서 읽는지 (계약 입력의 조절값 설명에 붙는다) — 2026-11-10 목록 재료: 템플릿 설명
     # '채점 클라이언트의 요청 하나 시간 한도' 를 자료의 '응답 시간 목표' 와 잇지 못해 세 번 1초·2초·30초로 흔들렸다.
     harness_notes: dict[str, str] = Field(default_factory=dict)
+    # 숨은 케이스가 실패를 고르는 방식 — "item" 이면 같은 경로로 여러 건을 보내는 흐름(대기열·일괄 전송)이라 실패를 순번("처음 2건")이
+    # 아니라 항목 내용으로만 정한다 (HiddenCase.faults.when). 공개 글(trigger 의 '간헐적')은 그대로 둔다 — 정확한 실패 지정은 숨은 쪽에만.
+    # 2026-11-11 재측정 오프라인: 순번 실패 지정이 하나씩 보내는 허용 설계와 한꺼번에 보내는 구현에서 다르게 소비됐다.
+    fault_by: Literal["item"] | None = None
 
 
 class PublicIncident(Schema):

@@ -180,6 +180,7 @@ async def run_one(
         "ok_final": res.output is not None
         and not [f for f in res.flags if f.startswith(FLAG_DRAFT_INVALID)],
         "first_problems": res.first_problems,
+        "patched": res.patched,  # 부분 수리(spec/patch.py)로 풀린 문제
         "flags": res.flags,
         "fail_reasons": res.fail_reasons,
         "cost_usd": sum(p.cost_usd or 0.0 for p in res.provenance),

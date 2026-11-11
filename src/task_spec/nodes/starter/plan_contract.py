@@ -29,6 +29,7 @@ from task_spec.schemas import (
     TaskContract,
     TaskItem,
 )
+from task_spec.schemas.domain import HiddenAcceptance
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import fit_auth
 from task_spec.starter.contract import (
@@ -113,6 +114,9 @@ def for_material(template: Template, seed: FeatureSeed | None) -> Template:
             }
         )
         for p in template.manifest.harness_params
+        if not seed.harness
+        or p.name
+        in need  # 조절값을 나열한 재료는 그것만 — 검사·입력·기본값 채우기가 같은 목록을 본다
     ]
     return replace(
         template, manifest=template.manifest.model_copy(update={"harness_params": params})
@@ -238,6 +242,42 @@ def forbidden_text(seed: FeatureSeed | None, spec: SpecView) -> str:
     )
 
 
+def material_params(seed: FeatureSeed | None, m: TemplateManifest) -> set[str]:
+    """계약 생성기에 보이고 숨은 계획에 남는 조절값 — 재료가 조절값을 나열했으면(FeatureSeed.harness 가 비지 않은 목록) 그것만,
+    아니면(None·[] — 필수 없음일 뿐 동시 요청 등은 쓸 수 있다) 템플릿 전부.
+    2026-11-11 N+1 백엔드 알파: 템플릿 조절값이 모두 보여 LLM 이 이 함정과 무관한 concurrency=1·bursts=1 을 넣고(지원자에게 보이는 값이라
+    자료 근거가 없어 계약 실패), pool_size·connection_timeout_ms 는 함정용 자료(개발 환경 DB 설정)에서 베꼈다."""
+    names = {p.name for p in m.harness_params}
+    if seed is None or not seed.harness:
+        return names
+    return set(seed.harness) & names
+
+
+def fit_material_params(
+    plan: HiddenPlan, seed: FeatureSeed | None, m: TemplateManifest
+) -> tuple[HiddenPlan, list[str]]:
+    """재료가 나열하지 않은 조절값을 LLM 이 넣으면 뺀다 (입력에 보이지 않는 값 — 안전망). 동시 요청 조절값(burst_rows)이 빠지면
+    숨은 케이스 데이터의 버스트 표시도 끈다 (버스트 행 수를 잴 조절값이 없다)."""
+    keep = material_params(seed, m)
+    extra = sorted(k for k in plan.harness if k not in keep)
+    if not extra:
+        return plan, []
+    harness = {k: v for k, v in plan.harness.items() if k in keep}
+    evidence = {k: v for k, v in plan.evidence.items() if k in keep}
+    no_burst = any(n not in keep for n in m.burst_rows)
+    cases = [
+        c.model_copy(update={"data": [d.model_copy(update={"burst": False}) for d in c.data]})
+        if no_burst and any(d.burst for d in c.data)
+        else c
+        for c in plan.cases
+    ]
+    fixed = plan.model_copy(update={"harness": harness, "evidence": evidence, "cases": cases})
+    return fixed, [
+        f"재료가 쓰지 않는 조절값 뺌: {', '.join(extra)} (FeatureSeed.harness 에 없음)"
+        + (" — 버스트 표시도 끔" if no_burst and cases != list(plan.cases) else "")
+    ]
+
+
 def plan_input(
     task: TaskItem, template: Template, note: str | None = None, seed: FeatureSeed | None = None
 ) -> PlanContractInputV3:
@@ -248,6 +288,7 @@ def plan_input(
         f"{', 지원자에게 보임 — 자료·답에 적힌 값 그대로' if p.visible else ''}"
         f"{_range(p.minimum, p.maximum)}) — {p.description}"
         for p in m.harness_params
+        if p.name in material_params(seed, m)
     )
     # 재료가 이 숨은 요구의 사유를 선언했으면 그것만 보인다 (FeatureSeed.reasons)
     allowed = set(seed.reasons) if seed is not None and seed.reasons else None
@@ -270,10 +311,7 @@ def plan_input(
         acceptance_public="\n".join(f"{a.ac_id} {a.text}" for a in task.acceptance_public) or NONE,
         deliverables="\n".join(f"- {d}" for d in task.deliverables) or NONE,
         traps="\n".join(f"{t.trap_id} {t.description}" for t in task.traps) or NONE,
-        acceptance_hidden="\n".join(
-            f"{h.ac_id} ({h.trap_id}) {h.text}" for h in task.acceptance_hidden
-        )
-        or NONE,
+        acceptance_hidden="\n".join(hidden_ac_line(h) for h in task.acceptance_hidden) or NONE,
         materials="\n\n".join(f"[{a.artifact_id}] {a.title}\n{a.content}" for a in task.artifacts)
         or NONE,
         clarifications="\n".join(
@@ -309,12 +347,32 @@ def fit_fk_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
     return (contract.model_copy(update={"entities": entities}), notes) if notes else (contract, [])
 
 
+def hidden_ac_line(h: HiddenAcceptance) -> str:
+    """숨김 수용 기준 한 줄 + 승인된 실패 지정 (계약 단계가 그 케이스 faults 로 옮긴다 — 코드가 같은 값인지 대조)."""
+    lines = [f"{h.ac_id} ({h.trap_id}) {h.text}"]
+    if h.items:
+        lines.append(
+            f"  테스트가 만들 항목 (승인됨 — 이 기준의 숨은 케이스는 이 이름 그대로 만든다): {', '.join(h.items)}"
+        )
+    for f in h.faults:
+        what = f"{f.status} 응답" if f.status is not None else "연결 실패"
+        lines.append(
+            f'  실패 지정 (승인됨 — 이 기준의 숨은 케이스 faults 로 옮긴다): {f.operation} — 항목 "{f.item}" 처음 {f.times}번 → {what}'
+        )
+    return "\n".join(lines)
+
+
 def fit_output(
-    out: PlanContractOutput, manifest: TemplateManifest, spec: SpecView
+    out: PlanContractOutput,
+    manifest: TemplateManifest,
+    spec: SpecView,
+    seed: FeatureSeed | None = None,
 ) -> tuple[PlanContractOutput, list[str]]:
     """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다."""
-    filled, notes = fill_hidden_defaults(out.hidden_plan, manifest)
+    trimmed, notes = fit_material_params(out.hidden_plan, seed, manifest)
+    filled, fill_notes = fill_hidden_defaults(trimmed, manifest)
+    notes += fill_notes
     named, fk_notes = fit_fk_targets(out.contract)
     out = out.model_copy(update={"hidden_plan": filled, "contract": named})
     notes += fk_notes
@@ -343,7 +401,23 @@ def fit_output(
     )  # 사유 코드를 적은 trap_id → 숨김 수용 기준의 숨은 요구
     out = out.model_copy(update={"hidden_plan": trapped})
     notes += trap_notes
+    unfaulted, fault_notes = fit_faults(out.hidden_plan, spec)
+    out = out.model_copy(update={"hidden_plan": unfaulted})
+    notes += fault_notes
     return out, notes
+
+
+def fit_faults(plan: HiddenPlan, spec: SpecView) -> tuple[HiddenPlan, list[str]]:
+    """실패 지정(HiddenCase.faults)은 명세의 숨김 수용 기준에 승인된 실패 지정이 있는 케이스에서만 — 나머지는 LLM 이 채워도 뺀다
+    (무엇을 실패시킬지는 명세가 정한다). 출력 스키마가 프롬프트 본문에 들어가 이전 프롬프트 판에도 이 칸이 보인다 — 뺀 그대로면
+    실패 지정이 없는 명세의 계약·숨은 테스트는 전과 같다."""
+    dropped = [c.case_id for c in plan.cases if c.faults and c.ac_id not in spec.hidden_faults]
+    if not dropped:
+        return plan, []
+    cases = [c.model_copy(update={"faults": []}) if c.case_id in dropped else c for c in plan.cases]
+    return plan.model_copy(update={"cases": cases}), [
+        f"실패 지정 뺌 ({', '.join(dropped)}) — 명세의 숨김 수용 기준에 승인된 실패 지정이 없음"
+    ]
 
 
 async def plan_contract(
@@ -392,7 +466,7 @@ async def plan_contract(
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
         raw = out
-        out, notes = fit_output(out, manifest, spec)
+        out, notes = fit_output(out, manifest, spec, seed)
         check = check_contract(
             out.contract, out.hidden_plan, spec, manifest, seed, first_answer=attempt == 0
         )

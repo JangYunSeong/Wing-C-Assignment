@@ -136,6 +136,7 @@ def test_lookup_key_fixed_for_many_rows() -> None:
     c["seed"] = [_seed(200, (1, 200, {"status": "READY", "shopId": 7, "orderNo": 1}))]
     got = seed_problems(TaskContract.model_validate(c))
     assert _has(got, "범위 1~200", "shopId, orderNo", "orderNo 는 values 에서 뺀다"), got
+    assert not _has(got, "목록을 돌려주는")  # 변경(PATCH)은 목록 API 가 아니다
     # 하나라도 행마다 다르면(코드 기본값), 한 행 그룹이면, id 로 찾으면 괜찮다
     for seed in (
         _seed(200, (1, 200, {"status": "READY", "shopId": 7})),
@@ -375,3 +376,32 @@ def test_helpers_give_path_key_values_and_hand_built_keys_are_flagged() -> None:
     assert _hand_built_keys([built], contract, "숨은 테스트") and not _hand_built_keys(
         [used], contract, "숨은 테스트"
     )
+
+
+def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
+    """목록 API 는 같은 경로 변수 값이 여러 행에 있는 것이 정상 — 2026-11-11 N+1 알파: GET /projects/{projectId}/board/posts(m1[]) 를
+    '한 행을 찾는 API' 로 짚어 계약을 다시 요청했다. 한 행을 돌려주는 API 는 지금처럼 잡는다."""
+    c = _contract()
+    c["entities"][0]["fields"] += [{"name": "shopId", "type": "integer", "refs": ["r1"]}]
+    c["endpoints"][1]["path"] = "/shops/{shopId}/orders"
+    c["endpoints"][0]["path"] = "/orders/{id}/status"
+    c["seed"] = [_seed(200, (1, 200, {"status": "READY", "shopId": 7}))]
+    ok = next(r for r in c["endpoints"][1]["responses"] if 200 <= r["status"] < 300)
+    ok.update({"returns": "m1[]", "body": []})
+    assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")
+    ok.update({"returns": None, "body": [{"name": "items", "type": "m1[]", "refs": ["r1"]}]})
+    assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")  # 감싼 목록
+    ok.update({"returns": "m1", "body": []})
+    assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
+    # GET 인데 응답을 한 건으로 적었으면 — 목록이면 returns "m1[]" 로, 한 행 조회면 값을 뺀다 (갈래 둘)
+    assert _has(
+        seed_problems(TaskContract.model_validate(c)),
+        'returns "m1[]" (Order 목록)',
+        "shopId 는 values 에서 뺀다",
+    )
+    # 다른 것의 목록(멤버 한 행을 찾아 감사 기록을 돌려줌)은 계속 잡는다 — 이 검사가 생긴 경우 (alpha-cap1·trap2)
+    ok.update({"returns": None, "body": [{"name": "content", "type": "array", "refs": ["r1"]}]})
+    got = seed_problems(TaskContract.model_validate(c))
+    assert _has(got, "한 행을 찾는", "shopId") and not _has(
+        got, "목록을 돌려주는"
+    )  # 이미 다른 것의 목록
