@@ -100,7 +100,7 @@ async def test_first_answer_ok() -> None:
     fake = FakeBackend().push(_out())
     res = await _run(fake)
     assert res.ok and len(fake.calls) == 1 and res.flags == []
-    assert res.provenance[0].prompt == "plan_contract@22"
+    assert res.provenance[0].prompt == "plan_contract@23"
     assert res.contract is not None and [e.endpoint_id for e in res.contract.endpoints] == [
         "e1",
         "e2",
@@ -114,7 +114,7 @@ async def test_failed_calls_are_counted_in_provenance() -> None:
     res = await _run(fake)
     assert not res.ok and res.contract is None
     assert len(fake.calls) == 6
-    assert len(res.provenance) == 3 and all(p.prompt == "plan_contract@22" for p in res.provenance)
+    assert len(res.provenance) == 3 and all(p.prompt == "plan_contract@23" for p in res.provenance)
     assert sum(p.tokens.out for p in res.provenance) == 6 * 500
 
 
