@@ -14,7 +14,7 @@ from langgraph.graph.state import CompiledStateGraph
 from task_spec.api.deps import PostingsContext
 from task_spec.api.errors import install_error_handlers
 from task_spec.api.launcher import RunLauncher
-from task_spec.api.routers import health, postings, runs, ui
+from task_spec.api.routers import builds, health, postings, runs, ui
 from task_spec.config import Settings, get_settings
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm.factory import build_llm_client
@@ -29,6 +29,7 @@ from task_spec.prompting import PromptRegistry
 from task_spec.retrieve import build_retriever
 from task_spec.spec.incidents import load_incidents
 from task_spec.spec.store import CommonTaskStore
+from task_spec.starter.store import PgBuildStore
 
 
 def create_app(
@@ -54,6 +55,10 @@ def create_app(
         store = await PostingStore.open(app.state.settings.database_url.get_secret_value())
         # 공고 단위 공통 과제 저장소 (같은 공고 지원자는 같은 공통 과제)
         common_store = await CommonTaskStore.open(
+            app.state.settings.database_url.get_secret_value()
+        )
+        # 공통 과제 빌드·전달 묶음 저장소 (#85) — 테이블은 여기서 만든다. 묶음 파일은 settings.images_root
+        app.state.builds = await PgBuildStore.open(
             app.state.settings.database_url.get_secret_value()
         )
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
@@ -85,6 +90,7 @@ def create_app(
                 await app.state.ontology.close()
                 await store.close()
                 await common_store.close()
+                await app.state.builds.close()
 
     app = FastAPI(title="task-spec", lifespan=lifespan)
     if settings is not None:
@@ -97,6 +103,7 @@ def create_app(
     install_error_handlers(app)
     app.include_router(runs.router)
     app.include_router(postings.router)
+    app.include_router(builds.router)
     app.include_router(health.router)
     app.include_router(ui.router)
     return app

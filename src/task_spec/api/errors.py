@@ -89,6 +89,21 @@ class ServiceUnavailable(DomainError):
     status_code = 503
 
 
+class BuildNotFound(DomainError):
+    code = "build_not_found"
+    status_code = 404
+
+    def __init__(self, build_id: str) -> None:
+        super().__init__(f"빌드를 찾을 수 없습니다: {build_id}")
+
+
+class BuildRuleViolation(DomainError):
+    """빌드 저장소 규칙 위반 (상태·역할 충돌) — 저장소 메시지는 id·상태·역할만 담는다."""
+
+    code = "build_rule_violation"
+    status_code = 409
+
+
 class InvalidUpload(DomainError):
     code = "invalid_upload"
     status_code = 422

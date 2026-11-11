@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -132,6 +133,14 @@ CREATE TABLE IF NOT EXISTS public.artifact_delivery (
 );
 CREATE INDEX IF NOT EXISTS artifact_delivery_build ON public.artifact_delivery (build_id);
 """
+
+
+@dataclass(frozen=True)
+class TaskLabel:
+    """화면 목록용 공통 과제 이름표 — 제목·공고 id 만 (명세 본문은 넣지 않는다)."""
+
+    title: str | None
+    posting_id: str
 
 
 class BuildRuleError(ValueError):
@@ -250,6 +259,10 @@ class BuildRepo(Protocol):
 
     async def builds(self, common_id: str) -> list[BuildRecord]: ...
 
+    async def recent(self, limit: int) -> list[BuildRecord]: ...
+
+    async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]: ...
+
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord: ...
 
     async def reopen(self, build_id: str) -> list[BuildArtifact]: ...
@@ -296,6 +309,7 @@ class InMemoryBuildStore:
     """단위 테스트·DB 없는 실행용. 공통 과제 행 존재는 확인하지 않는다 (FK 는 Postgres 에서)."""
 
     def __init__(self) -> None:
+        self.labels: dict[str, TaskLabel] = {}  # 공통 과제 행 대신 (테스트가 채움)
         self._builds: dict[str, BuildRecord] = {}
         self._files: dict[tuple[str, str, str, str], StarterFile] = {}
         self._artifacts: dict[tuple[str, str], BuildArtifact] = {}
@@ -329,6 +343,13 @@ class InMemoryBuildStore:
         return sorted(
             (b for b in self._builds.values() if b.common_id == common_id), key=lambda b: b.seq
         )
+
+    async def recent(self, limit: int) -> list[BuildRecord]:
+        rows = sorted(self._builds.values(), key=lambda b: (b.created_at, b.build_id), reverse=True)
+        return rows[:limit]
+
+    async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]:
+        return {c: self.labels[c] for c in common_ids if c in self.labels}
 
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
@@ -598,6 +619,28 @@ class PgBuildStore:
             )
             rows = await cur.fetchall()
         return [self._build(r) for r in rows]
+
+    async def recent(self, limit: int) -> list[BuildRecord]:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM public.common_task_build ORDER BY created_at DESC, id DESC LIMIT %s",
+                (limit,),
+            )
+            rows = await cur.fetchall()
+        return [self._build(r) for r in rows]
+
+    async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]:
+        ids = sorted(set(common_ids))
+        if not ids:
+            return {}
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, posting_id, task->>'title' AS title FROM public.common_task "
+                "WHERE id = ANY(%s)",
+                (ids,),
+            )
+            rows = await cur.fetchall()
+        return {r["id"]: TaskLabel(title=r["title"], posting_id=r["posting_id"]) for r in rows}
 
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord:
         async with (

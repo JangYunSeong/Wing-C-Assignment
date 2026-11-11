@@ -248,6 +248,17 @@ def tree_sha256(root: Path) -> str:
     return h.hexdigest()
 
 
+def grader_sha256(kdir: Path) -> str:
+    """채점용 내용 해시 — 숨은 overlay + config.json (Containerfile·라벨 제외, schemas/package.py `grader_sha256`)."""
+    h = hashlib.sha256()
+    files = sorted(p for p in (kdir / "overlay").rglob("*") if p.is_file()) + [kdir / "config.json"]
+    for p in files:
+        h.update(
+            str(p.relative_to(kdir)).encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest()
+        )
+    return h.hexdigest()
+
+
 def candidate_tree(t: Template, item: dict[str, Any], dest: Path) -> None:
     """템플릿 project/ + 시작 코드 + README — 응시자가 받는 작업 경로 그대로."""
     if dest.exists():
@@ -550,6 +561,7 @@ def main() -> None:
                 "tree": tree,
                 "cdir": cdir,
                 "config": config,
+                "grader_sha256": grader_sha256(kdir),
                 "template": t,
             }
         )
@@ -689,6 +701,7 @@ def main() -> None:
                     "grade": f"podman run --rm --network none -v <제출물>:/submission:ro -v <결과>:/out {x['grader']} grade",
                     "timeout_s": TIMEOUT_S,
                     "cases": x["config"]["cases"],
+                    "grader_sha256": x["grader_sha256"],
                 },
                 "verification": {
                     name: {
