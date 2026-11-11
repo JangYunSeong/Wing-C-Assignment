@@ -111,3 +111,60 @@ def test_status_below_400_means_network_failure() -> None:
         assert HiddenFault(operation="가상 저장", item="가상B", status=v).status is None  # type: ignore[arg-type]
         assert Fault(endpoint="e1", status=v).status is None  # type: ignore[arg-type]
     assert HiddenFault(operation="가상 저장", item="가상B", status=503).status == 503
+
+
+# ── 숨은 contract.ts 의 실패 지정 도우미 (failHcN) — 테스트는 부르기만 한다 ──
+
+
+def _helper(case: dict[str, Any]) -> str:
+    from task_spec.starter.hidden_helpers import render_contract_case
+    from task_spec.starter.templates import load_template
+
+    plan = HiddenPlan.model_validate(_with(case))
+    f = render_contract_case(
+        TaskContract.model_validate(_contract()),
+        plan,
+        load_template("frontend/react-vite-ts").manifest,
+    )
+    assert f is not None
+    return f.content
+
+
+def test_helper_writes_one_once_per_fault_and_time_matched_by_body() -> None:
+    text = _helper(
+        {
+            "faults": [
+                {"endpoint": "e1", "when": {"toStatus": "SHIPPED"}, "times": 2, "status": 503},
+                {"endpoint": "e1", "when": {"toStatus": '메모 "C"'}, "status": None},
+            ]
+        }
+    )
+    body = text[text.index("export function failHc1(): void {") :]
+    once = [ln for ln in body.splitlines() if ln.strip().startswith("api.once(")]
+    assert len(once) == 3  # times 2 + 1
+    assert once[0].startswith('  api.once("PATCH", "/orders/:id/status", { status: 503, json: ')
+    assert '(c) => String((c.body as Record<string, unknown>)["toStatus"]) === "SHIPPED"' in once[0]
+    assert (
+        "{ networkError: true }" in once[2] and '=== "메모 \\"C\\""' in once[2]
+    )  # 따옴표·한글 그대로
+
+
+def test_helper_is_absent_without_faults() -> None:
+    assert "failHc1" not in _helper({})
+
+
+def test_case_file_must_call_the_helper_and_not_fail_directly() -> None:
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import _fault_calls
+
+    plan = HiddenPlan.model_validate(_with({"faults": [MAPPED]}))
+    good = GeneratedFile(path="src/__grading__/cases/hc1.test.tsx", content="// hc1\nfailHc1();\n")
+    assert _fault_calls(good, {"hc1"}, plan, None) == []
+    bad = GeneratedFile(
+        path="src/__grading__/cases/hc1.test.tsx",
+        content="// hc1\nconst call = await waitForX();\nawait call.networkError();\n",
+    )
+    probs = _fault_calls(bad, {"hc1"}, plan, None)
+    assert any("failHc1() 을 부르지 않음" in p for p in probs)
+    assert any("실패를 직접 건다('.networkError(')" in p for p in probs)
+    assert _fault_calls(bad, {"hc2"}, plan, None) == []  # 다른 케이스 파일은 보지 않는다

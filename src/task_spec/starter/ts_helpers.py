@@ -10,7 +10,7 @@ import json
 import re
 from typing import Literal
 
-from task_spec.schemas.build import ContractResponse, GeneratedFile, TaskContract
+from task_spec.schemas.build import ContractResponse, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.field_types import FieldType
 from task_spec.starter.field_types import parse as parse_field
@@ -51,7 +51,10 @@ def _ts(value: str) -> str:
 
 
 def render_ts_contract(
-    contract: TaskContract, manifest: TemplateManifest, audience: Literal["hidden", "public"]
+    contract: TaskContract,
+    manifest: TemplateManifest,
+    audience: Literal["hidden", "public"],
+    plan: HiddenPlan | None = None,
 ) -> GeneratedFile | None:
     rule = manifest.hidden_helper if audience == "hidden" else manifest.public_helper
     if rule is None:
@@ -189,7 +192,62 @@ def render_ts_contract(
             f"  return api.waitForCall({_ts(e.method or '')}, {_ts(msw_path(e.path))}, match as ((call: Call) => boolean) | undefined) as unknown as Promise<{base}Call>;",
             "}",
         ]
+    if audience == "hidden" and plan is not None:
+        lines += fault_lines(contract, plan)
     return GeneratedFile(path=rule.path, content="\n".join(lines) + "\n")
+
+
+def fault_fn(case_id: str) -> str:
+    """숨은 케이스의 실패 지정 함수 이름 — hc1 → failHc1."""
+    return "fail" + case_id[:1].upper() + case_id[1:]
+
+
+def fault_lines(contract: TaskContract, plan: HiddenPlan) -> list[str]:
+    """숨은 케이스마다 승인된 실패 지정(HiddenCase.faults)을 거는 함수 — 테스트는 부르기만 한다 (LLM 이 실패 거는 꼴을 정하지 않는다).
+    본문으로 고른 요청에만 실패를 준다 (api.once 의 match) — 몇 번째 요청인지·하나씩인지 한꺼번에인지와 무관하다.
+    2026-11-11 실패 지정 알파: 같은 지정을 hc1 은 api.once(match) 로 맞게, hc2 는 waitForCall → respond/networkError 로 써 —
+    한꺼번에 보내는 구현에서 첫 응답이 붙잡힌 요청 모두에 가 두 번째 요청을 기다리다 예외로 끝났다."""
+    from task_spec.starter.conformance import _Examples  # 순환 import 를 피해 여기서
+
+    by_id = {e.endpoint_id: e for e in contract.endpoints if e.method}
+    examples = _Examples(contract)
+    out: list[str] = []
+    for c in plan.cases:
+        faults = [f for f in c.faults if f.endpoint in by_id]
+        if not faults:
+            continue
+        out += [
+            "",
+            f"/** {c.case_id} 승인된 실패 지정 — 케이스 맨 앞(요청이 나가기 전)에 한 번 부른다. 그 항목의 요청만 실패하고 나머지는 평소대로",
+            " *  (routeContract·api.collection 의 응답). 이 실패를 waitFor…·fail·networkError·api.once 로 따로 걸지 않는다. */",
+            f"export function {fault_fn(c.case_id)}(): void {{",
+        ]
+        for f in faults:
+            e = by_id[f.endpoint]
+            if f.status is None:
+                reply = "{ networkError: true }"
+            else:
+                err = next((r for r in e.responses if r.status == f.status), None) or next(
+                    (r for r in e.responses if r.status >= 400 and (r.body or r.returns)), None
+                )
+                body = examples.response(err) if err is not None else None
+                if body is None:
+                    body = {"message": "일시 오류"}
+                reply = f"{{ status: {f.status}, json: {json.dumps(body, ensure_ascii=False)} }}"
+            match = (
+                " && ".join(
+                    f"String((c.body as Record<string, unknown>)[{_ts(k)}]) === {_ts(str(v))}"
+                    for k, v in f.when.items()
+                )
+                or "true"
+            )
+            what = ", ".join(f"{k}={v}" for k, v in f.when.items()) or "모든 요청"
+            for _ in range(f.times):
+                out.append(
+                    f"  api.once({_ts(e.method or '')}, {_ts(msw_path(e.path))}, {reply}, (c) => {match}); // {e.endpoint_id} {what}"
+                )
+        out.append("}")
+    return out
 
 
 # 앱 쪽 계약 타입 — 시작 코드·참조 구현이 서버 응답을 같은 모양으로 읽게 (2026-11-10 알파 분류: 생성물끼리 계약 해석이 어긋난

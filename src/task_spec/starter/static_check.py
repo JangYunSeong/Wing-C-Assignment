@@ -53,7 +53,7 @@ from task_spec.starter.tables import (
     spring_snake,
 )
 from task_spec.starter.templates import Template, glob_match, is_java, is_python, slot_allows
-from task_spec.starter.ts_helpers import app_type_names, render_app_types
+from task_spec.starter.ts_helpers import app_type_names, fault_fn, render_app_types
 
 KIND_SLOT = {
     "starter": "starter",
@@ -1097,6 +1097,33 @@ def _literal_headers(
     return out
 
 
+_DIRECT_FAULT = re.compile(r"\.(?:fail|networkError)\(|\bapi\.once\(")
+
+
+def _fault_calls(
+    f: GeneratedFile, ids: Collection[str], plan: HiddenPlan, only: Collection[str] | None
+) -> list[str]:
+    """실패 지정이 있는 숨은 케이스 파일은 도우미 failHcN() 을 부르고, 실패를 따로 걸지 않는다 (TypeScript 도우미).
+    2026-11-11 실패 지정 알파: hc2 가 지정을 waitForCall → respond/networkError 로 써 한꺼번에 보내는 구현에서만 예외."""
+    out: list[str] = []
+    for c in plan.cases:
+        if not c.faults or c.case_id not in ids or (only is not None and c.case_id not in only):
+            continue
+        fn = fault_fn(c.case_id)
+        if f"{fn}(" not in f.content:
+            out.append(
+                f"숨은 케이스 {c.case_id} 파일 {f.path} 이 실패 지정 도우미 {fn}() 을 부르지 않음 — 케이스 맨 앞(요청이 나가기 전)에 "
+                f"`{fn}();` 을 한 번 부른다 (그 항목의 요청만 실패한다)"
+            )
+        direct = _DIRECT_FAULT.search(f.content)
+        if direct:
+            out.append(
+                f"숨은 케이스 {c.case_id} 파일 {f.path} 이 실패를 직접 건다('{direct.group(0)}') — 실패는 {fn}() 이 건다. "
+                "같은 경로 요청을 붙잡아 fail·networkError 로 답하면 한꺼번에 보내는 구현에서 붙잡힌 요청 모두에 같은 답이 간다"
+            )
+    return out
+
+
 def _hidden_cases(
     o: Overlay,
     t: Template,
@@ -1145,6 +1172,8 @@ def _hidden_cases(
             used_codes |= {mt.group(1) for mt in rx.finditer(f.content)}
         ids = set(case_rx.findall(f.content))
         seen_ids.update(ids)
+        if helper is not None and helper.path.endswith(".ts") and f.path != helper_path:
+            out += _fault_calls(f, ids, plan, only)
         if only is not None and (others := sorted(ids & plan_ids - set(only))):
             out.append(
                 f"숨은 테스트 {f.path} 에 다른 케이스 id 가 나옴: {', '.join(others)} — 이 파일은 {', '.join(sorted(only))} 만 다룬다"

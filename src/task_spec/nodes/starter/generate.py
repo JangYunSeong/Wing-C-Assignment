@@ -59,7 +59,7 @@ from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
 from task_spec.starter.templates import Template, is_java
-from task_spec.starter.ts_helpers import ensure_vitest_imports, render_app_types
+from task_spec.starter.ts_helpers import ensure_vitest_imports, fault_fn, render_app_types
 
 NONE = "(없음)"
 FLAG_FAILED = "시작 코드 생성 실패 (LLM 응답 없음·형식 오류): "
@@ -193,6 +193,11 @@ def plan_text(
             lines += [_range_text(r, names) for r in alloc.for_case(c.case_id)]
         lines += [f"  준비 (하네스가 입력 환경을 바꿈): {step}" for step in c.setup]
         lines += [f"  실패 지정: {fault_text(f, apis)}" for f in c.faults]
+        if c.faults:
+            lines.append(
+                f"  실패 지정은 도우미 {fault_fn(c.case_id)}() 를 케이스 맨 앞(요청이 나가기 전)에 한 번 불러 건다 — "
+                "같은 실패를 waitFor…·fail·networkError·api.once 로 따로 걸지 않는다"
+            )
     return "\n".join(lines)
 
 
