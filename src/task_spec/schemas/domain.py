@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -352,6 +352,12 @@ class HiddenAcceptance(Schema):
     ac_id: str = Field(pattern=r"^h\d{1,2}$")
     trap_id: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=400)
+    # 테스트가 만들 항목 (실패 지정이 있을 때 2개 이상, 서로 다른 짧은 이름 — 예: 메모A·메모B·메모C). 실패 지정의 item 은 이 중 하나이고
+    # 실패하지 않는 항목이 하나 이상 있어야 '그 항목만 실패'가 성립한다. 2026-11-11 재배정 명세(오프라인): item 을 '대기 중인 점검 메모'처럼
+    # 항목 전체로 적어 사실상 '모든 메모의 처음 2번 실패'가 됐다.
+    items: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(
+        default_factory=list, max_length=8
+    )
     faults: list[HiddenFault] = Field(default_factory=list, max_length=4)  # 실패 지정 (비면 없음)
 
 

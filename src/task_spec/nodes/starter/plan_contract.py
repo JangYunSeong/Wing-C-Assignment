@@ -350,6 +350,10 @@ def fit_fk_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
 def hidden_ac_line(h: HiddenAcceptance) -> str:
     """숨김 수용 기준 한 줄 + 승인된 실패 지정 (계약 단계가 그 케이스 faults 로 옮긴다 — 코드가 같은 값인지 대조)."""
     lines = [f"{h.ac_id} ({h.trap_id}) {h.text}"]
+    if h.items:
+        lines.append(
+            f"  테스트가 만들 항목 (승인됨 — 이 기준의 숨은 케이스는 이 이름 그대로 만든다): {', '.join(h.items)}"
+        )
     for f in h.faults:
         what = f"{f.status} 응답" if f.status is not None else "연결 실패"
         lines.append(

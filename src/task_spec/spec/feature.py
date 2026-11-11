@@ -36,6 +36,7 @@ from task_spec.schemas import (
     DraftFeatureOutputV4,
     DraftFeatureOutputV5,
     FeatureSeed,
+    HiddenAcceptance,
     Observable,
     PublicIncident,
     TaskItem,
@@ -179,7 +180,8 @@ def seed_block(inc: PublicIncident) -> str:
         lines.append(
             "실패 지정 (숨김 수용 기준마다 필수): 이 숨은 요구는 같은 동작으로 여러 건을 보낸다 — acceptance_hidden 마다 faults 에 "
             "채점 때 어느 항목의 요청이 실패하는지 항목 내용으로 적는다 {operation: 공개 요구에 나온 동작의 말, item: 그 항목을 가리키는 값, "
-            "times: 그 항목의 처음 몇 번, status: 오류 상태(없으면 연결 실패)}. 기준 글도 항목으로 쓰고 '처음 N건'·'두 번째 요청' 같은 "
+            "times: 그 항목의 처음 몇 번, status: 오류 상태(없으면 연결 실패)}, items 에 테스트가 만들 항목을 짧은 이름으로 2개 이상 "
+            "(실패 항목은 그중 하나, 실패하지 않는 항목도 남긴다 — 예: items=['메모A','메모B','메모C'], item='메모B'). 기준 글도 항목으로 쓰고 '처음 N건'·'두 번째 요청' 같은 "
             "순번은 쓰지 않는다. 정확한 실패 항목은 숨김 수용 기준에만 — 상황·요구·자료에는 운영 조건 그대로(간헐적 실패) 둔다"
         )
     return "\n".join(lines)
@@ -553,6 +555,31 @@ ORDINAL_FAULT = re.compile(
 )
 
 
+def _fault_items(h: HiddenAcceptance) -> list[str]:
+    """실패 지정이 있는 기준은 테스트가 만들 항목(items)을 2개 이상 나열하고, 실패 항목은 그중 하나 — 실패하지 않는 항목이 남아야
+    '그 항목만 실패'가 성립한다 [확정: 2026-11-11 사용자]."""
+    items = [i.strip() for i in h.items]
+    out: list[str] = []
+    if len(set(items)) < 2:
+        out.append(
+            f"숨김 수용 기준 {h.ac_id} 의 items(테스트가 만들 항목)가 2개 이상의 서로 다른 이름이 아님 — 실패 지정이 고를 항목을 "
+            "짧은 이름으로 나열한다 (예: items=['메모A','메모B','메모C'], faults 의 item='메모B')"
+        )
+        return out
+    bad = [f.item for f in h.faults if f.item.strip() not in items]
+    if bad:
+        out.append(
+            f"숨김 수용 기준 {h.ac_id} 의 실패 지정 item 이 items 에 없음: {', '.join(bad)} — 실패할 항목 하나를 items 의 이름 그대로 쓴다 "
+            f"(items: {', '.join(items)})"
+        )
+    failing = {f.item.strip() for f in h.faults}
+    if set(items) <= failing:
+        out.append(
+            f"숨김 수용 기준 {h.ac_id} 의 items 가 모두 실패 지정됨 — '그 항목만 실패'가 성립하도록 실패하지 않는 항목을 하나 이상 남긴다"
+        )
+    return out
+
+
 def check_hidden_faults(out: DraftFeatureOutput, seed: FeatureSeed | None) -> list[str]:
     """숨김 수용 기준의 실패 지정 — 재료가 fault_by="item"(같은 경로로 여러 건을 보내는 흐름)이면 기준마다 항목 내용으로 정한 실패가
     있어야 하고, 기준 글이 순번으로 실패를 정하면 안 된다 [확정: 2026-11-11 사용자 — 명세에서 정해 사람이 승인]."""
@@ -565,6 +592,8 @@ def check_hidden_faults(out: DraftFeatureOutput, seed: FeatureSeed | None) -> li
                 f"숨김 수용 기준 {h.ac_id} 에 실패 지정(faults)이 없음 — 이 숨은 요구는 같은 동작으로 여러 건을 보내므로 어느 항목의 "
                 "요청이 실패하는지 항목 내용으로 정한다 (예: operation='점검 메모 저장', item='메모B', times=1, status=503)"
             )
+        if h.faults:
+            out_ += _fault_items(h)
         m = ORDINAL_FAULT.search(h.text)
         if m:
             out_.append(
@@ -935,7 +964,7 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
             "acceptance_hidden": [
                 h
                 if res.seed is not None and res.seed.fault_by is not None
-                else h.model_copy(update={"faults": []})
+                else h.model_copy(update={"faults": [], "items": []})
                 for h in out.acceptance_hidden
             ],
             "clarifications": list(out.clarifications),

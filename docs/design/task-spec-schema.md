@@ -81,8 +81,10 @@ task:                                  # common_tasks·verification_tasks·slots
     - ac_id: h#
       trap_id: ...
       text: ...
+      items: ["<테스트가 만들 항목>", ...]      # 실패 지정이 있을 때 2개 이상, 서로 다른 짧은 이름 (최대 8)
       faults:                                 # 실패 지정 — 순번이 아니라 항목 내용으로, 최대 4 (비면 없음)
-        - {operation: "<실패시킬 동작, 공개 요구의 말>", item: "<항목을 가리키는 내용 값>", times: 1~3, status: 400~599|null(연결 실패)}
+        - {operation: "<실패시킬 동작, 공개 요구의 말>", item: "<items 중 하나>", times: 1~3, status: 400~599|null(연결 실패)}
+                                              # 실패하지 않는 항목이 items 에 하나 이상 남아야 한다
   clarifications:                            # 물으면 공개할 추가 요구·제약, 최대 6
     - {clarification_id, topic, answer, answer_hint, reveals: [trap_id], match_terms}
   max_clarifications: 1~6
@@ -127,6 +129,7 @@ task:                                  # common_tasks·verification_tasks·slots
 | 기능형(`task_kind=feature`)은 공통 과제(`track=common`)에만, 기능형 전용 칸은 incident에서 비어 있어야 함     | [확정: 2026-11-06 사용자] | P1 `TaskItem` 검증 규칙                                                                      |
 | 확장 슬롯(`slots`)이 공통 과제(`track=common`)에만 있도록 스키마 검증 추가 | [제안] | 슬롯을 공통 과제에 둔다는 결정은 위 [확정: 2026-11-03] 행. 지금 P1 스키마는 최대 6개만 강제한다 — 이 행은 그 검증을 더하자는 제안
 | 숨김 수용 기준의 실패 지정(`acceptance_hidden[].faults`) — 순번(처음 N건)이 아니라 항목 내용으로 정해 명세에 두고 사람이 승인한다. 과제 코드 단계는 계약 API·요청 칸에 옮기기만 하고 코드가 같은 값인지 대조 | [확정: 2026-11-11 사용자] | 재측정 오프라인: 순번 지정이 보내는 방식(하나씩/한꺼번에)마다 다르게 소비됨. 재료 `FeatureSeed.fault_by="item"` 이면 필수 |
+| 실패 지정이 있는 숨김 수용 기준은 테스트가 만들 항목(`items`, 2개 이상)을 나열하고, 실패 항목은 그중 하나 — 실패하지 않는 항목이 남아야 한다 | [확정: 2026-11-11 사용자] | 재배정 명세(오프라인): item 을 '대기 중인 점검 메모'(항목 전체)로 적어 '그 항목만 실패'가 성립하지 않음 |
 | 연결 문구(`link_text`)에 숫자·가명화 토큰·원문 베끼기·정답 개념 없음                                        | [제안]                 | P1 생성 단계 검사 `spec/questions.py` (스키마 검증 아님), 실패 시 1회 재요청 후 기본 문구                         |
 
 

@@ -34,7 +34,11 @@ def test_spec_check_needs_content_faults_for_item_materials() -> None:
     assert any("h1 에 실패 지정(faults)이 없음" in p for p in probs)
     assert any("순번으로 정함('처음 2건')" in p for p in probs)
     ok = bare.model_copy(
-        update={"text": "SHIPPED 변경의 첫 전송이 실패해도 한 번씩 저장", "faults": [APPROVED]}
+        update={
+            "text": "SHIPPED 변경의 첫 전송이 실패해도 한 번씩 저장",
+            "faults": [APPROVED],
+            "items": ["SHIPPED", "DELIVERED"],
+        }
     )
     assert check_hidden_faults(cast(Any, SimpleNamespace(acceptance_hidden=[ok])), item) == []
     assert check_hidden_faults(out, BACKEND_SEED) == []  # 재료가 쓰지 않으면 보지 않는다
@@ -213,3 +217,35 @@ def test_material_listing_params_keeps_only_those() -> None:
     assert not any(d.burst for c in fixed.cases for d in c.data)
     assert "concurrency, pool_size" in notes[0] and "버스트 표시도 끔" in notes[0]
     assert fit_material_params(plan, lost, lt.manifest) == (plan, [])
+
+
+def test_fault_items_must_list_test_items_and_leave_one_unfailed() -> None:
+    """2026-11-11 재배정 명세(오프라인): item 을 '대기 중인 점검 메모'(항목 전체)로 적어 '그 항목만 실패'가 성립하지 않았다."""
+    item = BACKEND_SEED.model_copy(update={"fault_by": "item"})
+
+    def probs(items: list[str], faulted: list[str]) -> list[str]:
+        h = HiddenAcceptance(
+            ac_id="h1",
+            trap_id="t1",
+            text="가상 기준",
+            items=items,
+            faults=[HiddenFault(operation="가상 저장", item=i, status=503) for i in faulted],
+        )
+        return check_hidden_faults(cast(Any, SimpleNamespace(acceptance_hidden=[h])), item)
+
+    assert any("2개 이상의 서로 다른 이름이 아님" in p for p in probs([], ["대기 중인 점검 메모"]))
+    assert any("item 이 items 에 없음: 메모Z" in p for p in probs(["메모A", "메모B"], ["메모Z"]))
+    assert any("모두 실패 지정됨" in p for p in probs(["메모A", "메모B"], ["메모A", "메모B"]))
+    assert probs(["메모A", "메모B", "메모C"], ["메모B"]) == []
+
+
+def test_contract_input_lists_the_approved_items() -> None:
+    from task_spec.nodes.starter.plan_contract import hidden_ac_line
+
+    h = HiddenAcceptance(
+        ac_id="h1", trap_id="t1", text="가상 기준", items=["메모A", "메모B"], faults=[APPROVED]
+    )
+    assert (
+        "테스트가 만들 항목 (승인됨 — 이 기준의 숨은 케이스는 이 이름 그대로 만든다): 메모A, 메모B"
+        in hidden_ac_line(h)
+    )
