@@ -32,7 +32,7 @@ SCALARS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("integer", ("integer", "int", "long", "bigint", "short", "smallint", "int32", "int64")),
     ("number", ("number", "decimal", "bigdecimal", "double", "float", "numeric", "real")),
     ("boolean", ("boolean", "bool")),
-    ("string", ("string", "varchar", "text", "char", "uuid", "email", "url")),
+    ("string", ("string", "str", "varchar", "text", "char", "uuid", "email", "url")),
     ("object", ("object", "map", "json", "record")),
 )
 _BY_NAME = {n: kind for kind, names in SCALARS for n in names}
@@ -84,18 +84,11 @@ def _unwrap(s: str) -> str:
 
 
 def parse(t: str) -> FieldType:
+    """맨 바깥 | 를 먼저 나눈다 — TypeScript 처럼 `A | B[]` 는 A 또는 B 의 배열 (`(A|B)[]` 는 괄호가 묶는다).
+    식별자는 ref 로 두고, 계약 엔티티에 있는지는 쓰는 쪽이 본다 (없으면 unknown — 앱 타입 unknown, 예시는 글자)."""
     s = _unwrap(t.strip())
     if not s:
         return UNKNOWN
-    if s.endswith("[]"):
-        return FieldType("list", items=(parse(s[:-2]),))
-    m = re.fullmatch(r"(?:array|list)\s*<\s*(.+)\s*>", s, re.I)
-    if m:
-        return FieldType("list", items=(parse(m.group(1)),))
-    m = re.fullmatch(r"enum\s*\((.*)\)", s, re.I)
-    if m:
-        vals = tuple(v.strip().strip("'\"") for v in re.split(r"[|,]", m.group(1)) if v.strip())
-        return FieldType("enum", values=vals)
     parts = [p.strip() for p in _split_top(s, "|")]
     if len(parts) > 1:
         nullable = any(p.lower() in _NULLS for p in parts)
@@ -107,6 +100,15 @@ def parse(t: str) -> FieldType:
             o = opts[0]
             return FieldType(o.kind, o.items, o.values, o.name, nullable=nullable)
         return FieldType("union", items=opts, nullable=nullable) if opts else UNKNOWN
+    if s.endswith("[]"):
+        return FieldType("list", items=(parse(s[:-2]),))
+    m = re.fullmatch(r"(?:array|list)\s*<\s*(.+)\s*>", s, re.I)
+    if m:
+        return FieldType("list", items=(parse(m.group(1)),))
+    m = re.fullmatch(r"enum\s*\((.*)\)", s, re.I)
+    if m:
+        vals = tuple(v.strip().strip("'\"") for v in re.split(r"[|,]", m.group(1)) if v.strip())
+        return FieldType("enum", values=vals)
     if s.lower() in ("array", "list"):
         return FieldType("list", items=(UNKNOWN,))
     kind = _BY_NAME.get(s.lower())

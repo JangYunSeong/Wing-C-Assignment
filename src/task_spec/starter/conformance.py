@@ -64,6 +64,10 @@ class _Examples:
     def example(self, ft: FieldType, name: str) -> Any:
         """앱 계약 타입(ts_helpers.ts_type)과 같은 해석의 예시 값 — `A | null` 은 A 의 값, 원소가 모르는 꼴인 배열은 빈 배열."""
         ft = non_null(ft)
+        if ft.kind == "ref" and ft.name not in self.by_key:
+            ft = FieldType(
+                "unknown"
+            )  # 계약 엔티티가 아닌 이름(str·phone·Money) — 앱 타입도 unknown, 예시는 글자
         if ft.kind == "enum":
             return next((v for v in ft.values if v), "A")
         if ft.kind == "list":

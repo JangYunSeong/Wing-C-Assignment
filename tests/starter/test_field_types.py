@@ -27,6 +27,10 @@ ENT = {"Sensor": "Sensor", "m2": "Sensor"}
         ("LocalDateTime", "string"),
         ("object", "Record<string, unknown>"),
         ("Unknown$Thing!", "unknown"),
+        ("string | string[]", "string | string[]"),  # 맨 바깥 | 를 [] 보다 먼저
+        ("Sensor | number[]", "Sensor | number[]"),
+        ("str", "string"),
+        ("phone", "unknown"),  # 엔티티가 아닌 이름
     ],
 )
 def test_one_parse_for_app_types(t: str, ts: str) -> None:
@@ -44,4 +48,9 @@ def test_smoke_example_follows_the_same_parse() -> None:
     assert value("number | null") == 1.5
     assert value("object") == {}
     assert value("array") == [] and value("Nope[]") == []
+    # 엔티티가 아닌 이름은 참조가 아니다 — {} 가 아니라 글자 (이전 해석과 같게)
+    assert value("phone") == "가상 x" and value("Money") == "가상 x"
+    assert value("str") == "가상 x"
+    assert value("string | string[]") == "가상 x"
+    assert parse("enum(A|B)").kind == "enum" and parse("array<A|B>").kind == "list"
     assert parse("(a)|(b)").kind == "union"
