@@ -41,6 +41,7 @@ from task_spec.schemas.build_record import (
     StarterFile,
     StoredFileKind,
 )
+from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.package import (
     BUILD_ID,
     ArtifactFile,
@@ -309,6 +310,10 @@ class BuildRepo(Protocol):
 
     async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]: ...
 
+    async def task(self, common_id: str) -> TaskItem | None:
+        """공통 과제 명세 (진행자 보기용 — 숨은 칸이 함께 있으니 그대로 내보내지 않는다)."""
+        ...
+
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord: ...
 
     async def reopen(self, build_id: str) -> list[BuildArtifact]: ...
@@ -360,6 +365,7 @@ class InMemoryBuildStore:
 
     def __init__(self) -> None:
         self.labels: dict[str, TaskLabel] = {}  # 공통 과제 행 대신 (테스트가 채움)
+        self.tasks: dict[str, TaskItem] = {}  # 공통 과제 명세 (테스트가 채움)
         self._builds: dict[str, BuildRecord] = {}
         self._files: dict[tuple[str, str, str, str], StarterFile] = {}
         self._artifacts: dict[tuple[str, str], BuildArtifact] = {}
@@ -400,6 +406,9 @@ class InMemoryBuildStore:
 
     async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]:
         return {c: self.labels[c] for c in common_ids if c in self.labels}
+
+    async def task(self, common_id: str) -> TaskItem | None:
+        return self.tasks.get(common_id)
 
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
@@ -702,6 +711,12 @@ class PgBuildStore:
             )
             rows = await cur.fetchall()
         return {r["id"]: TaskLabel(title=r["title"], posting_id=r["posting_id"]) for r in rows}
+
+    async def task(self, common_id: str) -> TaskItem | None:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT task FROM public.common_task WHERE id = %s", (common_id,))
+            row = await cur.fetchone()
+        return None if row is None else TaskItem.model_validate(row["task"])
 
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord:
         async with (

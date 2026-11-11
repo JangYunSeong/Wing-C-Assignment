@@ -7,7 +7,14 @@ from pathlib import Path
 import httpx
 
 from task_spec.api.app import create_app
+from task_spec.schemas import TargetCompetency, TaskItem, TechEnv
 from task_spec.schemas.build_record import README_PATH, StarterFile
+from task_spec.schemas.domain import (
+    Artifact,
+    Clarification,
+    DebugStage,
+    HiddenAcceptance,
+)
 from task_spec.schemas.package import flag_id
 from task_spec.starter.store import InMemoryBuildStore, TaskLabel
 from tests.api.conftest import make_settings
@@ -151,3 +158,80 @@ async def test_readme_missing(tmp_path: Path) -> None:
     async with await _client(tmp_path, store) as c:
         r = await c.get(f"/builds/{bid}/readme")
         assert r.status_code == 404 and "저장한 README 없음" in r.json()["error"]["message"]
+
+
+def _facilitator_task() -> TaskItem:
+    """가상 명세 — 숨은 칸마다 표식 글(HIDDEN-…)을 넣어 응답에 없는지 본다."""
+    return TaskItem(
+        task_id=CID,
+        track="common",
+        task_kind="feature",
+        target_competencies=[TargetCompetency(competency_id="comp:a", label="가상 역량")],
+        tech_env=TechEnv(basis="공고 언어"),
+        difficulty_target="medium",
+        time_limit_min=60,
+        title="가상 목록 화면",
+        artifacts=[
+            Artifact(artifact_id="a1", title="가상 지표", content="분당 10건", role="key"),
+            Artifact(artifact_id="a2", title="가상 문서", content="미끼 예제", role="distractor"),
+        ],
+        max_requests=1,
+        clarifications=[
+            Clarification(
+                clarification_id="c1",
+                topic="가상 주제",
+                answer="구체 답",
+                answer_hint="모호한 답",
+                match_terms=["생성 빈도"],
+                reveals=["t1"],
+            )
+        ],
+        max_clarifications=2,
+        acceptance_hidden=[
+            HiddenAcceptance(ac_id="h1", trap_id="t1", text="HIDDEN-REQ 숨은 요구 원문")
+        ],
+        debug_stage=DebugStage(
+            time_limit_min=20,
+            scenario="가상 증상",
+            trap_ids=["t1"],
+            artifacts=[Artifact(artifact_id="a3", title="가상 로그", content="로그", role="key")],
+            max_requests=1,
+            deliverables=["원인 메모"],
+        ),
+    )
+
+
+async def test_facilitator_view_has_only_what_candidates_can_ask_for(tmp_path: Path) -> None:
+    store = InMemoryBuildStore()
+    bid = await _review_build(store)
+    async with await _client(tmp_path, store) as c:
+        assert (await c.get(f"/builds/{bid}/facilitator")).json()["error"]["code"] == (
+            "facilitator_not_available"
+        )  # 명세 없음
+        store.tasks[CID] = _facilitator_task()
+        r = await c.get(f"/builds/{bid}/facilitator")
+    assert r.status_code == 200
+    body = r.json()
+    s1 = body["stage1"]
+    assert [m["title"] for m in s1["materials"]["items"]] == ["가상 지표", "가상 문서"]
+    assert s1["materials"]["max_requests"] == 1 and s1["clarifications"]["max_questions"] == 2
+    ans = s1["clarifications"]["items"][0]
+    assert (ans["answer"], ans["answer_hint"], ans["match_terms"]) == (
+        "구체 답",
+        "모호한 답",
+        ["생성 빈도"],
+    )
+    assert body["stage2"]["scenario"] == "가상 증상"
+    assert body["stage2"]["materials"]["items"][0]["content"] == "로그"
+    text = r.text
+    for hidden in ('"role"', "distractor", '"key"', "reveals", "trap", "HIDDEN-REQ", "observables"):
+        assert hidden not in text, hidden
+
+
+async def test_facilitator_view_waits_for_verified_build(tmp_path: Path) -> None:
+    store = InMemoryBuildStore()
+    b = await store.new_build(CID, "onto-test", AT)
+    store.tasks[CID] = _facilitator_task()
+    async with await _client(tmp_path, store) as c:
+        r = await c.get(f"/builds/{b.build_id}/facilitator")
+    assert r.status_code == 404 and "상태 pending" in r.json()["error"]["message"]
