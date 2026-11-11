@@ -26,8 +26,9 @@ from psycopg.rows import dict_row
 
 from eval.starter.split_delivery import extract_readme
 from task_spec.config import get_settings
-from task_spec.schemas import TaskItem
+from task_spec.schemas import GeneratedFile, TaskItem
 from task_spec.schemas.build_record import README_PATH, BuildRecord, StarterFile
+from task_spec.starter.code_map import SECTION
 from task_spec.starter.render import render_readme
 from task_spec.starter.store import PgBuildStore
 from task_spec.starter.templates import load_template
@@ -86,8 +87,14 @@ async def backfill(
     if got.removeprefix("sha256:") != image:
         return f"로컬 이미지 {got[:19]} ≠ 등록 {cand.image_id[:19]} — podman load 필요"
     shown = extract_readme(image, template.manifest.workspace)
+    # 이미지 README 에 '시작 코드' 절이 있으면 저장된 시작 코드로 같은 절을 다시 그려 대조한다 (starter/code_map.py)
+    starter = (
+        [GeneratedFile(path=f.path, content=f.content) for f in await store.files(bid, ["starter"])]
+        if SECTION in shown
+        else None
+    )
     rendered = render_readme(
-        await _task(store, build.common_id), build.outcome.contract, template
+        await _task(store, build.common_id), build.outcome.contract, template, starter=starter
     ).content
     note = "같음"
     if _sha(shown) != _sha(rendered) and accept_reordered and reorder_only(shown, rendered):

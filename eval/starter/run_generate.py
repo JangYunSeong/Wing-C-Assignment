@@ -427,7 +427,9 @@ async def main() -> None:
     overlays = [r.overlay for r in [starter, *others] if r.overlay is not None]
     for o in overlays:
         _write(o, out / "overlays" / (o.kind + (f"-{o.label}" if o.label else "")))
-    readme = render_readme(task, contract, template)
+    readme = render_readme(
+        task, contract, template, starter=starter.overlay.files if starter.overlay else None
+    )
     (out / "README.md").write_text(readme.content, "utf-8")
     full = static_check(
         overlays,
