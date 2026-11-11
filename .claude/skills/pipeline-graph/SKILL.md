@@ -270,7 +270,7 @@ async def approval(state: RunState) -> Command:
 ```
 
 - interrupt 이전에 부작용(저장·외부 호출)을 두지 않는다.
-- 승인 결정에는 `reviewer`, `at`, `comment` 를 남긴다 (명세 `approval` 필드, `context.md` §6).
+- 승인 결정에는 `reviewer`, `at`, `comment` 를 남긴다 (명세 `approval` 필드, `docs/design/task-spec-schema.md`).
 - 자동 승인 경로·타임아웃 승인은 만들지 않는다.
 
 ## 체크포인터

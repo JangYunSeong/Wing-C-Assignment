@@ -1,7 +1,6 @@
 """도메인 모델 (공고 프로필·주장·후보·대조·근거·비교·명세).
 
-TODO(spec): 아직 내용이 정해지지 않았다. 골격 단계라 최소 필드만 둔다.
-명세(TaskSpec) 스키마의 SSOT 는 온톨로지 레포 `context.md` §6 — 확정되면 그쪽에 맞춘다.
+명세(TaskSpec) 스키마의 SSOT 는 `docs/design/task-spec-schema.md` — 칸을 넣거나 뜻을 바꿀 때는 그 문서와 이 파일을 같은 PR 에서 고친다.
 """
 
 from __future__ import annotations
@@ -236,7 +235,7 @@ Difficulty = Literal["high", "medium", "low"]
 
 
 class TargetCompetency(Schema):
-    """측정 대상 역량 1건 (context.md §6 target_competencies). 결정적으로 채운다."""
+    """측정 대상 역량 1건 (task-spec-schema.md target_competencies). 결정적으로 채운다."""
 
     competency_id: str = Field(min_length=1)
     label: str
@@ -393,7 +392,7 @@ class TechEnv(Schema):
 
 
 class TaskItem(Schema):
-    """명세 안의 과제 1건 (context.md §6). 결정적 필드 + LLM 필드(draft_task) + 검토 표시."""
+    """명세 안의 과제 1건 (task-spec-schema.md). 결정적 필드 + LLM 필드(draft_task) + 검토 표시."""
 
     task_id: str = Field(min_length=1)
     track: Track
@@ -477,7 +476,7 @@ class SlotAssignment(Schema):
 
 
 class TaskSpec(Schema):
-    """④ 과제 명세 초안/확정본 (context.md §6).
+    """④ 과제 명세 초안/확정본 (task-spec-schema.md).
 
     공통 과제는 공고 기준만으로 만든다 (불변식 3). 경험 검증 과제는 compare 의 claims_to_verify 에서.
     """

@@ -124,7 +124,7 @@ POST /runs              posting_id=prov-…  → posting_profile(source=provisio
 | ③ 평가 근거 | 역량 → `competency_ncs` ∩ `cell_ncs`(셀 범위) → `ncs_element` → `ncs_criterion`·`ncs_ksa`; 역량 → `competency_esco` |
 
 - NCS 는 **셀(직군×업종) 범위 안에서만** 고른다. 셀 밖 능력단위를 근거로 쓰지 않는다.
-- ESCO 는 대표가 있을 때만 (broad·공백이면 생략, `context.md` §6).
+- ESCO 는 대표가 있을 때만 (broad·공백이면 생략, `docs/design/task-spec-schema.md`).
 - uncovered(온톨로지에 없는 역량)는 만들어내지 않고 그대로 uncovered 로 보고 → 온톨로지 레포에 역량 신설 후보 이슈.
 
 ## 매처 공유
