@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from task_spec.nodes.starter.plan_contract import fit_unevidenced
 from task_spec.schemas import FeatureSeed, HiddenPlan, TaskContract, TemplateManifest
 from task_spec.spec.incidents import load_incidents
 from task_spec.starter.contract import (
@@ -775,3 +776,40 @@ def test_api_field_names_fixed_by_the_spec_are_accepted() -> None:
     ).problems
     assert not _has(probs, "member_id")  # API 필드는 명세 이름 인정
     assert _has(probs, "order_no")  # 엔티티 필드는 규칙대로
+
+
+def test_rounded_quote_value_passes_with_flag() -> None:
+    """2026-11-11 백엔드 N+1: 'p50: 8.1' 을 인용하고 8 을 썼다 — 정수로 맞춘 값은 통과, 승인자 확인 [확정: 2026-11-11 사용자]."""
+    texts = ["metric: db_query_roundtrip_ms\np50: 8.1\np95: 14.7"]
+    assert evidence_check(8, "p50: 8.1", texts) == "rounded"
+    assert evidence_check(9, "p50: 8.1", texts) == "rounded"  # 올림
+    assert evidence_check(10, "p50: 8.1", texts) == "bad"  # 1 이상 차이
+    assert evidence_check(8, "p50: 8.1\np95: 14.7", texts) == "bad"  # 후보가 여럿
+    spec = _spec(visible_texts=("pool: 8\nthreads: 32", "p50: 8.1"))
+    m = _manifest().model_dump()
+    m["harness_params"][2] |= {"visible": True, "spec_patterns": [r"쿼리\s*지연\s*(\d+)\s*ms"]}
+    plan = _plan(harness={"pool_size": 8, "concurrency": 32, "query_delay_ms": 8})
+    plan["evidence"] = {"query_delay_ms": "p50: 8.1"}
+    res = _check(plan=plan, spec=spec, manifest=TemplateManifest.model_validate(m))
+    assert not _has(res.problems, "query_delay_ms"), res.problems
+    assert _has(res.review_flags, "query_delay_ms=8", "정수로 맞춘")
+
+
+def test_unevidenced_optional_param_is_dropped_by_code() -> None:
+    """2026-11-11 백엔드 중복 처리: 근거를 '없음'으로 쓴 선택 조절값을 재요청에도 못 뺐다 — 코드가 뺀다. 필수·자료에 있는 값은 두고."""
+    m = _manifest().model_dump()
+    m["harness_params"][2] |= {"visible": True, "spec_patterns": [r"쿼리\s*지연\s*(\d+)\s*ms"]}
+    manifest = TemplateManifest.model_validate(m)
+    spec = _spec(visible_texts=("pool: 8\nthreads: 32", "자료에 지연 수치 없음"))
+    plan = HiddenPlan.model_validate(
+        _plan(harness={"pool_size": 8, "concurrency": 32, "query_delay_ms": 20})
+        | {"evidence": {"query_delay_ms": "없음", "concurrency": "없음"}}
+    )
+    fixed, notes = fit_unevidenced(plan, manifest, spec)
+    assert "query_delay_ms" not in fixed.harness and "query_delay_ms" not in fixed.evidence
+    assert fixed.harness["concurrency"] == 32  # 자료(threads: 32)에 있으니 둔다
+    assert notes and "query_delay_ms" in notes[0]
+    assert fit_unevidenced(HiddenPlan.model_validate(_plan()), manifest, spec) == (
+        HiddenPlan.model_validate(_plan()),
+        [],
+    )

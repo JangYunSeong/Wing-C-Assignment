@@ -43,6 +43,7 @@ from task_spec.starter.contract import (
     fit_traps,
     hidden_terms,
     timed_hints,
+    unevidenced,
 )
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
@@ -253,6 +254,40 @@ def material_params(seed: FeatureSeed | None, m: TemplateManifest) -> set[str]:
     return set(seed.harness) & names
 
 
+def fit_unevidenced(
+    plan: HiddenPlan, m: TemplateManifest, spec: SpecView
+) -> tuple[HiddenPlan, list[str]]:
+    """근거를 '없음'으로 쓴 선택 조절값(보이는 값, 필수 아님)이 자료 어디에도 없으면 뺀다 — 검사는 '빼라'고 다시 묻지만
+    LLM 이 끝까지 못 뺐다 [확정: 2026-11-11 사용자]. 2026-11-11 백엔드 중복 처리 알파: 재료가 조절값을 나열하지 않아(harness: [])
+    템플릿 조절값이 다 보였고, concurrency 를 '자료에 없음'으로 적고도 넣어 계약이 세 번 다 막혔다.
+    필수 조절값은 빼지 않는다 (명세 수정 필요로 남는다). 동시 요청 조절값이 빠지면 버스트 표시도 끈다."""
+    drop = sorted(
+        p.name
+        for p in m.harness_params
+        if p.name in plan.harness
+        and p.visible
+        and not p.required
+        and (plan.evidence.get(p.name) or "").strip() == NO_EVIDENCE
+        and unevidenced(p, plan.harness[p.name], spec.visible_texts)
+    )
+    if not drop:
+        return plan, []
+    harness = {k: v for k, v in plan.harness.items() if k not in drop}
+    evidence = {k: v for k, v in plan.evidence.items() if k not in drop}
+    no_burst = any(n in drop for n in m.burst_rows)
+    cases = [
+        c.model_copy(update={"data": [d.model_copy(update={"burst": False}) for d in c.data]})
+        if no_burst and any(d.burst for d in c.data)
+        else c
+        for c in plan.cases
+    ]
+    fixed = plan.model_copy(update={"harness": harness, "evidence": evidence, "cases": cases})
+    return fixed, [
+        f"근거가 '없음'인 선택 조절값 뺌: {', '.join(drop)} (자료에 그 값이 없음)"
+        + (" — 버스트 표시도 끔" if no_burst and cases != list(plan.cases) else "")
+    ]
+
+
 def fit_material_params(
     plan: HiddenPlan, seed: FeatureSeed | None, m: TemplateManifest
 ) -> tuple[HiddenPlan, list[str]]:
@@ -371,6 +406,8 @@ def fit_output(
     """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다."""
     trimmed, notes = fit_material_params(out.hidden_plan, seed, manifest)
+    trimmed, free_notes = fit_unevidenced(trimmed, manifest, spec)
+    notes += free_notes
     filled, fill_notes = fill_hidden_defaults(trimmed, manifest)
     notes += fill_notes
     named, fk_notes = fit_fk_targets(out.contract)

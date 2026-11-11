@@ -182,8 +182,8 @@ def picked_values(param: HarnessParam, seen: Sequence[str]) -> list[str]:
 
 
 _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
-# 근거 인용 안에서 값 후보가 아닌 숫자 — 백분율(38%)·시각(19:00)
-_NOT_VALUE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*%|\d{1,2}:\d{2}")
+# 근거 인용 안에서 값 후보가 아닌 숫자 — 백분율(38%)·시각(19:00)·백분위 이름(p50·p95·p99 — 2026-11-11 N+1: 'p50: 8.1' 의 50)
+_NOT_VALUE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*%|\d{1,2}:\d{2}|\b[pP]\d{2,3}(?:\.\d)?\b")
 NO_EVIDENCE = "없음"
 MIN_QUOTE = 6
 MAX_QUOTE = 160  # 분포·표 전체를 통째로 인용하면 그 안의 아무 숫자나 근거가 된다
@@ -210,6 +210,19 @@ _UNIT_MS = {
     "분": 60000.0,
     "min": 60000.0,
 }
+
+
+def unevidenced(param: HarnessParam, value: HarnessValue, texts: Iterable[str]) -> bool:
+    """근거를 '없음'으로 쓴 조절값이 자료 어디에도 없는가 — 템플릿 표기로 뽑히는 값도, 단위를 환산해 맞는 시간 값도 없다."""
+    texts = list(texts)
+    if extract_values(param, texts):
+        return False
+    unit = param_unit(param.name)
+    if unit is None or not isinstance(value, (int, float)) or isinstance(value, bool):
+        return True
+    return not any(
+        float(value) in _converted(h, unit) for h in timed_hints(param.name, texts, limit=20)
+    )
 
 
 def param_unit(name: str) -> str | None:
@@ -246,9 +259,11 @@ def timed_hints(name: str, texts: Iterable[str], limit: int = 4) -> list[str]:
 
 def evidence_check(
     value: HarnessValue, quote: str, texts: Iterable[str], unit: str | None = None
-) -> Literal["ok", "ambiguous", "bad"]:
+) -> Literal["ok", "ambiguous", "rounded", "bad"]:
     """`evidence_ok` 의 자세한 판정. 백분율·시각은 값 후보에서 빼고, 남은 후보가 여럿이면 ambiguous
-    ("1개: 38% 2개: 41% … 4개 이상: 7%" 를 인용하면 1·2·3·4 아무것이나 근거가 된다 — 알파 테스트 2026-11-07)."""
+    ("1개: 38% 2개: 41% … 4개 이상: 7%" 를 인용하면 1·2·3·4 아무것이나 근거가 된다 — 알파 테스트 2026-11-07).
+    rounded: 정수 값이 인용 안의 소수 하나를 반올림·올림·내림한 값 (차이 1 미만) — 통과시키고 승인자에게 [확정: 2026-11-11 사용자].
+    2026-11-11 백엔드 N+1 알파: 'p50: 8.1' 을 인용하고 query_delay_ms=8 을 써 계약이 세 번 다 막혔다."""
     q = _norm(quote).strip(" \"'“”‘’…")
     if not MIN_QUOTE <= len(q) <= MAX_QUOTE or not any(q in _norm(t) for t in texts):
         return "bad"
@@ -259,6 +274,14 @@ def evidence_check(
         if float(value) not in numbers:
             if unit is not None and float(value) in _converted(q, unit):
                 return "ok" if len(_TIMED.findall(q)) == 1 else "ambiguous"
+            if isinstance(value, int) and len(numbers) == 1:
+                (n,) = numbers
+                if (
+                    n is not None
+                    and n != int(n)
+                    and value in {round(n), math.floor(n), math.ceil(n)}
+                ):
+                    return "rounded"
             return "bad"
         return "ok" if len(numbers) == 1 else "ambiguous"
     return "ok" if str(value).lower() in q.lower() else "bad"
@@ -352,6 +375,11 @@ def _harness(
             continue
         if cited == "ok":
             continue  # 근거 인용으로 확인
+        if cited == "rounded":
+            flags.append(
+                f"운영 값 {p.name}={value} 은 근거 인용 {quote!r} 의 값을 정수로 맞춘 것 — 승인자 확인"
+            )
+            continue
         if cited == "ambiguous":
             flags.append(
                 f"운영 값 {p.name}={value} 의 근거 인용에 숫자가 여럿 — {quote!r}, 승인자 확인"
