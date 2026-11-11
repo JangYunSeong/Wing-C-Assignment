@@ -422,6 +422,9 @@ class TemplateManifest(Schema):
     seed_rows: bool = True
     init_scripts: InitScripts | None = None
     config_merge: ConfigMerge | None = None
+    # 코드 뼈대 (docs/design/code-skeleton.md) — 켜면 계약에서 API 호출 함수·화면 컴포넌트·라우트를 코드가 먼저 쓰고(starter/skeleton.py)
+    # 생성기는 몸통만 채운다 (이름·시그니처·라우트 유지 — static_check._skeleton_kept). React v10 · Java v2 부터.
+    skeleton: bool = False
     seed_sql: SeedSql | None = None
     hidden_helper: HiddenHelper | None = None
     # 공개 테스트 도우미 — 같은 렌더러, 숨은 범위 대신 공개 테스트 몫 행 (starter/hidden_helpers.py audience="public")

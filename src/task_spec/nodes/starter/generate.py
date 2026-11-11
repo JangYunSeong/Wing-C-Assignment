@@ -57,6 +57,7 @@ from task_spec.starter.java_imports import ensure_java_imports
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
 from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.seed_sql import render_seed_sql
+from task_spec.starter.skeleton import render_skeleton
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
 from task_spec.starter.templates import Template, is_java
 from task_spec.starter.ts_helpers import ensure_vitest_imports, fault_fn, render_app_types
@@ -627,11 +628,29 @@ def _overlay(kind: FileKind, label: str = "") -> Callable[[list[GeneratedFile]],
 
 
 def _with_app_types(text: str, contract: TaskContract, template: Template) -> str:
-    """시작 코드 입력의 템플릿 파일 목록에 앱 쪽 계약 타입(잠김, 코드가 씀)을 붙인다 — 그 파일을 import 해 응답을 읽게."""
+    """시작 코드 입력의 템플릿 파일 목록에 앱 쪽 계약 타입(잠김, 코드가 씀)을 붙인다 — 그 파일을 import 해 응답을 읽게.
+    템플릿이 코드 뼈대를 켰으면(manifest.skeleton) 뼈대 파일과 규칙도 (docs/design/code-skeleton.md)."""
     f = render_app_types(contract, template.manifest)
-    if f is None:
-        return text
-    return f"{text}\n\n=== {f.path} (잠김 — 계약에서 코드가 만든 타입, 이것을 import 한다) ===\n{f.content.rstrip()}"
+    if f is not None:
+        text = f"{text}\n\n=== {f.path} (잠김 — 계약에서 코드가 만든 타입, 이것을 import 한다) ===\n{f.content.rstrip()}"
+    skel = render_skeleton(contract, template.manifest)
+    if skel:
+        java = template.manifest.stack is not None and template.manifest.stack.language == "java"
+        text += (
+            (
+                "\n\n코드 뼈대 (계약에서 코드가 만든 파일 — ContractController·ContractService 의 메서드 이름·매개변수·매핑과"
+                " 요청 record 는 그대로 두고 ContractService 의 몸통을 채운다. 계약 API 를 다른 컨트롤러에서 다시 매핑하지 않는다."
+                " 엔티티·리포지토리·응답 DTO·다른 클래스는 더해도 된다. 주석에 할 일·해법을 쓰지 않는다):"
+            )
+            if java
+            else (
+                "\n\n코드 뼈대 (계약에서 코드가 만든 파일 — 함수·컴포넌트 이름과 매개변수, App.tsx 의 화면 라우트는 그대로 두고 몸통만 채운다."
+                " 서버는 이 API 호출 함수로 부르고, 화면은 이 컴포넌트 파일에 그린다. 도우미 함수·파일은 더해도 된다."
+                " 주석에 할 일·해법을 쓰지 않는다):"
+            )
+        )
+        text += "".join(f"\n\n=== {g.path} (뼈대) ===\n{g.content.rstrip()}" for g in skel)
+    return text
 
 
 def _app_overlay(
@@ -640,14 +659,19 @@ def _app_overlay(
     """앱 쪽 계약 타입(src/api/contract-types.ts)은 코드가 쓴다 — 생성기가 같은 경로를 쓰면 버리고, 시작 코드에는 코드 판을 넣는다
     (참조 구현은 시작 코드 위에 놓이므로 시작 코드 판이 그대로 쓰인다)."""
     types = render_app_types(b.contract, b.template.manifest)
-    if types is None:
+    skel = render_skeleton(b.contract, b.template.manifest)
+    if types is None and not skel:
         return _overlay(kind, label)
 
     def make(files: list[GeneratedFile]) -> Overlay:
-        kept = [f for f in files if f.path != types.path]
-        return Overlay(
-            kind=kind, files=(*kept, *((types,) if kind == "starter" else ())), label=label
-        )
+        kept = [f for f in files if types is None or f.path != types.path]
+        added: list[GeneratedFile] = []
+        if kind == "starter":
+            added += [types] if types is not None else []
+            # 시작 코드가 빠뜨린 뼈대 파일은 코드 판으로 (참조 구현은 시작 코드 위에 놓여 그 판을 물려받는다)
+            have = {f.path for f in kept}
+            added += [g for g in skel if g.path not in have]
+        return Overlay(kind=kind, files=(*kept, *added), label=label)
 
     return make
 

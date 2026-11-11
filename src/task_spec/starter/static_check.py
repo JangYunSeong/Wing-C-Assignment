@@ -45,6 +45,17 @@ from task_spec.starter.hidden_helpers import (
 )
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
+from task_spec.starter.skeleton import (
+    APP,
+    ENDPOINTS,
+    JAVA_CONTROLLER,
+    JAVA_SERVICE,
+    PAGES,
+    endpoint_fns,
+    java_fns,
+    page_names,
+)
+from task_spec.starter.skeleton import routes as skeleton_routes
 from task_spec.starter.tables import (
     contract_tables,
     declared_tables,
@@ -653,6 +664,129 @@ _JSON_INLINE = re.compile(
     r"|(?<!request)(?<!req)\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … } — 요청 본문(request.json())은 빼고
 )
 _TYPES_IMPORT = re.compile(r"""from\s+['"](?:\.{1,2}/)+(?:[\w-]+/)*contract-types['"]""")
+
+
+def _split_params(params: str) -> list[str]:
+    """매개변수 목록 → 이름들 — 타입 안의 쉼표({ a: string; b: number }·Record<a, b>)는 나누지 않는다."""
+    names, depth, cur = [], 0, ""
+    for ch in params + ",":
+        if ch in "{<([":
+            depth += 1
+        elif ch in "}>)]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            name = re.split(r"[?:=]", cur.strip(), maxsplit=1)[0].strip()
+            if name:
+                names.append(name)
+            cur = ""
+        else:
+            cur += ch
+    return names
+
+
+_JAVA_PARAMS = r"\(((?:[^()]|\([^()]*\))*)\)"
+
+
+def _java_param_names(params: str) -> list[str]:
+    """Java 매개변수 목록 → 이름 (어노테이션·제네릭 안의 쉼표는 나누지 않는다)."""
+    names, depth, cur = [], 0, ""
+    for ch in params + ",":
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        if ch == "," and depth == 0:
+            words = re.findall(r"\w+", re.sub(r"@\w+(\([^)]*\))?", "", cur))
+            if words:
+                names.append(words[-1])
+            cur = ""
+        else:
+            cur += ch
+    return names
+
+
+def _java_skeleton_kept(written: dict[str, str], contract: TaskContract) -> list[str]:
+    """Java 뼈대 — ContractController·ContractService 의 메서드 이름·매개변수, 컨트롤러 매핑. 다른 파일이 계약 경로를 다시 매핑하면 기동 실패."""
+    msgs: list[str] = []
+    fns = java_fns(contract)
+    rule = " — 코드 뼈대: 메서드 이름·매개변수·매핑은 그대로 두고 몸통만 채운다 (클래스·메서드는 더해도 된다)"
+    for path in (JAVA_CONTROLLER, JAVA_SERVICE):
+        if path not in written:
+            continue
+        for fn in fns:
+            m = re.search(
+                rf"public\s+[\w<>?,\s]+?\s{re.escape(fn.name)}\s*{_JAVA_PARAMS}", written[path]
+            )
+            if m is None:
+                msgs.append(f"{path} 에 계약 메서드 {fn.name} 가 없음{rule}")
+            elif tuple(_java_param_names(m.group(1))) != fn.params:
+                msgs.append(
+                    f"{path} 의 {fn.name} 매개변수가 뼈대와 다름: ({', '.join(_java_param_names(m.group(1)))}) — 뼈대는 ({', '.join(fn.params)}){rule}"
+                )
+    if JAVA_CONTROLLER in written:
+        for e in contract.endpoints:
+            if (
+                e.method
+                and f'{e.method.capitalize()}Mapping("{e.path}")' not in written[JAVA_CONTROLLER]
+            ):
+                msgs.append(f"{JAVA_CONTROLLER} 에 {e.method} {e.path} 매핑이 없음{rule}")
+    paths = {e.path for e in contract.endpoints if e.method}
+    for path, text in written.items():
+        if path == JAVA_CONTROLLER or not path.endswith(".java") or "/src/test/" in f"/{path}":
+            continue
+        if not re.search(r"@(?:Rest)?Controller\b", text):
+            continue
+        for p in paths:
+            if f'"{p}"' in text:
+                msgs.append(
+                    f"{path} 가 계약 경로 {p} 를 다시 매핑함 — 계약 API 매핑은 {JAVA_CONTROLLER} 한곳 (같은 경로 두 매핑이면 기동 실패)"
+                )
+    return msgs
+
+
+def _skeleton_kept(
+    o: Overlay, template: Template, contract: TaskContract | None
+) -> list[StaticProblem]:
+    """코드 뼈대(docs/design/code-skeleton.md)를 유지했는가 — 이 오버레이가 쓴 뼈대 파일만 본다 (쓰지 않은 파일은 시작 코드·뼈대 판).
+    API 호출 함수의 이름·매개변수, 화면 컴포넌트 이름, App.tsx 의 화면 경로 → 컴포넌트 라우트."""
+    if contract is None or not template.manifest.skeleton:
+        return []
+    written = {f.path: f.content for f in o.files}
+    msgs: list[str] = []
+    if template.manifest.stack is not None and template.manifest.stack.language == "java":
+        return [StaticProblem(o.target, m) for m in _java_skeleton_kept(written, contract)]
+    if ENDPOINTS in written:
+        text = written[ENDPOINTS]
+        for fn in endpoint_fns(contract):
+            m = re.search(
+                rf"export\s+(?:async\s+)?function\s+{re.escape(fn.name)}\s*\(([^)]*(?:\{{[^}}]*\}}[^)]*)*)\)",
+                text,
+            )
+            if m is None:
+                msgs.append(
+                    f"{ENDPOINTS} 에 계약 API 호출 함수 {fn.name} 가 없음 (이름을 바꾸지 않는다)"
+                )
+            elif tuple(_split_params(m.group(1))) != fn.params:
+                msgs.append(
+                    f"{ENDPOINTS} 의 {fn.name} 매개변수가 뼈대와 다름: ({', '.join(_split_params(m.group(1)))}) — 뼈대는 ({', '.join(fn.params)})"
+                )
+    names = page_names(contract)
+    for sc in contract.screens:
+        path = f"{PAGES}/{names[sc.screen_id]}.tsx"
+        if path in written and not re.search(
+            rf"export\s+default\s+function\s+{names[sc.screen_id]}\b", written[path]
+        ):
+            msgs.append(
+                f"{path} 가 화면 컴포넌트 {names[sc.screen_id]} 를 export default 하지 않음 (이름을 바꾸지 않는다)"
+            )
+    if APP in written:
+        for route, comp in skeleton_routes(contract):
+            if f'path="{route}"' not in written[APP] or f"<{comp}" not in written[APP]:
+                msgs.append(
+                    f"{APP} 에 뼈대 라우트 {route} → {comp} 가 없음 (화면 경로·컴포넌트를 유지한다)"
+                )
+    rule = " — 코드 뼈대: 함수·컴포넌트 이름과 매개변수, 화면 라우트는 그대로 두고 몸통만 채운다 (도우미 함수·파일은 더해도 된다)"
+    return [StaticProblem(o.target, m + rule) for m in msgs]
 
 
 def _contract_types_usage(
@@ -2139,6 +2273,7 @@ def static_check(
             res.problems += _script_imports(o, template, contract)
             res.problems += _datasource_config(o, template)
             res.problems += _contract_types_usage(o, template, contract)
+            res.problems += _skeleton_kept(o, template, contract)
             res.problems += _java_test_pitfalls(
                 o, template, template.manifest.seed_sql.path if template.manifest.seed_sql else None
             )

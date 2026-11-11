@@ -98,6 +98,12 @@ async def main() -> None:
         default=None,
         help="기능형 재료 고정 (공고 해시 배정 대신) — 예: --incident pub:sw.frontend:previous-user-data-after-logout",
     )
+    ap.add_argument(
+        "--template-version",
+        type=int,
+        default=None,
+        help="템플릿 판 고정 (CURRENT 는 그대로) — 예: --template-version 10",
+    )
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
     pins = {k: int(v) for k, _, v in (x.partition("=") for x in a.pin)}
@@ -194,6 +200,11 @@ async def main() -> None:
         raise SystemExit(f"기능형 재료가 없는 직군: {p.sub}")
     # 직군 → 템플릿 (없는 직군은 Java 로 — 종이 단계 밖)
     template = select_template(p.sub) or load_template(JAVA)
+    if (
+        a.template_version is not None
+    ):  # 템플릿 판 고정 (CURRENT 는 그대로) — 예: 코드 뼈대 v10 을 v9 와 비교
+        template = load_template(template.manifest.template_id, a.template_version)
+        report["template_pinned"] = template.manifest.ref
     res = await plan_contract(
         task,
         template,
