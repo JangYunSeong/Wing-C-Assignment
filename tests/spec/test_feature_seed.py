@@ -176,12 +176,12 @@ async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.Mon
     spec = (await draft(_state("run-a", approval=revise)))["spec"]
     task = spec.common_tasks[0]
     assert task.task_kind == "feature" and task.traps[0].trap_id == "t1"
-    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@6+{feature_ref(BACKEND)}"
+    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@9+{feature_ref(BACKEND)}"
     assert FLAG_SEED_UNREVIEWED in task.review_flags
 
 
 def test_current_feature_prompt_is_v6() -> None:
-    assert _REG.get("draft_feature_task").ref == "draft_feature_task@6"
+    assert _REG.get("draft_feature_task").ref == "draft_feature_task@9"
 
 
 def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
