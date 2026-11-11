@@ -378,6 +378,41 @@ def test_gate3_prime_kept_requirement_must_pass() -> None:
     assert _keys(plan) == ["gen_hidden"] and plan.actions[0].gate == "③'"
 
 
+def test_regenerated_design_alone_stuck_in_a_hidden_case_suspects_the_test_once() -> None:
+    """2026-11-11 fe8 오프라인 hc2: 숨은 테스트가 첫 요청을 붙잡은 채 두 번째를 기다려, 하나씩 보내는 허용 설계만 시간 초과(HARNESS_ERR)로
+    떨어질 수 있었다 — 게이트 ④ 는 단언 실패만 봐서 그 구현을 계속 다시 만들었다. 다시 만든 뒤에도 혼자면 테스트를 한 번 의심한다."""
+    stuck = _t(
+        "hidden",
+        "hc2",
+        "HARNESS_ERR",
+        None,
+        "Error: 요청이 오지 않음: POST /api/memos — 응답하지 않은 요청 1개가 붙잡혀 있는 동안 기다렸다",
+    )
+    naive = _run("naive-all", "ref_naive", *GOOD_NAIVE)
+    d1 = _run("d1", "ref_accepted", GOOD_ACC[0], stuck)
+    # 처음엔 그 구현 탓
+    plan = _assign(_report(naive, d1))
+    assert _keys(plan) == ["gen_accepted:d1"] and plan.actions[0].gate == "setup"
+    # 다시 만든 뒤에도 그 구현만 → 숨은 테스트를 한 번 의심 (설계 모순 예산)
+    plan = _assign(_report(naive, d1), gen_accepted__d1=1)
+    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].budget == DESIGN_SUFFIX
+    assert "다른 구현(naive-all)은 판정까지 갔다" in plan.actions[0].note
+    assert "응답하지 않은 요청을 붙잡은 채 다음 요청을 기다리지 말고" in plan.actions[0].note
+    # 그 한 번을 썼으면 예전처럼 그 구현 (예산은 재생성 쪽이 센다)
+    counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN_SUFFIX}": 1}
+    plan = assign(_report(naive, d1), PLAN2, OVERLAYS, MISSED, counts)
+    assert [a.key for a in plan.actions] == ["gen_accepted:d1"]
+    # 테스트를 의심하는 회차에는 같은 케이스에서 함께 깨진 흔한 구현을 다시 만들지 않는다 (고친 테스트로 다음 회차에 비교)
+    both = _run("naive-all", "ref_naive", GOOD_NAIVE[0], stuck)
+    d2 = _run("d2", "ref_accepted", *GOOD_ACC)
+    plan = _assign(_report(both, d1, d2), gen_accepted__d1=1)
+    assert _keys(plan) == ["gen_hidden"] and "다른 구현(d2)은" in plan.actions[0].note
+    # 흔한 구현만 혼자 떨어지면 예전 그대로 그 구현
+    n_stuck = _run("naive-all", "ref_naive", GOOD_NAIVE[0], stuck)
+    plan = _assign(_report(n_stuck, _run("d1", "ref_accepted", *GOOD_ACC)), gen_accepted__d1=1)
+    assert [a.generator for a in plan.actions] == ["gen_naive"]
+
+
 def test_gate4_accepted_designs() -> None:
     fail = _t("hidden", "hc2", "ASSERT", "record_missing", "실패 기록 없음")
     d1, d2 = (

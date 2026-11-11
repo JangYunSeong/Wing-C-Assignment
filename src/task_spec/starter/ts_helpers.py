@@ -56,10 +56,13 @@ def render_ts_contract(
         return None
     harness = "../harness/grader" if audience == "hidden" else "../__grading__/harness/grader"
     who = "숨은 케이스" if audience == "hidden" else "공개 테스트"
+    registry = (
+        "contract_registry" in rule.features
+    )  # React v8+ 하네스 — 계약의 성공 상태·test id 를 하네스에 알린다
     lines = [
         f"// 이 과제의 공개 계약에서 빌드 파이프라인이 만든 도우미 — 손으로 고치지 않는다. {who}가 import 한다.",
         "// test id·화면 경로·API 경로를 직접 쓰지 말고 아래 상수·함수를 쓴다 (없는 이름은 tsc 가 잡는다).",
-        f"import {{ api, type Call, type CallHandle }} from {_ts(harness)};",
+        f"import {{ api, type Call, type CallHandle{', type TestId' if registry else ''} }} from {_ts(harness)};",
         "",
     ]
     tids: dict[str, str] = {}
@@ -74,7 +77,8 @@ def render_ts_contract(
     )
     lines.append("export const TID = {")
     lines += [
-        f"  {k}: {_ts(v)}," + (f" // 조작: {actions[k]}" if k in actions else "")
+        f"  {k}: {_ts(v)}{' as TestId' if registry else ''},"
+        + (f" // 조작: {actions[k]}" if k in actions else "")
         for k, v in tids.items()
     ]
     lines += ["} as const;", ""]
@@ -99,6 +103,23 @@ def render_ts_contract(
             f"  {spring_snake(method_name(e)).upper()}: {{ method: {_ts(e.method or '')}, path: {_ts(msw_path(e.path))} }}, // {e.endpoint_id} {e.summary}"
         )
     lines += ["} as const;", ""]
+    if registry:
+        ok_status = {
+            f"{e.method} {msw_path(e.path)}": ok.status
+            for e in endpoints
+            if (ok := next((r for r in e.responses if 200 <= r.status < 300), None)) is not None
+        }
+        lines += [
+            "/** 계약을 하네스에 알린다 (import 할 때 한 번) — 상태를 주지 않은 응답(respond(본문)·always·once·collection)은 계약의 성공 상태로 나가고,",
+            " *  textsByRole 이 TID 를 범위로 안다 */",
+            "api.contract({",
+            "  ok: {",
+            *[f"    {_ts(k)}: {v}," for k, v in ok_status.items()],
+            "  },",
+            "  testIds: Object.values(TID),",
+            "});",
+            "",
+        ]
     lines += [
         "/** 이 과제의 계약 API 를 모두 가로챈다 — 케이스 파일의 beforeEach 에서 (가로챈 요청은 응답할 때까지 붙잡힌다) */",
         "export function routeContract(): void {",

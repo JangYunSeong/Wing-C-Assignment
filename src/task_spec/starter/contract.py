@@ -32,6 +32,7 @@ from task_spec.schemas.build import (
     HarnessValue,
     HiddenPlan,
     TaskContract,
+    UiElement,
 )
 from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import FeatureSeed
@@ -1267,15 +1268,202 @@ _FIELD_ROLES = frozenset(
 )
 
 
+# 경로는 경로 글자만 — 'POST /api/auth/login으로'·'… login.' 의 조사·마침표를 먹지 않게 (리뷰 2026-11-11)
+_MENTION = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_\-./:{}]*[A-Za-z0-9_\-/}])")
+# 사용자가 입력하지 않는 요청 칸 — 앱이 만드는 번호·토큰·시각 (폼 입력란으로 만들지 않는다). 화면·API 경로 변수도 앱이 채운다.
+# 'userId' 처럼 이름이 …Id 여도 로그인 폼에선 사용자가 입력하므로 …Id 전체를 빼지 않는다 (2026-11-11 fe7d-user 재생).
+_SYSTEM_FIELD = re.compile(
+    r"^(?:id|token|.+Token|.+At|.+_at|(?:request|idempotency|client|trace|correlation)(?:Id|Key|_id|_key))$"
+)
+_PATH_VAR = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}|:([A-Za-z_][A-Za-z0-9_]*)")
+_NUMBER_TYPES = frozenset({"integer", "int", "long", "number", "float", "double", "decimal"})
+_MAX_ELEMENTS = 30  # UiScreen.elements 상한
+
+
+def _route_shape(path: str) -> str:
+    return re.sub(r"\{[^}/]+\}|:[^/]+", ":", path.rstrip("/")) or "/"
+
+
+def _form_endpoint(contract: TaskContract, form: UiElement) -> Endpoint | None:
+    """폼의 조작·설명에 적힌 제출 요청(메서드·경로)과 같은 계약 API. 적혀 있지 않으면, 본문을 받는 변경 API(POST·PUT·PATCH)가
+    계약에 하나뿐이고 다른 요소의 조작이 그 API 를 말하지 않을 때만 그것 (2026-11-10 fe7c-user: 조작 '제출하면 로그인 요청을 보내고…')."""
+    for text in (form.action or "", form.description):
+        for method, path in _MENTION.findall(text):
+            for e in contract.endpoints:
+                if e.method == method and _route_shape(e.path) == _route_shape(path):
+                    return e
+    if _MENTION.search(form.action or ""):
+        return None  # 다른 요청을 적었다 — 짐작하지 않는다
+    writes = [e for e in contract.endpoints if e.method in ("POST", "PUT", "PATCH") and e.request]
+    if len(writes) != 1:
+        return None
+    mentioned = any(
+        (m := _MENTION.search(el.action or "")) is not None
+        and m.group(1) == writes[0].method
+        and _route_shape(m.group(2)) == _route_shape(writes[0].path)
+        for sc in contract.screens
+        for el in sc.elements
+        if el is not form
+    )
+    return None if mentioned else writes[0]
+
+
+def _kebab(name: str) -> str:
+    """칸 이름 → test id 꼬리 (camelCase → kebab). 영문·숫자가 없는 이름은 빈 문자열 — 그 칸은 입력란으로 만들지 않는다."""
+    out = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", name).lower()
+    return re.sub(r"[^a-z0-9]+", "-", out).strip("-")
+
+
+def _input_fields(e: Endpoint, route: str) -> list[ContractField]:
+    """요청 본문 칸 중 사용자가 입력하는 것 (요청 번호·토큰·시각처럼 앱이 만드는 칸, 화면·API 경로 변수, 객체·배열,
+    영문 이름이 없는 칸은 뺀다)."""
+    path_vars = {a or b for a, b in _PATH_VAR.findall(f"{route} {e.path}")}
+    return [
+        f
+        for f in e.request
+        if not _SYSTEM_FIELD.match(f.name)
+        and f.name not in path_vars
+        and _kebab(f.name)
+        and not f.type.strip().endswith("[]")
+        and f.type.strip().lower() not in ("array", "list", "object", "map", "json")
+    ]
+
+
+def _field_element(form: UiElement, f: ContractField) -> UiElement:
+    t = f.type.strip()
+    enum = re.fullmatch(r"enum\s*\((.+)\)", t, re.I)
+    values = [v.strip() for v in re.split(r"[|,]", enum.group(1)) if v.strip()] if enum else []
+    if values and len(values) <= 20 and all(len(v) <= 60 for v in values):
+        role, options = "combobox", values
+    elif t.lower() in ("boolean", "bool"):
+        role, options = "checkbox", []
+    elif t.lower() in _NUMBER_TYPES or "password" in f.name.lower():
+        role, options = "input", []  # 숫자(spinbutton)·비밀번호 입력란 — 역할이 textbox 가 아니다
+    else:
+        role, options = "textbox", []
+    what = (
+        f"{f.name} 입력란 — 폼 {form.test_id} 의 요청 칸 {f.name}{'' if f.required else ' (선택)'}"
+    )
+    return UiElement(
+        test_id=f"{form.test_id}-{_kebab(f.name)}",
+        role=role,  # type: ignore[arg-type]
+        description=what[:200],
+        action="값을 입력한다 — 제출하기 전에는 요청이 나가지 않는다",
+        options=options,
+        refs=list(form.refs),
+    )
+
+
+def _owned(form: UiElement, el: UiElement) -> bool:
+    """화면에 폼이 여럿일 때 요소가 그 폼의 것인지 — test id 접두(`login-form-…`·`login-…`)로."""
+    stem = re.sub(r"-?form$", "", form.test_id) or form.test_id
+    return el is not form and (
+        el.test_id.startswith(f"{form.test_id}-") or el.test_id.startswith(f"{stem}-")
+    )
+
+
+def fit_forms(contract: TaskContract) -> tuple[TaskContract, list[str]]:
+    """ui 계약의 폼 — 입력란·제출 버튼이 요소로 없으면 폼의 조작에 적힌 제출 요청(메서드·경로)의 요청 칸에서 코드가 채운다.
+
+    2026-11-11 프론트 알파 fe8-user: 로그인 폼(login-form, 조작 'POST /api/auth/login', 요청 칸 username·password)에 입력란도
+    버튼도 없어 계약 답 3개가 모두 막혔다 (재요청 문구가 'form 대신 button 하나로'를 알려 줬지만 이 폼은 입력란이 필요했다).
+    - 요청 칸이 있으면 칸마다 입력란 `<폼>-<칸>` (요청 번호·토큰·시각처럼 앱이 채우는 칸은 빼고), 버튼이 없으면 제출 버튼 `<폼>-submit`.
+    - 요청 칸이 없는 폼이면 입력란이 필요 없다 — 버튼이 없으면 폼을 같은 test id 의 버튼으로, 있으면 폼을 묶음(region)으로 (test id 는 그대로).
+    - 화면에 폼이 여럿이면 폼마다 그 폼의 요소(test id 접두)로 본다. 요소 수 상한(30)은 넘지 않는다.
+    - 제출 요청을 찾지 못한 폼은 그대로 — 검사(_ui_form_fields)가 다시 묻는다."""
+    if contract.interface_kind != "ui":
+        return contract, []
+    notes: list[str] = []
+    screens = []
+    for sc in contract.screens:
+        forms = [el for el in sc.elements if el.role == "form"]
+        if not forms:
+            screens.append(sc)
+            continue
+        elements = list(sc.elements)
+        ids = {el.test_id for el in elements}
+        for form in forms:
+            mine = [el for el in elements if len(forms) == 1 or _owned(form, el)]
+            has_field = any(el.role in _FIELD_ROLES for el in mine)
+            has_button = any(el.role == "button" for el in mine)
+            if has_field and has_button:
+                continue
+            e = _form_endpoint(contract, form)
+            if e is not None and not has_field and not e.request:
+                at = elements.index(form)
+                role, how = (
+                    ("region", "묶음(region)으로 (버튼이 제출한다)")
+                    if has_button
+                    else ("button", "같은 test id 의 버튼으로")
+                )
+                elements[at] = form.model_copy(update={"role": role})
+                notes.append(
+                    f"화면 {sc.route} 의 폼 {form.test_id} 는 요청 칸이 없는 {e.method} {e.path} 를 보내 입력란이 필요 없다 — {how}"
+                )
+                continue
+            fields = _input_fields(e, sc.route) if e is not None else []
+            if e is not None and not has_field and fields:
+                room = _MAX_ELEMENTS - len(elements) - (0 if has_button else 1)
+                new = [
+                    el
+                    for f in fields
+                    if (el := _field_element(form, f)).test_id not in ids and len(el.test_id) <= 60
+                ][: max(0, room)]
+                if new:
+                    at = elements.index(form) + 1
+                    elements[at:at] = new
+                    ids |= {el.test_id for el in new}
+                    has_field = True
+                    notes.append(
+                        f"화면 {sc.route} 의 폼 {form.test_id} 에 입력란이 없어 {e.method} {e.path} 의 요청 칸으로 채움: "
+                        + ", ".join(f"{el.test_id}({el.role})" for el in new)
+                    )
+            submit = form.action or (
+                f"클릭하면 폼을 제출 — {e.method} {e.path} 요청" if e is not None else ""
+            )
+            sid = f"{form.test_id}-submit"
+            if (
+                has_field
+                and not has_button
+                and submit
+                and sid not in ids
+                and len(elements) < _MAX_ELEMENTS
+            ):
+                after = (
+                    elements.index(form)
+                    + 1
+                    + sum(1 for el in elements if el.test_id.startswith(f"{form.test_id}-"))
+                )
+                button = UiElement(
+                    test_id=sid,
+                    role="button",
+                    description=f"폼 {form.test_id} 제출 버튼",
+                    action=submit[:200],
+                    refs=list(form.refs),
+                )
+                elements.insert(after, button)
+                ids.add(sid)
+                notes.append(
+                    f"화면 {sc.route} 의 폼 {form.test_id} 에 제출 버튼이 없어 {sid} 을 더함 (폼의 조작대로)"
+                )
+        screens.append(
+            sc.model_copy(update={"elements": elements}) if elements != list(sc.elements) else sc
+        )
+    if not notes:
+        return contract, []
+    return contract.model_copy(update={"screens": screens}), notes
+
+
 def _ui_form_fields(contract: TaskContract) -> list[str]:
     """ui 계약: 폼(form) 요소만 있고 그 안의 입력란·제출 버튼이 요소로 없음 — 테스트는 test id 로만 찾으므로 입력란을 짐작한다
     (`input[name="userId"]`). 2026-11-10 저장된 화면 계약에서 폼이 있는 화면 13개 중 12개가 이랬고, 알파 fe7d-user 숨은 테스트가
-    로그인 입력란을 name 속성으로 찾다 모든 구현에서 예외."""
+    로그인 입력란을 name 속성으로 찾다 모든 구현에서 예외. 제출 요청이 폼에 적혀 있으면 fit_forms 가 먼저 채우므로, 여기 남는 것은
+    제출 요청을 찾지 못했거나 요청 칸이 모두 앱이 채우는 칸인 폼이다 (2026-11-11 알파 fe8-user)."""
     if contract.interface_kind != "ui":
         return []
     out: list[str] = []
     for sc in contract.screens:
-        forms = [el.test_id for el in sc.elements if el.role == "form"]
+        forms = [el for el in sc.elements if el.role == "form"]
         if not forms:
             continue
         roles = {el.role for el in sc.elements}
@@ -1284,11 +1472,24 @@ def _ui_form_fields(contract: TaskContract) -> list[str]:
             for w, ok in (("입력란", bool(roles & _FIELD_ROLES)), ("제출 버튼", "button" in roles))
             if not ok
         ]
-        if missing:
-            out.append(
-                f"화면 {sc.route} 의 폼({', '.join(forms)})에 {'·'.join(missing)} 요소가 없음 — 폼 안에서 사용자가 다루는 입력란(textbox 등)과 "
-                "제출 버튼을 각각 test id 가 있는 요소로 적고 조작(action)을 쓴다 (테스트는 test id 로만 찾는다). 입력란이 없는 폼이면 form 대신 button 하나로 적는다"
+        if not missing:
+            continue
+        sent = [(f, e) for f in forms if (e := _form_endpoint(contract, f)) is not None]
+        if sent:
+            how = "; ".join(
+                f"{f.test_id} 는 {e.method} {e.path} 를 보낸다 — 요청 칸 {'·'.join(x.name for x in e.request) or '없음'} 중 사용자가 입력하는 칸마다"
+                for f, e in sent
             )
+            advice = f"{how} 입력란(textbox 등)을, 그리고 제출 버튼을 각각 test id 가 있는 요소로 적고 조작(action)을 쓴다"
+        else:
+            advice = (
+                "폼 요소의 조작(action)에 제출할 때 나가는 요청을 메서드·경로로 적고 (예: '제출 버튼을 누르면 POST /api/auth/login'), "
+                "그 요청 칸 중 사용자가 입력하는 칸마다 입력란(textbox 등)과 제출 버튼을 각각 test id 가 있는 요소로 적는다"
+            )
+        out.append(
+            f"화면 {sc.route} 의 폼({', '.join(f.test_id for f in forms)})에 {'·'.join(missing)} 요소가 없음 — {advice} "
+            "(테스트는 test id 로만 찾는다). 입력란이 필요 없는 폼이면 form 대신 button 하나로 적는다"
+        )
     return out
 
 
