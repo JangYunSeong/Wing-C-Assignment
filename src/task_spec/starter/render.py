@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 
 from task_spec.schemas import ContractField, GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.template import TableNaming, TemplateManifest
+from task_spec.starter.code_map import code_map, code_map_markdown, code_map_problems, starter_view
 from task_spec.starter.seed_rows import seed_markdown
 from task_spec.starter.tables import contract_tables, table_label
 from task_spec.starter.templates import Template
@@ -166,9 +168,16 @@ def process_markdown(task: TaskItem) -> str:
 
 
 def render_readme(
-    task: TaskItem, contract: TaskContract, template: Template, *, public_tests: bool = False
+    task: TaskItem,
+    contract: TaskContract,
+    template: Template,
+    *,
+    public_tests: bool = False,
+    starter: Sequence[GeneratedFile] | None = None,
 ) -> GeneratedFile:
-    """README.tpl.md 의 자리를 채운다. 템플릿이 모르는 자리를 쓰거나 값이 비면 RenderError."""
+    """README.tpl.md 의 자리를 채운다. 템플릿이 모르는 자리를 쓰거나 값이 비면 RenderError.
+    starter(시작 코드 출력)를 주면 '시작 코드' 절(이미 있는 파일·화면 경로·함수 이름 — starter/code_map.py)을 '코드 구조' 절 뒤에
+    붙이고, 적힌 이름이 시작 코드와 맞는지 대조한다 (맞지 않으면 RenderError — 코드와 README 가 어긋나면 안 된다)."""
     tpl_path = template.root / README_TEMPLATE
     tpl = tpl_path.read_text("utf-8")
     values = {
@@ -189,7 +198,33 @@ def render_readme(
     empty = sorted(k for k in used if not values[k].strip())
     if empty:
         raise RenderError(f"README 자리에 넣을 명세 문장이 없음: {', '.join(empty)}")
-    return GeneratedFile(path=README, content=_SLOT.sub(lambda m: values[m.group(1)], tpl))
+    content = _SLOT.sub(lambda m: values[m.group(1)], tpl)
+    if starter is not None:
+        content = with_code_map(content, starter_view(template.root, starter), contract)
+    return GeneratedFile(path=README, content=content)
+
+
+def with_code_map(
+    readme: str, files: Sequence[GeneratedFile], contract: TaskContract | None = None
+) -> str:
+    """README 에 '시작 코드' 절 — '코드 구조' 절 뒤(없으면 끝)에. 대조가 실패하면 RenderError."""
+    section = code_map_markdown(code_map(files, contract))
+    if not section:
+        return readme
+    if "\n## 코드 구조" in readme:
+        head, rest = readme.split("\n## 코드 구조", 1)
+        nxt = rest.find("\n## ")
+        merged = (
+            head + "\n## 코드 구조" + rest[:nxt] + "\n\n" + section.rstrip("\n") + "\n" + rest[nxt:]
+            if nxt >= 0
+            else head + "\n## 코드 구조" + rest.rstrip("\n") + "\n\n" + section
+        )
+    else:
+        merged = readme.rstrip("\n") + "\n\n" + section
+    bad = code_map_problems(merged, files)
+    if bad:
+        raise RenderError("README 시작 코드 절이 시작 코드와 맞지 않음: " + "; ".join(bad[:5]))
+    return merged
 
 
 def render_params(plan: HiddenPlan, manifest: TemplateManifest) -> GeneratedFile:

@@ -267,6 +267,8 @@ async def main() -> None:
         starter is not None
     ):  # 응시자가 받는 모양 — 응시용 이미지와 같은 층 (템플릿 project/ + 시작 코드 + README)
         assemble(template, out / "candidate", starter)
+        # 시작 코드가 정해진 뒤 다시 — '시작 코드' 절(이미 있는 파일·함수 이름)을 그 시작 코드에서 뽑아 넣는다 (starter/code_map.py)
+        readme = render_readme(task, res.contract, template, starter=starter.files)
         (out / "candidate" / readme.path).write_text(readme.content, "utf-8")
     report["build"] = {
         "status": built_out.status,
