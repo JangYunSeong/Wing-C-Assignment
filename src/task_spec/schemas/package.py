@@ -61,8 +61,19 @@ class ImageArchive(Schema):
     name: str = Field(min_length=1)  # load 뒤 이름 (localhost/task/<build_id>-<role>)
 
 
+class CaseResult(Schema):
+    """케이스 하나의 채점 결과 — result.json `cases[]` 에서 (승인자가 문제를 쓸지 정할 때 본다, 2026-11-11 사용자).
+    message 는 실패 단언 앞부분만 — 테스트 본문은 넣지 않는다."""
+
+    id: str = Field(min_length=1, max_length=120)
+    kind: str = Field(min_length=1, max_length=20)  # hidden · public
+    passed: bool
+    reason: str | None = Field(default=None, max_length=80)
+    message: str | None = Field(default=None, max_length=300)
+
+
 class VerifySummary(Schema):
-    """채점 결과 요약 — result.json `summary` 와 같은 모양."""
+    """채점 결과 요약 — result.json `summary` 와 같은 모양 + 케이스별 결과(cases, 없으면 예전 기록)."""
 
     hidden_passed: int = Field(ge=0)
     hidden_total: int = Field(ge=0)
@@ -70,6 +81,7 @@ class VerifySummary(Schema):
     public_total: int = Field(ge=0)
     existing_failed: list[str] = Field(default_factory=list)
     selftest_failed: list[str] = Field(default_factory=list)
+    cases: list[CaseResult] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _passed_within_total(self) -> VerifySummary:

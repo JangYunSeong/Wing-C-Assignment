@@ -10,12 +10,13 @@ from task_spec.api.app import create_app
 from task_spec.schemas import TargetCompetency, TaskItem, TechEnv
 from task_spec.schemas.build_record import README_PATH, StarterFile
 from task_spec.schemas.domain import (
+    AcceptedDesign,
     Artifact,
     Clarification,
     DebugStage,
     HiddenAcceptance,
 )
-from task_spec.schemas.package import flag_id
+from task_spec.schemas.package import CaseResult, VerifySummary, flag_id
 from task_spec.starter.store import InMemoryBuildStore, TaskLabel
 from tests.api.conftest import make_settings
 from tests.starter.test_build_store import AT, FLAG, H_NEW, H_OLD, _artifact, _outcome
@@ -235,3 +236,68 @@ async def test_facilitator_view_waits_for_verified_build(tmp_path: Path) -> None
     async with await _client(tmp_path, store) as c:
         r = await c.get(f"/builds/{b.build_id}/facilitator")
     assert r.status_code == 404 and "상태 pending" in r.json()["error"]["message"]
+
+
+async def test_cases_view_for_approvers_has_case_text_and_results(tmp_path: Path) -> None:
+    """승인자 보기 — 숨은 케이스 상황·통과 조건·의도한 사유, 공개 테스트, 허용 설계, 대상별 케이스 결과. 테스트·참조 구현 본문은 없다."""
+    store = InMemoryBuildStore()
+    b = await store.new_build(CID, "onto-test", AT)
+    await store.set_status(b.build_id, "generating")
+    await store.put_files(
+        b.build_id,
+        [StarterFile.of(b.build_id, "ref_accepted", "src/Svc.java", SECRET, variant="d1")],
+    )
+    out = _outcome(H_OLD)
+    hc = out.hidden_plan.cases[0].case_id
+    out = out.model_copy(
+        update={
+            "verification": {
+                "naive-all": VerifySummary(
+                    hidden_passed=0,
+                    hidden_total=1,
+                    public_passed=1,
+                    public_total=1,
+                    cases=[
+                        CaseResult(
+                            id=hc, kind="hidden", passed=False, reason="gap", message="기대 0"
+                        ),
+                    ],
+                )
+            }
+        }
+    )
+    await store.save_outcome(b.build_id, out)
+    async with await _client(tmp_path, store) as c:
+        assert (await c.get(f"/builds/{b.build_id}/cases")).status_code == 404  # 검증 전
+        await store.set_status(b.build_id, "verifying")
+        await store.set_status(b.build_id, "review")
+        store.tasks[CID] = _facilitator_task().model_copy(
+            update={
+                "accepted_designs": [
+                    AcceptedDesign(
+                        design_id="d1", summary="가상 설계", conditions="가상 조건", trap_ids=["t1"]
+                    ),
+                    AcceptedDesign(
+                        design_id="d2", summary="다른 설계", conditions="조건", trap_ids=["t1"]
+                    ),
+                ]
+            }
+        )
+        r = await c.get(f"/builds/{b.build_id}/cases")
+    assert r.status_code == 200
+    body = r.json()
+    hidden = [x for x in body["cases"] if x["kind"] == "hidden"]
+    assert hidden and hidden[0]["id"] == hc and hidden[0]["expect"] and hidden[0]["intended_reason"]
+    assert [x["id"] for x in body["cases"] if x["kind"] == "public"] == [
+        t.test_id for t in out.contract.public_tests
+    ]
+    assert body["results"]["naive-all"][0] == {
+        "id": hc,
+        "kind": "hidden",
+        "passed": False,
+        "reason": "gap",
+        "message": "기대 0",
+    }
+    assert [d["design_id"] for d in body["accepted_designs"]] == ["d1", "d2"]
+    assert body["acceptance_hidden"][0]["text"].startswith("HIDDEN-REQ")
+    assert SECRET not in r.text  # 참조 구현 본문은 없다
