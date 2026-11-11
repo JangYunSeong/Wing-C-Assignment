@@ -189,10 +189,18 @@ def _lookup_key_problems(contract: TaskContract) -> list[str]:
                 g
             ) in s.groups:  # 필드가 아닌 경로 변수({memberId} → id 등)가 있으면 그게 행마다 다르다
                 if keys and g.last > g.first and all(k in g.values for k in keys):
+                    # 갈래 둘 — 2026-11-11 N+1 알파: 목록 API 응답을 한 건의 칸으로 적은 계약에 '값을 뺀다' 만 줘서 다시 요청해도
+                    # 응답 모양을 고치지 않았다 (진짜 원인은 목록 표시가 없는 응답)
                     msg = (
-                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.path} 로 한 행을 찾는 "
-                        f"{', '.join(keys)} 가 모든 행에서 같음 — 여러 건 조회 오류. "
-                        f"{keys[-1]} 는 values 에서 뺀다 (코드가 행마다 다른 값을 넣는다)"
+                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.method or ''} {e.path} 를 {', '.join(keys)} 로 한 행을 찾는 "
+                        f"API 로 적었는데 {', '.join(keys)} 가 모든 행에서 같음 — 여러 건 조회 오류. "
+                        + (
+                            f'목록을 돌려주는 API 면 성공 응답을 returns "{s.entity_id}[]" ({m.name} 목록)으로 적는다. '
+                            f"한 행을 찾는 API 면 {keys[-1]} 는 values 에서 뺀다"
+                            if e.method == "GET"  # 변경 요청(PATCH 등)은 목록 API 가 아니다
+                            else f"{keys[-1]} 는 values 에서 뺀다"
+                        )
+                        + " (코드가 행마다 다른 값을 넣는다)"
                     )
                     if msg not in out:
                         out.append(msg)

@@ -136,6 +136,7 @@ def test_lookup_key_fixed_for_many_rows() -> None:
     c["seed"] = [_seed(200, (1, 200, {"status": "READY", "shopId": 7, "orderNo": 1}))]
     got = seed_problems(TaskContract.model_validate(c))
     assert _has(got, "범위 1~200", "shopId, orderNo", "orderNo 는 values 에서 뺀다"), got
+    assert not _has(got, "목록을 돌려주는")  # 변경(PATCH)은 목록 API 가 아니다
     # 하나라도 행마다 다르면(코드 기본값), 한 행 그룹이면, id 로 찾으면 괜찮다
     for seed in (
         _seed(200, (1, 200, {"status": "READY", "shopId": 7})),
@@ -392,6 +393,12 @@ def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
     assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")  # 감싼 목록
     ok.update({"returns": "m1", "body": []})
     assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
+    # GET 인데 응답을 한 건으로 적었으면 — 목록이면 returns "m1[]" 로, 한 행 조회면 값을 뺀다 (갈래 둘)
+    assert _has(
+        seed_problems(TaskContract.model_validate(c)),
+        'returns "m1[]" (Order 목록)',
+        "shopId 는 values 에서 뺀다",
+    )
     # 다른 것의 목록(멤버 한 행을 찾아 감사 기록을 돌려줌)은 계속 잡는다 — 이 검사가 생긴 경우 (alpha-cap1·trap2)
     ok.update({"returns": None, "body": [{"name": "content", "type": "array", "refs": ["r1"]}]})
     assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
