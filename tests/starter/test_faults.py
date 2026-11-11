@@ -168,3 +168,48 @@ def test_case_file_must_call_the_helper_and_not_fail_directly() -> None:
     assert any("failHc1() 을 부르지 않음" in p for p in probs)
     assert any("실패를 직접 건다('.networkError(')" in p for p in probs)
     assert _fault_calls(bad, {"hc2"}, plan, None) == []  # 다른 케이스 파일은 보지 않는다
+
+
+def test_material_listing_params_keeps_only_those() -> None:
+    """2026-11-11 N+1 백엔드 알파: 템플릿 조절값이 모두 보여 LLM 이 무관한 concurrency=1·bursts=1 을 넣고 근거가 없어 계약 실패.
+    재료가 조절값을 나열했으면 입력·검사·숨은 계획 모두 그것만 — 나열하지 않았으면([]·None) 템플릿 그대로 (lost-update 는 동시 요청을 쓴다)."""
+    import json
+    from pathlib import Path
+
+    from task_spec.nodes.starter.plan_contract import (
+        fit_material_params,
+        for_material,
+        material_params,
+    )
+    from task_spec.schemas.incident import PublicIncident
+    from task_spec.starter.templates import load_template
+
+    root = Path(__file__).parents[2] / "incidents/public_v1"
+    java = load_template("backend/java-spring-boot3-jpa")
+    nplus1 = PublicIncident.model_validate(
+        json.loads((root / "sw.backend.n-plus-one.json").read_text("utf-8"))
+    ).feature
+    lost = PublicIncident.model_validate(
+        json.loads((root / "sw.backend.lost-update.json").read_text("utf-8"))
+    ).feature
+    t = for_material(java, nplus1)
+    assert material_params(nplus1, t.manifest) == {"query_delay_ms", "request_timeout_s"}
+    assert {p.name for p in t.manifest.harness_params} == {"query_delay_ms", "request_timeout_s"}
+    lt = for_material(java, lost)
+    assert "concurrency" in material_params(lost, lt.manifest)  # [] — 필수 없음일 뿐, 거르지 않는다
+    plan = HiddenPlan.model_validate(
+        _with({"data": [{"entity_id": "m1", "rows": 200, "burst": True}]})
+        | {
+            "harness": {
+                "query_delay_ms": 12,
+                "request_timeout_s": 1,
+                "concurrency": 1,
+                "pool_size": 10,
+            }
+        }
+    )
+    fixed, notes = fit_material_params(plan, nplus1, t.manifest)
+    assert fixed.harness == {"query_delay_ms": 12, "request_timeout_s": 1}
+    assert not any(d.burst for c in fixed.cases for d in c.data)
+    assert "concurrency, pool_size" in notes[0] and "버스트 표시도 끔" in notes[0]
+    assert fit_material_params(plan, lost, lt.manifest) == (plan, [])
