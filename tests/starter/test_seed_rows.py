@@ -401,4 +401,7 @@ def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
     )
     # 다른 것의 목록(멤버 한 행을 찾아 감사 기록을 돌려줌)은 계속 잡는다 — 이 검사가 생긴 경우 (alpha-cap1·trap2)
     ok.update({"returns": None, "body": [{"name": "content", "type": "array", "refs": ["r1"]}]})
-    assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
+    got = seed_problems(TaskContract.model_validate(c))
+    assert _has(got, "한 행을 찾는", "shopId") and not _has(
+        got, "목록을 돌려주는"
+    )  # 이미 다른 것의 목록

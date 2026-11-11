@@ -147,6 +147,16 @@ def _scope_gap_problems(contract: TaskContract) -> list[str]:
     return out
 
 
+def _returns_any_list(e: Endpoint) -> bool:
+    """성공 응답에 목록이 있는가 (무엇의 목록이든) — returns X[] 이거나 본문에 목록 칸."""
+    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    if ok is None:
+        return False
+    if ok.returns and ok.returns.endswith("[]"):
+        return True
+    return any(parse_field(f.type).kind == "list" for f in ok.body)
+
+
 def _lists_entity(e: Endpoint, m: Entity) -> bool:
     """성공 응답이 그 엔티티의 목록인가 — returns 가 `m1[]`·`이름[]` 이거나, 본문에 그 엔티티의 목록 칸(`{items: m1[]}`)이 있다.
     다른 것의 목록(멤버 한 행을 찾아 그 감사 기록을 돌려주는 API)은 아니다 — 경로 변수로 그 엔티티 한 행을 찾는다."""
@@ -197,7 +207,9 @@ def _lookup_key_problems(contract: TaskContract) -> list[str]:
                         + (
                             f'목록을 돌려주는 API 면 성공 응답을 returns "{s.entity_id}[]" ({m.name} 목록)으로 적는다. '
                             f"한 행을 찾는 API 면 {keys[-1]} 는 values 에서 뺀다"
-                            if e.method == "GET"  # 변경 요청(PATCH 등)은 목록 API 가 아니다
+                            # 목록 표시가 없는 GET 만 — 변경 요청(PATCH 등)은 목록 API 가 아니고, 이미 다른 것의 목록을 돌려주는 GET
+                            # (길드 감사 …/members/{memberId}/audit — 감사 기록)은 경로로 멤버 한 행을 찾는다
+                            if e.method == "GET" and not _returns_any_list(e)
                             else f"{keys[-1]} 는 values 에서 뺀다"
                         )
                         + " (코드가 행마다 다른 값을 넣는다)"
