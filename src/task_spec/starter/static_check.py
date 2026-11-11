@@ -45,7 +45,16 @@ from task_spec.starter.hidden_helpers import (
 )
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
-from task_spec.starter.skeleton import APP, ENDPOINTS, PAGES, endpoint_fns, page_names
+from task_spec.starter.skeleton import (
+    APP,
+    ENDPOINTS,
+    JAVA_CONTROLLER,
+    JAVA_SERVICE,
+    PAGES,
+    endpoint_fns,
+    java_fns,
+    page_names,
+)
 from task_spec.starter.skeleton import routes as skeleton_routes
 from task_spec.starter.tables import (
     contract_tables,
@@ -675,6 +684,66 @@ def _split_params(params: str) -> list[str]:
     return names
 
 
+_JAVA_PARAMS = r"\(((?:[^()]|\([^()]*\))*)\)"
+
+
+def _java_param_names(params: str) -> list[str]:
+    """Java 매개변수 목록 → 이름 (어노테이션·제네릭 안의 쉼표는 나누지 않는다)."""
+    names, depth, cur = [], 0, ""
+    for ch in params + ",":
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        if ch == "," and depth == 0:
+            words = re.findall(r"\w+", re.sub(r"@\w+(\([^)]*\))?", "", cur))
+            if words:
+                names.append(words[-1])
+            cur = ""
+        else:
+            cur += ch
+    return names
+
+
+def _java_skeleton_kept(written: dict[str, str], contract: TaskContract) -> list[str]:
+    """Java 뼈대 — ContractController·ContractService 의 메서드 이름·매개변수, 컨트롤러 매핑. 다른 파일이 계약 경로를 다시 매핑하면 기동 실패."""
+    msgs: list[str] = []
+    fns = java_fns(contract)
+    rule = " — 코드 뼈대: 메서드 이름·매개변수·매핑은 그대로 두고 몸통만 채운다 (클래스·메서드는 더해도 된다)"
+    for path in (JAVA_CONTROLLER, JAVA_SERVICE):
+        if path not in written:
+            continue
+        for fn in fns:
+            m = re.search(
+                rf"public\s+[\w<>?,\s]+?\s{re.escape(fn.name)}\s*{_JAVA_PARAMS}", written[path]
+            )
+            if m is None:
+                msgs.append(f"{path} 에 계약 메서드 {fn.name} 가 없음{rule}")
+            elif tuple(_java_param_names(m.group(1))) != fn.params:
+                msgs.append(
+                    f"{path} 의 {fn.name} 매개변수가 뼈대와 다름: ({', '.join(_java_param_names(m.group(1)))}) — 뼈대는 ({', '.join(fn.params)}){rule}"
+                )
+    if JAVA_CONTROLLER in written:
+        for e in contract.endpoints:
+            if (
+                e.method
+                and f'{e.method.capitalize()}Mapping("{e.path}")' not in written[JAVA_CONTROLLER]
+            ):
+                msgs.append(f"{JAVA_CONTROLLER} 에 {e.method} {e.path} 매핑이 없음{rule}")
+    paths = {e.path for e in contract.endpoints if e.method}
+    for path, text in written.items():
+        if path == JAVA_CONTROLLER or not path.endswith(".java") or "/src/test/" in f"/{path}":
+            continue
+        if not re.search(r"@(?:Rest)?Controller\b", text):
+            continue
+        for p in paths:
+            if f'"{p}"' in text:
+                msgs.append(
+                    f"{path} 가 계약 경로 {p} 를 다시 매핑함 — 계약 API 매핑은 {JAVA_CONTROLLER} 한곳 (같은 경로 두 매핑이면 기동 실패)"
+                )
+    return msgs
+
+
 def _skeleton_kept(
     o: Overlay, template: Template, contract: TaskContract | None
 ) -> list[StaticProblem]:
@@ -684,6 +753,8 @@ def _skeleton_kept(
         return []
     written = {f.path: f.content for f in o.files}
     msgs: list[str] = []
+    if template.manifest.stack is not None and template.manifest.stack.language == "java":
+        return [StaticProblem(o.target, m) for m in _java_skeleton_kept(written, contract)]
     if ENDPOINTS in written:
         text = written[ENDPOINTS]
         for fn in endpoint_fns(contract):

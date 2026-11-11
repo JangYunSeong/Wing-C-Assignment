@@ -6,13 +6,16 @@ from task_spec.schemas import GeneratedFile, TaskContract
 from task_spec.starter.skeleton import (
     APP,
     ENDPOINTS,
+    JAVA_CONTROLLER,
+    JAVA_SERVICE,
     endpoint_fns,
+    java_fns,
     page_names,
     render_skeleton,
 )
 from task_spec.starter.static_check import Overlay, _skeleton_kept
 from task_spec.starter.templates import load_template
-from tests.starter.test_contract_shapes import _ui_contract
+from tests.starter.test_contract_shapes import _contract, _ui_contract
 
 V10 = load_template("frontend/react-vite-ts", 10)
 V8 = load_template("frontend/react-vite-ts", 8)
@@ -83,3 +86,52 @@ def test_kept_skeleton_passes_and_renames_are_caught() -> None:
         + "\nexport function extra() {}\n"
     )
     assert _problems([GeneratedFile(path=ENDPOINTS, content=body)]) == []
+
+
+# ── Java ───────────────────────────────────────────────────────────
+
+J2 = load_template("backend/java-spring-boot3-jpa", 2)
+J1 = load_template("backend/java-spring-boot3-jpa", 1)
+CJ = TaskContract.model_validate(_contract())
+
+
+def _jproblems(files: list[GeneratedFile]) -> list[str]:
+    return [p.message for p in _skeleton_kept(Overlay(kind="starter", files=tuple(files)), J2, CJ)]
+
+
+def test_java_skeleton_maps_every_endpoint_through_one_controller() -> None:
+    assert render_skeleton(CJ, J1.manifest) == []
+    files = {f.path: f.content for f in render_skeleton(CJ, J2.manifest)}
+    ctl, svc = files[JAVA_CONTROLLER], files[JAVA_SERVICE]
+    for fn in java_fns(CJ):
+        assert f"service.{fn.name}({', '.join(fn.params)})" in ctl
+        assert f" {fn.name}(" in svc
+    for e in CJ.endpoints:
+        assert f'{e.method.capitalize()}Mapping("{e.path}")' in ctl  # type: ignore[union-attr]
+    assert "UnsupportedOperationException" in svc
+    assert _jproblems(list(render_skeleton(CJ, J2.manifest))) == []
+
+
+def test_java_skeleton_changes_and_remapping_are_caught() -> None:
+    skel = render_skeleton(CJ, J2.manifest)
+    svc = next(f for f in skel if f.path == JAVA_SERVICE)
+    fn = java_fns(CJ)[0]
+    renamed = svc.content.replace(f" {fn.name}(", " handle(")
+    assert any(
+        f"{fn.name} 가 없음" in p
+        for p in _jproblems([GeneratedFile(path=JAVA_SERVICE, content=renamed)])
+    )
+    e = next(e for e in CJ.endpoints if e.method)
+    other = GeneratedFile(
+        path="src/main/java/com/example/service/orders/OrderController.java",
+        content=f'@RestController\npublic class OrderController {{ @GetMapping("{e.path}") public void x() {{}} }}',
+    )
+    assert any("다시 매핑함" in p for p in _jproblems([other]))
+    # 몸통을 채우고 의존성을 더하는 것은 괜찮다
+    filled = svc.content.replace(
+        "throw new UnsupportedOperationException(", "return ResponseEntity.ok("
+    ).replace(
+        "public class ContractService {",
+        "public class ContractService {\n    private final Object repo = null;",
+    )
+    assert _jproblems([GeneratedFile(path=JAVA_SERVICE, content=filled)]) == []

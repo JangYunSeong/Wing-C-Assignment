@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from task_spec.schemas.build import Endpoint, GeneratedFile, Screen, TaskContract
 from task_spec.schemas.template import TemplateManifest
@@ -230,9 +231,11 @@ def render_app(contract: TaskContract) -> GeneratedFile | None:
 
 
 def render_skeleton(contract: TaskContract, manifest: TemplateManifest) -> list[GeneratedFile]:
-    """템플릿이 뼈대를 켰을 때(manifest.skeleton)만 — API 호출 함수·화면 컴포넌트·라우트."""
+    """템플릿이 뼈대를 켰을 때(manifest.skeleton)만 — React: API 호출 함수·화면 컴포넌트·라우트, Java: 매핑·처리 메서드·요청 record."""
     if not manifest.skeleton:
         return []
+    if manifest.stack is not None and manifest.stack.language == "java":
+        return render_java_skeleton(contract)
     files = [f for f in (render_endpoints(contract), render_app(contract)) if f is not None]
     return files + render_pages(contract)
 
@@ -241,3 +244,170 @@ def routes(contract: TaskContract) -> list[tuple[str, str]]:
     """뼈대 라우트 (React Router 경로, 컴포넌트 이름) — 정적 검사가 App.tsx 에 남았는지 본다."""
     names = page_names(contract)
     return [(_route(sc.route), names[sc.screen_id]) for sc in contract.screens]
+
+
+# ── Java (Spring Boot) ─────────────────────────────────────────────
+# 매핑은 ContractController 한곳에 — 몸통은 ContractService 로 넘기기만. 요청 본문은 <Api>Request record (날짜·시각 칸은 String 으로 받아
+# 구현이 해석 — Instant·LocalDateTime 짐작이 되풀이됐다). 엔티티·리포지토리·응답 모양은 생성기 몫 (시드 SQL·테이블 이름과 맞추는 기존 검사).
+
+JAVA_PKG = "com.example.service.api"
+JAVA_DIR = "src/main/java/com/example/service/api"
+JAVA_CONTROLLER = f"{JAVA_DIR}/ContractController.java"
+JAVA_SERVICE = f"{JAVA_DIR}/ContractService.java"
+
+_JAVA_KIND = {
+    "integer": "Long",
+    "number": "java.math.BigDecimal",
+    "boolean": "Boolean",
+    "object": "java.util.Map<String, Object>",
+}
+
+
+def java_type(t: str) -> str:
+    """계약 필드 타입 → Java 타입 (요청 바인딩용). 글자·날짜·enum·모르는 꼴은 String."""
+    from task_spec.starter.field_types import non_null, parse
+
+    def of(ft: Any) -> str:
+        ft = non_null(ft)
+        if ft.kind == "list":
+            return f"java.util.List<{of(ft.items[0])}>"
+        if ft.kind == "ref":
+            return "java.util.Map<String, Object>"
+        return _JAVA_KIND.get(ft.kind, "String")
+
+    return of(parse(t))
+
+
+def _java_ident(name: str) -> str:
+    parts = [p for p in re.split(r"[^A-Za-z0-9]+", name) if p]
+    if not parts:
+        return "value"
+    out = parts[0][:1].lower() + parts[0][1:] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+    return out if not out[0].isdigit() else f"v{out}"
+
+
+def _path_var_type(contract: TaskContract, var: str) -> str:
+    for m in contract.entities:
+        for f in m.fields:
+            if f.name.lower() == var.lower():
+                return java_type(f.type)
+    return "Long" if var.lower() == "id" or var.lower().endswith("id") else "String"
+
+
+@dataclass(frozen=True)
+class JavaParam:
+    name: str
+    decl: str  # 컨트롤러 매개변수 선언 (어노테이션 포함)
+    type: str
+
+
+def java_params(contract: TaskContract, e: Endpoint) -> list[JavaParam]:
+    out: list[JavaParam] = []
+    for v in _path_vars(e.path):
+        t = _path_var_type(contract, v)
+        out.append(JavaParam(_java_ident(v), f'@PathVariable("{v}") {t} {_java_ident(v)}', t))
+    if e.request:
+        t = f"{_base(e)}Request"
+        out.append(JavaParam("body", f"@RequestBody {t} body", t))
+    for q in e.query:
+        t = java_type(q.type)
+        out.append(
+            JavaParam(
+                _java_ident(q.name),
+                f'@RequestParam(name = "{q.name}", required = {str(q.required).lower()}) {t} {_java_ident(q.name)}',
+                t,
+            )
+        )
+    for h in e.headers:
+        out.append(
+            JavaParam(
+                _java_ident(h.name),
+                f'@RequestHeader(name = "{h.name}", required = {str(h.required).lower()}) String {_java_ident(h.name)}',
+                "String",
+            )
+        )
+    return out
+
+
+def java_fns(contract: TaskContract) -> list[Fn]:
+    return [
+        Fn(method_name(e), tuple(p.name for p in java_params(contract, e)))
+        for e in contract.endpoints
+        if e.method
+    ]
+
+
+def render_java_skeleton(contract: TaskContract) -> list[GeneratedFile]:
+    eps = [e for e in contract.endpoints if e.method]
+    if not eps:
+        return []
+    files: list[GeneratedFile] = []
+    ctl: list[str] = []
+    svc: list[str] = []
+    for e in eps:
+        name = method_name(e)
+        params = java_params(contract, e)
+        doc = f"    /** {e.endpoint_id} {e.method} {e.path} — {e.summary} */"
+        spring_path = re.sub(r":(\w+)", r"{\1}", e.path)
+        ann = f'    @{(e.method or "GET").capitalize()}Mapping("{spring_path}")'
+        ctl += [
+            "",
+            doc,
+            ann,
+            f"    public ResponseEntity<?> {name}({', '.join(p.decl for p in params)}) {{",
+            f"        return service.{name}({', '.join(p.name for p in params)});",
+            "    }",
+        ]
+        svc += [
+            "",
+            doc,
+            f"    public ResponseEntity<?> {name}({', '.join(f'{p.type} {p.name}' for p in params)}) {{",
+            f'        throw new UnsupportedOperationException("{e.endpoint_id} {e.method} {e.path}");',
+            "    }",
+        ]
+        if e.request:
+            fields = ", ".join(f"{java_type(f.type)} {_java_ident(f.name)}" for f in e.request)
+            files.append(
+                GeneratedFile(
+                    path=f"{JAVA_DIR}/{_base(e)}Request.java",
+                    content=(
+                        f"package {JAVA_PKG};\n\n"
+                        f"/** {e.endpoint_id} {e.method} {e.path} 요청 본문 — 계약 칸 그대로 (뼈대 — 칸 이름·타입은 유지한다). */\n"
+                        f"public record {_base(e)}Request({fields}) {{}}\n"
+                    ),
+                )
+            )
+    head = "\n".join(
+        [
+            f"package {JAVA_PKG};",
+            "",
+            "import org.springframework.http.ResponseEntity;",
+            "import org.springframework.web.bind.annotation.*;",
+            "",
+            "/** 계약 API 매핑 — 빌드 파이프라인이 계약에서 만든 뼈대. 메서드 이름·매개변수·매핑은 유지하고 처리는 ContractService 에서.",
+            " *  계약 경로를 다른 컨트롤러에서 다시 매핑하지 않는다 (같은 경로 두 매핑이면 기동 실패). */",
+            "@RestController",
+            "public class ContractController {",
+            "    private final ContractService service;",
+            "",
+            "    public ContractController(ContractService service) {",
+            "        this.service = service;",
+            "    }",
+        ]
+    )
+    files.append(GeneratedFile(path=JAVA_CONTROLLER, content=head + "\n".join(ctl) + "\n}\n"))
+    shead = "\n".join(
+        [
+            f"package {JAVA_PKG};",
+            "",
+            "import org.springframework.http.ResponseEntity;",
+            "import org.springframework.stereotype.Service;",
+            "",
+            "/** 계약 API 처리 — 뼈대. 메서드 이름·매개변수는 유지하고 몸통을 채운다 (리포지토리 등은 생성자로 받아 더해도 된다).",
+            " *  응답 상태·본문은 계약의 응답대로 ResponseEntity 로 돌려준다. */",
+            "@Service",
+            "public class ContractService {",
+        ]
+    )
+    files.append(GeneratedFile(path=JAVA_SERVICE, content=shead + "\n".join(svc) + "\n}\n"))
+    return files

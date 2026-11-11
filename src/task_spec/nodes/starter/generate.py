@@ -635,10 +635,19 @@ def _with_app_types(text: str, contract: TaskContract, template: Template) -> st
         text = f"{text}\n\n=== {f.path} (잠김 — 계약에서 코드가 만든 타입, 이것을 import 한다) ===\n{f.content.rstrip()}"
     skel = render_skeleton(contract, template.manifest)
     if skel:
+        java = template.manifest.stack is not None and template.manifest.stack.language == "java"
         text += (
-            "\n\n코드 뼈대 (계약에서 코드가 만든 파일 — 함수·컴포넌트 이름과 매개변수, App.tsx 의 화면 라우트는 그대로 두고 몸통만 채운다."
-            " 서버는 이 API 호출 함수로 부르고, 화면은 이 컴포넌트 파일에 그린다. 도우미 함수·파일은 더해도 된다."
-            " 주석에 할 일·해법을 쓰지 않는다):"
+            (
+                "\n\n코드 뼈대 (계약에서 코드가 만든 파일 — ContractController·ContractService 의 메서드 이름·매개변수·매핑과"
+                " 요청 record 는 그대로 두고 ContractService 의 몸통을 채운다. 계약 API 를 다른 컨트롤러에서 다시 매핑하지 않는다."
+                " 엔티티·리포지토리·응답 DTO·다른 클래스는 더해도 된다. 주석에 할 일·해법을 쓰지 않는다):"
+            )
+            if java
+            else (
+                "\n\n코드 뼈대 (계약에서 코드가 만든 파일 — 함수·컴포넌트 이름과 매개변수, App.tsx 의 화면 라우트는 그대로 두고 몸통만 채운다."
+                " 서버는 이 API 호출 함수로 부르고, 화면은 이 컴포넌트 파일에 그린다. 도우미 함수·파일은 더해도 된다."
+                " 주석에 할 일·해법을 쓰지 않는다):"
+            )
         )
         text += "".join(f"\n\n=== {g.path} (뼈대) ===\n{g.content.rstrip()}" for g in skel)
     return text
