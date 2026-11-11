@@ -25,6 +25,8 @@ from task_spec.schemas.build import (
     TaskContract,
 )
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.field_types import FieldType, non_null
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.templates import is_java, is_python
 from task_spec.starter.ts_helpers import msw_path
 
@@ -33,37 +35,10 @@ CONFORM_TEST = f"{CONFORM_DIR}/conform.test.tsx"
 CONFORM_CONFIG = f"{CONFORM_DIR}/vitest.conform.config.ts"
 TYPED = "가상1"  # 입력란에 넣는 글자 — 글자·숫자 입력란 모두에 무언가 들어가게
 
-# 계약 필드 타입은 생성기가 자유롭게 쓴다 (2026-11-10 저장 계약 집계: string·String·VARCHAR, long·bigint·Integer,
-# datetime·timestamp·LocalDateTime·DateTime …) — 예시 값을 만들 때만 뜻으로 묶는다.
-_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "datetime",
-        ("datetime", "timestamp", "localdatetime", "instant", "offsetdatetime", "zoneddatetime"),
-    ),
-    ("date", ("date", "localdate")),
-    ("integer", ("integer", "int", "long", "bigint", "short", "smallint", "int32", "int64")),
-    ("number", ("number", "decimal", "bigdecimal", "double", "float", "numeric", "real")),
-    ("boolean", ("boolean", "bool")),
-    ("string", ("string", "varchar", "text", "char", "uuid", "email", "url")),
-)
-_LIST = re.compile(
-    r"^(?:array<\s*(?P<a>[\w.]+)\s*>|list<\s*(?P<l>[\w.]+)\s*>|(?P<b>[\w.]+)\s*\[\])$", re.I
-)
-_ENUM = re.compile(r"^enum\((?P<v>[^)]*)\)$", re.I)
-
 
 def type_kind(t: str) -> str:
-    """계약 필드 타입 글 → string·integer·number·boolean·datetime·date·enum·list·ref·unknown."""
-    s = t.strip()
-    if _ENUM.match(s):
-        return "enum"
-    if _LIST.match(s) or s.lower() in ("array", "object[]"):
-        return "list"
-    base = s.split("(")[0].strip().lower()
-    for kind, names in _KINDS:
-        if base in names:
-            return kind
-    return "ref" if re.fullmatch(r"m\d{1,2}|[A-Z]\w*", s) else "unknown"
+    """계약 필드 타입 글 → string·integer·number·boolean·datetime·date·time·object·enum·list·union·ref·unknown (field_types 해석)."""
+    return parse_field(t).kind
 
 
 class _Examples:
@@ -84,30 +59,30 @@ class _Examples:
             self._depth -= 1
 
     def value(self, f: ContractField) -> Any:
-        t = f.type.strip()
-        kind = type_kind(t)
-        if kind == "enum":
-            m = _ENUM.match(t)
-            vals = [v.strip() for v in re.split(r"[|,]", m.group("v"))] if m else []
-            return next((v for v in vals if v), "A")
-        if kind == "list":
-            m = _LIST.match(t)
-            inner = m and (m.group("a") or m.group("l") or m.group("b"))
-            if inner and inner in self.by_key:
-                return [self.entity(inner)]
-            if inner and type_kind(inner) not in ("ref", "unknown"):
-                return [self.value(f.model_copy(update={"type": inner}))]
-            return []
-        if kind == "ref":
-            return self.entity(t)
+        return self.example(parse_field(f.type), f.name)
+
+    def example(self, ft: FieldType, name: str) -> Any:
+        """앱 계약 타입(ts_helpers.ts_type)과 같은 해석의 예시 값 — `A | null` 은 A 의 값, 원소가 모르는 꼴인 배열은 빈 배열."""
+        ft = non_null(ft)
+        if ft.kind == "enum":
+            return next((v for v in ft.values if v), "A")
+        if ft.kind == "list":
+            inner = non_null(ft.items[0])
+            if inner.kind == "unknown" or (inner.kind == "ref" and inner.name not in self.by_key):
+                return []
+            return [self.example(inner, name)]
+        if ft.kind == "ref":
+            return self.entity(ft.name)
         return {
-            "string": f"가상 {f.name}",
+            "string": f"가상 {name}",
             "integer": 1,
             "number": 1.5,
             "boolean": False,
             "datetime": "2026-01-01T09:00:00Z",
             "date": "2026-01-01",
-        }.get(kind, f"가상 {f.name}")
+            "time": "09:00:00",
+            "object": {},
+        }.get(ft.kind, f"가상 {name}")
 
     def response(self, r: ContractResponse) -> Any:
         if r.returns:
