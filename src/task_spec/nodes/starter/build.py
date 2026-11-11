@@ -588,6 +588,27 @@ async def build_and_repair(
     return out
 
 
+KEEP_GATES = frozenset(
+    "③④'"
+)  # 숨은 테스트 수리 중 이전 파일이 판정까지 간 사유 게이트 (흔한 구현 변별·허용 구현과 모순)
+
+
+def _keepable_cases(actions: Sequence[RepairAction], out: BuildOutcome) -> frozenset[str]:
+    """숨은 테스트 수리에서 재요청 뒤에도 문제가 남으면 이전 파일을 둘 케이스. 숨은 테스트 사유 게이트가 모두 ③·③'·④ 이고,
+    직전 검증에서 모든 구현이 그 케이스를 판정(PASS·ASSERT)까지 간 것만 — setup·static·컴파일 수리, 테스트 예외·하네스가 짚은 결함으로
+    끝난 케이스는 이전 파일 자체가 깨졌으니 남기지 않는다 (남기면 다음 회차에 같은 실패, 기록은 kept-previous 로 오해)."""
+    gates = [a.gate for a in actions if a.generator == "gen_hidden"]
+    if not gates or not all(set(g) <= KEEP_GATES for g in gates) or not out.reports:
+        return frozenset()
+    runs = [r for r in out.reports[-1].runs if r.kind in ("ref_naive", "ref_accepted")]
+    ids = {t.name for r in runs for t in r.tests if t.group == "hidden"}
+    return frozenset(
+        cid
+        for cid in ids
+        if all((t := r.case(cid)) is not None and t.result in ("PASS", "ASSERT") for r in runs)
+    )
+
+
 async def _regenerate(
     actions: list[RepairAction],
     out: BuildOutcome,
@@ -688,7 +709,7 @@ async def _regenerate(
             b,
             note=notes["gen_hidden"],
             previous=hidden_prev,
-            keep_previous=True,
+            keep_previous=_keepable_cases(actions, out),
             **kw,  # type: ignore[arg-type]
         )
         jobs.append((HIDDEN, hidden_job))

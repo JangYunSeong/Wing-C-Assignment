@@ -594,14 +594,14 @@ async def test_hidden_repair_keeps_previous_file_when_problem_remains() -> None:
             _files((HC1_PATH, fixed1)), _files((HC2_PATH, bad)), _files((HC2_PATH, bad))
         )
 
-    res = await _gen(gen_hidden, fake(), b, note=note, previous=prev, keep_previous=True)
+    res = await _gen(gen_hidden, fake(), b, note=note, previous=prev, keep_previous={"hc2"})
     assert res.ok, res.problems
     files = {f.path: f.content for f in res.overlay.files}  # type: ignore[union-attr]
     assert files[HC1_PATH] == fixed1 and files[HC2_PATH] == HC2  # hc2 는 이전 파일
     assert list(res.kept) == ["hc2"] and "다른 케이스 id" in res.kept["hc2"][0]
     assert [o.label for o in res.rejected] == ["gen_hidden-hc2"]
     assert any(f.startswith(FLAG_INVALID + "gen_hidden(hc2)") for f in res.flags)
-    # 컴파일 수리(keep_previous=False)는 이전 파일이 깨졌을 수 있다 — 실패로 드러낸다
+    # 남길 케이스가 아니면 (컴파일·setup·static 수리, 테스트 예외로 끝난 케이스) 실패로 드러낸다
     res = await _gen(gen_hidden, fake(), b, note=note, previous=prev)
     assert not res.ok and any(p.startswith("hc2: ") for p in res.problems)
     assert res.kept == {} and [o.label for o in res.rejected] == ["gen_hidden-hc2"]

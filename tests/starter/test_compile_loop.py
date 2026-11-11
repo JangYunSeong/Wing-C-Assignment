@@ -263,3 +263,37 @@ def test_starter_compile_errors_inside_test_files_go_to_the_test_generator() -> 
     # 시작 코드 파일의 오류는 그대로 시작 코드
     plan = assign(report(ORDER_JAVA), PLAN2, overlays, MISSED)
     assert [(a.generator, a.gate) for a in plan.actions] == [("gen_starter", "①")]
+
+
+def test_previous_hidden_file_is_kept_only_for_judged_cases_of_gate_3_and_4() -> None:
+    """#102 검토: 이전 파일 유지가 모든 숨은 테스트 수리에 켜져 있었다 — setup·static 수리, 테스트 예외로 끝난 케이스는 이전 파일이 깨졌다."""
+    from task_spec.nodes.starter.build import BuildOutcome, _keepable_cases
+    from task_spec.schemas import TargetRun, VerifyReport
+    from task_spec.starter.repair import RepairAction
+
+    def run(target: str, kind: str, hc1: str, hc2: str) -> TargetRun:
+        tests = [
+            {"group": "hidden", "name": "hc1", "result": hc1},
+            {"group": "hidden", "name": "hc2", "result": hc2},
+        ]
+        return TargetRun.model_validate({"target": target, "kind": kind, "tests": tests})
+
+    out = BuildOutcome(status="failed")
+    out.reports.append(
+        VerifyReport(
+            runs=[
+                run("naive-all", "ref_naive", "PASS", "HARNESS_ERR"),
+                run("d1", "ref_accepted", "PASS", "PASS"),
+            ]
+        )
+    )
+    hidden = lambda gate: RepairAction("gen_hidden", "", gate, "가상 사유", "가상 수정 요청")  # noqa: E731
+    assert _keepable_cases([hidden("③"), hidden("③'"), hidden("④")], out) == {
+        "hc1"
+    }  # hc2 는 예외로 끝남
+    assert _keepable_cases([hidden("③④")], out) == {"hc1"}  # 합친 게이트
+    assert _keepable_cases([hidden("③"), hidden("setup")], out) == frozenset()
+    assert _keepable_cases([hidden("static")], out) == frozenset()
+    assert (
+        _keepable_cases([RepairAction("gen_naive", "naive-all", "③", "r", "n")], out) == frozenset()
+    )
