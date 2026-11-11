@@ -16,9 +16,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
-from task_spec.schemas.build import Entity
+from task_spec.schemas.build import Endpoint, Entity
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import requester_rows
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.seed_sql import _insert_fields, default_value
 
 PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 행 수 — 숨은 범위·작은 id 밖
@@ -146,6 +147,22 @@ def _scope_gap_problems(contract: TaskContract) -> list[str]:
     return out
 
 
+def _lists_entity(e: Endpoint, m: Entity) -> bool:
+    """성공 응답이 그 엔티티의 목록인가 — returns 가 `m1[]`·`이름[]` 이거나, 본문에 그 엔티티의 목록 칸(`{items: m1[]}`)이 있다.
+    다른 것의 목록(멤버 한 행을 찾아 그 감사 기록을 돌려주는 API)은 아니다 — 경로 변수로 그 엔티티 한 행을 찾는다."""
+    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    if ok is None:
+        return False
+    keys = {m.entity_id, m.name}
+    if ok.returns and ok.returns.endswith("[]") and ok.returns[:-2] in keys:
+        return True
+    for f in ok.body:
+        ft = parse_field(f.type)
+        if ft.kind == "list" and ft.items[0].kind == "ref" and ft.items[0].name in keys:
+            return True
+    return False
+
+
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
     """경로 변수로 한 행을 찾는데 여러 행 그룹이 그 필드를 모두 같은 값으로 고정 — 조회가 여러 건이 된다.
 
@@ -161,6 +178,11 @@ def _lookup_key_problems(contract: TaskContract) -> list[str]:
         for s in contract.seed:
             m = entities.get(s.entity_id)
             if m is None:
+                continue
+            if _lists_entity(e, m):
+                # 그 엔티티의 목록 API — 같은 경로 변수 값(프로젝트의 게시글들)이 여러 행에 있는 것이 정상. 2026-11-11 N+1 알파:
+                # GET /projects/{projectId}/board/posts(m1[]) 를 '한 행을 찾는 API' 로 짚어 계약을 다시 요청했다.
+                # 길드 감사(GET …/members/{memberId}/audit — 감사 기록 목록)는 멤버 한 행을 찾으므로 계속 본다
                 continue
             keys = params if set(params) <= {f.name for f in m.fields} else []
             for (
