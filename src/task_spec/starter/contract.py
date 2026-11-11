@@ -1525,6 +1525,49 @@ def _ui_form_fields(contract: TaskContract) -> list[str]:
     return out
 
 
+# 실패를 순번으로 정하는 말 — 재료가 fault_by="item" 일 때만 본다 ('첫 재연결'·'메모 B 의 첫 전송' 같은 정상 글은 걸리지 않게 수·서수만)
+_ORDINAL_FAULT = re.compile(
+    r"(?:처음|앞|먼저 온|최초)\s*\d+\s*(?:건|개|번|회)|\d+\s*번째\s*(?:요청|전송|호출|저장)"
+    r"|(?:두|세|네|다섯)\s*번째\s*(?:요청|전송|호출|저장)"
+)
+
+
+def _faults(contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None) -> list[str]:
+    """숨은 케이스의 실패 지정(HiddenCase.faults) — 계약에 있는 API·요청 본문 칸인지. 재료가 fault_by="item" 이면 케이스마다 내용으로
+    고른 실패가 있어야 하고, 시나리오가 순번으로 실패를 정하면 안 된다 (2026-11-11 재측정 오프라인 — 순번이 보내는 방식마다 다르게 소비)."""
+    by_id = {e.endpoint_id: e for e in contract.endpoints}
+    out: list[str] = []
+    for c in plan.cases:
+        for f in c.faults:
+            e = by_id.get(f.endpoint)
+            if e is None:
+                out.append(f"숨은 케이스 {c.case_id} 의 실패 지정 API {f.endpoint} 가 계약에 없음")
+                continue
+            names = {x.name for x in e.request}
+            bad = sorted(set(f.when) - names)
+            if bad:
+                out.append(
+                    f"숨은 케이스 {c.case_id} 의 실패 지정이 {e.method or ''} {e.path} 요청 본문에 없는 칸으로 고름: {', '.join(bad)} "
+                    f"(요청 본문 칸: {', '.join(sorted(names)) or '없음'})"
+                )
+    if seed is None or seed.fault_by != "item":
+        return out
+    for c in plan.cases:
+        if not any(f.when for f in c.faults):
+            out.append(
+                f"숨은 케이스 {c.case_id} 에 내용으로 고른 실패 지정(faults.when)이 없음 — 이 재료는 같은 경로로 여러 건을 보내므로 "
+                "어느 항목의 요청을 실패시킬지 요청 본문 값으로 정한다 (예: 메모 B 의 첫 전송만 503). 순번(처음 N건)으로 정하지 않는다"
+            )
+        text = " ".join([c.scenario, c.expect, *c.setup])
+        m = _ORDINAL_FAULT.search(text)
+        if m:
+            out.append(
+                f"숨은 케이스 {c.case_id} 시나리오가 실패를 순번으로 정함('{m.group(0)}') — 하나씩 보내는 구현과 한꺼번에 보내는 구현에서 "
+                "다른 요청이 실패한다. 실패할 항목을 내용으로 적고 faults.when 에 같은 값을 넣는다"
+            )
+    return out
+
+
 def check_contract(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -1551,6 +1594,7 @@ def check_contract(
     harness_problems, gaps, flags = _harness(plan, spec, manifest)
     problems += harness_problems
     problems += _reasons(plan, manifest, seed)
+    problems += _faults(contract, plan, seed)
     problems += feasibility_problems(plan, manifest)
     if manifest.seed_rows:
         problems += seed_problems(contract)

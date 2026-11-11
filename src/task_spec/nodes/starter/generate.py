@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -46,7 +47,7 @@ from task_spec.schemas import (
     TaskContract,
     TaskItem,
 )
-from task_spec.schemas.build import FileKind
+from task_spec.schemas.build import Fault, FileKind
 from task_spec.schemas.template import FailureReason, HiddenHelper, SlotKind, TemplateManifest
 from task_spec.starter.config_merge import merge_config
 from task_spec.starter.contract import SpecView, existing_endpoints
@@ -168,6 +169,11 @@ def plan_text(
     '허용되지 않은 전이') 사유 쪽을 따르게 (2026-11-08 상류 평가: 롤백 사유 케이스 9개 중 8개)."""
     alloc = allocate_rows(contract, plan) if contract is not None else None
     names = {m.entity_id: m.name for m in contract.entities} if contract is not None else {}
+    apis = (
+        {e.endpoint_id: f"{e.method or ''} {e.path}".strip() for e in contract.endpoints}
+        if contract is not None
+        else {}
+    )
     lines = ["조절값 (GraderParams 로 읽는 이름 = 값):"]
     lines += [f"- {k} = {v}" for k, v in plan.harness.items()] or ["- (없음)"]
     lines.append("케이스:")
@@ -186,7 +192,25 @@ def plan_text(
         if alloc is not None:
             lines += [_range_text(r, names) for r in alloc.for_case(c.case_id)]
         lines += [f"  준비 (하네스가 입력 환경을 바꿈): {step}" for step in c.setup]
+        lines += [f"  실패 지정: {fault_text(f, apis)}" for f in c.faults]
     return "\n".join(lines)
+
+
+def fault_text(f: Fault, apis: Mapping[str, str] | None = None) -> str:
+    """숨은 케이스 실패 지정 한 줄 — 하네스가 본문으로 고른 요청에만 실패를 준다 (순번으로 정하지 않는다)."""
+    api = (apis or {}).get(f.endpoint, f.endpoint)
+    which = (
+        "본문 "
+        + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in f.when.items())
+        + " 인 요청"
+        if f.when
+        else "모든 요청"
+    )
+    what = f"{f.status} 응답" if f.status is not None else "연결 실패"
+    return (
+        f"{api} 에서 {which}의 처음 {f.times}번 → {what} — 그 요청을 본문으로 골라 실패시킨다 "
+        "(몇 번째 요청인지로 정하지 않는다: 구현마다 보내는 순서·묶음이 다르다)"
+    )
 
 
 def existing_apis(task: TaskItem, contract: TaskContract) -> list[str]:

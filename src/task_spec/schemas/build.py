@@ -493,6 +493,25 @@ class CaseRows(Schema):
     )
 
 
+class Fault(Schema):
+    """숨은 케이스의 실패 지정 — 어느 요청을 실패시키는지 **순번이 아니라 요청 본문 내용으로** 고른다.
+    2026-11-11 재측정 오프라인(008d6314): 시나리오 '재연결 직후 처음 2건 503' 을 테스트가 순번으로 채워, 하나씩 보내는 허용 설계(d1)는
+    두 번째 503 을 다음 연결에서 또 받아 메모를 잃은 것으로 판정됐고, 다시 만든 테스트는 오지 않을 두 번째 요청을 기다렸다 —
+    보내는 방식(하나씩/한꺼번에)에 따라 판정이 갈렸다. 내용으로 고르면(메모 B 의 첫 전송만 실패) 어느 방식이든 같은 요청이 실패한다."""
+
+    endpoint: str = Field(pattern=r"^e\d{1,2}$", description="실패시킬 계약 API 의 endpoint_id")
+    when: dict[str, SeedScalar] = Field(
+        default_factory=dict,
+        description='이 값을 본문에 가진 요청만 실패 (요청 본문 칸 이름 → 값, 예: {"note": "메모B"}). 비우면 그 API 의 모든 요청',
+    )
+    times: int = Field(
+        default=1, ge=1, le=3, description="그 요청(같은 내용)의 처음 몇 번을 실패시킬지"
+    )
+    status: int | None = Field(
+        default=None, ge=400, le=599, description="오류 응답 상태 — 비우면 연결 실패(응답 없음)"
+    )
+
+
 class HiddenCase(Schema):
     case_id: str = Field(pattern=r"^hc\d{1,2}$")
     ac_id: str = Field(pattern=r"^h\d{1,2}$")
@@ -507,6 +526,8 @@ class HiddenCase(Schema):
     setup: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(
         default_factory=list, max_length=6
     )
+    # 이 케이스에서 하네스가 실패시킬 요청 (숨김). 비면 시나리오 글 그대로 — 재료가 fault_by="item" 이면 실패를 주는 케이스는 반드시 채운다.
+    faults: list[Fault] = Field(default_factory=list, max_length=4)
 
 
 class HiddenPlan(Schema):
