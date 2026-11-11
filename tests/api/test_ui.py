@@ -29,8 +29,10 @@ async def test_ui_builds_page_uses_build_apis_only(make_client: AppFactory) -> N
     assert 'href="builds.html"' in (await client.get("/ui/")).text  # 작업대에서 오갈 수 있게
     js = (await client.get("/ui/builds.js")).text
     assert "/builds?limit=" in js and "/artifacts" in js and "/delivery-targets" in js
-    # 숨은 계획·테스트 본문은 API 가 내주지 않는다 — 화면도 그 칸을 기대하지 않는다
-    for hidden in ("hidden_plan", "intended_reason", "contract", "content"):
+    # 숨은 계획 원문·계약 원문·파일 본문은 API 가 내주지 않는다 — 화면도 그 칸을 기대하지 않는다.
+    # 케이스 설명·의도한 실패 사유는 승인자용 /cases 로만 받는다 [확정: 2026-11-11 사용자 — 문제를 쓸지 정하는 사람이 본다]
+    assert "/cases" in js and "intended_reason" in js
+    for hidden in ("hidden_plan", "contract", "content"):
         assert hidden not in js, hidden
 
 
