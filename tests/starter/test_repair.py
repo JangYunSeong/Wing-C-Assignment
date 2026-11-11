@@ -990,7 +990,7 @@ def test_grading_environment_error_in_every_implementation_is_escalated_not_rege
 
 def test_case_that_still_misses_the_naive_after_a_rewrite_is_flagged_not_failed() -> None:
     """2026-11-10 gen-item2: hc2 가 의도한 사유로 함정을 잡는데 hc1 만 다시 만든 뒤에도 흔한 구현이 통과 — 예산을 다 써 failed 였다.
-    허용 구현은 모두 통과했으니 막지 않고 '변별하지 못하는 케이스'로 사람 확인."""
+    허용 구현은 모두 통과했으니 막지 않고 '변별하지 못하는 케이스'로 채점에서 뺀다 (2026-11-11 사용자 — 예전엔 표시만)."""
     naive = _run(
         "naive-all",
         "ref_naive",
@@ -1001,7 +1001,11 @@ def test_case_that_still_misses_the_naive_after_a_rewrite_is_flagged_not_failed(
     assert _keys(_assign(report)) == ["gen_hidden"]  # 처음엔 숨은 테스트를 다시
     again = _assign(report, gen_hidden=1)
     assert again.passed and not again.actions
-    assert any("hc1" in f and "hc2" in f and "가르지 않는다" in f for f in again.flags)
+    assert any("hc1" in f and "hc2" in f and "채점에서 뺐다" in f for f in again.flags)
+    assert again.weak == [
+        "hc1"
+    ]  # 채점에서 뺀다 [확정: 2026-11-11 사용자] — hc2 가 함정을 잡으니 숨은 요구는 남는다
+    assert _assign(report).weak == []  # 다시 만들기 전에는 빼지 않는다
 
 
 def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> None:

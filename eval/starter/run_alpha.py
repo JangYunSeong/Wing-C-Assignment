@@ -271,6 +271,22 @@ async def main() -> None:
         compiler=g,  # 채점 코드를 먼저 컴파일 — 오류는 쓴 생성기에 (build.compile_and_fix)
     )
     spent += built_out.cost_usd
+    if (
+        built_out.hidden_plan is not None
+    ):  # 채점에서 뺀 케이스 — 이미지·저장이 읽는 계획도 같게 (원래 계획은 contract.orig.json)
+        (out / "contract.json").rename(out / "contract.orig.json")
+        (out / "contract.json").write_text(
+            json.dumps(
+                {
+                    "contract": res.contract.model_dump(mode="json"),
+                    "hidden_plan": built_out.hidden_plan.model_dump(mode="json"),
+                },
+                ensure_ascii=False,
+                indent=1,
+            ),
+            "utf-8",
+        )
+        (out / "plan.md").write_text(plan_text(built_out.hidden_plan, res.contract), "utf-8")
     for key, o in built_out.overlays.items():
         _write(o, out / "overlays" / key)
     starter = built_out.overlays.get("starter")
@@ -295,6 +311,7 @@ async def main() -> None:
         "static_retries": built_out.static_retries,
         "rejected": write_rejected(built_out.rejected, out / "rejected"),
         "verify": [[_run_row(r) for r in rep.runs] for rep in built_out.reports],
+        "dropped_cases": built_out.dropped_cases,  # 변별하지 못해 채점에서 뺀 숨은 케이스
     }
     report["cost_usd"] = round(spent, 4)
     report["candidate_files"] = tree(out / "candidate") if starter is not None else []
