@@ -29,6 +29,7 @@ from task_spec.nodes.starter.generate import (
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import AcceptedDesign, CompileError, Provenance, VerifyReport
 from task_spec.schemas.build import RepairRecord
+from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
 from task_spec.starter.hidden_helpers import render_persistence_check
 from task_spec.starter.render import render_params
@@ -58,6 +59,7 @@ class Verifier(Protocol):
         hidden: Overlay,
         refs: Sequence[Overlay],
         public: Overlay | None = None,
+        conform: Overlay | None = None,
     ) -> VerifyReport: ...
 
 
@@ -435,6 +437,14 @@ async def build_and_repair(
         )
         return True
 
+    # 계약 적합성 스모크 (게이트 ⓪) — 계약에서 코드가 쓴다. 시작 코드·참조 구현을 계약 모양 응답으로 두드려 탓을 증거로 정한다
+    conform_files = render_conformance(b.contract, b.template.manifest)
+    conform = (
+        Overlay(kind="public_test", files=tuple(conform_files), label="conform")
+        if conform_files
+        else None
+    )
+
     # ① 테스트 먼저 (2026-11-08 사용자 결정 — TDD): 공개 테스트·숨은 테스트를 계약에서 따로 (서로 보지 않음)
     use_public = b.template.manifest.public_helper is not None
     tests = await asyncio.gather(
@@ -513,6 +523,7 @@ async def build_and_repair(
                 out.overlays[HIDDEN],
                 [o for k, o in out.overlays.items() if k not in (STARTER, HIDDEN, PUBLIC)],
                 **({"public": out.overlays[PUBLIC]} if PUBLIC in out.overlays else {}),
+                **({"conform": conform} if conform is not None else {}),
             )
             out.reports.append(report)
             out.snapshots.append(dict(out.overlays))
@@ -527,6 +538,7 @@ async def build_and_repair(
                 out.regen_counts,
                 shared,
                 terms=b.template.manifest.repair_terms,
+                fix_markers=b.seed.fix_markers if b.seed is not None else (),
             )
             for (
                 flag

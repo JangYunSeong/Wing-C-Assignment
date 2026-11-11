@@ -96,6 +96,14 @@
       "응답 실패",
       "게이트웨이"
     ],
+    "fix_markers": [
+      "\\bfindByRequestId\\b",
+      "\\bexistsByRequestId\\b",
+      "unique\\s*=\\s*true",
+      "UniqueConstraint",
+      "ON CONFLICT",
+      "DataIntegrityViolation"
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,

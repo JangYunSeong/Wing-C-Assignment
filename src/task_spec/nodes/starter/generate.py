@@ -34,7 +34,7 @@ from task_spec.schemas import (
     GeneratedFile,
     GeneratedFiles,
     GenHiddenInput,
-    GenHiddenInputV2,
+    GenHiddenInputV3,
     GenPublicInput,
     GenRefInput,
     GenRefInputV3,
@@ -58,7 +58,7 @@ from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
 from task_spec.starter.templates import Template, is_java
-from task_spec.starter.ts_helpers import ensure_vitest_imports
+from task_spec.starter.ts_helpers import ensure_vitest_imports, render_app_types
 
 NONE = "(없음)"
 FLAG_FAILED = "시작 코드 생성 실패 (LLM 응답 없음·형식 오류): "
@@ -235,7 +235,7 @@ def starter_input(
     m = template.manifest
     return GenStarterInputV3(
         stack=stack_text(m),
-        template_files=template_files_text(template),
+        template_files=_with_app_types(template_files_text(template), contract, template),
         slots=slots_text(m, "starter"),
         existing_apis=_lines(existing_apis(task, contract)),
         title=task.title or NONE,
@@ -292,7 +292,7 @@ def hidden_input(
         helper is not None
     ):  # 이 과제의 계약 도우미 — 숨은 케이스가 상속(Java)·import(TypeScript)한다 (starter/hidden_helpers.py)
         api += helper_block(m, helper, m.hidden_helper, "계약 도우미")
-    return GenHiddenInputV2(
+    return GenHiddenInputV3(
         stack=stack_text(m),
         harness_api=api,
         slots=slots_text(m, "hidden"),
@@ -306,6 +306,9 @@ def hidden_input(
         ),
         failure_reasons=_lines([reason_line(r) for r in m.failure_reasons]),
         revision_note=note or NONE,
+        accepted_designs=_lines(
+            [f"{d.design_id}: {d.summary} — {d.conditions}" for d in task.accepted_designs]
+        ),
     )
 
 
@@ -590,6 +593,32 @@ def _overlay(kind: FileKind, label: str = "") -> Callable[[list[GeneratedFile]],
     return lambda files: Overlay(kind=kind, files=tuple(files), label=label)
 
 
+def _with_app_types(text: str, contract: TaskContract, template: Template) -> str:
+    """시작 코드 입력의 템플릿 파일 목록에 앱 쪽 계약 타입(잠김, 코드가 씀)을 붙인다 — 그 파일을 import 해 응답을 읽게."""
+    f = render_app_types(contract, template.manifest)
+    if f is None:
+        return text
+    return f"{text}\n\n=== {f.path} (잠김 — 계약에서 코드가 만든 타입, 이것을 import 한다) ===\n{f.content.rstrip()}"
+
+
+def _app_overlay(
+    b: BuildInputs, kind: FileKind, label: str = ""
+) -> Callable[[list[GeneratedFile]], Overlay]:
+    """앱 쪽 계약 타입(src/api/contract-types.ts)은 코드가 쓴다 — 생성기가 같은 경로를 쓰면 버리고, 시작 코드에는 코드 판을 넣는다
+    (참조 구현은 시작 코드 위에 놓이므로 시작 코드 판이 그대로 쓰인다)."""
+    types = render_app_types(b.contract, b.template.manifest)
+    if types is None:
+        return _overlay(kind, label)
+
+    def make(files: list[GeneratedFile]) -> Overlay:
+        kept = [f for f in files if f.path != types.path]
+        return Overlay(
+            kind=kind, files=(*kept, *((types,) if kind == "starter" else ())), label=label
+        )
+
+    return make
+
+
 async def gen_starter(
     b: BuildInputs,
     *,
@@ -603,7 +632,7 @@ async def gen_starter(
     return await _generate(
         "gen_starter",
         lambda n: starter_input(b.task, b.contract, b.template, n, public),
-        _overlay("starter"),
+        _app_overlay(b, "starter"),
         b.check,
         llm=llm,
         prompts=prompts,
@@ -796,7 +825,7 @@ async def gen_naive(
     return await _generate(
         "gen_naive",
         lambda n: naive_input(b.task, b.contract, b.template, starter, seed, keep_traps, n, public),
-        _overlay("ref_naive", label),
+        _app_overlay(b, "ref_naive", label),
         b.check,
         llm=llm,
         prompts=prompts,
@@ -823,7 +852,7 @@ async def gen_accepted(
     return await _generate(
         "gen_accepted",
         lambda n: accepted_input(b.task, b.contract, b.template, starter, design, n, public),
-        _overlay("ref_accepted", design.design_id),
+        _app_overlay(b, "ref_accepted", design.design_id),
         lambda o: b.check(o, starter),
         llm=llm,
         prompts=prompts,

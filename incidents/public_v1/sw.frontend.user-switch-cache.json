@@ -98,6 +98,12 @@
       "번갈아",
       "가족"
     ],
+    "fix_markers": [
+      "queryClient\\.clear\\(",
+      "\\.removeQueries\\(",
+      "\\.resetQueries\\(",
+      "queryKey:\\s*\\[[^\\]]*\\buserId\\b"
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,

@@ -100,6 +100,13 @@
       "몰려",
       "수십 건"
     ],
+    "fix_markers": [
+      "@Version\\b",
+      "LockModeType",
+      "PESSIMISTIC",
+      "FOR UPDATE",
+      "@Lock\\("
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,

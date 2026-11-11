@@ -36,7 +36,7 @@ from typing import Any
 
 from eval.starter import python_verify
 from eval.starter.gradle_verify import case_ids, write_overlay
-from eval.starter.node_verify import layout_of
+from eval.starter.node_verify import NODE_IMAGE, layout_of
 from eval.starter.replay_contracts import _loose as loose_contract
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.starter.render import render_readme
@@ -96,7 +96,7 @@ JAVA = Stack(
 )
 # Debian 12(bookworm) — Playwright 공식 지원 배포판이라 실제 브라우저 층도 같은 계열로 (alpine/musl 은 미지원, 2026-11-09 문서 확인)
 NODE = Stack(
-    base="docker.io/library/node:22-bookworm-slim",
+    base=NODE_IMAGE,
     install=(
         # lock 그대로 설치하고 뼈대의 타입 검사·테스트를 한 번 — 응시·채점 컨테이너는 네트워크 없음
         "RUN npm ci --no-audit --no-fund && npx tsc --noEmit && npx vitest run && rm -rf node_modules/.vite node_modules/.vitest",

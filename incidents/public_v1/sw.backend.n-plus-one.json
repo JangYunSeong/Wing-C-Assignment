@@ -93,6 +93,14 @@
       "지연 지표",
       "수백 건"
     ],
+    "fix_markers": [
+      "JOIN FETCH|join fetch",
+      "@EntityGraph",
+      "@BatchSize",
+      "default_batch_fetch_size",
+      "\\bfindAllById\\b",
+      "\\bfind\\w*By\\w*In\\("
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,

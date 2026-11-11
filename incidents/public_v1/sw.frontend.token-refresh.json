@@ -95,6 +95,13 @@
       "토큰 묶음",
       "다시 인증"
     ],
+    "fix_markers": [
+      "refresh\\w*Promise\\b",
+      "pendingRefresh",
+      "refreshInFlight",
+      "\\bisRefreshing\\b",
+      "\\b(?:refresh|failed)Queue\\b"
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,

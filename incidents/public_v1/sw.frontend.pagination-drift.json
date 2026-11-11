@@ -90,6 +90,12 @@
       "생성량",
       "계속 들어오"
     ],
+    "fix_markers": [
+      "\\blastId\\b",
+      "\\bcursor\\b",
+      "\\bseenIds?\\b",
+      "new Set\\("
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,

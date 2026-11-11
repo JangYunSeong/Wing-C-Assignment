@@ -94,6 +94,10 @@
       "오류 지표",
       "실패율"
     ],
+    "fix_markers": [
+      "status\\s*:\\s*['\\\"](?:pending|sent|대기|보냄)['\\\"]",
+      "\\.status\\s*===?\\s*['\\\"](?:pending|sent)['\\\"]"
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,

@@ -248,8 +248,12 @@ class PythonVerifier:
         hidden: Overlay,
         refs: Sequence[Overlay],
         public: Overlay | None = None,
+        conform: Overlay | None = None,
     ) -> VerifyReport:
         """GradleVerifier.verify 와 같은 대상 순서 — 시작 코드(+공개), 시작 코드 그대로 + 숨은, 참조 구현마다 (+공개 + 숨은)."""
+        del (
+            conform
+        )  # 계약 적합성 스모크는 TypeScript 템플릿만 (starter/conformance.py) — Python 은 2단계
         self.rounds += 1
         self.work.mkdir(parents=True, exist_ok=True)
         pub = (public,) if public is not None else ()

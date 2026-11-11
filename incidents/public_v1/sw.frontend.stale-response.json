@@ -103,6 +103,14 @@
       "모바일",
       "들쭉날쭉"
     ],
+    "fix_markers": [
+      "AbortController",
+      "\\.abort\\(",
+      "\\blet\\s+(?:cancelled|canceled|ignore|ignored|active|isActive|stale)\\s*=",
+      "latest\\w*Ref\\b",
+      "(?:request|req|seq)IdRef\\b",
+      "\\buseQuery\\s*\\("
+    ],
     "task_shape": "code",
     "starter": "search-autocomplete-react",
     "reviewed": false,

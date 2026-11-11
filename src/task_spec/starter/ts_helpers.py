@@ -78,6 +78,10 @@ def render_ts_contract(
         for k, v in tids.items()
     ]
     lines += ["} as const;", ""]
+    lines += options_lines(
+        contract,
+        "선택은 `await user.selectOptions(el, OPTIONS.X[0])` — 값을 짐작하거나 options[0] 으로 고르지 않는다",
+    )
     lines.append(
         "/** 화면 경로 (계약 screens) — renderApp(SCREEN.S1). 경로 변수가 있는 화면은 함수: SCREEN.S2({ id: '1' }) */"
     )
@@ -161,6 +165,85 @@ def render_ts_contract(
             "}",
         ]
     return GeneratedFile(path=rule.path, content="\n".join(lines) + "\n")
+
+
+# 앱 쪽 계약 타입 — 시작 코드·참조 구현이 서버 응답을 같은 모양으로 읽게 (2026-11-10 알파 분류: 생성물끼리 계약 해석이 어긋난
+# 실패의 대표 — fefix e99cbba0 시작 코드 api 모듈이 배열 응답을 `{ items }` 로 읽음. 전에는 구현마다 src/ 에 타입을 직접 정의했다)
+APP_TYPES = "src/api/contract-types.ts"
+
+
+def options_lines(contract: TaskContract, how: str) -> list[str]:
+    """선택형 요소의 고를 수 있는 값 (계약 screens[].elements[].options) — 테스트 도우미와 앱 타입이 같은 상수를 낸다."""
+    opts: dict[str, list[str]] = {}
+    for sc in contract.screens:
+        for el in sc.elements:
+            if el.options:
+                opts.setdefault(_const(el.test_id), list(el.options))
+    return [
+        f"/** 선택형 요소의 고를 수 있는 값 (계약 options) — {how} */",
+        "export const OPTIONS = {",
+        *[f"  {k}: {json.dumps(v, ensure_ascii=False)}," for k, v in opts.items()],
+        "} as const;",
+        "",
+    ]
+
+
+def app_type_names(contract: TaskContract) -> list[str]:
+    """앱 계약 타입 파일이 내보내는 이름 — 엔티티 이름 + API 마다 <Api>Ok·<Api>Error (+ 본문 있는 요청은 <Api>Body)."""
+    out = [_ident(m.name) for m in contract.entities]
+    for e in contract.endpoints:
+        if e.method:
+            base = method_name(e)[:1].upper() + method_name(e)[1:]
+            out += [f"{base}Ok", f"{base}Error", *([f"{base}Body"] if e.request else [])]
+    return list(dict.fromkeys(out))
+
+
+def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> GeneratedFile | None:
+    """`src/api/contract-types.ts` — 공개 계약의 데이터 모양·응답 본문 타입 (테스트 도우미 contract.ts 와 같은 이름·같은 모양).
+    잠긴 파일로 시작 코드 오버레이에 코드가 넣는다 — 생성기가 같은 경로를 쓰면 버린다. 공개 계약만 (지원자에게 보여도 된다)."""
+    language = manifest.stack.language.lower() if manifest.stack else ""
+    if language != "typescript" or manifest.public_helper is None or not contract.screens:
+        return None  # Java·Python 템플릿은 켜지 않는다 (백엔드는 2단계에서 타입 대응표로)
+    names = {m.entity_id: _ident(m.name) for m in contract.entities}
+    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities}
+    lines = [
+        "// 이 과제의 공개 계약에서 빌드 파이프라인이 만든 타입 — 손으로 고치지 않는다 (잠김).",
+        "// 서버 응답은 이 타입으로 읽는다: `const data: <Api>Ok = await res.json();` — 같은 이름의 타입을 다시 정의하지 않는다.",
+        "",
+        *options_lines(contract, "선택 목록은 이 값을 그대로 그린다 (안내 문구는 따로)"),
+        "/** 계약 데이터 모양 (entities) */",
+    ]
+    for m in contract.entities:
+        lines.append(f"export interface {names[m.entity_id]} {{")
+        lines += [
+            f"  {_prop(f.name)}{'' if f.required else '?'}: {ts_type(f.type, by_name)};"
+            for f in m.fields
+        ]
+        lines.append("}")
+    for e in contract.endpoints:
+        if not e.method:
+            continue
+        base = method_name(e)[:1].upper() + method_name(e)[1:]
+        ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+        errs = [r for r in e.responses if r.status >= 400 and (r.body or r.returns)]
+        err_types = list(dict.fromkeys(_body_type(r, names, by_name) for r in errs))
+        lines += [
+            "",
+            f"/** {e.endpoint_id} {e.method} {e.path} 성공 응답 본문 ({ok.status if ok else '-'}) — {e.summary} */",
+            f"export type {base}Ok = {_body_type(ok, names, by_name) if ok else 'unknown'};",
+            f"/** {e.endpoint_id} 오류 응답 본문 ({', '.join(str(r.status) for r in errs) or '-'}) */",
+            f"export type {base}Error = {' | '.join(err_types) or 'unknown'};",
+        ]
+        if e.request:
+            fields = "; ".join(
+                f"{_prop(f.name)}{'' if f.required else '?'}: {ts_type(f.type, by_name)}"
+                for f in e.request
+            )
+            lines += [
+                f"/** {e.endpoint_id} 요청 본문 */",
+                f"export type {base}Body = {{ {fields} }};",
+            ]
+    return GeneratedFile(path=APP_TYPES, content="\n".join(lines) + "\n")
 
 
 _SCALAR = {

@@ -276,8 +276,12 @@ class GradleVerifier:
         hidden: Overlay,
         refs: Sequence[Overlay],
         public: Overlay | None = None,
+        conform: Overlay | None = None,
     ) -> VerifyReport:
         """public 이 있으면 시작 코드 실행에 공개 테스트를 넣고(저장 확인은 통과·새 기능 공개 테스트는 실패해야), 참조 구현 실행에도 넣는다."""
+        del (
+            conform
+        )  # 계약 적합성 스모크는 TypeScript 템플릿만 (starter/conformance.py) — Java 는 2단계
         self.rounds += 1
         self.work.mkdir(parents=True, exist_ok=True)
         pub = (public,) if public is not None else ()

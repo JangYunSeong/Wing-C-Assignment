@@ -45,6 +45,12 @@ TRAP_SUFFIX = "#trap"
 # 구현 실행 오류(repair_terms.impl_crash)로 다시 만든 횟수 키 — 컴파일 오류처럼 함정과 무관한 결함이라 일반 예산과 따로 센다.
 # 2026-11-09 데이터 알파 6회차: 실행 오류 수리가 흔한 구현의 예산을 써, 다음 회차에 흔한 구현이 hc4 를 통과했는데(③) 다시 만들 수 없어 빌드가 끝났다.
 CRASH_SUFFIX = "#crash"
+# 다른 허용 구현은 통과하는 숨은 케이스에서 한 허용 구현만 다시 만든 뒤에도 떨어질 때 숨은 테스트를 다시 만든 횟수 키 — 일반 예산과 따로.
+# 2026-11-10 프론트 알파 49507571·008d6314: 숨은 테스트가 한 설계의 진행(이어 붙인 뒤 정확히 40건, 첫 재연결에 4건 이상)을 단언해
+# 다른 허용 설계(쪽 번호+거르기, 실패하면 멈춤)를 막았는데, 흔한 구현은 의도한 사유로 잡혀 '허용 구현 탓'으로 끝났다.
+DESIGN_SUFFIX = "#design"
+# 흔한 구현이 정답 장치를 쓴다는 재료 판정 — 막는 표시(unresolved)로 옮긴다 (assign)
+MATERIAL_VERDICT = "재료 판정: "
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
 KEEP_NAIVE = (
     "\n지적된 실패만 고친다 — 입력의 흔한 구현 설명이 말하는 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)는 "
@@ -148,6 +154,66 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
                 budget=prev.budget or a.budget,
             )
     return list(out.values())
+
+
+CONFORM_NOTE = (
+    "계약 적합성 스모크(계약 모양 그대로의 응답을 바로 주고 입력란에 글자를 넣음)에서 앱이 깨졌다 — 응답 본문은 계약의 모양 "
+    "그대로 읽는다 (계약 응답이 배열이면 배열, 칸 이름 그대로 — 감싼 객체로 읽지 않는다). 받은 값이 비어도 화면이 내려가지 않게 한다. 실패한 화면:"
+)
+
+
+def _conform(runs: Sequence[TargetRun]) -> list[RepairAction]:
+    """게이트 ⓪ — 계약 적합성 스모크 (starter/conformance.py, 계약에서 코드가 쓴 검사). 탓을 실패 메시지 꼴이 아니라 증거로 정한다:
+    시작 코드가 깨지면 시작 코드 · 참조 구현이 모두 같은 화면에서 깨지면 공유 코드(시작 코드) · 일부만 깨지면 그 구현.
+    2026-11-10 프론트 알파(fefix e99cbba0): 시작 코드 api 모듈이 배열 응답을 `{ items }` 로 읽어 구현들이 화면째 내려갔는데, ⑤가 공개 테스트를
+    의심해 다시 만들고 예산을 다 썼다."""
+
+    def bad(r: TargetRun) -> list[TestResult]:
+        return [t for t in r.results("conform") if t.result != "PASS"]
+
+    def lines(ts: list[TestResult]) -> str:
+        return "\n".join(f"- {t.name}: {_short(t.message)}" for t in ts[:6])
+
+    starter = next((r for r in runs if r.kind == "starter"), None)
+    if starter is not None and (b := bad(starter)):
+        return [
+            RepairAction(
+                "gen_starter",
+                "",
+                "⓪",
+                f"시작 코드가 계약 적합성 스모크 실패: {_short(b[0].name)}",
+                f"{CONFORM_NOTE}\n{lines(b)}",
+            )
+        ]
+    refs = [r for r in runs if r.kind in ("ref_naive", "ref_accepted") and r.setup == "ok"]
+    failing = [(r, b) for r in refs if (b := bad(r))]
+    if not failing:
+        return []
+    if (
+        len(refs) >= 2
+        and len(failing) == len(refs)
+        and len({tuple(sorted(t.name for t in b)) for _, b in failing}) == 1
+    ):
+        return [
+            RepairAction(
+                "gen_starter",
+                "",
+                "⓪",
+                f"참조 구현 모두 같은 화면에서 계약 적합성 스모크 실패 — 공유 코드 의심: {_short(failing[0][1][0].name)}",
+                f"시작 코드 위의 구현 {len(refs)}개가 모두 같은 화면에서 깨진다 — 구현이 함께 쓰는 시작 코드(api 모듈·화면 뼈대)를 "
+                f"계약대로 고친다. {CONFORM_NOTE}\n{lines(failing[0][1])}",
+            )
+        ]
+    return [
+        RepairAction(
+            _gen_for(r),
+            r.target,
+            "⓪",
+            f"{r.target} 가 계약 적합성 스모크 실패: {_short(b[0].name)}",
+            f"{CONFORM_NOTE}\n{lines(b)}",
+        )
+        for r, b in failing
+    ]
 
 
 def _starter(
@@ -272,6 +338,18 @@ def _public_refs(
         if not bad:
             continue
         msgs = {r.target: (t.message if t is not None else "결과 없음") for r, t in bad}
+        defect = _test_defect(msgs, terms)
+        if defect:
+            out.append(
+                RepairAction(
+                    "gen_public",
+                    "",
+                    "⑤",
+                    f"공개 테스트 {name} 가 하네스가 짚은 테스트 결함으로 실패 ({', '.join(defect)})",
+                    f"하네스가 공개 테스트 {name} 의 결함을 짚었다: {_short(msgs[defect[0]])} — 구현 탓이 아니다. 테스트를 고친다.",
+                )
+            )
+            continue
         crash_rx = re.compile(terms.impl_crash) if terms is not None and terms.impl_crash else None
         # 이미 다시 만든 구현이 또 실행 오류면 구현 탓으로 보지 않는다 — 테스트가 준 입력(경로 등)이 원인일 수 있어 아래 규칙으로
         # (2026-11-09 데이터 알파 5회차: 공개 테스트가 경로를 문자열 그대로 넘겨 모든 구현이 '입력 폴더 없음' — 구현만 두 번 다시 만들었다)
@@ -310,6 +388,28 @@ def _public_refs(
                             f"흔한 구현만 공개 테스트 {name} 에서 계속 실패 — 누설 의심",
                             f"흔한 구현({r.target})이 다시 만든 뒤에도 공개 테스트 {name} 에서만 실패한다: {_short(msgs[r.target])} — "
                             "공개 테스트가 숨은 요구(동시성·저장 실패 처리 등)를 시험하고 있을 수 있다. 공개 수용 기준이 말하는 응답·기록만 확인한다.",
+                        )
+                    )
+                    continue
+                if (
+                    r.kind == "ref_accepted"
+                    and regen_counts.get(f"gen_accepted:{r.target}", 0) >= 1
+                    and regen_counts.get(f"gen_public{DESIGN_SUFFIX}", 0) == 0
+                ):
+                    # 다시 만든 허용 구현만 또 떨어지고 다른 구현은 통과 — 공개 테스트가 한 구현 방식에 기댔을 수 있다 (게이트 ④ 와 같은 규칙).
+                    # 2026-11-10 응답 순서 cf4: 공개 pt1 이 '서버'를 치고 조건 없이 먼저 온 요청('서')에 응답해, 지난 응답을 무시하는 허용 구현 d2 만
+                    # 목록을 못 보여 줬다 — d2 를 두 번 다시 만들고 예산을 다 썼다. 공개 테스트 입력에는 설계를 넣지 않는다 (숨은 요구의 해법).
+                    passing = [x.target for x, t in res if t is not None and t.result == "PASS"]
+                    out.append(
+                        RepairAction(
+                            "gen_public",
+                            "",
+                            "⑤",
+                            f"다시 만든 {r.target} 만 공개 테스트 {name} 실패 — 테스트가 한 구현 방식에 기댐 의심",
+                            f"공개 테스트 {name} 가 다시 만든 구현({r.target})에서만 또 실패하고 다른 구현({', '.join(passing)})은 통과한다: "
+                            f"{_short(msgs[r.target])} — 올바른 구현마다 다를 수 있는 것(먼저 보낸 요청, 요청 수, 중간 화면)에 기대지 않는지 본다. "
+                            "요청이 여러 개 나갈 수 있으면 `waitFor…(match)` 로 확인할 요청(지금 입력의 요청 등)을 골라 응답하고, 공개 수용 기준이 말하는 결과만 단언한다.",
+                            budget=DESIGN_SUFFIX,
                         )
                     )
                     continue
@@ -596,7 +696,17 @@ def _ref_existing(
     ]
 
 
-def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAction]:
+def _test_defect(msgs: Mapping[str, str], terms: RepairTerms | None) -> list[str]:
+    """하네스가 테스트 결함이라고 짚은 실패 메시지(manifest repair_terms.test_defect)를 낸 대상들."""
+    if terms is None or not terms.test_defect:
+        return []
+    rx = re.compile(terms.test_defect)
+    return [t for t, m in msgs.items() if rx.search(m)]
+
+
+def _hidden_broken(
+    runs: Sequence[TargetRun], plan: HiddenPlan, terms: RepairTerms | None = None
+) -> list[RepairAction]:
     """숨은 케이스가 판정까지 못 감(테스트 자체 예외·결과 없음) — **구현끼리 비교해** 탓을 정한다.
 
     - 준비된 구현 **모두**에서 그러면 숨은 테스트 탓 → `gen_hidden`.
@@ -610,6 +720,19 @@ def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAc
             (r, x) for r in runs if (x := r.case(c.case_id)) is None or x.result == "HARNESS_ERR"
         ]
         if not bad:
+            continue
+        defect = _test_defect({r.target: x.message for r, x in bad if x is not None}, terms)
+        if defect:
+            msg = next(x.message for r, x in bad if x is not None and r.target == defect[0])
+            out.append(
+                RepairAction(
+                    "gen_hidden",
+                    "",
+                    "④",
+                    f"숨은 케이스 {c.case_id} 가 하네스가 짚은 테스트 결함으로 실패 ({', '.join(defect)})",
+                    f"하네스가 숨은 케이스 {c.case_id} 의 결함을 짚었다: {_short(msg)} — 구현 탓이 아니다. 테스트를 고친다.",
+                )
+            )
             continue
         if len(bad) == len(runs):
             missing = [r.target for r, x in bad if x is None]
@@ -653,12 +776,23 @@ def _hidden_broken(runs: Sequence[TargetRun], plan: HiddenPlan) -> list[RepairAc
     return out
 
 
+def marker_hits(overlay: Overlay | None, markers: Sequence[str]) -> list[str]:
+    """흔한 구현 코드(테스트 제외)에 나온 정답 장치 표지 — 재료 fix_markers."""
+    if overlay is None or not markers:
+        return []
+    text = "\n".join(
+        f.content for f in overlay.files if "/test/" not in f.path and ".test." not in f.path
+    )
+    return sorted({m.group(0) for rx in markers for m in re.finditer(rx, text)})[:6]
+
+
 def _gate3(
     run: TargetRun,
     plan: HiddenPlan,
     missed: set[str],
     regen_counts: Mapping[str, int],
     terms: RepairTerms | None = None,
+    hits: Sequence[str] = (),
 ) -> tuple[list[RepairAction], list[str]]:
     passed = [
         c
@@ -678,6 +812,27 @@ def _gate3(
         and r.reason in intended
         for c in plan.cases
     )
+    if passed and not shows_trap and hits:
+        # 흔한 구현이 숨은 케이스를 통과했고 그 코드에 허용 설계의 장치가 있다 — 숨은 테스트가 아니라 흔한 구현(또는 재료) 문제.
+        # 2026-11-10 응답 순서 cf: 흔한 구현이 매 회차 React 정리 패턴(let cancelled …)을 썼는데 ③ 이 숨은 테스트를 다시 만들었다.
+        ids = ", ".join(c.case_id for c in passed)
+        found = ", ".join(hits)
+        if regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0:
+            return [
+                RepairAction(
+                    "gen_naive",
+                    run.target,
+                    "③",
+                    f"흔한 구현이 {ids} 통과 — 정답 장치({found})를 씀 ({run.target})",
+                    f"이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치({found})를 썼다 — 그 장치를 빼고 입력의 흔한 구현 "
+                    "설명대로만 쓴다 (설명에 없는 방어 코드·정리 함수의 무시 표시·취소·묶음 조회 등을 더하지 않는다).",
+                    budget=TRAP_SUFFIX,
+                )
+            ], []
+        return [], [
+            f"{MATERIAL_VERDICT}흔한 구현({run.target})이 다시 만든 뒤에도 허용 설계의 장치({found})를 써 숨은 케이스 {ids} 를 통과 — "
+            "AI 흔한 구현이 기본으로 정답을 쓰므로 이 함정은 AI 첫 답을 가르지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
+        ]
     if (
         passed
         and not shows_trap
@@ -794,6 +949,11 @@ def _gate4(
                 )
             )
             continue
+        passing = [
+            r.target
+            for r in runs
+            if (got := r.case(c.case_id)) is not None and got.result == "PASS"
+        ]
         for r, res in failed:
             key = f"gen_accepted:{r.target}"
             if regen_counts.get(key, 0) == 0:
@@ -805,6 +965,22 @@ def _gate4(
                         f"{r.target} 가 {c.case_id} 실패 [{res.reason or '-'}]",
                         f"이 허용 설계 구현이 숨은 요구 {c.trap_id} 의 확인({c.case_id}, 통과 조건: {c.expect})에서 실패했다: "
                         f"{_short(res.message)} — 설계 조건과 스택 조건을 지켜 다시 쓴다.",
+                    )
+                )
+            elif passing and regen_counts.get(f"gen_hidden{DESIGN_SUFFIX}", 0) == 0:
+                # 다시 만든 허용 구현이 또 떨어지는데 다른 허용 구현은 통과 — 케이스가 한 설계의 진행만 단언했을 수 있다.
+                # 흔한 구현을 의도한 사유로 잡는지(아래 갈래)는 이 케이스가 공정한지를 말해 주지 않는다. 한 번만 테스트를 의심한다.
+                actions.append(
+                    RepairAction(
+                        "gen_hidden",
+                        "",
+                        "④",
+                        f"다시 만든 {r.target} 만 {c.case_id} 실패 — 설계와 모순 의심",
+                        f"허용 설계 구현({r.target})을 다시 만들어도 숨은 케이스 {c.case_id} 에서 실패하고, 다른 허용 설계 "
+                        f"구현({', '.join(passing)})은 통과한다: {_short(res.message)} — 허용 설계 {r.target} 의 정당한 동작"
+                        "(목록 길이·한 번에 보내는 건수·실패 뒤 멈춤 등 설계마다 다른 값)을 단언하지 않았는지 본다. "
+                        f"모든 허용 설계에서 같은 결과(통과 조건: {c.expect})만 확인하고, 흔한 구현은 계속 의도한 사유로 실패해야 한다.",
+                        budget=DESIGN_SUFFIX,
                     )
                 )
             elif any(
@@ -888,6 +1064,7 @@ def assign(
     regen_counts: Mapping[str, int] | None = None,
     shared_paths: Collection[str] = (),
     terms: RepairTerms | None = None,
+    fix_markers: Sequence[str] = (),
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
@@ -905,6 +1082,12 @@ def assign(
         res.unresolved += env  # 다시 만들 것이 없다 — 승인자에게 (review_flags)
         return res
     if acts := _starter(starter, overlays, terms):
+        res.actions = acts
+        return res
+    if acts := _conform(report.runs):
+        # 계약 모양 응답에 깨진 코드부터 고친다. 깨진 구현을 빼고 남은 구현끼리 비교하면 '모든 구현이 실패'가 구현 하나로도 성립해
+        # 테스트를 잘못 의심한다 (2026-11-10 e99cbba0 재검증: 깨진 셋을 빼자 남은 d3 하나의 공개 실패로 공개 테스트를 다시 만들려 했다).
+        # 다음 회차에 고친 구현까지 모두 다시 비교한다.
         res.actions = acts
         return res
     acts, flags = _starter_public(starter, counts)
@@ -952,12 +1135,16 @@ def assign(
     # 숨은 게이트는 공개 테스트를 통과한 구현만 믿는다 — 공개 요구가 깨진 구현의 숨은 결과는 그 결함 탓일 수 있다
     # (2026-11-08: 시작 코드 결함으로 두 구현이 같은 500 을 내자 흔한 구현이 '의도한 사유'로 실패한 것처럼 보였다)
     judged = [r for r in ready if r.target in trusted]
-    actions += _hidden_broken(judged, plan)
+    actions += _hidden_broken(judged, plan, terms)
     for run in judged:
         if run.kind == "ref_naive":
-            acts, flags = _gate3(run, plan, missed_traps.get(run.target, set()), counts, terms)
+            hits = marker_hits(overlays.get(run.target), fix_markers)
+            acts, flags = _gate3(
+                run, plan, missed_traps.get(run.target, set()), counts, terms, hits
+            )
             actions += acts
-            res.flags += flags
+            res.unresolved += [f for f in flags if f.startswith(MATERIAL_VERDICT)]
+            res.flags += [f for f in flags if not f.startswith(MATERIAL_VERDICT)]
     accepted = [r for r in judged if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(

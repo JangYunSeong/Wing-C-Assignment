@@ -14,7 +14,7 @@ from task_spec.llm import Completion, LLMClient
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import GeneratedFile, HiddenPlan, TargetRun, VerifyReport
-from task_spec.starter.repair import assign
+from task_spec.starter.repair import DESIGN_SUFFIX, assign
 from task_spec.starter.static_check import Overlay
 from tests.starter.test_generate import D1, D2, SERVICE, STARTER, _files, _inputs
 from tests.starter.test_static_check import CASES, HC1, PKG
@@ -400,9 +400,19 @@ def test_gate4_accepted_designs() -> None:
     assert _keys(_assign(_report(d1), gen_accepted__d1=1)) == ["gen_hidden"]
     plan = _assign(_report(d1), gen_accepted__d1=1, gen_hidden=1)
     assert not plan.actions and any("사람 확인" in u for u in plan.unresolved)
-    # 허용 구현이 여럿인데 다시 만든 하나가 또 혼자 실패 → 설계 조건 부족
-    plan = _assign(_report(naive, d1, _run("d2", "ref_accepted", *GOOD_ACC)), gen_accepted__d1=1)
-    assert not plan.actions and plan.unresolved
+    # 허용 구현이 여럿인데 다시 만든 하나가 또 혼자 실패(다른 허용 구현은 통과) → 숨은 테스트가 한 설계만 단언했는지 한 번 의심
+    # (2026-11-10 프론트 알파: 흔한 구현은 의도한 사유로 잡혀도 다른 허용 설계를 막는 케이스가 있었다)
+    d2_ok = _run("d2", "ref_accepted", *GOOD_ACC)
+    plan = _assign(_report(naive, d1, d2_ok), gen_accepted__d1=1)
+    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].budget == DESIGN_SUFFIX
+    assert "다른 허용 설계 구현(d2)은 통과" in plan.actions[0].note
+    # 그 한 번을 썼으면 → 사람 확인 (설계를 못 따름 — 흔한 구현을 의도한 사유로 잡으므로)
+    counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN_SUFFIX}": 1}
+    plan = assign(_report(naive, d1, d2_ok), PLAN2, OVERLAYS, MISSED, counts)
+    assert not plan.actions and any("설계를 못 따름" in u for u in plan.unresolved)
+    # 일반 숨은 테스트 예산(③ 등)을 이미 써도 이 의심은 따로 센다
+    plan = _assign(_report(naive, d1, d2_ok), gen_accepted__d1=1, gen_hidden=1)
+    assert _keys(plan) == ["gen_hidden"]
 
 
 def test_same_generator_actions_are_merged() -> None:
@@ -957,3 +967,78 @@ def test_case_that_still_misses_the_naive_after_a_rewrite_is_flagged_not_failed(
     again = _assign(report, gen_hidden=1)
     assert again.passed and not again.actions
     assert any("hc1" in f and "hc2" in f and "가르지 않는다" in f for f in again.flags)
+
+
+def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> None:
+    """흔한 구현이 숨은 케이스를 통과했고 허용 설계의 장치(재료 fix_markers)를 썼다 — 숨은 테스트가 아니라 흔한 구현을 그 장치를 짚어
+    다시 만들고, 다시 만든 뒤에도 그렇면 재료 판정(막는 표시)으로 사람에게 (2026-11-10 응답 순서 cf: React 정리 패턴 let cancelled)."""
+    naive = _run("naive-all", "ref_naive", *GOOD_ACC)  # 숨은 케이스를 모두 통과
+    code = Overlay(
+        kind="ref_naive",
+        label="naive-all",
+        files=(GeneratedFile(path="src/pages/Search.tsx", content="let cancelled = false;"),),
+    )
+    overlays = {**OVERLAYS, "naive-all": code}
+    markers = [r"\blet\s+cancelled\s*="]
+    report = _report(naive, _run("d1", "ref_accepted", *GOOD_ACC))
+    plan = assign(report, PLAN2, overlays, MISSED, {}, fix_markers=markers)
+    assert [(a.key, a.gate) for a in plan.actions] == [("gen_naive:naive-all", "③")]
+    assert "let cancelled =" in plan.actions[0].note and not plan.unresolved
+    again = assign(
+        report, PLAN2, overlays, MISSED, {"gen_naive:naive-all#trap": 1}, fix_markers=markers
+    )
+    assert not again.actions and any(u.startswith("재료 판정: ") for u in again.unresolved)
+    # 표지가 없으면 지금 규칙 그대로 (흔한 구현을 먼저 다시)
+    plain = assign(report, PLAN2, OVERLAYS, MISSED, {}, fix_markers=markers)
+    assert [a.key for a in plain.actions] == [
+        "gen_naive:naive-all"
+    ] and "정답 장치" not in plain.actions[0].reason
+
+
+def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() -> None:
+    """2026-11-10 응답 순서 cf4: 공개 테스트가 지난 요청에 응답해, 지난 응답을 무시하는 허용 구현 d2 만 계속 떨어졌다."""
+    from task_spec.starter.repair import DESIGN_SUFFIX
+
+    pub = _t("public", "pt1", "HARNESS_ERR", None, "Unable to find recommendation-list")
+    report = _report(
+        _run("naive-all", "ref_naive", *GOOD_NAIVE, _t("public", "pt1")),
+        _run("d1", "ref_accepted", *GOOD_ACC, _t("public", "pt1")),
+        _run("d2", "ref_accepted", *GOOD_ACC, pub),
+    )
+    first = assign(report, PLAN2, OVERLAYS, MISSED, {})
+    assert [a.key for a in first.actions] == ["gen_accepted:d2"]  # 처음엔 그 구현
+    again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1})
+    assert [(a.key, a.budget) for a in again.actions] == [("gen_public", DESIGN_SUFFIX)]
+    assert "naive-all, d1" in again.actions[0].note and "match" in again.actions[0].note
+    spent = assign(
+        report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1, f"gen_public{DESIGN_SUFFIX}": 1}
+    )
+    assert [a.key for a in spent.actions] == [
+        "gen_accepted:d2"
+    ]  # 한 번 의심했으면 원래대로 (예산이 막는다)
+
+
+def test_harness_diagnosed_test_defect_goes_straight_to_the_test() -> None:
+    """React 템플릿 v7: match 없는 기다림에 붙잡힌 요청이 여럿이면 하네스가 테스트 결함이라고 짚는다 — 어느 구현에서 났든 첫 회차에 그 테스트를."""
+    from task_spec.schemas.template import RepairTerms
+
+    terms = RepairTerms(test_defect=r"붙잡힌 \w+ \S+ 요청이 \d+개 — match 로")
+    msg = "Error: 붙잡힌 GET /api/x 요청이 2개 — match 로 확인할 요청을 고른다"
+    report = _report(
+        _run("naive-all", "ref_naive", *GOOD_NAIVE, _t("public", "pt1", "HARNESS_ERR", None, msg)),
+        _run("d1", "ref_accepted", *GOOD_ACC, _t("public", "pt1")),
+    )
+    plan = assign(report, PLAN2, OVERLAYS, MISSED, {}, terms=terms)
+    assert [(a.key, a.gate) for a in plan.actions] == [("gen_public", "⑤")]
+    hidden = _report(
+        _run("naive-all", "ref_naive", *GOOD_NAIVE),
+        _run(
+            "d1", "ref_accepted", _t("hidden", "hc1", "HARNESS_ERR", None, msg), _t("hidden", "hc2")
+        ),
+        _run("d2", "ref_accepted", *GOOD_ACC),
+    )
+    plan = assign(hidden, PLAN2, OVERLAYS, MISSED, {}, terms=terms)
+    assert [(a.key, a.gate) for a in plan.actions] == [("gen_hidden", "④")]
+    # 패턴이 없는 템플릿은 지금 규칙 그대로 (그 구현)
+    plan = assign(report, PLAN2, OVERLAYS, MISSED, {})
+    assert [a.key for a in plan.actions] == ["gen_naive:naive-all"]

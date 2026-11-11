@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from task_spec.schemas.base import Schema
 
@@ -65,7 +66,20 @@ class FeatureSeed(Schema):
     # 나오면 재요청. 자료 본문·구체 답(answer)에는 써도 된다 (단서는 거기서 보여야 함). 프롬프트에는 넣지 않는다 (검사 전용).
     # business_need 에 나온 말은 공개된 업무 요구라 검사에서 뺀다.
     trigger_terms: list[str] = Field(default_factory=list)
+    # 허용 설계의 장치가 코드에 드러나는 표지 (정규식) — 흔한 구현에는 없어야 한다. 흔한 구현이 숨은 케이스를 통과하고 이 표지가 있으면
+    # 흔한 구현을 그 장치를 짚어 다시 만들고, 다시 만든 뒤에도 그렇면 "AI 흔한 구현이 기본으로 정답을 쓴다"는 재료 판정 (repair ③).
+    # 2026-11-10 변별 실패 분석: 응답 순서 흔한 구현이 매 회차 React 정리 패턴(let cancelled …)을 써 — 허용 설계 그 자체.
+    # 생성 단계 정적 검사로는 쓰지 않는다 (저장 코드 검증에서 흔한 구현이 제대로 떨어진 회차에도 걸린 경우가 있었다).
+    fix_markers: list[str] = Field(default_factory=list)
     task_shape: Literal["code", "analysis"] = "code"
+
+    @field_validator("fix_markers")
+    @classmethod
+    def _markers_compile(cls, v: list[str]) -> list[str]:
+        for rx in v:
+            re.compile(rx)
+        return v
+
     starter: str | None = None  # 검증된 시작 코드 예제 (data/feature_starters/<id>) — 없으면 명세만
     reviewed: bool = False  # 사람이 검토했는지 — false 면 명세 review_flags 에 남긴다
     contract_needs: list[ContractNeed] = Field(default_factory=list)  # 계약에 꼭 있어야 할 요소

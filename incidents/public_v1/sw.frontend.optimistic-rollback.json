@@ -93,6 +93,13 @@
       "타임아웃",
       "모바일"
     ],
+    "fix_markers": [
+      "\\bonMutate\\b",
+      "\\brollback\\b",
+      "\\brevert\\w*\\b",
+      "\\bsnapshot\\b",
+      "\\bpreviousValue\\b"
+    ],
     "task_shape": "code",
     "starter": null,
     "reviewed": false,
