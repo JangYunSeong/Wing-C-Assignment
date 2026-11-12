@@ -3,7 +3,8 @@
 #
 # 사용: docker/build_release.sh [버전]     (기본 버전 = 날짜-커밋)
 # 결과: dist/task-spec-<버전>/
-#   images.tar (+ .sha256)   task-api:<버전>, task-db:1, nginx   → 서버에서 podman load -i images.tar
+#   images.tar (+ .sha256)   task-api:<버전>, task-builder:<버전>, task-db:1, nginx   → 서버에서 podman load -i images.tar
+#                            (builder 는 builder 전용 사용자로 따로 load — docs/deploy.md 2-8)
 #   docker/                  run 스크립트·env 예시·DB 초기화 스크립트
 # DB 데이터(덤프)는 별도 — data/exports/ 의 덤프를 함께 전달 (지원자 파생물 포함 여부 확인 후).
 set -euo pipefail
@@ -17,6 +18,7 @@ OUT="dist/task-spec-${VER}"
 mkdir -p "$OUT"
 
 podman build -f docker/api/Dockerfile -t "task-api:${VER}" .
+podman build -f docker/builder/Dockerfile -t "task-builder:${VER}" .
 podman build -q -f docker/db/Dockerfile -t task-db:1 docker/db >/dev/null
 NGINX_IMAGE="docker.io/library/nginx:1.27-alpine"   # docker/nginx/run.sh 기본값과 같게
 podman pull -q "$NGINX_IMAGE" >/dev/null
@@ -25,11 +27,14 @@ podman pull -q "$NGINX_IMAGE" >/dev/null
 podman run --rm --entrypoint sh "task-api:${VER}" -c \
   'test ! -e /app/.env && test ! -e /app/data && test -z "$(ls -A /data)" && test ! -e /app/tests' \
   || { echo "이미지에 넣으면 안 되는 파일이 있습니다" >&2; exit 1; }
+podman run --rm --entrypoint sh "task-builder:${VER}" -c \
+  'test ! -e /app/.env && test ! -e /app/data && test ! -e /app/tests && test ! -e /app/eval && test -z "$(find /app/templates -name .gradle -o -name node_modules)"' \
+  || { echo "builder 이미지에 넣으면 안 되는 파일이 있습니다" >&2; exit 1; }
 
-podman save -o "$OUT/images.tar" "task-api:${VER}" task-db:1 "$NGINX_IMAGE"
+podman save -o "$OUT/images.tar" "task-api:${VER}" "task-builder:${VER}" task-db:1 "$NGINX_IMAGE"
 ( cd "$OUT" && sha256sum images.tar > images.tar.sha256 )
 mkdir -p "$OUT/docker"
-cp -r docker/api docker/db docker/nginx "$OUT/docker/"
-rm -f "$OUT/docker/api/.env"   # 비밀값 — 묶음에 넣지 않는다
-printf 'task-api:%s\ntask-db:1\n%s\ncommit %s\n' "$VER" "$NGINX_IMAGE" "$(git rev-parse HEAD)" > "$OUT/VERSION"
+cp -r docker/api docker/builder docker/db docker/nginx "$OUT/docker/"
+rm -f "$OUT/docker/api/.env" "$OUT/docker/builder/.env"   # 비밀값 — 묶음에 넣지 않는다
+printf 'task-api:%s\ntask-builder:%s\ntask-db:1\n%s\ncommit %s\n' "$VER" "$VER" "$NGINX_IMAGE" "$(git rev-parse HEAD)" > "$OUT/VERSION"
 echo "→ $OUT ($(du -sh "$OUT/images.tar" | cut -f1))"

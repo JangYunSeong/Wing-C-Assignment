@@ -114,3 +114,22 @@ async def test_packages_need_a_review_build(
     await store.save_outcome(b.build_id, _outcome(H_OLD))
     with pytest.raises(BuildRuleError, match="review"):
         await loader.register_packages(store, tmp_path, b, _inputs(b))
+
+
+def test_package_modes_follow_the_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """기본은 소유자 전용(0600/0700). builder 를 다른 사용자로 둘 때(#129 2-b) 0640/0750 — ACL 마스크가 읽기를 허용하게."""
+    import stat
+
+    from task_spec.starter.artifacts import write_role
+
+    d = tmp_path / "role"
+    d.mkdir()
+    (d / "x.tar.zst").write_bytes(b"x")
+    write_role(d, "candidate.json", "{}")
+    assert stat.S_IMODE((d / "candidate.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+    monkeypatch.setenv("PACKAGE_FILE_MODE", "640")
+    monkeypatch.setenv("PACKAGE_DIR_MODE", "750")
+    write_role(d, "candidate.json", "{}")
+    assert stat.S_IMODE((d / "SHA256SUMS").stat().st_mode) == 0o640
+    assert stat.S_IMODE(d.stat().st_mode) == 0o750
