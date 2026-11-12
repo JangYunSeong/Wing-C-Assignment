@@ -11,6 +11,7 @@ from pathlib import Path
 
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract
 from task_spec.starter import images as b
+from task_spec.starter import layers as L
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import load_template
 from tests.starter.test_kit import _task
@@ -40,9 +41,9 @@ def test_python_stack_and_grade_config() -> None:
     from tests.starter.test_data_template import _contract, _plan
 
     t = load_template("data/python-duckdb", 1)
-    assert b.stack_for(t) is b.PY and "3.11-slim-bookworm" in b.PY.base
-    assert b.PY.grader_setup == () and b.NODE.grader_setup == (
-        b.PYTHON3,
+    assert b.stack_for(t) is L.PY and "3.11-slim-bookworm" in L.PY.base
+    assert L.PY.grader_setup == () and L.NODE.grader_setup == (
+        L.PYTHON3,
     )  # Python 런타임엔 python3 설치 생략
     cfg = b.py_config(t, _material(_plan(), _contract()))
     assert cfg["python"] == "/opt/venv/bin/python" and cfg["template_dir"] == "/workspace"
@@ -63,7 +64,7 @@ def test_node_stack_and_grade_config() -> None:
     from tests.starter.test_frontend_template import _contract, _plan
 
     fe = load_template("frontend/react-vite-ts")
-    assert b.stack_for(fe) is b.NODE and "bookworm" in b.NODE.base
+    assert b.stack_for(fe) is L.NODE and "bookworm" in L.NODE.base
     cfg = b.node_config(fe, _material(_plan(), _contract()))
     assert cfg["compile_command"] == ["npx", "tsc", "--noEmit"]
     assert cfg["grading_command"][-1].endswith("vitest.grading.config.ts")
@@ -76,7 +77,7 @@ def test_node_stack_and_grade_config() -> None:
 
 def test_grade_scripts_are_the_moved_standalone_files() -> None:
     """채점 기반 층에 복사하는 grade 스크립트 — starter/grade/ 의 단독 실행 파일 (task_spec 을 import 하지 않음)."""
-    for st in (b.JAVA, b.NODE, b.PY):
+    for st in (L.JAVA, L.NODE, L.PY):
         assert st.grade_script.is_file() and st.grade_script.parent.name == "grade"
         assert "task_spec" not in st.grade_script.read_text("utf-8").split('"""', 2)[2]
 

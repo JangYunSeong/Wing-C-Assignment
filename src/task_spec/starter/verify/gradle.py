@@ -3,7 +3,9 @@
 실제 verifier(#55)는 네트워크 없는 채점용 이미지·반복·자원 축소까지 한다 (spec-to-code §7.1). 이것은 그 전에 수리 루프를 실제 빌드로 돌려 보는 대용품이다.
 템플릿 project/ + 오버레이(+ 숨은 테스트면 잠긴 하네스·자체 점검)를 채점용 이미지와 같은 순서로 조립한다.
 
-Gradle 실행 파일·의존성 캐시 경로는 `verify/tools.py` (환경 변수 GRADLE_BIN·GRADLE_USER_HOME·BUILD_TOOLS_DIR).
+격리 (#127): 기본은 검증용 템플릿 층(`layers.ensure_verify_layer` — 채점 이미지와 같은 JDK·Gradle wrapper·오프라인 의존성) 위
+`--network none` 자식 컨테이너에서 `./gradlew --offline` (채점 이미지의 TEST_COMMAND 와 같은 방식). `VERIFY_ISOLATION=host` 면
+예전처럼 호스트 Gradle — 실행 파일·의존성 캐시 경로는 `verify/tools.py` (GRADLE_BIN·GRADLE_USER_HOME·BUILD_TOOLS_DIR).
 """
 
 from __future__ import annotations
@@ -19,10 +21,17 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
+from task_spec.starter.layers import ensure_verify_layer
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 from task_spec.starter.verify import tools
-from task_spec.starter.verify.workspace import assemble, write_overlay
+from task_spec.starter.verify.workspace import (
+    CI_ENV,
+    assemble,
+    isolated,
+    run_in_container,
+    write_overlay,
+)
 
 _JAVAC = re.compile(r"^(/\S+\.java):(\d+): error: (.+)$")
 _REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
@@ -34,15 +43,35 @@ def gradle_env() -> dict[str, str]:
     return os.environ | {"GRADLE_USER_HOME": str(tools.gradle_user_home())}
 
 
+GRADLE_ARGS = ("--console=plain", "--no-daemon", "--continue")
+
+
+def run_gradle_in(
+    image: str, work: Path, log: Path, timeout: int = 1200, task: str = "test"
+) -> tuple[int | None, float]:
+    """검증용 템플릿 층에서 `./gradlew --offline` — 조립 폴더만 같은 절대 경로로 붙이고 네트워크 없음."""
+    log.write_text("", "utf-8")
+    code, seconds = run_in_container(
+        image,
+        ["sh", "./gradlew", task, "--offline", *GRADLE_ARGS],
+        work,
+        log,
+        timeout,
+        env=dict(CI_ENV),  # 호스트 실행과 같은 환경 변수
+    )
+    return code, round(seconds, 1)
+
+
 def run_gradle(
     work: Path, log: Path, timeout: int = 1200, task: str = "test"
 ) -> tuple[int | None, float]:
-    """(종료 코드 — 시간 초과면 None, 걸린 초). task 는 Gradle 작업 — 상류 평가는 compileTestJava (구현 없이 채점 코드 컴파일만)."""
+    """호스트 Gradle (`VERIFY_ISOLATION=host`). (종료 코드 — 시간 초과면 None, 걸린 초).
+    task 는 Gradle 작업 — 상류 평가는 compileTestJava (구현 없이 채점 코드 컴파일만)."""
     t0 = time.monotonic()
     with log.open("w") as fh:
         try:
             proc = subprocess.run(
-                [str(tools.gradle_bin()), task, "--console=plain", "--no-daemon", "--continue"],
+                [str(tools.gradle_bin()), task, *GRADLE_ARGS],
                 cwd=work,
                 env=gradle_env(),
                 stdout=fh,
@@ -169,6 +198,14 @@ class GradleVerifier:
         )
         self.rounds = 0
         self.compiles = 0
+        self._image: str | None = None
+
+    def _gradle(self, dest: Path, log: Path, task: str = "test") -> tuple[int | None, float]:
+        if not isolated():
+            return run_gradle(dest, log, self.timeout, task)
+        if self._image is None:  # 처음 한 번 — 템플릿 내용이 같으면 있는 층을 쓴다
+            self._image = ensure_verify_layer(self.template, tools.tools_dir())
+        return run_gradle_in(self._image, dest, log, self.timeout, task)
 
     def _target(
         self, target: str, kind: str, parts: Sequence[Overlay], hidden: Overlay | None
@@ -176,7 +213,7 @@ class GradleVerifier:
         dest = self.work / f"r{self.rounds}-{target}"
         log = self.work / f"r{self.rounds}-{target}.log"
         assemble(self.template, dest, *parts)
-        code, seconds = run_gradle(dest, log, self.timeout)
+        code, seconds = self._gradle(dest, log)
         text = log.read_text("utf-8", errors="ignore")
         errors = compile_errors(text, dest)
         ids = case_ids(hidden, self.template.manifest.hidden_rules.case_id_pattern)
@@ -216,7 +253,7 @@ class GradleVerifier:
         cmds = self.template.manifest.commands
         cmd = (cmds.test_compile if cmds is not None else None) or "gradlew compileTestJava"
         task = next(t for t in cmd.split()[1:] if not t.startswith("-"))
-        code, _ = run_gradle(dest, log, self.timeout, task)
+        code, _ = self._gradle(dest, log, task)
         text = log.read_text("utf-8", errors="ignore")
         errors = compile_errors(text, dest)
         shutil.rmtree(dest, ignore_errors=True)

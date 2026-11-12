@@ -46,8 +46,9 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "pg: task_db_test(PostgreSQL) 가 필요한 통합 테스트 — TEST_DATABASE_URL 필요",
     "llm: 실제 외부 LLM API 호출 (비용 발생) — 명시적으로 -m llm 일 때만",
+    "podman: 실제 podman 으로 자식 컨테이너를 띄우는 격리 확인 (#127) — 명시적으로 -m podman 일 때만",
 ]
-addopts = "-m 'not pg and not llm'"
+addopts = "-m 'not pg and not llm and not podman'"
 
 [tool.ruff]
 line-length = 100
