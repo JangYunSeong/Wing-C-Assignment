@@ -37,7 +37,7 @@ from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
-from task_spec.starter.header_values import header_values
+from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
     key_fields,
     render_contract_case,
@@ -1226,6 +1226,56 @@ def _hand_built_keys(
     return out
 
 
+_OK_HEADERS_ARG = re.compile(r"\bok_?[Hh]eaders\(\s*([^()]*?)\s*\)")
+_QUOTED = re.compile(r"^[\"']([^\"']*)[\"']$")
+
+
+def _header_rejected(contract: TaskContract, name: str) -> bool:
+    """계약이 그 헤더의 형식 오류·빈 값을 400 으로 정했나 — 그 거절 시험 값은 글자로 써도 둔다."""
+    return any(
+        r.status == 400 and name.lower() in (r.description or "").lower()
+        for e in contract.endpoints
+        if any(h.name == name for h in e.headers)
+        for r in e.responses
+    )
+
+
+def _literal_value(arg: str, text: str) -> str | None:
+    """헤더 값 자리의 글자 — 글자 그대로("req-001")이거나, 글자를 담은 변수(`String key = "req-001";` 뒤의 key).
+    2026-11-12 실패 사례는 변수 꼴이었다 (`String reqId = "req-seq-001"; … okHeaders(reqId)`)."""
+    if (q := _QUOTED.match(arg)) is not None:
+        return q.group(1)
+    if re.fullmatch(r"[A-Za-z_]\w*", arg):
+        m = re.search(r"\b" + re.escape(arg) + r"\s*=\s*[\"']([^\"']*)[\"']\s*[;\n]", text)
+        return m.group(1) if m else None
+    return None
+
+
+def _literal_request_keys(
+    cases: Sequence[GeneratedFile], contract: TaskContract, name: str, label: str
+) -> list[str]:
+    """요청마다 새 값인 헤더(요청 번호·멱등 키)에 글자 값을 씀 — `okHeaders("req-001")`·`"X-Request-Id", "…"`·`"X-Request-Id": "…"`.
+    케이스마다 따로 만든 테스트가 같은 글자를 쓰면 서로의 기록을 돌려받는다 (2026-11-12 백엔드 중복 처리: hc1·hc2 가 모두
+    'req-seq-001' — 허용 구현이 hc2 의 기록을 hc1 에 돌려줘 '기대 15000, 실제 13000'). 계획에 적힌 글자도 예외로 두지 않는다
+    (그 경우가 바로 계획에서 온 값). 계약이 그 헤더의 형식 오류를 400 으로 정했으면 거절 시험 값이라 둔다."""
+    if _header_rejected(contract, name):
+        return []
+    named = re.compile(r'"' + re.escape(name) + r'"\s*[,:]\s*([^,)}\n]+)', re.I)
+    out: list[str] = []
+    for f in cases:
+        args = [m.group(1).strip() for m in _OK_HEADERS_ARG.finditer(f.content)]
+        args += [m.group(1).strip() for m in named.finditer(f.content)]
+        vals = sorted({v for a in args if (v := _literal_value(a, f.content)) is not None})
+        if vals:
+            shown = ", ".join(f'"{v}"' for v in vals[:3])
+            out.append(
+                f"{label} {f.path} 가 요청마다 새 값인 헤더 {name} 에 글자 값을 씀 ({shown}) — `String key = newRequestId();` 처럼 "
+                "도우미로 만든 변수를 okHeaders(key) 에 넘긴다 (같은 요청의 재시도는 그 변수를 다시 넘긴다). 계획에 적힌 요청 번호 "
+                "글자도 쓰지 않는다 — 다른 케이스·공개 테스트와 같은 값이 되면 서로의 기록을 돌려받는다"
+            )
+    return out
+
+
 def _literal_headers(
     cases: Sequence[GeneratedFile], contract: TaskContract, label: str
 ) -> list[str]:
@@ -1234,6 +1284,9 @@ def _literal_headers(
     거절 값 상수가 없으면 통과 값이 아닌 값은 거절 시험일 수 있어 둔다. 계약 값 그대로면 글자로 써도 막지 않는다."""
     out: list[str] = []
     for h in header_values(contract):
+        if h.source == PER_REQUEST:
+            out += _literal_request_keys(cases, contract, h.name, label)
+            continue
         if h.ok is None or h.denied is None:
             continue
         key = re.sub(r"[^A-Za-z0-9]+", "_", h.name).strip("_").upper()
