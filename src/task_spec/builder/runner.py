@@ -1,0 +1,321 @@
+"""빌드 작업 실행기 — 큐에서 가져간 빌드 하나를 review 까지 (상태 전이·비용 상한·lease·실패 사유·정리).
+
+생성·이미지 단계(`Steps`)는 바꿔 끼운다 — 실제는 `builder/steps.py`, 시험은 가짜. 순서:
+
+    claim(generating) ─ contract ─ build ─ 파일·README 저장 ─ verifying ─ images ─ 결과 저장 ─ review ─ 묶음 등록
+
+- 비용: 단계마다 provenance 비용을 `record_stage` 로 쌓고, 작업당 상한을 넘으면 다음 단계로 가지 않는다 (단계 중간에는 끊지 않음 —
+  수리 루프는 MAX_ROUNDS 가 막는다). 하루 상한은 `claim` 이 막는다.
+- lease: heartbeat 를 lease 의 1/3 마다. lease 를 잃으면(다른 worker 가 복구했거나 실패로 바뀜) 이 작업을 멈추고 상태를 건드리지 않는다.
+- 실패: 사유는 짧게 (단계 + 원인 요약 또는 예외 종류) — 생성 코드·명세 원문·예외 메시지는 저장소·로그에 넣지 않는다.
+  예외 전문은 작업 폴더의 error.txt 에만 (git 밖, 실패 작업 폴더를 남길 때).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import shutil
+import traceback
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol
+
+from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
+from task_spec.schemas.build import RepairRecord
+from task_spec.schemas.build_record import README_PATH, BuildOutcome, BuildRecord, StarterFile
+from task_spec.schemas.incident import FeatureSeed
+from task_spec.schemas.package import VerifySummary
+from task_spec.starter.artifacts import merged_flags
+from task_spec.starter.static_check import Overlay
+from task_spec.starter.store import BuildRepo, TaskLabel
+from task_spec.starter.templates import Template
+
+logger = logging.getLogger(__name__)
+
+
+class StepFailed(Exception):
+    """생성·검증이 끝까지 가지 못함 — 메시지는 저장소 실패 사유로 그대로 (짧게, 원문 없이).
+    cost_usd: 실패하기 전까지 그 단계가 쓴 LLM 비용 — 하루 상한에 들어가야 한다 (2026-11-12 스모크: 계약 3회 실패가 $0 으로 남음)."""
+
+    def __init__(self, message: str, cost_usd: float = 0.0) -> None:
+        super().__init__(message)
+        self.cost_usd = cost_usd
+
+
+class BudgetExceeded(StepFailed):
+    pass
+
+
+@dataclass(frozen=True)
+class Job:
+    build: BuildRecord
+    task: TaskItem  # 승인된 공통 과제 명세 (공고·재료에서 — 지원자 문서 없음)
+    label: TaskLabel  # 제목·공고 id·판
+    work: Path  # 이 빌드의 작업 폴더 (절대 경로)
+
+
+@dataclass(frozen=True)
+class ContractResult:
+    template: Template
+    contract: TaskContract
+    plan: HiddenPlan
+    cost_usd: float
+    seed: FeatureSeed | None = None  # 재료의 기능형 칸 — 생성기 입력 그대로 넘긴다
+    avoid_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    overlays: dict[str, Overlay]  # starter · hidden · public · 참조 구현 라벨
+    plan: HiddenPlan  # 변별 못 하는 케이스를 뺀 뒤의 숨은 계획 (이미지·저장이 쓴다)
+    readme: str  # 지원자 README (시작 코드가 정해진 뒤 렌더)
+    review_flags: list[str]
+    repairs: list[RepairRecord]
+    cost_usd: float
+
+
+@dataclass(frozen=True)
+class ImagesResult:
+    template_ref: str
+    tree_sha256: str
+    grader_sha256: str
+    verification: dict[str, VerifySummary]  # 제출물(starter-only·참조 구현)마다 채점 결과
+    cleanup: list[str] = field(default_factory=list)  # 작업이 끝나면 지울 로컬 이미지 이름
+    package: object | None = None  # Steps.register 가 쓰는 것 (실제: loader.PackageInputs 재료)
+
+
+class Steps(Protocol):
+    async def contract(self, job: Job) -> ContractResult: ...
+
+    async def build(self, job: Job, c: ContractResult) -> BuildResult: ...
+
+    async def images(self, job: Job, c: ContractResult, b: BuildResult) -> ImagesResult: ...
+
+    async def register(
+        self, store: BuildRepo, job: Job, c: ContractResult, b: BuildResult, i: ImagesResult
+    ) -> None: ...
+
+    async def cleanup(self, images: list[str]) -> None: ...
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    work_root: Path
+    budget_usd: float
+    lease_seconds: int
+    keep_failed_work: bool = True
+
+
+def _fresh_dir(work: Path) -> None:
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+
+
+def _write_error(work: Path, exc: BaseException) -> None:
+    if work.is_dir():
+        (work / "error.txt").write_text(
+            "".join(traceback.format_exception(exc)), "utf-8", errors="replace"
+        )
+
+
+def overlay_files(build_id: str, overlays: dict[str, Overlay], readme: str) -> list[StarterFile]:
+    out = [
+        StarterFile.of(build_id, o.kind, f.path, f.content, o.label)
+        for o in overlays.values()
+        for f in o.files
+    ]
+    return [*out, StarterFile.of(build_id, "readme", README_PATH, readme)]
+
+
+class _Run:
+    """빌드 하나의 진행 — 단계 기록·비용 누계."""
+
+    def __init__(self, store: BuildRepo, cfg: RunConfig, build: BuildRecord) -> None:
+        self.store, self.cfg, self.build = store, cfg, build
+        self.stage = "start"
+        self.spent = 0.0
+
+    async def enter(self, stage: str, cost_usd: float = 0.0) -> None:
+        """이전 단계의 비용을 더하고 다음 단계로 — 작업당 상한을 넘으면 멈춘다."""
+        self.spent += cost_usd
+        self.build = await self.store.record_stage(self.build.build_id, stage, cost_usd)
+        self.stage = stage
+        if self.spent > self.cfg.budget_usd:
+            raise BudgetExceeded(
+                f"비용 상한 — {stage} 전까지 ${self.spent:.3f} > ${self.cfg.budget_usd:.2f} (BUILD_BUDGET_USD)"
+            )
+
+
+async def run_job(
+    store: BuildRepo, steps: Steps, cfg: RunConfig, build: BuildRecord
+) -> BuildRecord:
+    """claim 으로 가져간(generating) 빌드 하나를 review 까지. 실패하면 failed + 사유. 작업 폴더는 성공이면 지운다."""
+    work = cfg.work_root / build.build_id
+    run = _Run(store, cfg, build)
+    images: list[str] = []
+    ok = False
+    try:
+        task = await store.task(build.common_id)
+        label = (await store.task_labels([build.common_id])).get(build.common_id)
+        if task is None or label is None:
+            raise StepFailed("공통 과제 명세 없음")
+        await asyncio.to_thread(_fresh_dir, work)  # 이전 시도의 반쯤 쓴 폴더는 지운다
+        job = Job(build=build, task=task, label=label, work=work)
+
+        await run.enter("contract")
+        c = await steps.contract(job)
+        await run.enter("build", c.cost_usd)
+        b = await steps.build(job, c)
+        await run.enter("files", b.cost_usd)
+        await store.put_files(build.build_id, overlay_files(build.build_id, b.overlays, b.readme))
+        await store.set_status(build.build_id, "verifying")
+        await run.enter("images")
+        i = await steps.images(job, c, b)
+        images = i.cleanup
+        await store.save_outcome(
+            build.build_id,
+            BuildOutcome(
+                template_ref=i.template_ref,
+                tree_sha256=i.tree_sha256,
+                grader_sha256=i.grader_sha256,
+                contract=c.contract,
+                hidden_plan=b.plan,
+                verification=i.verification,
+                review_flags=merged_flags(task.review_flags, b.review_flags),
+                repairs=b.repairs,
+            ),
+        )
+        await run.enter("package")
+        await store.set_status(build.build_id, "review")
+        run.stage = "package"
+        await steps.register(store, job, c, b, i)
+        ok = True
+        done = await store.get(build.build_id)
+        assert done is not None
+        logger.info(
+            "빌드 %s review (비용 $%.3f)",
+            build.build_id,
+            run.spent,
+            extra={"build_id": build.build_id},
+        )
+        return done
+    except asyncio.CancelledError:  # lease 를 잃었다 — 상태는 복구한 쪽이 정한다
+        logger.warning("빌드 %s 중단: lease 를 잃음 (%s 단계)", build.build_id, run.stage)
+        raise
+    except StepFailed as e:
+        if e.cost_usd:  # 실패한 단계가 쓴 비용도 쌓는다
+            with contextlib.suppress(Exception):
+                await store.record_stage(build.build_id, run.stage, e.cost_usd)
+        return await _fail(store, work, build, str(e), run.stage, None)
+    except Exception as e:  # 인프라·코드 오류 — 사유는 단계와 예외 종류만
+        return await _fail(store, work, build, f"{run.stage}: {type(e).__name__}", run.stage, e)
+    finally:
+        with contextlib.suppress(Exception):
+            await steps.cleanup(images)
+        if ok or not cfg.keep_failed_work:
+            await asyncio.to_thread(shutil.rmtree, work, True)
+
+
+async def _fail(
+    store: BuildRepo,
+    work: Path,
+    build: BuildRecord,
+    reason: str,
+    stage: str,
+    exc: BaseException | None,
+) -> BuildRecord:
+    if exc is not None:  # 예외 전문은 작업 폴더에만 (git 밖, 저장소·로그에는 넣지 않음)
+        await asyncio.to_thread(_write_error, work, exc)
+    logger.error(
+        "빌드 %s 실패 (%s 단계): %s",
+        build.build_id,
+        stage,
+        type(exc).__name__ if exc is not None else "단계 실패",
+        extra={"build_id": build.build_id},
+    )
+    current = await store.get(build.build_id)
+    if current is None or current.status not in ("pending", "generating", "verifying", "review"):
+        return current or build  # 이미 끝난 빌드 (다른 쪽이 실패 처리)
+    return await store.fail(build.build_id, reason)
+
+
+async def run_with_lease(
+    store: BuildRepo,
+    steps: Steps,
+    cfg: RunConfig,
+    build: BuildRecord,
+    worker: str,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> BuildRecord | None:
+    """lease 를 heartbeat 로 붙든 채 run_job. lease 를 잃으면 작업을 취소하고 None."""
+    job = asyncio.create_task(run_job(store, steps, cfg, build))
+
+    async def beat() -> None:
+        while not job.done():
+            await sleep(cfg.lease_seconds / 3)
+            if job.done():
+                return
+            if not await store.heartbeat(build.build_id, worker, cfg.lease_seconds):
+                job.cancel()
+                return
+
+    hb = asyncio.create_task(beat())
+    try:
+        return await job
+    except asyncio.CancelledError:
+        if hb.done() and not hb.cancelled():  # heartbeat 가 취소했다 — 이 worker 는 손을 뗀다
+            return None
+        raise
+    finally:
+        hb.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb
+
+
+@dataclass
+class Worker:
+    """큐를 하나씩 — 시작할 때와 빈 큐일 때 죽은 작업을 복구한다."""
+
+    store: BuildRepo
+    steps: Steps
+    cfg: RunConfig
+    name: str
+    daily_budget_usd: float
+    poll_seconds: float
+    max_attempts: int
+    stopping: bool = False
+
+    async def once(self, now: datetime | None = None) -> BuildRecord | None:
+        """가져갈 것이 있으면 하나 처리하고 그 결과, 없으면 None."""
+        build = await self.store.claim(
+            self.name,
+            self.cfg.lease_seconds,
+            at=now or datetime.now(UTC),
+            daily_budget_usd=self.daily_budget_usd,
+        )
+        if build is None:
+            return None
+        logger.info(
+            "빌드 %s 시작 (시도 %d)",
+            build.build_id,
+            build.attempt,
+            extra={"build_id": build.build_id},
+        )
+        return await run_with_lease(self.store, self.steps, self.cfg, build, self.name)
+
+    async def serve(self, once: bool = False) -> None:
+        for b in await self.store.recover_expired(max_attempts=self.max_attempts):
+            logger.warning("죽은 작업 복구: %s → %s", b.build_id, b.status)
+        while not self.stopping:
+            got = await self.once()
+            if once:
+                return
+            if got is None:
+                await asyncio.sleep(self.poll_seconds)
+                for b in await self.store.recover_expired(max_attempts=self.max_attempts):
+                    logger.warning("죽은 작업 복구: %s → %s", b.build_id, b.status)

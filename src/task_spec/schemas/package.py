@@ -101,7 +101,9 @@ class PackageHeader(Schema):
     """세 파일 공통 머리."""
 
     mock: bool = False
-    approval: Literal["approved", "none"]
+    # approved = 시작 코드 승인 뒤(전달 가능) · pending = builder 가 review 에서 쓴 승인 전 묶음(전달 불가, 승인 때 approved 로 다시 씀 #130)
+    # · none = 목 판(평가용 명세로 만든 것)
+    approval: Literal["approved", "pending", "none"]
     note: str = ""
     common_id: str = Field(pattern=COMMON_ID)
     revision: int = Field(ge=1)
@@ -123,9 +125,15 @@ class PackageHeader(Schema):
             )
         if self.mock:
             return self
-        # 실제 전달: 사람 승인(시작 코드 승인) 없이 나가는 묶음은 없다 · 온톨로지는 고정 버전만 (불변식 4)
-        if self.approval != "approved":
-            raise ValueError("mock 이 아닌 묶음은 approval=approved 여야 한다")
+        # 실제 묶음: 승인 전(pending)이거나 사람 승인(시작 코드 승인) 뒤(approved) — 승인 없이 전달되는 묶음은 없다.
+        # pending 은 builder(#129)가 review 에서 등록하는 묶음 (승인이 묶음을 요구하므로 승인 전에 만든다). 전달은 approved 만.
+        if self.approval == "none":
+            raise ValueError(
+                "mock 이 아닌 묶음은 approval=pending(승인 전) 또는 approved 여야 한다"
+            )
+        if self.approval == "pending":
+            return self
+        # 전달하는 묶음은 온톨로지 고정 버전만 (불변식 4)
         if self.ontology_version.endswith("+dirty"):
             raise ValueError("mock 이 아닌 묶음에 커밋 안 된 온톨로지(+dirty)를 쓸 수 없다")
         return self

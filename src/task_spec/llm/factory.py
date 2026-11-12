@@ -1,13 +1,27 @@
-"""Settings → LLMClient. 키는 Settings(SecretStr) 에서만 꺼낸다."""
+"""설정 → LLMClient. 키는 설정(SecretStr) 에서만 꺼낸다. API 의 Settings 와 builder 의 BuilderSettings(#129) 가 같이 쓴다."""
 
 from __future__ import annotations
 
-from task_spec.config import Settings
+from typing import Protocol
+
+from pydantic import SecretStr
+
 from task_spec.llm.client import LLMClient
 from task_spec.llm.openai_compat import OpenAICompatBackend
 
 
-def build_llm_client(settings: Settings) -> LLMClient:
+class LLMSettings(Protocol):
+    @property
+    def openai_api_key(self) -> SecretStr: ...
+    @property
+    def opencode_api_key(self) -> SecretStr: ...
+    @property
+    def opencode_base_url(self) -> str: ...
+    @property
+    def llm_timeout_seconds(self) -> float: ...
+
+
+def build_llm_client(settings: LLMSettings) -> LLMClient:
     return LLMClient(
         {
             "openai": OpenAICompatBackend(

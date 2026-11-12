@@ -34,26 +34,18 @@ from task_spec.config import Settings
 from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
     README_PATH,
-    BuildArtifact,
     BuildOutcome,
     StarterFile,
 )
-from task_spec.schemas.package import (
-    CandidateDescriptor,
-    GraderDescriptor,
-    ResultContract,
-)
+from task_spec.schemas.package import PackageHeader
 from task_spec.starter.artifacts import (
-    CASE_FIELDS,
-    RESULT_FIELDS,
     extract_readme,
     merged_flags,
     overlay_files,
-    pack,
     summaries,
-    write_role,
 )
 from task_spec.starter.images import grader_sha256
+from task_spec.starter.loader import ImageRef, PackageInputs, register_packages
 from task_spec.starter.store import PgBuildStore
 
 MOCK_NOTE = "승인되지 않은 평가용 명세로 만든 목 판"
@@ -163,66 +155,38 @@ async def import_one(
     else:  # README 를 저장하기 전에 적재한 빌드 — 이미 있으면 같은 본문이어야 한다
         await store.put_readme(StarterFile.of(build.build_id, "readme", README_PATH, readme))
 
-    header = {
-        "mock": True,
-        "approval": "none",
-        "note": MOCK_NOTE,
-        "common_id": cid,
-        "revision": revision,
-        "build_id": build.build_id,
-        "template_ref": t["template_ref"],
-        "ontology_version": build.ontology_version,
-        "tree_sha256": tree,
-        "title": t.get("title"),
-    }
-    cdir, cimg = pack(root, build, "candidate", c)
-    (cdir / README_PATH).write_text(
-        readme, "utf-8"
-    )  # 이미지를 열지 않고 보여 줄 수 있게 — SHA256SUMS 에 들어간다
-    cand = CandidateDescriptor(
-        **header,
-        image=cimg,
-        load=f"podman load -i {cimg.file}",
-        workspace=c["workspace"],
-        run=f"podman run -it --name <응시자> {cimg.name} bash",
-        commands={k: v for k, v in (c.get("commands") or {}).items() if k != "hidden_test"},
-    )
-    g = t["grader"]
-    gdir, gimg = pack(root, build, "grader", g)
-    grade = f"podman run --rm --network none -v <제출물>:/submission:ro,z -v <결과>:/out:z {gimg.name} grade"
     starter = summaries(t["verification"]).get("starter-only")
     if starter is None:
         raise SystemExit(f"{cid}: 시작 코드만 채점한 결과(starter-only)가 없다")
-    grader = GraderDescriptor(
-        **header,
-        image=gimg,
-        load=f"podman load -i {gimg.file}",
-        grader_sha256=grader_hash,
-        grade=grade,
-        grade_without_selinux_relabel=grade.replace(":ro,z", ":ro")
-        .replace(":/out:z", ":/out")
-        .replace("--network none", "--network none --security-opt label=disable"),
-        timeout_s=g["timeout_s"],
-        result=ResultContract(fields=RESULT_FIELDS, case_fields=CASE_FIELDS),
-        case_ids=[x["id"] for x in g["cases"]],
-        starter_expected=starter,
-    )
-    for role, d, desc, img in (
-        ("candidate", cdir, cand, cimg),
-        ("grader", gdir, grader, gimg),
-    ):
-        files = write_role(d, f"{role}.json", desc.model_dump_json(indent=2))
-        await store.put_artifact(
-            BuildArtifact(
+    g = t["grader"]
+    await register_packages(
+        store,
+        root,
+        build,
+        PackageInputs(
+            header=PackageHeader(
+                mock=True,
+                approval="none",
+                note=MOCK_NOTE,
+                common_id=cid,
+                revision=revision,
                 build_id=build.build_id,
-                role=role,  # type: ignore[arg-type]
-                files=files,
-                image_id=img.image_id,
+                template_ref=t["template_ref"],
+                ontology_version=build.ontology_version,
                 tree_sha256=tree,
-                grader_sha256=grader_hash,
-                created_at=build.created_at,
-            )
-        )
+                title=t.get("title"),
+            ),
+            candidate=ImageRef(c["name"], c["image_id"]),
+            grader=ImageRef(g["name"], g["image_id"]),
+            readme=readme,
+            workspace=c["workspace"],
+            commands=c.get("commands") or {},
+            grader_sha256=grader_hash,
+            timeout_s=g["timeout_s"],
+            case_ids=[x["id"] for x in g["cases"]],
+            starter_expected=starter,
+        ),
+    )
     return f"{cid} r{t['revision']}: → {build.build_id} (review, 묶음 {root / build.build_id})"
 
 
