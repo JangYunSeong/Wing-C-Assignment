@@ -255,6 +255,10 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 
 ## 승인 (interrupt)
 
+> 빌드(시작 코드) 승인은 실행 그래프가 아니라 **빌드 승인 그래프**(`graph/build_approval.py`, #130)다 — 같은 체크포인터,
+> thread 는 (빌드, 결과)마다 `build-<build_id>-<결과 키>`. 결과가 바뀌면(수리) 옛 thread 의 resume 은 stale 로 끝난다.
+> `finalize_build` 는 DB 승인만, 묶음 approved 다시 쓰기·평가 키트는 builder [확정: 2026-11-12 사용자].
+
 ```python
 from langgraph.types import interrupt, Command
 

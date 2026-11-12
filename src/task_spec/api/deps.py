@@ -85,3 +85,14 @@ def get_builds(request: Request) -> BuildRepo:
 
 
 BuildsDep = Annotated[BuildRepo, Depends(get_builds)]
+
+
+def get_build_approval(request: Request) -> CompiledStateGraph:
+    """빌드 승인 그래프 (#130) — lifespan 이 실행 그래프와 같은 체크포인터로 만든다 (테스트는 app.state.build_approval 에)."""
+    graph = getattr(request.app.state, "build_approval", None)
+    if graph is None:
+        raise ServiceUnavailable("빌드 승인 그래프가 준비되지 않았습니다")
+    return graph  # type: ignore[no-any-return]
+
+
+BuildApprovalDep = Annotated[CompiledStateGraph, Depends(get_build_approval)]

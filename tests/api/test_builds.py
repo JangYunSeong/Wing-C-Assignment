@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -25,10 +26,14 @@ CID = "ct-0123456789ab"
 SECRET = "가상 참조 구현 본문 SECRET-REF"
 
 
-async def _client(tmp_path: Path, store: InMemoryBuildStore | None) -> httpx.AsyncClient:
+async def _client(
+    tmp_path: Path, store: InMemoryBuildStore | None, approval: Any = None
+) -> httpx.AsyncClient:
     app = create_app(settings=make_settings(tmp_path))
     if store is not None:
         app.state.builds = store
+    if approval is not None:  # 빌드 승인 그래프 (#130, 메모리 체크포인터)
+        app.state.build_approval = approval
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
@@ -341,3 +346,76 @@ async def test_build_request_queues_once_and_needs_an_approved_feature_task(
         assert (
             await c.post("/common-tasks/not-an-id/builds", json={"requested_by": "a"})
         ).status_code == 422
+
+
+async def test_build_approval_flow_through_the_api(tmp_path: Path) -> None:
+    """빌드 승인 (#130) — GET 이 승인 thread 를 시작(interrupt 까지), POST 는 resume 만. 판단이 빠지면 422 로 다시 기다린다."""
+    from datetime import UTC, datetime
+
+    from task_spec.graph import make_checkpointer
+    from task_spec.graph.build_approval import build_approval_graph
+    from task_spec.schemas.package import ReviewDecision
+
+    store = InMemoryBuildStore()
+    bid = await _review_build(store)
+    await store.reopen(bid)  # README 를 저장한 빌드로 다시 (승인에 필요)
+    await store.put_readme(StarterFile.of(bid, "readme", README_PATH, "# 가상 README"))
+    await store.set_status(bid, "verifying")
+    await store.set_status(bid, "review")
+    for role in ("candidate", "grader"):
+        await store.put_artifact(_artifact(bid, role, H_OLD))  # type: ignore[arg-type]
+    pending = await store.new_build("ct-ba9876543210", "onto-test", AT)
+    decision = ReviewDecision(
+        flag_id=flag_id(FLAG), flag=FLAG, verdict="fixed", reviewer="가상승인자"
+    )
+    body = {
+        "status": "approved",
+        "reviewer": "가상승인자",
+        "at": datetime(2026, 11, 12, tzinfo=UTC).isoformat(),
+        "decisions": [decision.model_dump(mode="json")],
+    }
+    async with make_checkpointer(kind="memory") as cp:
+        async with await _client(tmp_path, store, build_approval_graph(store, cp)) as c:
+            view = (await c.get(f"/builds/{bid}/approval")).json()
+            assert view["state"] == "awaiting" and view["flags"][0]["flag_id"] == flag_id(FLAG)
+            bad = await c.post(f"/builds/{bid}/approve", json={**body, "decisions": []})
+            assert (
+                bad.status_code == 422 and bad.json()["error"]["code"] == "build_approval_invalid"
+            )
+            assert "빠진 표시 1건" in bad.json()["error"]["message"]
+            assert (
+                await c.post(f"/builds/{bid}/approve", json={"status": "approved"})
+            ).status_code == 422
+            ok = await c.post(f"/builds/{bid}/approve", json=body)
+            assert ok.status_code == 200 and ok.json()["state"] == "approved"
+            again = (await c.get(f"/builds/{bid}/approval")).json()
+            assert again["status"] == "approved" and again["approved_by"] == "가상승인자"
+            assert again["flags"][0]["verdict"] == "fixed"
+            assert (
+                await c.post(f"/builds/{pending.build_id}/approve", json=body)
+            ).status_code == 409
+
+
+async def test_build_reject_through_the_api(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    from task_spec.graph import make_checkpointer
+    from task_spec.graph.build_approval import build_approval_graph
+
+    store = InMemoryBuildStore()
+    bid = await _review_build(store)
+    body = {
+        "status": "rejected",
+        "reviewer": "가상승인자",
+        "at": datetime(2026, 11, 12, tzinfo=UTC).isoformat(),
+        "comment": "가상 반려 사유",
+    }
+    async with make_checkpointer(kind="memory") as cp:
+        async with await _client(tmp_path, store, build_approval_graph(store, cp)) as c:
+            r = await c.post(
+                f"/builds/{bid}/approve", json=body
+            )  # GET 없이도 thread 를 시작하고 resume
+            assert r.status_code == 200 and r.json()["state"] == "rejected"
+            assert r.json()["error"] == "승인자 반려 (가상승인자): 가상 반려 사유"
+    b = await store.get(bid)
+    assert b is not None and b.status == "failed"

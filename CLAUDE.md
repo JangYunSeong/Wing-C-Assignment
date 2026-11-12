@@ -90,4 +90,4 @@ data/            git 밖 — raw/ pseudonymized/ runs/ ontology/<version>/
 - 이슈·PR 은 GitHub(`gh`) — `github-issue`, `github-pr` 에이전트.
 - 코드 변경 후 `uv run pytest -q` (단위). Postgres 통합 테스트는 `-m pg` (`TEST_DATABASE_URL` 필요).
   실제 LLM API 스모크는 `-m llm` — 비용이 들므로 프롬프트·llm 변경 때만, 가상 텍스트로.
-- 레포: `JangYunSeong/p1-task-spec` (private).
+- 레포: `JangYunSeong/Wing-C-Assignment` (private, 옛 이름 `p1-task-spec`). 원격은 ssh(`git@github.com:JangYunSeong/Wing-C-Assignment.git`).
