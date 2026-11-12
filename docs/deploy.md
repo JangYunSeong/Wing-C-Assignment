@@ -260,6 +260,38 @@ systemctl --user start podman-restart.service        # 시험 — 떠 있는 컨
 - linger 가 켜져 있어야 로그인 없이 부팅 때 사용자 서비스가 돈다 (`loginctl show-user <사용자> -p Linger` → yes).
 - API 가 DB 보다 먼저 떠서 실패해도 restart 정책으로 다시 붙는다. `podman stop` 으로 일부러 멈춘 컨테이너도 재부팅 때는 다시 뜬다.
 
+### 2-10. builder 자동 업그레이드 — 배포 사용자가 넣으면 task-builder 가 스스로
+
+배포할 때마다 `sudo -iu task-builder` 로 들어가지 않게, **받는 폴더**(`/srv/task-spec/builder-inbox`)에 배포 사용자가 이미지·`run.sh`·체크섬을
+넣으면 task-builder 의 systemd path 유닛이 업그레이드한다 (`docker/builder/upgrade.sh`): 체크섬 → `podman load` → 지금 builder 정지
+(작업 끝날 때까지) → 새 `run.sh` 로 기동 → "builder 시작" 로그 확인 → **실패면 이전 이미지·run.sh 로 되돌림**. 결과는 받는 폴더의
+`last-upgrade.json`. 설정 파일(`~/builder-settings`, 비밀값)은 task-builder 홈에만 있고 건드리지 않는다. 배포 사용자는 받는 폴더에 쓰기만 —
+builder 작업 폴더·설정은 여전히 못 본다.
+
+처음 한 번 (sudo 없음 — `/srv/task-spec` 는 배포 사용자 소유):
+
+```bash
+# 배포 사용자 — 받는 폴더 (배포 사용자·task-builder 둘 다 읽고 쓰고, 새 파일도 그대로 상속)
+mkdir -m 770 /srv/task-spec/builder-inbox
+setfacl -m u:task-builder:rwx /srv/task-spec/builder-inbox
+setfacl -d -m u:task-builder:rwx,u:$(id -un):rwx /srv/task-spec/builder-inbox
+docker/builder/deliver.sh --setup            # 설치 파일을 받는 폴더 setup/ 에
+
+# task-builder 사용자 — 유닛 설치·켜기 (지금 떠 있는 builder 의 run.sh 를 되돌리기용으로 둔다)
+sudo -iu task-builder
+sh /srv/task-spec/builder-inbox/setup/install-upgrader.sh     # active 가 나오면 됨
+```
+
+그다음부터 배포 (배포 사용자, 레포 루트 — 커밋된 상태로):
+
+```bash
+docker/builder/deliver.sh    # 이미지 빌드·금지 파일 검사 → 받는 폴더 → last-upgrade.json 이 ok 면 끝 (지금 작업이 있으면 끝난 뒤, 최대 20분 기다림)
+```
+
+- 실패하면 `last-upgrade.json` 의 `message` (체크섬·불러오기·기동 실패·되돌림). 자세한 건 task-builder 로 `journalctl --user -u task-builder-upgrade`·`podman logs task-builder`.
+- `upgrade.sh`·유닛을 바꾸면 `deliver.sh --setup` 뒤 task-builder 로 `install-upgrader.sh` 를 다시 (자기 자신은 자동으로 바꾸지 않는다).
+- builder 설정 값(`~/builder-settings`)을 바꿀 때는 지금처럼 task-builder 로 고치고 다시 만든다 (`podman restart` 는 env 파일을 다시 읽지 않는다).
+
 ## 3. 확인
 
 ```bash

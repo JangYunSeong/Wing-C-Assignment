@@ -1,0 +1,8 @@
+[Unit]
+Description=task-builder 업그레이드 (받은 이미지 load → 다시 기동, 실패면 되돌림)
+
+[Service]
+Type=oneshot
+ExecStart=%h/builder-bin/upgrade.sh
+# 이미지 load(수백 MB) + 지금 작업 끝날 때까지 정지 + 기동 확인
+TimeoutStartSec=20min

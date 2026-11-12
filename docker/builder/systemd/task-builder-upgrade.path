@@ -1,0 +1,10 @@
+# builder 자동 업그레이드 (docs/deploy.md 2-10) — 받는 폴더에 체크섬 파일(마지막에 쓰임)이 생기면 업그레이드를 돌린다
+[Unit]
+Description=task-builder 업그레이드 대기 (받는 폴더 감시)
+
+[Path]
+PathExistsGlob=/srv/task-spec/builder-inbox/task-builder-*.sha256
+Unit=task-builder-upgrade.service
+
+[Install]
+WantedBy=default.target
