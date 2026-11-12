@@ -869,6 +869,64 @@ function renderVerify(s) {
     .join("")}</div>`;
 }
 
+/* 과제 생성 요청 (#128) — 명세 승인과 따로, 사람이 원할 때만 큐에 넣는다 (builder 가 가져가 만든다) */
+const BUILD_KO = { pending: "대기", generating: "생성 중", verifying: "검증 중", review: "검토", approved: "승인", published: "전달됨", failed: "실패" };
+function renderBuildRequests(el, s) {
+  const tasks = (s.common_tasks || []).filter((t) => t.task_kind === "feature");
+  if (!tasks.length) return;
+  const box = document.createElement("div");
+  box.style.marginTop = "16px";
+  box.innerHTML = `<div class="block-head"><span class="eyebrow">과제 생성</span>
+      <span class="only-approver">명세 승인과 따로 — 시작 코드·테스트·이미지는 요청할 때만 만듭니다 (LLM 비용 발생)</span></div>
+    <div class="row" style="gap:8px;align-items:center;margin:8px 0"><label for="build-by">요청자</label>
+      <input id="build-by" value="${esc(keep.get("reviewer", ""))}" autocomplete="name" style="max-width:200px"></div>
+    <ul class="lines">${tasks
+      .map(
+        (t) => `<li data-cid="${esc(t.task_id)}" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span>${esc(t.title || t.task_id)} <span class="mono faint">${esc(t.task_id)}</span></span>
+        <span class="build-state faint">읽는 중…</span>
+        <button type="button" class="btn small" data-build="${esc(t.task_id)}">과제 생성</button></li>`,
+      )
+      .join("")}</ul>
+    <p class="msg" id="build-msg" role="status"></p>`;
+  el.appendChild(box);
+  tasks.forEach((t) => refreshBuildState(box, t.task_id));
+  box.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-build]");
+    if (!btn) return;
+    const msg = box.querySelector("#build-msg");
+    const by = box.querySelector("#build-by").value.trim();
+    if (!by) return say(msg, "요청자 이름을 적으세요.", "err");
+    keep.set("reviewer", by);
+    const cid = btn.dataset.build;
+    try {
+      const r = await busy(btn, "요청 중…", () =>
+        api("POST", `/common-tasks/${encodeURIComponent(cid)}/builds`, { json: { requested_by: by } }),
+      );
+      say(msg, r.created ? `요청했습니다 (${r.build.build_id}) — builder 가 가져가면 진행됩니다.` : `이미 진행 중인 빌드가 있습니다 (${r.build.build_id}).`, "ok");
+    } catch (e) {
+      say(msg, e.message, "err");
+    }
+    refreshBuildState(box, cid);
+  });
+}
+async function refreshBuildState(box, cid) {
+  const li = [...box.querySelectorAll("li[data-cid]")].find((x) => x.dataset.cid === cid);
+  if (!li) return;
+  const slot = li.querySelector(".build-state");
+  try {
+    const rows = await api("GET", `/builds?common_id=${encodeURIComponent(cid)}`);
+    const last = rows[rows.length - 1];
+    slot.innerHTML = last
+      ? `<a href="builds.html#${encodeURIComponent(last.build_id)}" class="mono">${esc(last.build_id)}</a>
+         <span class="pill b-${esc(last.status)}">${esc(BUILD_KO[last.status] || last.status)}${last.stage ? ` · ${esc(last.stage)}` : ""}</span>
+         ${last.error ? `<span class="bad">${esc(last.error)}</span>` : ""}`
+      : "아직 만든 빌드 없음";
+  } catch (e) {
+    slot.textContent = e.message;
+  }
+}
+
 /* 승인 */
 function renderDecide(view, s) {
   const el = $("#decide");
@@ -889,6 +947,7 @@ function renderDecide(view, s) {
         a.remove();
       }, 0);
     });
+    renderBuildRequests(el, s);
     return;
   }
   if (view.status === "rejected") {
