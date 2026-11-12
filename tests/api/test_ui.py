@@ -33,7 +33,11 @@ async def test_ui_builds_page_uses_build_apis_only(make_client: AppFactory) -> N
     # 케이스 설명·의도한 실패 사유는 승인자용 /cases 로만 받는다 [확정: 2026-11-11 사용자 — 문제를 쓸지 정하는 사람이 본다]
     assert "/cases" in js and "intended_reason" in js
     # README 본문(/readme)·진행자 자료 본문(/facilitator)은 지원자가 받는 글이다 — 그 두 API 의 content 만 허용
-    assert 'data-t="readme"' in js and 'data-t="facilitator"' in js and "/builds/${encodeURIComponent(id)}/${tab}" in js
+    assert (
+        'data-t="readme"' in js
+        and 'data-t="facilitator"' in js
+        and "/builds/${encodeURIComponent(id)}/${tab}" in js
+    )
     rest = js.replace("v.content", "").replace("a.content", "")
     for hidden in ("hidden_plan", "contract", "content"):
         assert hidden not in rest, hidden

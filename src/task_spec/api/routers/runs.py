@@ -11,9 +11,17 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langgraph.types import Command
 
-from task_spec.api.deps import GraphDep, LauncherDep, OntologyDep, RunViewDep, SettingsDep
+from task_spec.api.deps import (
+    CommonStoreDep,
+    GraphDep,
+    LauncherDep,
+    OntologyDep,
+    RunViewDep,
+    SettingsDep,
+)
 from task_spec.api.errors import (
     ApprovalNotPending,
+    CommonTaskGone,
     ErrorResponse,
     PostingNotFound,
     RunNotFound,
@@ -113,9 +121,15 @@ async def approve_run(
     decision: ApprovalDecision,  # TODO(auth): reviewer 는 인증 전까지 요청 본문에서 받는다
     view: RunViewDep,
     launcher: LauncherDep,
+    common_store: CommonStoreDep,
 ) -> RunAccepted:
     if view.status != "awaiting_approval":
         raise ApprovalNotPending(f"승인 대기 상태가 아닙니다 (현재: {view.status})", run_id=run_id)
+    # 확정(finalize)은 명세가 가리키는 공통 과제 판을 승인한다 — 판이 없으면 실행이 실패하므로 승인 전에 막는다
+    if decision.status == "approved" and common_store is not None and view.spec is not None:
+        gone = await common_store.missing([r.common_id for r in view.spec.common_refs])
+        if gone:
+            raise CommonTaskGone(gone, run_id=run_id)
     launcher.launch(run_id, Command(resume=decision.model_dump(mode="json")))
     return RunAccepted(run_id=run_id, status="running")
 

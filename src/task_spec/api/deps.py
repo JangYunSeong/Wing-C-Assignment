@@ -18,6 +18,7 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
+from task_spec.spec.store import CommonTaskRepo
 from task_spec.starter.store import BuildRepo
 
 
@@ -85,6 +86,14 @@ def get_builds(request: Request) -> BuildRepo:
 
 
 BuildsDep = Annotated[BuildRepo, Depends(get_builds)]
+
+
+def get_common_store(request: Request) -> CommonTaskRepo | None:
+    """공고 단위 공통 과제 저장소 — lifespan 이 연다. DB 없는 테스트 앱은 None (승인 전 확인을 건너뛴다)."""
+    return getattr(request.app.state, "common_store", None)
+
+
+CommonStoreDep = Annotated[CommonTaskRepo | None, Depends(get_common_store)]
 
 
 def get_build_approval(request: Request) -> CompiledStateGraph:

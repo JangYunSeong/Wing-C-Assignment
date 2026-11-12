@@ -62,6 +62,7 @@ def create_app(
         app.state.builds = await PgBuildStore.open(
             app.state.settings.database_url.get_secret_value()
         )
+        app.state.common_store = common_store  # 명세 승인 전 공통 과제 확인 (runs.approve_run)
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때

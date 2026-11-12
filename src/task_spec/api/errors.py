@@ -135,6 +135,20 @@ class CommonTaskNotFound(DomainError):
         super().__init__(f"공통 과제를 찾을 수 없습니다: {common_id}")
 
 
+class CommonTaskGone(DomainError):
+    """승인하려는 명세가 가리키는 공통 과제 판이 저장소에 없다 — 확정하면 실패하므로 승인 전에 막는다."""
+
+    code = "common_task_gone"
+    status_code = 409
+
+    def __init__(self, common_ids: list[str], *, run_id: str) -> None:
+        super().__init__(
+            f"이 명세가 가리키는 공통 과제가 저장소에 없습니다 ({', '.join(common_ids)}) — "
+            "같은 공고로 명세를 다시 만드세요",
+            run_id=run_id,
+        )
+
+
 class BuildRuleViolation(DomainError):
     """빌드 저장소 규칙 위반 (상태·역할 충돌) — 저장소 메시지는 id·상태·역할만 담는다."""
 

@@ -451,14 +451,28 @@ def make_finalize(
         if state.spec is None or state.approval is None or state.approval.status != "approved":
             raise RuntimeError("finalize: 승인되지 않은 명세는 확정할 수 없습니다")
         if store is not None:
-            for r in state.spec.common_refs:
-                await store.approve(r.common_id, state.approval.reviewer, state.approval.at)
+            ids = [r.common_id for r in state.spec.common_refs]
+            gone = await store.missing(ids)
+            if gone:  # API 가 승인 전에 막지만 (409), 그 사이 지워진 경우에도 사유를 남긴다
+                raise CommonTaskMissing(gone)
+            for cid in ids:
+                await store.approve(cid, state.approval.reviewer, state.approval.at)
         return {"spec": state.spec.model_copy(update={"approval": state.approval})}
 
     return finalize
 
 
 finalize = make_finalize()
+
+
+class CommonTaskMissing(RuntimeError):
+    """명세가 가리키는 공통 과제 판이 저장소에 없다 (DB 정리 등) — 같은 공고로 명세를 다시 만든다."""
+
+    def __init__(self, common_ids: list[str]) -> None:
+        self.common_ids = common_ids
+        super().__init__(
+            f"공통 과제가 저장소에 없습니다: {', '.join(common_ids)} — 같은 공고로 명세를 다시 만드세요"
+        )
 
 
 def _summarize(exc: ValidationError) -> str:
