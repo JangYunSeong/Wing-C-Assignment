@@ -73,6 +73,10 @@ class CommonTaskRepo(Protocol):
 
     async def approve(self, common_id: str, reviewer: str, at: datetime) -> None: ...
 
+    async def missing(self, common_ids: list[str]) -> list[str]:
+        """저장소에 없는 공통 과제 id (승인 전 확인 — 명세가 가리키는 판이 지워졌으면 확정할 수 없다)."""
+        ...
+
     async def approved_kind(self, posting_id: str, ontology_version: str) -> TaskKind | None: ...
 
 
@@ -127,6 +131,10 @@ class InMemoryCommonStore:
             if r["key"] == row["key"] and r["status"] == "approved" and r is not row:
                 r["status"] = "superseded"
         row["status"], row["approved_by"], row["approved_at"] = "approved", reviewer, at
+
+    async def missing(self, common_ids: list[str]) -> list[str]:
+        have = {r["id"] for r in self.rows}
+        return [c for c in common_ids if c not in have]
 
     async def approved_kind(self, posting_id: str, ontology_version: str) -> TaskKind | None:
         rows = [
@@ -236,6 +244,16 @@ class CommonTaskStore:
                 "WHERE id = %s",
                 (reviewer, at, common_id),
             )
+
+    async def missing(self, common_ids: list[str]) -> list[str]:
+        if not common_ids:
+            return []
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT id FROM public.common_task WHERE id = ANY(%s)", (list(common_ids),)
+            )
+            have = {r[0] for r in await cur.fetchall()}
+        return [c for c in common_ids if c not in have]
 
     async def approved_kind(self, posting_id: str, ontology_version: str) -> TaskKind | None:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:

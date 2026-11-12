@@ -5,9 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+
 from task_spec.nodes.spec import (
     FLAG_REUSED_DRAFT,
     SKELETON_REF,
+    CommonTaskMissing,
     approval_summary,
     make_draft_spec,
     make_finalize,
@@ -102,3 +105,15 @@ async def test_approval_summary_has_tasks_common_and_verify_claims() -> None:
     assert summary.comparison.claims_to_verify[0].claim_id == "c1"
     # 인증 전: 주장 인용(quote)은 요약 모델에 필드 자체가 없다
     assert "quote" not in type(summary.comparison.claims_to_verify[0]).model_fields
+
+
+async def test_finalize_refuses_when_common_task_is_gone() -> None:
+    """명세가 가리키는 공통 과제 판이 지워졌으면 (운영 DB 정리 등) KeyError 대신 사유를 담은 오류, 다른 판은 승인하지 않는다."""
+    store = InMemoryCommonStore()
+    spec = (await make_draft_spec(None, store=store)(_state("run-a")))["spec"]
+    gone = spec.common_refs[0].common_id
+    assert await store.missing([gone, "ct-nope"]) == ["ct-nope"]
+    store.rows.clear()
+    with pytest.raises(CommonTaskMissing) as e:
+        await make_finalize(store)(_state("run-a", spec=spec, approval=_decision("approved")))
+    assert e.value.common_ids == [gone] and gone in str(e.value)

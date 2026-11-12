@@ -35,6 +35,8 @@ async def test_store_roundtrip_reuse_approve_supersede() -> None:
     try:
         assert await store.reusable(key) is None
         r1 = await store.save_draft(key, _task(), [])
+        assert await store.missing([r1.id, "ct-nope"]) == ["ct-nope"]
+        assert await store.missing([]) == []
         assert r1.revision == 1 and r1.task.task_id == r1.id and r1.status == "draft"
         got = await store.reusable(key)
         assert got is not None and got.id == r1.id and got.task.title == "가상 과제"

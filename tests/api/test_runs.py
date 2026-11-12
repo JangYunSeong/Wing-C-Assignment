@@ -102,6 +102,37 @@ async def test_approve_when_not_pending_is_409(client: httpx.AsyncClient) -> Non
     assert resp.json()["error"]["run_id"] == run_id
 
 
+class _GoneCommonStore:
+    """명세가 가리키는 공통 과제 판이 모두 지워진 저장소 (가짜)."""
+
+    def __init__(self) -> None:
+        self.asked: list[list[str]] = []
+
+    async def missing(self, common_ids: list[str]) -> list[str]:
+        self.asked.append(list(common_ids))
+        return ["ct-gone"]
+
+
+async def test_approve_when_common_task_gone_is_409_and_run_stays_pending(
+    client: httpx.AsyncClient,
+) -> None:
+    run_id = await _create(client)
+    await wait_status(client, run_id, "awaiting_approval")
+    store = _GoneCommonStore()
+    client._transport.app.state.common_store = store  # type: ignore[attr-defined]
+
+    resp = await client.post(f"/runs/{run_id}/approve", json=reviewer_decision("approved"))
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "common_task_gone"
+    assert "ct-gone" in resp.json()["error"]["message"]
+    assert store.asked  # 명세의 공통 과제 참조로 물었다
+    # 실행은 그대로 승인 대기 — 확정(finalize)을 돌리지 않았다
+    assert (await client.get(f"/runs/{run_id}")).json()["status"] == "awaiting_approval"
+    # 반려는 공통 과제를 승인하지 않으므로 막지 않는다
+    resp = await client.post(f"/runs/{run_id}/approve", json=reviewer_decision("rejected"))
+    assert resp.status_code == 202
+
+
 async def test_unknown_run_is_404(client: httpx.AsyncClient) -> None:
     for method, path in [
         ("get", "/runs/nope"),
