@@ -232,7 +232,7 @@ async function show(id) {
         <div class="meta"><span class="mono">${esc(b.build_id)}</span><span>${esc(b.template_ref || "–")}</span><span>만든 시각 ${when(b.created_at)}</span>
         ${b.approved_by ? `<span>승인 ${esc(b.approved_by)} · ${when(b.approved_at)}</span>` : ""}</div>
         ${queueLine(b)}</div>
-        <div class="right">${pill(b.status)}</div></div>
+        <div class="right">${pill(b.status)}<button type="button" class="btn small" data-problem>문제 보기</button></div></div>
       <nav class="jump" aria-label="빌드 안에서 이동"><a href="#" data-jump="b-verify">검증</a><a href="#" data-jump="b-cases">테스트</a><a href="#" data-jump="b-flags">검토 표시</a><a href="#" data-jump="b-arts">이미지 묶음</a><a href="#" data-jump="b-deliv">전달</a></nav>
       <section class="block" id="b-verify"><div class="block-head"><h3>검증 결과</h3><span class="aside">채점용 이미지로 채점한 구현별 통과 수</span></div>
         ${verificationTable(b.verification)}
@@ -248,6 +248,110 @@ async function show(id) {
   }
 }
 
+/* 문제 보기 — 지원자가 받는 README 와, 진행자(응시 플랫폼)가 요청·질문에 내주는 자료·답·2단계. 숨은 칸은 두 API 모두 내리지 않는다 */
+const inline = (t) =>
+  esc(t)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+
+function markdown(src) {
+  const out = [];
+  const lines = src.replace(/\r/g, "").split("\n");
+  for (let i = 0; i < lines.length; ) {
+    const l = lines[i];
+    if (l.startsWith("```")) {
+      const body = [];
+      for (i++; i < lines.length && !lines[i].startsWith("```"); i++) body.push(lines[i]);
+      i++;
+      out.push(`<pre><code>${esc(body.join("\n"))}</code></pre>`);
+    } else if (/^#{1,4} /.test(l)) {
+      const n = l.match(/^#+/)[0].length;
+      out.push(`<h${n}>${inline(l.slice(n + 1))}</h${n}>`);
+      i++;
+    } else if (/^\s*\|/.test(l)) {
+      const rows = [];
+      for (; i < lines.length && /^\s*\|/.test(lines[i]); i++) rows.push(lines[i].trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
+      const body = rows.filter((r) => !r.every((c) => /^:?-{2,}:?$/.test(c)));
+      const [h, ...rest] = body;
+      out.push(`<div class="tbl-wrap"><table><thead><tr>${h.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+    } else if (/^\s*([-*]|\d+\.) /.test(l)) {
+      const ordered = /^\s*\d+\. /.test(l);
+      const items = [];
+      for (; i < lines.length && /^\s*([-*]|\d+\.) /.test(lines[i]); i++) items.push(`<li>${inline(lines[i].replace(/^\s*([-*]|\d+\.) /, ""))}</li>`);
+      out.push(ordered ? `<ol>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
+    } else if (l.trim()) {
+      const para = [];
+      for (; i < lines.length && lines[i].trim() && !/^(#{1,4} |```|\s*\||\s*([-*]|\d+\.) )/.test(lines[i]); i++) para.push(inline(lines[i]));
+      out.push(`<p>${para.join("<br>")}</p>`);
+    } else i++;
+  }
+  return `<div class="md">${out.join("")}</div>`;
+}
+
+function materialsList(m) {
+  if (!m.items.length) return `<p class="placeholder">없음</p>`;
+  return `<p class="faint">요청 상한 ${m.max_requests ?? "없음"}</p><ul class="bflags">${m.items
+    .map((a) => `<li><span class="mono faint">${esc(a.id)}</span> <b>${esc(a.title)}</b><p>${esc(a.content)}</p></li>`)
+    .join("")}</ul>`;
+}
+
+function facilitatorBlock(f) {
+  const s1 = f.stage1;
+  const qs = s1.clarifications.items
+    .map(
+      (c) => `<li><span class="mono faint">${esc(c.id)}</span> <b>${esc(c.topic)}</b>
+      <p><span class="faint">이 낱말이 있으면 구체 답:</span> ${esc(c.match_terms.join(", ") || "–")}<br>
+      <span class="faint">구체 답:</span> ${esc(c.answer)}${c.answer_hint ? `<br><span class="faint">모호한 질문엔:</span> ${esc(c.answer_hint)}` : ""}</p></li>`,
+    )
+    .join("");
+  const s2 = f.stage2
+    ? `<h4>2단계 · ${f.stage2.time_limit_min}분 <span class="faint">(1단계 제출 뒤 공개)</span></h4>
+      <div class="md"><p>${esc(f.stage2.scenario).replace(/\n/g, "<br>")}</p></div>
+      <div class="eyebrow">제출물</div><ul class="bflags">${f.stage2.deliverables.map((d) => `<li><p>${esc(d)}</p></li>`).join("")}</ul>
+      <div class="eyebrow">요청하면 주는 자료</div>${materialsList(f.stage2.materials)}`
+    : `<h4>2단계</h4><p class="placeholder">없음</p>`;
+  return `<div class="fac"><h4>1단계 · ${s1.time_limit_min}분</h4>
+    <div class="eyebrow">요청하면 주는 자료</div>${materialsList(s1.materials)}
+    <div class="eyebrow">질문 답 (질문 상한 ${s1.clarifications.max_questions ?? "없음"})</div>
+    <p class="faint">${esc(s1.clarifications.rule)}</p><ul class="bflags">${qs || "<li>없음</li>"}</ul>${s2}</div>`;
+}
+
+let problemCache = {};
+async function openProblem(id, tab) {
+  let dlg = $("#problem");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "problem";
+    dlg.className = "problem";
+    dlg.innerHTML = `<div class="p-head"><h3 id="p-title"></h3>
+      <div class="seg" role="group" aria-label="보기" id="p-tabs"><button type="button" data-t="readme">지원자 과제 설명</button><button type="button" data-t="facilitator">진행자 보기</button></div>
+      <button type="button" class="btn small" id="p-close">닫기</button></div><div class="p-body" id="p-body"></div>`;
+    document.body.append(dlg);
+    dlg.addEventListener("click", (ev) => {
+      if (ev.target === dlg || ev.target.closest("#p-close")) return dlg.close();
+      const t = ev.target.closest("button[data-t]");
+      if (t) openProblem(dlg.dataset.id, t.dataset.t);
+    });
+  }
+  dlg.dataset.id = id;
+  const b = builds.find((x) => x.build_id === id);
+  $("#p-title").textContent = b?.title || id;
+  for (const btn of $("#p-tabs").children) btn.setAttribute("aria-pressed", String(btn.dataset.t === tab));
+  if (!dlg.open) dlg.showModal();
+  const body = $("#p-body");
+  const key = `${id}|${tab}`;
+  body.innerHTML = `<p class="placeholder">읽는 중…</p>`;
+  try {
+    problemCache[key] ??= await api(`/builds/${encodeURIComponent(id)}/${tab}`);
+    if (dlg.dataset.id !== id) return;
+    const v = problemCache[key];
+    body.innerHTML = tab === "readme" ? markdown(v.content) : facilitatorBlock(v);
+    body.scrollTop = 0;
+  } catch (e) {
+    body.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+  }
+}
+
 $("#list").addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-id]");
   if (btn) show(btn.dataset.id);
@@ -260,10 +364,12 @@ $("#filter").addEventListener("click", (ev) => {
   renderList();
 });
 $("#reload").addEventListener("click", () => {
+  problemCache = {};
   loadList();
   if (current) show(current);
 });
 $("#detail").addEventListener("click", async (ev) => {
+  if (ev.target.closest("button[data-problem]")) return openProblem(current, "readme");
   const jump = ev.target.closest("a[data-jump]");
   if (jump) {
     ev.preventDefault();
