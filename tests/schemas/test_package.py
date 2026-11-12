@@ -205,6 +205,97 @@ def test_kit_consistency() -> None:
         EvalKit.model_validate(_kit(verification={}))
 
 
+def _stage(**over: Any) -> dict[str, Any]:
+    return {
+        "trap_ids": ["t1"],
+        "observables": [{"kind": "requests_artifact", "value": "a1"}],
+        "materials": [{"artifact_id": "a1", "title": "가상 로그", "role": "key"}],
+        **over,
+    }
+
+
+def test_kit_process_stages_optional_and_valid() -> None:
+    EvalKit.model_validate(_kit())  # 과정 기준이 없는 이전 키트도 그대로
+    kit = EvalKit.model_validate(
+        _kit(
+            stage1=_stage(
+                observables=[{"kind": "asks_clarification", "value": "c1"}],
+                clarifications=[{"clarification_id": "c1", "topic": "가상", "reveals": ["t1"]}],
+            ),
+            stage2=_stage(),
+        )
+    )
+    assert kit.stage2 is not None and kit.stage2.materials[0].role == "key"
+
+
+def test_kit_process_references_must_resolve() -> None:
+    with pytest.raises(ValidationError, match="없는 자료"):
+        EvalKit.model_validate(_kit(stage2=_stage(materials=[])))
+    with pytest.raises(ValidationError, match="없는 질문"):
+        EvalKit.model_validate(
+            _kit(stage1=_stage(observables=[{"kind": "asks_clarification", "value": "c9"}]))
+        )
+
+
+def test_kit_process_references_stay_within_their_stage() -> None:
+    """진행자 기록은 단계마다 따로 맞춰 본다 — 다른 단계에만 있는 자료·질문을 가리키면 거절 (spec/feature.py 와 같은 규칙)."""
+    a8 = {"artifact_id": "a8", "title": "가상 로그", "role": "key"}
+    with pytest.raises(ValidationError, match="stage1 관찰 항목이 이 단계에 없는 자료"):
+        EvalKit.model_validate(
+            _kit(
+                stage1=_stage(observables=[{"kind": "requests_artifact", "value": "a8"}]),
+                stage2=_stage(
+                    materials=[a8], observables=[{"kind": "requests_artifact", "value": "a8"}]
+                ),
+            )
+        )
+    with pytest.raises(ValidationError, match="stage2 관찰 항목이 이 단계에 없는 질문"):
+        EvalKit.model_validate(
+            _kit(
+                stage1=_stage(
+                    clarifications=[{"clarification_id": "c1", "topic": "가상", "reveals": []}]
+                ),
+                stage2=_stage(observables=[{"kind": "asks_clarification", "value": "c1"}]),
+            )
+        )
+
+
+def test_kit_process_questions_only_in_stage1() -> None:
+    with pytest.raises(ValidationError, match="질문은 1단계에만"):
+        EvalKit.model_validate(
+            _kit(
+                stage2=_stage(
+                    clarifications=[{"clarification_id": "c1", "topic": "가상", "reveals": []}]
+                )
+            )
+        )
+    with pytest.raises(ValidationError, match="질문은 1단계에만"):
+        EvalKit.model_validate(_kit(stage2=_stage(max_clarifications=2)))
+
+
+def test_kit_process_trap_references_must_resolve() -> None:
+    with pytest.raises(ValidationError, match="없는 함정"):
+        EvalKit.model_validate(_kit(stage2=_stage(trap_ids=["t9"])))
+    with pytest.raises(ValidationError, match="없는 함정"):
+        EvalKit.model_validate(
+            _kit(stage2=_stage(observables=[{"kind": "catches_trap", "value": "t9"}]))
+        )
+    with pytest.raises(ValidationError, match="없는 함정"):
+        EvalKit.model_validate(
+            _kit(
+                stage1=_stage(
+                    clarifications=[{"clarification_id": "c1", "topic": "가상", "reveals": ["t9"]}]
+                )
+            )
+        )
+    with pytest.raises(ValidationError, match="케이스의 함정이 없다"):
+        EvalKit.model_validate(_kit(stage1=_stage(trap_ids=[])))
+    # 케이스에서 빠진(채점에서 뺀) 함정도 1단계 목록에 있으면 가리킬 수 있다
+    EvalKit.model_validate(
+        _kit(stage1=_stage(trap_ids=["t1", "t2"]), stage2=_stage(trap_ids=["t2"]))
+    )
+
+
 def test_kit_needs_reviewer_decision_per_flag_unless_mock() -> None:
     with pytest.raises(ValidationError, match="승인자 판단"):
         EvalKit.model_validate(_kit(review_decisions=[]))
