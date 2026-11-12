@@ -148,3 +148,38 @@ def test_helper_gives_fresh_request_key_and_a_retry_overload() -> None:
     assert "return okHeaders(newRequestId());" in body
     assert "protected static Map<String, String> okHeaders(String key)" in body
     assert 'Map.of("X-Request-Id", key)' in body and "HEADER_X_REQUEST_ID_OK" not in body
+
+
+def test_literal_request_key_in_tests_is_re_requested() -> None:
+    """2026-11-12 백엔드 중복 처리: hc1·hc2 가 요청 번호를 글자('req-seq-001')로 써 서로의 기록을 돌려받았다 — 글자 그대로든
+    변수에 담았든 다시 묻는다. 도우미로 만든 값(newRequestId())·계약이 형식 오류 400 을 정한 경우는 둔다."""
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import _literal_headers
+
+    c = _contract()
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Request-Id", "type": "string", "constraints": "UUID v4 형식", "refs": ["r1"]}
+    ]
+    contract = TaskContract.model_validate(c)
+
+    def probs(body: str, ct: TaskContract = contract) -> list[str]:
+        return _literal_headers(
+            [GeneratedFile(path="cases/Hc1Test.java", content=body)], ct, "숨은 테스트"
+        )
+
+    assert probs('var r = post(okHeaders("req-seq-001"), body);')  # 글자 그대로
+    assert probs(
+        'String reqId = "req-seq-001";\nvar r = post(okHeaders(reqId), body);'
+    )  # 변수에 담은 글자
+    assert probs('Map.of("X-Request-Id", "abc-1")')  # 헤더 이름 꼴
+    assert probs('headers = {"X-Request-Id": "abc-1"}')  # Python·TS 꼴
+    assert "newRequestId()" in probs('okHeaders("x1")')[0]
+    assert not probs(
+        "String key = newRequestId();\nvar r = post(okHeaders(key), body);\npost(okHeaders(key), body);"
+    )
+    assert not probs("var r = post(okHeaders(), body);")
+    # 계약이 그 헤더의 형식 오류를 400 으로 정했으면 거절 시험 값은 둔다
+    c["endpoints"][0]["responses"].append(
+        {"status": 400, "description": "X-Request-Id 형식이 UUID 가 아님"}
+    )
+    assert not probs('okHeaders("not-a-uuid")', TaskContract.model_validate(c))

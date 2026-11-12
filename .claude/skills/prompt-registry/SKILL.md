@@ -21,7 +21,9 @@ prompts/
 ```
 
 - **기존 vN.md 는 수정하지 않는다** (훅 `protect-prompt-versions.sh` 가 막는다). 오탈자도 새 버전.
-- `CURRENT` 는 평가 통과 후에만 바꾼다 (§5).
+- `CURRENT` 는 평가 통과 후에만 바꾼다 (§5). 예외: 시작 코드 빌드 생성기(`gen_*` 와 스택별 `_react`·`_py`, `plan_contract`)는
+  새 vN 을 만들면 같은 변경에서 `CURRENT` 를 올리고 `PROMOTIONS.md` 에 날짜·sha256·근거·첫 평가(다음 알파)를 적는다
+  [확정: 2026-11-09 사용자 — 옛 CURRENT 때문에 버전 고정을 빠뜨리면 옛 프롬프트가 쓰였다]. 명세 생성 쪽 프롬프트에는 넓히지 않는다.
 
 ### vN.md 형식
 

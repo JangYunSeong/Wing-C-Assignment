@@ -577,16 +577,22 @@ def test_injection_helper_counts_as_what_causes_a_rollback() -> None:
 
 
 def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
-    """2026-11-09 알파: hc2 가 커밋 실패 주입 뒤 `statusCode() < 500` 을 단언해 실패를 알린(500) 구현이 모두 떨어졌다."""
+    """2026-11-09 알파: hc2 가 커밋 실패 주입 뒤 `statusCode() < 500` 을 단언해 실패를 알린(500) 구현이 모두 떨어졌다.
+    2026-11-12 코드 리뷰(PR #121): '성공이 아님'(isNotEqualTo(200)·≥400)도 단정 — 응답을 먼저 주고 뒤에 저장하는 허용 설계는 2xx."""
     plan = HiddenPlan.model_validate(
         _plan(
             harness={"pool_size": 8, "concurrency": 32, "connection_timeout_ms": 5000},
             cases=[{**_plan()["cases"][0], "intended_reason": "rollback_left_success"}],
         )
     )
+    status_assert = (
+        "        org.assertj.core.api.Assertions.assertThat(r.statusCode())\n"
+        '                .as(Reasons.as("rollback_left_success", "성공 기록 남음")).isNotEqualTo(200);'
+    )
+    assert status_assert in ROLLBACK
 
-    def msgs(inject: str, check: str) -> list[str]:
-        case = ROLLBACK.replace("INJECT", inject).replace(".isNotEqualTo(200)", check)
+    def msgs(inject: str, body: str) -> list[str]:
+        case = ROLLBACK.replace("INJECT", inject).replace(status_assert, body)
         files = [_f(f"{CASES}/OrderRollbackTest.java", case), render_params(plan, JAVA.manifest)]
         return static_check(
             _overlays(hidden=files),
@@ -597,25 +603,36 @@ def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
             seed=BACKEND_SEED,
         ).for_target("gen_hidden")
 
-    inject = 'injectCommitFailure("update", TABLE_ORDER);'
-    for pinned in (".isLessThan(500)", ".isEqualTo(200)", ".isEqualTo(500)", ".isIn(200, 409)"):
-        assert _has(msgs(inject, pinned), "주입한 요청의 응답 코드를 단정"), pinned
-    # '성공 아님'만 보는 단언은 그대로, 주입이 없는 케이스의 상태 단언도 그대로
-    for loose in (".isNotEqualTo(200)", ".isGreaterThanOrEqualTo(400)"):
-        assert not _has(msgs(inject, loose), "응답 코드를 단정"), loose
-    assert not _has(msgs("", ".isEqualTo(200)"), "응답 코드를 단정")
-    # 주입 뒤 기록을 읽는 GET 의 200 은 맞다 (2026-11-09 재실행: 처음 검사가 감사 조회 단언까지 잡아 숨은 테스트 생성 실패)
-    read = (
-        "\n        var audit = getOrders(java.util.Map.of());\n"
-        "        org.assertj.core.api.Assertions.assertThat(audit.statusCode()).isEqualTo(200)"
+    def on_status(matcher: str) -> str:
+        return f"        org.assertj.core.api.Assertions.assertThat(r.statusCode()){matcher};"
+
+    # 응답 코드 대신 조회로 판정 — 기록을 읽는 GET 의 200 단언도 맞다
+    # (2026-11-09 재실행: 처음 검사가 감사 조회 단언까지 잡아 숨은 테스트 생성 실패)
+    by_record = (
+        "        var audit = getOrders(java.util.Map.of());\n"
+        "        org.assertj.core.api.Assertions.assertThat(audit.statusCode()).isEqualTo(200);\n"
+        "        org.assertj.core.api.Assertions.assertThat(audit.body())"
+        '.as(Reasons.as("rollback_left_success", "성공 기록 남음")).isNotNull();'
     )
-    assert not _has(msgs(inject, ".isNotEqualTo(200);" + read), "응답 코드를 단정")
+    inject = 'injectCommitFailure("update", TABLE_ORDER);'
+    for pinned in (
+        ".isLessThan(500)",
+        ".isEqualTo(200)",
+        ".isEqualTo(500)",  # 계약이 선언하지 않은 5xx
+        ".isIn(200, 409)",
+        ".isNotEqualTo(200)",
+        ".isGreaterThanOrEqualTo(400)",
+    ):
+        assert _has(msgs(inject, on_status(pinned)), "주입한 요청의 응답 코드를 단정"), pinned
+    assert not _has(msgs(inject, by_record), "응답 코드를 단정")
+    # 주입이 없는 케이스의 상태 단언은 그대로
+    assert not _has(msgs("", on_status(".isEqualTo(200)")), "응답 코드를 단정")
     # reset 뒤에 보낸 상태 변경 요청도 주입 밖이다
     after = (
         '\n        GraderJdbcHarness.reset();\n        var again = patchOrdersIdStatus(1L, java.util.Map.of(), "{}");\n'
-        + ("        org.assertj.core.api.Assertions.assertThat(again.statusCode()).isEqualTo(200)")
+        + "        org.assertj.core.api.Assertions.assertThat(again.statusCode()).isEqualTo(200);"
     )
-    assert not _has(msgs(inject, ".isNotEqualTo(200);" + after), "응답 코드를 단정")
+    assert not _has(msgs(inject, by_record + after), "응답 코드를 단정")
 
 
 def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:

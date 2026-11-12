@@ -37,7 +37,7 @@ from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
-from task_spec.starter.header_values import header_values
+from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
     key_fields,
     render_contract_case,
@@ -1142,6 +1142,10 @@ _RESET = re.compile(r"GraderJdbcHarness\.reset\(\)")
 # 응답이 그 값(들)이어야 한다는 단언 — '성공 아님'(isNotEqualTo·isGreaterThanOrEqualTo…)은 그대로 둔다
 _STATUS_UPPER = re.compile(r"\.(?:isLessThan|isLessThanOrEqualTo|isBetween|isStrictlyBetween)\(")
 _STATUS_IS = re.compile(r"\.(?:isEqualTo|isIn|isOneOf)\(([^()]*)\)")
+# 값과 같다(_STATUS_IS)·위로 막힘(_STATUS_UPPER) 밖의 응답 코드 단언 — '성공이 아님'(isNotEqualTo·아래로 막힘·isNotIn)
+_STATUS_OTHER = re.compile(
+    r"\.(?:isNotEqualTo|isNotIn|isGreaterThan|isGreaterThanOrEqualTo|isNotBetween)\("
+)
 
 
 def _injected_status_asserts(
@@ -1149,7 +1153,9 @@ def _injected_status_asserts(
 ) -> list[str]:
     """저장 실패를 주입한 케이스가 응답 코드를 특정 값·범위로 단정함 — 계약은 저장 실패 때의 응답을 정하지 않는다.
     2026-11-09 알파 (2df170e2): hc2 가 커밋 실패 주입 뒤 `statusCode() < 500` 을 rollback_left_success 사유로 단언해,
-    실패를 그대로 알린(500) 흔한 구현·허용 구현 모두 같은 줄에서 떨어졌다 (두 회차). 계약이 선언한 5xx 와 같다고 보는 것은 둔다."""
+    실패를 그대로 알린(500) 흔한 구현·허용 구현 모두 같은 줄에서 떨어졌다 (두 회차). 계약이 선언한 5xx 와 같다고 보는 것은 둔다.
+    2026-11-12 코드 리뷰(PR #121): '성공이 아님'(isNotEqualTo(200)·isGreaterThanOrEqualTo(400))도 단정이다 — 응답을 먼저 주고 뒤에
+    저장·기록하는 허용 설계는 주입해도 2xx 라 떨어진다. gen_hidden v6 과 같이 응답 코드는 아예 보지 않게 한다."""
     inject = [
         re.compile(p)
         for r in m.failure_reasons
@@ -1178,15 +1184,23 @@ def _injected_status_asserts(
                 )
             ):
                 continue
-            pinned = _STATUS_UPPER.search(stmt) or any(
-                {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))} - declared
+            # 계약이 선언한 5xx 와 같다고만 보는 단언은 둔다 — 그 밖의 값·범위·'성공이 아님'은 모두 단정
+            codes = [
+                {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))}
                 for mt in _STATUS_IS.finditer(stmt)
+            ]
+            declared_only = (
+                bool(codes)
+                and not _STATUS_UPPER.search(stmt)
+                and not _STATUS_OTHER.search(stmt)
+                and all(c and c <= declared for c in codes)
             )
-            if pinned:
+            if not declared_only:
                 out.append(
                     f"숨은 테스트 {f.path} 가 저장 실패를 주입한 요청의 응답 코드를 단정함: {' '.join(stmt.split())[:120]} — "
-                    "계약은 저장 실패 때의 응답을 정하지 않아, 실패를 그대로 알린(5xx) 올바른 구현도 떨어진다. "
-                    "응답은 보지 않거나 '성공이 아님'(isGreaterThanOrEqualTo(400))만 보고, 사유는 기록 단언에 붙인다"
+                    "계약은 저장 실패 때의 응답을 정하지 않는다. 실패를 그대로 알린(5xx) 구현도, 응답을 먼저 주고 뒤에 저장하는(2xx) "
+                    "허용 설계도 있다. 주입한 요청의 응답 코드는 보지 않고(isNotEqualTo(200)·isGreaterThanOrEqualTo(400) 도 쓰지 않음), "
+                    "판정과 사유는 그 행의 상태·성공 기록을 조회해 보는 단언에 붙인다"
                 )
                 break
     return out
@@ -1212,6 +1226,56 @@ def _hand_built_keys(
     return out
 
 
+_OK_HEADERS_ARG = re.compile(r"\bok_?[Hh]eaders\(\s*([^()]*?)\s*\)")
+_QUOTED = re.compile(r"^[\"']([^\"']*)[\"']$")
+
+
+def _header_rejected(contract: TaskContract, name: str) -> bool:
+    """계약이 그 헤더의 형식 오류·빈 값을 400 으로 정했나 — 그 거절 시험 값은 글자로 써도 둔다."""
+    return any(
+        r.status == 400 and name.lower() in (r.description or "").lower()
+        for e in contract.endpoints
+        if any(h.name == name for h in e.headers)
+        for r in e.responses
+    )
+
+
+def _literal_value(arg: str, text: str) -> str | None:
+    """헤더 값 자리의 글자 — 글자 그대로("req-001")이거나, 글자를 담은 변수(`String key = "req-001";` 뒤의 key).
+    2026-11-12 실패 사례는 변수 꼴이었다 (`String reqId = "req-seq-001"; … okHeaders(reqId)`)."""
+    if (q := _QUOTED.match(arg)) is not None:
+        return q.group(1)
+    if re.fullmatch(r"[A-Za-z_]\w*", arg):
+        m = re.search(r"\b" + re.escape(arg) + r"\s*=\s*[\"']([^\"']*)[\"']\s*[;\n]", text)
+        return m.group(1) if m else None
+    return None
+
+
+def _literal_request_keys(
+    cases: Sequence[GeneratedFile], contract: TaskContract, name: str, label: str
+) -> list[str]:
+    """요청마다 새 값인 헤더(요청 번호·멱등 키)에 글자 값을 씀 — `okHeaders("req-001")`·`"X-Request-Id", "…"`·`"X-Request-Id": "…"`.
+    케이스마다 따로 만든 테스트가 같은 글자를 쓰면 서로의 기록을 돌려받는다 (2026-11-12 백엔드 중복 처리: hc1·hc2 가 모두
+    'req-seq-001' — 허용 구현이 hc2 의 기록을 hc1 에 돌려줘 '기대 15000, 실제 13000'). 계획에 적힌 글자도 예외로 두지 않는다
+    (그 경우가 바로 계획에서 온 값). 계약이 그 헤더의 형식 오류를 400 으로 정했으면 거절 시험 값이라 둔다."""
+    if _header_rejected(contract, name):
+        return []
+    named = re.compile(r'"' + re.escape(name) + r'"\s*[,:]\s*([^,)}\n]+)', re.I)
+    out: list[str] = []
+    for f in cases:
+        args = [m.group(1).strip() for m in _OK_HEADERS_ARG.finditer(f.content)]
+        args += [m.group(1).strip() for m in named.finditer(f.content)]
+        vals = sorted({v for a in args if (v := _literal_value(a, f.content)) is not None})
+        if vals:
+            shown = ", ".join(f'"{v}"' for v in vals[:3])
+            out.append(
+                f"{label} {f.path} 가 요청마다 새 값인 헤더 {name} 에 글자 값을 씀 ({shown}) — `String key = newRequestId();` 처럼 "
+                "도우미로 만든 변수를 okHeaders(key) 에 넘긴다 (같은 요청의 재시도는 그 변수를 다시 넘긴다). 계획에 적힌 요청 번호 "
+                "글자도 쓰지 않는다 — 다른 케이스·공개 테스트와 같은 값이 되면 서로의 기록을 돌려받는다"
+            )
+    return out
+
+
 def _literal_headers(
     cases: Sequence[GeneratedFile], contract: TaskContract, label: str
 ) -> list[str]:
@@ -1220,6 +1284,9 @@ def _literal_headers(
     거절 값 상수가 없으면 통과 값이 아닌 값은 거절 시험일 수 있어 둔다. 계약 값 그대로면 글자로 써도 막지 않는다."""
     out: list[str] = []
     for h in header_values(contract):
+        if h.source == PER_REQUEST:
+            out += _literal_request_keys(cases, contract, h.name, label)
+            continue
         if h.ok is None or h.denied is None:
             continue
         key = re.sub(r"[^A-Za-z0-9]+", "_", h.name).strip("_").upper()
