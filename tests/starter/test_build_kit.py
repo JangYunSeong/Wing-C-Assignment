@@ -1,10 +1,11 @@
-"""전달 묶음의 평가 키트 — 적재한 묶음의 응시용·채점용 설명과 같은 빌드로, EvalKit 스키마를 통과하게 만든다 (2026-11-12). 가상 데이터만."""
+"""평가 키트(`starter.kit.build_kit`) — 적재한 묶음의 응시용·채점용 설명과 같은 빌드로, EvalKit 스키마를 통과하게 만든다 (2026-11-12). 가상 데이터만."""
 
 from __future__ import annotations
 
-from eval.starter.split_delivery import build_kit
 from task_spec.schemas.domain import AcceptedDesign
 from task_spec.schemas.package import CandidateDescriptor, EvalKit, GraderDescriptor
+from task_spec.starter.artifacts import summaries
+from task_spec.starter.kit import build_kit
 from tests.schemas.test_package import _candidate, _grader
 from tests.starter.test_kit import _task
 
@@ -48,10 +49,11 @@ def test_kit_from_stored_descriptors_passes_the_schema() -> None:
         },
     }
     kit = build_kit(
-        t,
-        task.model_dump(mode="json"),
+        task,
         cand,
         grad,
+        t["grader"]["cases"],
+        summaries(t["verification"]),
         {"gap": "가상 사유"},
         ["빌드 표시", "명세 표시"],
     )
@@ -103,4 +105,12 @@ def test_approved_kit_needs_reviewer_decisions_for_flags() -> None:
         },
     }
     with pytest.raises(ValidationError, match="승인자 판단"):
-        build_kit(t, task.model_dump(mode="json"), cand, grad, {"gap": "가상 사유"}, ["빌드 표시"])
+        build_kit(
+            task,
+            cand,
+            grad,
+            t["grader"]["cases"],
+            summaries(t["verification"]),
+            {"gap": "가상 사유"},
+            ["빌드 표시"],
+        )

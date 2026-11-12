@@ -235,7 +235,7 @@ templates/<직군>/<스택>/CURRENT
    허용 구현 숨은·공개 전부 통과, 시작 코드는 숨은 케이스 0개 통과 (회당 $0.15~0.17). 고친 것: 응답 타입(tsc)·test id 로만 찾기·
    구현이 테스트 폴더를 import 금지·사유별 작성법 — 알파 실패 원인에서 하나씩.
    이미지(2026-11-09): Node 응시용·채점용 이미지 — 런타임 node:22-bookworm-slim(Debian 12, Playwright 공식 지원 계열·alpine 미지원),
-   템플릿 층에 lock 그대로 설치한 node_modules, grade 는 eval/starter/image_grade_node.py(개발 서버 Node 검증기와 같은 판정 코드 한 벌).
+   템플릿 층에 lock 그대로 설치한 node_modules, grade 는 src/task_spec/starter/grade/image_grade_node.py(Node 검증기와 같은 판정 코드 한 벌).
    알파 성공 3건: 응시용 오프라인 tsc·테스트 통과, 채점 — 시작 코드 숨은 0/3, 허용 구현 전부 통과, 흔한 구현 3케이스 의도한 사유, 응시용 레이어 금지 경로 0.
    재료(2026-11-09): 중복 제출(TanStack Query Mutations 문서 — 같은 mutate 를 여러 번 부르면 기본 병렬, 보조 Stripe 멱등 키 글)·
    낙관적 갱신 되돌리기(TanStack Query Optimistic Updates — React useOptimistic 은 React 19 라 제외). 여러 추가 사례는 공고 id 해시로 배정.

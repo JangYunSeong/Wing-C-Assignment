@@ -7,7 +7,7 @@
 되돌리고, 채점 자리(reserved)에 지원자가 둔 파일은 지운 뒤 숨은·공개 테스트와 하네스를 얹어 tsc → vitest(기존) → vitest(채점)를 돌린다.
 결과는 /out/result.json + vitest JSON 보고서·로그.
 
-판정 코드는 이 파일 하나다 — 개발 서버 검증기(eval/starter/node_verify.py)가 여기의 판정 함수를 import 해 쓴다 (Java 는 gradle_verify 와
+판정 코드는 이 파일 하나다 — Node 검증기(task_spec/starter/verify/node.py)가 여기의 판정 함수를 import 해 쓴다 (Java 는 verify/gradle.py 와
 image_grade 두 벌). 그래서 **표준 라이브러리만** 쓴다 (이미지 안에서 돈다). 2026-11-09 React 템플릿 이미지.
 """
 

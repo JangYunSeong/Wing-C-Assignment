@@ -5,7 +5,7 @@
 
 /submission(응시 작업 경로 사본)을 복사해 잠긴 파일은 템플릿 원본으로 되돌리고, 채점 자리(reserved)에 지원자가 둔 파일은 지운 뒤
 숨은·공개 테스트와 하네스를 얹어 오프라인 Gradle 로 돌린다. 결과는 /out/result.json + JUnit 보고서·로그.
-판정은 개발 서버 검증기(eval/starter/gradle_verify.py)와 같다. 표준 라이브러리만 쓴다 (이미지 안에서 돈다).
+판정은 Gradle 검증기(task_spec/starter/verify/gradle.py)와 같다. 표준 라이브러리만 쓴다 (이미지 안에서 돈다).
 """
 
 from __future__ import annotations

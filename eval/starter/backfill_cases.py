@@ -20,10 +20,10 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from eval.starter.import_mock_builds import case_results
 from eval.starter.register_mock_common import dsn
 from task_spec.config import Settings
 from task_spec.schemas.package import VerifySummary
+from task_spec.starter.artifacts import case_results
 
 _COUNTS = ("hidden_passed", "hidden_total", "public_passed", "public_total")
 

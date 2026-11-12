@@ -27,8 +27,6 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client
-from eval.starter.gradle_verify import GRADLE, GradleVerifier, assemble, gradle_env
-from eval.starter.gradle_verify import write_overlay as _write
 from eval.starter.run_plan_contract import EXAMPLE, JAVA, build_task
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.nodes.starter.generate import (
@@ -47,6 +45,10 @@ from task_spec.starter.contract import SpecView
 from task_spec.starter.render import render_readme
 from task_spec.starter.static_check import Overlay, static_check
 from task_spec.starter.templates import Template, load_template
+from task_spec.starter.verify import tools
+from task_spec.starter.verify.gradle import GradleVerifier, gradle_env
+from task_spec.starter.verify.workspace import assemble
+from task_spec.starter.verify.workspace import write_overlay as _write
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "eval" / "build"
@@ -177,7 +179,7 @@ def gradle_test(work: Path, log: Path, timeout: int = 1200) -> dict[str, Any]:
     t0 = time.monotonic()
     with log.open("w") as fh:
         proc = subprocess.run(
-            [str(GRADLE), "test", "--console=plain", "--no-daemon", "--continue"],
+            [str(tools.gradle_bin()), "test", "--console=plain", "--no-daemon", "--continue"],
             cwd=work,
             env=env,
             stdout=fh,

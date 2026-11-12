@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from eval.starter.import_mock_builds import build_flags_of, merged_flags, repairs_of
+from eval.starter.import_mock_builds import build_flags_of, repairs_of
+from task_spec.starter.artifacts import merged_flags
 
 
 def test_run_alpha_report_build_flags_and_repairs_are_read(tmp_path: Path) -> None:

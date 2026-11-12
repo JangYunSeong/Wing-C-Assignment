@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from eval.starter.node_verify import clean_message, tsc_errors, vitest_results
 from task_spec.schemas import GeneratedFile
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import load_template
+from task_spec.starter.verify.node import clean_message, tsc_errors, vitest_results
 
 FE = load_template("frontend/react-vite-ts")
 WORK = Path("/work/r1-naive")
@@ -133,7 +133,7 @@ def test_vitest_report_becomes_one_result_per_file_with_case_ids_and_reasons() -
 
 def test_failed_line_is_a_separate_field_only_for_build_verification() -> None:
     """실패한 줄(at)은 수리 안내용 칸 — 메시지에 붙이지 않는다. 채점(grade, locate 끔)에는 넣지 않는다 (숨은 테스트 파일·줄)."""
-    from eval.starter import image_grade_node as judge
+    from task_spec.starter.grade import image_grade_node as judge
 
     path = "src/__grading__/cases/hc2.test.tsx"
     stack = f"AssertionError: expected 2 to be greater than or equal to 3\n    at {WORK / path}:66:7\n    at file:///x/chunk-hooks.js:155:11"

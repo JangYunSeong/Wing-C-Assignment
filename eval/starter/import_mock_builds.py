@@ -12,6 +12,7 @@
 같은 공통 과제에 같은 시작 코드(tree_sha256)의 빌드가 이미 묶음까지 있으면 건너뛴다. review 에서 묶음이 없으면 묶음만 다시.
 공통 과제 행(FK)이 먼저 있어야 한다 — 평가용 명세는 register_mock_common 으로 등록한 뒤 다시 만든 이미지를 넣는다.
 기본은 시험 DB(TEST_DATABASE_URL), 운영 DB 는 `--db main` 으로만. 묶음은 `Settings.images_root` 아래 (git 밖).
+묶음 저장·descriptor·SHA256SUMS 코드는 `task_spec.starter.artifacts` (#126 — builder 와 같은 코드). 여기는 manifest·알파 빌드 폴더를 읽는 부분.
 
   uv run python -m eval.starter.import_mock_builds --manifest data/mock_images/2026-11-10/manifest.json \\
       --runs data/mock_images/runs --task ct-0683f8a1b8d6:3 [--db main]
@@ -22,53 +23,40 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
-import shutil
-import subprocess
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import psycopg
 
-from eval.starter.build_mock_images import grader_sha256, load_run, template_of
+from eval.starter.build_mock_images import load_run, template_of
 from eval.starter.register_mock_common import dsn
-from eval.starter.split_delivery import extract_readme, save_image, sha256
 from task_spec.config import Settings
 from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
     README_PATH,
     BuildArtifact,
     BuildOutcome,
-    BuildRecord,
     StarterFile,
 )
 from task_spec.schemas.package import (
-    ArtifactFile,
-    ArtifactRole,
     CandidateDescriptor,
     GraderDescriptor,
-    ImageArchive,
     ResultContract,
-    VerifySummary,
 )
-from task_spec.starter.store import PgBuildStore, archive_name, role_dir, sha256sums
+from task_spec.starter.artifacts import (
+    CASE_FIELDS,
+    RESULT_FIELDS,
+    extract_readme,
+    merged_flags,
+    overlay_files,
+    pack,
+    summaries,
+    write_role,
+)
+from task_spec.starter.images import grader_sha256
+from task_spec.starter.store import PgBuildStore
 
 MOCK_NOTE = "승인되지 않은 평가용 명세로 만든 목 판"
-RESULT_FIELDS = ["common_id", "revision", "setup", "seconds", "cases", "summary", "report_path"]
-CASE_FIELDS = ["id", "trap_id", "kind", "passed", "reason", "intended_reason", "message"]
-
-
-def overlay_files(build_id: str, item: dict[str, Any]) -> list[StarterFile]:
-    """빌드 폴더의 오버레이 → `starter_file` 행 (참조 구현은 변형 라벨로 나눔)."""
-    out: list[StarterFile] = []
-    overlays = [item["starter"], item["hidden"], item["public"], *item["refs"].values()]
-    for ov in overlays:
-        if ov is None:
-            continue
-        for f in ov.files:
-            out.append(StarterFile.of(build_id, ov.kind, f.path, f.content, ov.label))
-    return out
 
 
 def repairs_of(run: Path, builds_root: Path) -> list[RepairRecord]:
@@ -98,67 +86,6 @@ def build_flags_of(run: Path, builds_root: Path) -> list[str]:
             if r.get("status") == "review":
                 raw = r.get("review_flags")
     return [str(f) for f in raw or []]
-
-
-def merged_flags(task_flags: Sequence[str], build_flags: Sequence[str]) -> list[str]:
-    """명세의 표시 + 빌드 단계의 표시 (같은 글은 한 번)."""
-    return list(dict.fromkeys([*task_flags, *build_flags]))
-
-
-def case_results(cases: Any) -> list[dict[str, Any]]:
-    """result.json cases[] → CaseResult 모양 (id·kind·passed·reason·message 앞 300자)."""
-    out: list[dict[str, Any]] = []
-    for c in cases or []:
-        if not isinstance(c, dict) or not c.get("id"):
-            continue
-        msg = c.get("message")
-        out.append(
-            {
-                "id": str(c["id"])[:120],
-                "kind": str(c.get("kind") or "hidden")[:20],
-                "passed": bool(c.get("passed")),
-                "reason": (str(c["reason"])[:80] if c.get("reason") else None),
-                "message": (" ".join(str(msg).split())[:300] if msg else None),
-            }
-        )
-    return out
-
-
-def summaries(verification: dict[str, Any]) -> dict[str, VerifySummary]:
-    return {
-        name: VerifySummary.model_validate({**v["summary"], "cases": case_results(v.get("cases"))})
-        for name, v in verification.items()
-        if v.get("summary")
-    }
-
-
-def write_role(d: Path, descriptor: str, body: str) -> list[ArtifactFile]:
-    """descriptor 를 쓰고 SHA256SUMS(자기 자신 제외)를 만든다. 권한은 소유자만 (split_delivery 와 같게)."""
-    (d / descriptor).write_text(body, "utf-8")
-    files = [
-        ArtifactFile(name=p.name, sha256=sha256(p), size_bytes=p.stat().st_size)
-        for p in sorted(d.iterdir())
-        if p.is_file() and p.name != "SHA256SUMS"
-    ]
-    (d / "SHA256SUMS").write_text(sha256sums(files), "utf-8")
-    for p in d.iterdir():
-        os.chmod(p, 0o600)
-    os.chmod(d, 0o700)
-    return files
-
-
-def pack(
-    root: Path, build: BuildRecord, role: ArtifactRole, image: dict[str, Any]
-) -> tuple[Path, ImageArchive]:
-    """이미지에 빌드 이름을 붙여 역할 폴더에 저장. image_id 는 바뀌지 않는다 (save_image 가 다시 load 해 확인)."""
-    d = role_dir(root, build.build_id, role)
-    if d.exists():
-        shutil.rmtree(d)  # 묶음 행이 없을 때만 여기 온다 — 지난 실패의 반쯤 쓴 폴더
-    d.mkdir(parents=True)
-    name = f"localhost/task/{build.build_id}-{role}"
-    subprocess.run(["podman", "tag", image["name"], name], check=True)
-    info = save_image(name, image["image_id"], d / archive_name(build.build_id, role))
-    return d, ImageArchive.model_validate(info)
 
 
 async def common_revision(conninfo: str, common_id: str) -> int:
@@ -222,12 +149,10 @@ async def import_one(
                 template_ref=t["template_ref"],
                 tree_sha256=tree,
                 grader_sha256=grader_hash,
-                contract=item["contract"],
-                hidden_plan=item["plan"],
+                contract=item.contract,
+                hidden_plan=item.plan,
                 verification=summaries(t["verification"]),
-                review_flags=merged_flags(
-                    item["task"].review_flags, build_flags_of(run, builds_root)
-                ),
+                review_flags=merged_flags(item.task.review_flags, build_flags_of(run, builds_root)),
                 repairs=repairs_of(run, builds_root),
             ),
         )

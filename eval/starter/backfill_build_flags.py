@@ -16,9 +16,10 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from eval.starter.import_mock_builds import build_flags_of, merged_flags, repairs_of
+from eval.starter.import_mock_builds import build_flags_of, repairs_of
 from eval.starter.register_mock_common import dsn
 from task_spec.config import Settings
+from task_spec.starter.artifacts import merged_flags
 
 
 def main() -> None:

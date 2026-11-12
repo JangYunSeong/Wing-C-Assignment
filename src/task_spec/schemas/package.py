@@ -143,7 +143,7 @@ class CandidateDescriptor(PackageHeader):
 
 
 class ResultContract(Schema):
-    """채점 결과 파일 형식 — 채점 스크립트(eval/starter/image_grade*.py)가 쓰는 `result.json`."""
+    """채점 결과 파일 형식 — 채점 스크립트(starter/grade/image_grade*.py)가 쓰는 `result.json`."""
 
     path: str = "/out/result.json"
     fields: list[str] = Field(min_length=1)

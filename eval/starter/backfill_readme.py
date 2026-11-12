@@ -24,10 +24,10 @@ import subprocess
 
 from psycopg.rows import dict_row
 
-from eval.starter.split_delivery import extract_readme
 from task_spec.config import get_settings
 from task_spec.schemas import GeneratedFile, TaskItem
 from task_spec.schemas.build_record import README_PATH, BuildRecord, StarterFile
+from task_spec.starter.artifacts import extract_readme
 from task_spec.starter.code_map import SECTION
 from task_spec.starter.render import render_readme
 from task_spec.starter.store import PgBuildStore
