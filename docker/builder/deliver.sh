@@ -12,7 +12,7 @@ if [[ "${1:-}" == --setup ]]; then
   mkdir -p "$INBOX/setup"
   install -m 644 docker/builder/upgrade.sh docker/builder/install-upgrader.sh docker/builder/run.sh \
     docker/builder/systemd/task-builder-upgrade.path docker/builder/systemd/task-builder-upgrade.service "$INBOX/setup/"
-  echo "task-builder 사용자로:  sh $INBOX/setup/install-upgrader.sh"
+  echo "task-builder 사용자로:  bash $INBOX/setup/install-upgrader.sh   (sh 는 안 됨 — bash 스크립트)"
   exit 0
 fi
 

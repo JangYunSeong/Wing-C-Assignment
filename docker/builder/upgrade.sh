@@ -58,6 +58,7 @@ for sum in "$INBOX"/task-builder-*.sha256; do
     continue
   fi
   prev_image=$(podman inspect "$NAME" --format '{{.ImageName}}' 2>/dev/null || true)
+  [[ -n "$prev_image" ]] || prev_image=$(podman ps -a --filter "name=^${NAME}\$" --format '{{.Image}}' 2>/dev/null | head -1)
   install -m 755 "$work/run-$ver.sh" "$BIN/run.sh.new"
   podman stop "$NAME" >/dev/null 2>&1 9>&-  # SIGTERM → 지금 작업 뒤 멈춤 (--stop-timeout 뒤 강제, lease 가 지나 다시 대기열로)
   if launch "$image" "$BIN/run.sh.new"; then
@@ -75,3 +76,4 @@ for sum in "$INBOX"/task-builder-*.sha256; do
   fi
   rm -rf "$work"
 done
+exit 0  # 받은 파일이 없을 때도 성공 (path 유닛이 다시 불러도 실패로 남지 않게)

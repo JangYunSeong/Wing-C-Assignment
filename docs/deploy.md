@@ -202,7 +202,7 @@ grep task-builder /etc/subuid /etc/subgid          # 없으면: sudo usermod --a
 
 # 2) 폴더 — 작업·도구는 builder 소유, 묶음 폴더(2-7)는 배포 사용자 소유 그대로 두고 ACL 로 builder 쓰기 + 배포 사용자 읽기 상속
 sudo install -d -o task-builder -g task-builder -m 700 /srv/task-spec/builder /srv/task-spec/builder/work /srv/task-spec/builder/tools
-sudo setfacl -m u:task-builder:x /srv/task-spec                                  # 지나가기만
+sudo setfacl -m u:task-builder:rx /srv/task-spec    # 지나가기 + 목록 — 2-10 의 systemd path 유닛이 위쪽 폴더까지 감시하려면 읽기가 있어야 한다
 sudo setfacl -m u:task-builder:rwx /srv/task-spec/images
 sudo setfacl -d -m u:task-builder:rwx,u:<배포 사용자>:rx /srv/task-spec/images    # 새 묶음: builder 가 쓰고 배포 사용자(=API)가 읽음
 getfacl /srv/task-spec/images
@@ -271,7 +271,9 @@ builder 작업 폴더·설정은 여전히 못 본다.
 처음 한 번 (sudo 없음 — `/srv/task-spec` 는 배포 사용자 소유):
 
 ```bash
-# 배포 사용자 — 받는 폴더 (배포 사용자·task-builder 둘 다 읽고 쓰고, 새 파일도 그대로 상속)
+# 배포 사용자 — task-builder 가 /srv/task-spec 를 읽을 수 있어야 한다 (x 만이면 path 유닛이 감시를 못 걸고 아무 기록 없이 반응하지 않는다)
+setfacl -m u:task-builder:rx /srv/task-spec
+# 받는 폴더 (배포 사용자·task-builder 둘 다 읽고 쓰고, 새 파일도 그대로 상속)
 mkdir -m 770 /srv/task-spec/builder-inbox
 setfacl -m u:task-builder:rwx /srv/task-spec/builder-inbox
 setfacl -d -m u:task-builder:rwx,u:$(id -un):rwx /srv/task-spec/builder-inbox
@@ -279,7 +281,7 @@ docker/builder/deliver.sh --setup            # 설치 파일을 받는 폴더 se
 
 # task-builder 사용자 — 유닛 설치·켜기 (지금 떠 있는 builder 의 run.sh 를 되돌리기용으로 둔다)
 sudo -iu task-builder
-sh /srv/task-spec/builder-inbox/setup/install-upgrader.sh     # active 가 나오면 됨
+bash /srv/task-spec/builder-inbox/setup/install-upgrader.sh   # active 가 나오면 됨 (sh 로 돌리면 'Illegal option -o pipefail')
 ```
 
 그다음부터 배포 (배포 사용자, 레포 루트 — 커밋된 상태로):
