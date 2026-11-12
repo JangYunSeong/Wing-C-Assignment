@@ -213,6 +213,8 @@ podman exec -it task_db psql -U task -d task_db -c '\password task_builder'
 
 # 4) builder 사용자로 — 소켓·이미지·설정 파일·기동 (반입 묶음 폴더를 그 사용자가 읽을 수 있는 곳에 둔다)
 sudo -iu task-builder
+# sudo -iu 셸에는 사용자 세션 변수가 없어 systemctl --user 가 "Failed to connect to bus" — linger 로 떠 있는 세션을 가리킨다 (한 번 .bashrc 에)
+echo 'export XDG_RUNTIME_DIR=/run/user/$(id -u); export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus' >> ~/.bashrc && . ~/.bashrc
 systemctl --user enable --now podman.socket
 podman load -i <반입 묶음>/images.tar                     # task-builder:<버전> (이 사용자 저장소에)
 install -m 600 <반입 묶음>/docker/builder/env.example ~/builder-settings
@@ -237,6 +239,26 @@ podman exec task-api ls /srv/task-spec/images/<build_id>/candidate   # (배포 �
 - 비용 상한(작업당·하루)과 모델은 builder 설정 파일 — 모델을 바꾸면 상한도 같이 올린다.
 - 승인된 빌드의 묶음 확정(descriptor approved·평가 키트 `eval_kit/`)도 builder 가 한다 (#130) — 새 작업을 가져가기 전마다, 몇 초.
   빌드 화면에 "묶음 확정 대기"가 오래 남으면 builder 로그와 빌드의 사유(`finalize: …`)를 본다. 전달은 확정된 빌드만.
+
+### 2-9. 재부팅 때 다시 띄우기 — 배포 사용자·`task-builder` 각각
+
+컨테이너는 `--restart unless-stopped` 라 죽으면 podman 이 다시 띄우지만, **서버 재부팅 뒤에는** rootless podman 이 사용자 서비스
+`podman-restart.service` 로만 다시 띄운다. 그 유닛은 `restart-policy=always` 만 띄우므로(podman 4.9) `unless-stopped` 줄을 더한다.
+(`podman update --restart` 는 podman 5 부터 — 4.9 에서는 컨테이너를 다시 만들지 않고 이 방법으로.) 사용자마다 한 번, sudo 없이:
+
+```bash
+mkdir -p ~/.config/systemd/user/podman-restart.service.d
+cat > ~/.config/systemd/user/podman-restart.service.d/unless-stopped.conf <<'CONF'
+[Service]
+ExecStart=/usr/bin/podman $LOGGING start --all --filter restart-policy=unless-stopped
+CONF
+systemctl --user daemon-reload
+systemctl --user enable podman-restart.service
+systemctl --user start podman-restart.service        # 시험 — 떠 있는 컨테이너는 그대로, 멈춘 것은 다시 뜬다
+```
+
+- linger 가 켜져 있어야 로그인 없이 부팅 때 사용자 서비스가 돈다 (`loginctl show-user <사용자> -p Linger` → yes).
+- API 가 DB 보다 먼저 떠서 실패해도 restart 정책으로 다시 붙는다. `podman stop` 으로 일부러 멈춘 컨테이너도 재부팅 때는 다시 뜬다.
 
 ## 3. 확인
 
