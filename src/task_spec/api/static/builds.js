@@ -1,5 +1,6 @@
 /* 공통 과제 빌드 — 임시 화면 (api/routers/ui.py 가 /ui/builds.html 로 내준다).
-   기존 API(/builds · /builds/{id} · /cases · /artifacts · /deliveries · /delivery-targets)만 부른다. 과제 생성 요청은 실행 화면(app.js)에서.
+   기존 API(/builds · /builds/{id} · /cases · /artifacts · /deliveries · /delivery-targets)만 부른다. 과제 생성 요청은 실행 화면(app.js)에서,
+   빌드 승인(#130)은 /builds/{id}/approval·approve, 실패 빌드 다시 요청은 /common-tasks/{id}/builds.
    '테스트' 절은 문제를 쓸지 정하는 승인자용 — 숨은 케이스의 상황·통과 조건·의도한 사유·허용 설계와 대상별 결과 (테스트 코드는 없다). */
 "use strict";
 
@@ -193,6 +194,147 @@ function deliveriesBlock(ds, targets) {
   return `<div class="eyebrow">전달 대상</div>${t}<div class="eyebrow">전달 기록</div>${d}`;
 }
 
+/* 빌드 승인 (#130) — GET 이 승인 thread 를 시작, POST 는 resume 만. 판단이 빠지면 서버가 다시 기다리고 사유를 준다 */
+async function send(path, json) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(json),
+    });
+  } catch {
+    throw new ApiError("서버에 연결하지 못했습니다.");
+  }
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* 본문 없음 */
+  }
+  if (!res.ok) throw new ApiError((data && data.error && data.error.message) || `요청이 실패했습니다 (HTTP ${res.status})`);
+  return data;
+}
+const remembered = {
+  get() {
+    try {
+      return localStorage.getItem("taskspec.reviewer") || "";
+    } catch {
+      return "";
+    }
+  },
+  set(v) {
+    try {
+      localStorage.setItem("taskspec.reviewer", v);
+    } catch {
+      /* 저장 못 해도 동작에는 영향 없음 */
+    }
+  },
+};
+const say = (text, kind = "") => {
+  const m = $("#approve-msg");
+  if (m) {
+    m.textContent = text;
+    m.className = `msg ${kind}`;
+  }
+};
+
+async function renderApproval(b) {
+  const box = $("#approve-body");
+  try {
+    const v = await api(`/builds/${encodeURIComponent(b.build_id)}/approval`);
+    if (current !== b.build_id || !box.isConnected) return;
+    if (v.state !== "awaiting") {
+      box.innerHTML = `<p class="placeholder">승인 대기가 아닙니다 (${esc(v.state)}).</p>`;
+      return;
+    }
+    const opts = Object.entries(VERDICT).map(([k, label]) => `<option value="${k}">${esc(label)}</option>`).join("");
+    box.innerHTML = `<form id="approve-form">
+      ${v.error ? `<p class="bad">${esc(v.error)}</p>` : ""}
+      ${
+        v.flags.length
+          ? `<ul class="bflags">${v.flags
+              .map(
+                (f, i) => `<li><p>${esc(f.text)}</p>
+              <div class="row" style="gap:8px;flex-wrap:wrap"><select data-flag="${i}" aria-label="판단"><option value="">판단 선택</option>${opts}</select>
+              <input type="text" data-note="${i}" placeholder="메모 (선택)" style="flex:1;min-width:160px"></div></li>`,
+              )
+              .join("")}</ul>`
+          : `<p class="placeholder">검토 표시가 없습니다 — 테스트 절을 보고 승인하세요.</p>`
+      }
+      <div class="row" style="gap:8px;align-items:center;margin:10px 0"><label for="approve-by">승인자</label>
+        <input type="text" id="approve-by" value="${esc(remembered.get())}" autocomplete="name" style="max-width:200px"></div>
+      <textarea id="approve-comment" placeholder="메모 — 반려할 때는 사유가 필요합니다"></textarea>
+      <div class="actions" style="margin-top:10px;display:flex;gap:8px">
+        <button type="button" class="btn primary" data-act="approved">승인</button>
+        <button type="button" class="btn" data-act="rejected">반려</button></div>
+      <p class="msg" id="approve-msg" role="status"></p></form>`;
+    box.querySelector("#approve-form").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-act]");
+      if (btn) submitApproval(b, v.flags, btn);
+    });
+  } catch (e) {
+    box.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+  }
+}
+
+async function submitApproval(b, flags, btn) {
+  const status = btn.dataset.act;
+  const reviewer = $("#approve-by").value.trim();
+  const comment = $("#approve-comment").value.trim();
+  if (!reviewer) return say("승인자 이름을 적으세요.", "err");
+  if (status === "rejected" && !comment) return say("반려에는 사유가 필요합니다.", "err");
+  const decisions = flags.map((f, i) => ({
+    flag_id: f.flag_id,
+    flag: f.text,
+    verdict: $(`select[data-flag="${i}"]`).value,
+    note: $(`input[data-note="${i}"]`).value.trim(),
+    reviewer,
+  }));
+  if (status === "approved" && decisions.some((d) => !d.verdict)) return say("검토 표시마다 판단을 고르세요.", "err");
+  remembered.set(reviewer);
+  btn.disabled = true;
+  try {
+    const r = await send(`/builds/${encodeURIComponent(b.build_id)}/approve`, {
+      status,
+      reviewer,
+      at: new Date().toISOString(),
+      decisions: status === "approved" ? decisions : [],
+      comment: comment || null,
+    });
+    say(r.state === "approved" ? "승인했습니다. 묶음 확정(평가 키트)은 builder 가 이어서 합니다." : "반려했습니다.", "ok");
+    loadList();
+    setTimeout(() => show(b.build_id), 600);
+  } catch (e) {
+    say(e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderRequestAgain(b) {
+  const box = $("#approve-body");
+  box.innerHTML = `<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <label for="again-by">요청자</label><input type="text" id="again-by" value="${esc(remembered.get())}" style="max-width:200px">
+      <button type="button" class="btn" id="again-btn">같은 공통 과제로 다시 요청</button></div>
+    <p class="msg" id="approve-msg" role="status"></p>`;
+  $("#again-btn").addEventListener("click", async (ev) => {
+    const by = $("#again-by").value.trim();
+    if (!by) return say("요청자 이름을 적으세요.", "err");
+    remembered.set(by);
+    ev.target.disabled = true;
+    try {
+      const r = await send(`/common-tasks/${encodeURIComponent(b.common_id)}/builds`, { requested_by: by });
+      say(r.created ? `요청했습니다 — ${r.build.build_id}` : `이미 진행 중인 빌드가 있습니다 — ${r.build.build_id}`, "ok");
+      loadList();
+    } catch (e) {
+      say(e.message, "err");
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
+}
+
 /* 큐 (#128) — 생성 요청으로 만든 빌드만: 요청자·단계·시도·비용·실패 사유 */
 function queueLine(b) {
   if (!b.requested_by) return "";
@@ -233,7 +375,7 @@ async function show(id) {
         ${b.approved_by ? `<span>승인 ${esc(b.approved_by)} · ${when(b.approved_at)}</span>` : ""}</div>
         ${queueLine(b)}</div>
         <div class="right">${pill(b.status)}<button type="button" class="btn small" data-problem>문제 보기</button></div></div>
-      <nav class="jump" aria-label="빌드 안에서 이동"><a href="#" data-jump="b-verify">검증</a><a href="#" data-jump="b-cases">테스트</a><a href="#" data-jump="b-flags">검토 표시</a><a href="#" data-jump="b-arts">이미지 묶음</a><a href="#" data-jump="b-deliv">전달</a></nav>
+      <nav class="jump" aria-label="빌드 안에서 이동"><a href="#" data-jump="b-verify">검증</a><a href="#" data-jump="b-cases">테스트</a><a href="#" data-jump="b-flags">검토 표시</a>${b.status === "review" || b.status === "failed" ? `<a href="#" data-jump="b-approve">${b.status === "review" ? "승인" : "다시 요청"}</a>` : ""}<a href="#" data-jump="b-arts">이미지 묶음</a><a href="#" data-jump="b-deliv">전달</a></nav>
       <section class="block" id="b-verify"><div class="block-head"><h3>검증 결과</h3><span class="aside">채점용 이미지로 채점한 구현별 통과 수</span></div>
         ${verificationTable(b.verification)}
         <div class="kv"><span>오버레이 파일</span><b>${esc(files)}</b><span>수리</span><b>${b.repairs}건</b>
@@ -241,8 +383,17 @@ async function show(id) {
         <span>온톨로지</span><b class="mono">${esc(b.ontology_version)}</b></div></section>
       <section class="block" id="b-cases"><div class="block-head"><h3>테스트</h3><span class="aside">문제를 쓸지 정할 때 — 케이스마다 무엇을 확인하고 누가 통과했나 (칸에 마우스를 올리면 실패 메시지)</span></div>${casesBlock(cases)}</section>
       <section class="block" id="b-flags"><div class="block-head"><h3>검토 표시</h3><span class="aside">승인 전에 표시마다 승인자 판단이 필요합니다 · ${decided}/${b.review_flags.length} 판단</span></div>${flagsBlock(b.review_flags)}</section>
+      ${
+        b.status === "review" || b.status === "failed"
+          ? `<section class="block" id="b-approve"><div class="block-head"><h3>${b.status === "review" ? "승인" : "다시 요청"}</h3>
+              <span class="aside">${b.status === "review" ? "시작 코드·테스트·이미지를 쓸지 정합니다 — 표시마다 판단한 뒤 승인 또는 반려" : "실패·반려된 빌드는 같은 공통 과제로 새로 만들 수 있습니다 (LLM 비용 발생)"}</span></div>
+              <div id="approve-body"><p class="placeholder">읽는 중…</p></div></section>`
+          : ""
+      }
       <section class="block" id="b-arts"><div class="block-head"><h3>이미지 묶음</h3><span class="aside">받는 곳별 폴더 — 응시용은 응시 환경, 채점용은 채점 서버로만</span></div>${artifactsBlock(arts)}</section>
       <section class="block" id="b-deliv"><div class="block-head"><h3>전달</h3></div>${deliveriesBlock(ds, targets)}</section>`;
+    if (b.status === "review") renderApproval(b);
+    else if (b.status === "failed") renderRequestAgain(b);
   } catch (e) {
     el.innerHTML = `<div class="sheet-head"><p class="bad">${esc(e.message)}</p></div>`;
   }
