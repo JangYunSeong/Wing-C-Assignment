@@ -61,7 +61,8 @@ LangGraph StateGraph (src/task_spec/graph) + AsyncPostgresSaver
    겹침 = LLM 판정(근거 주장 필수) + 규칙 합침 + 사람(겹침 낮추기·되돌리기) [확정: 2026-11-04].
 6. **역할(참여/주도/설계)은 칸 위치로 규칙 판정**한다. LLM 에 맡기지 않는다. 규칙표: pipeline-graph 스킬 "역할 규칙".
 7. **프롬프트는 코드에 문자열로 박지 않는다.** `prompts/<task>/vN.md` + `CURRENT`. 기존 vN 은 수정 금지(새 버전 추가).
-   `CURRENT` 변경은 평가 통과 후에만.
+   `CURRENT` 변경은 평가 통과 후에만. 예외: 시작 코드 빌드 생성기(`gen_*` 와 스택별 `_react`·`_py`, `plan_contract`)는
+   새 vN 을 만들면 같은 변경에서 `CURRENT` 를 올리고 `PROMOTIONS.md` 에 근거와 첫 평가(다음 알파)를 적는다 [확정: 2026-11-09 사용자].
 8. **모든 LLM 산출물에 provenance**: `prompt_id@version+hash`, 모델·설정, few-shot 예시 id, `ontology_version`.
 9. **승인은 LangGraph `interrupt()`** 로만 받는다. API 는 resume 만 한다.
 
