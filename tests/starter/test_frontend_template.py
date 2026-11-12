@@ -119,7 +119,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v11"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v12"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v2"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
@@ -965,3 +965,103 @@ def test_v6_harness_types_bodies_and_server_state() -> None:
     src = (FE.hidden / "harness" / "grader-api.ts").read_text("utf-8")
     assert "serverState<T = Body>(path: string): T[]" in src
     assert "once<B = Body>(" in src and "calls<B = Body>(" in src
+
+
+def test_contract_helper_tells_harness_numeric_id_lists_v12() -> None:
+    """2026-11-12 #102 검토: 하네스 목록 id 가 늘 글자라 숫자 id 계약에서 `===` 비교가 어긋났다 (저장 화면 계약 엔티티 id 4개 중 1개꼴이 숫자)."""
+    from task_spec.starter.ts_helpers import id_kinds, render_ts_contract
+
+    base = _contract().model_dump()
+    base["entities"] = [
+        {"entity_id": "m1", "name": "Memo", "fields": [_field("id", "integer"), _field("note")]},
+        {"entity_id": "m2", "name": "Tag", "fields": [_field("id", "string")]},
+    ]
+    memo_post = dict(base["endpoints"][0]) | {
+        "endpoint_id": "e2",
+        "method": "POST",
+        "path": "/api/memos",
+        "query": [],
+        "request": [_field("note")],
+        "responses": [{"status": 201, "description": "만듦", "returns": "m1"}],
+    }
+    memo_get = memo_post | {
+        "endpoint_id": "e3",
+        "method": "GET",
+        "path": "/api/memos/{memoId}",
+        "request": [],
+        "responses": [{"status": 200, "description": "하나", "returns": "m1"}],
+    }
+    tag_get = memo_get | {
+        "endpoint_id": "e4",
+        "path": "/api/tags",
+        "responses": [{"status": 200, "description": "목록", "returns": "m2[]"}],
+    }
+    base["endpoints"] = [*base["endpoints"], memo_post, memo_get, tag_get]
+    base["covers"] = {"r1": ["e1", "m1", "s1"], "r2": ["e1"]}
+    c = TaskContract.model_validate(base)
+    assert id_kinds(c) == {
+        "/api/memos": "number"
+    }  # 항목 경로는 목록 경로로, 글자 id 는 알리지 않음
+    ts = render_ts_contract(c, FE.manifest, "hidden")
+    assert (
+        ts is not None
+        and '    "/api/memos": "number",' in ts.content
+        and "idKinds: {" in ts.content
+    )
+    old = render_ts_contract(c, load_template("frontend/react-vite-ts", 11).manifest, "hidden")
+    assert old is not None and "idKinds" not in old.content  # v11 하네스는 idKinds 를 모른다
+
+
+def test_missing_harness_and_testing_library_imports_are_added_by_code() -> None:
+    """2026-11-12 #102 검토: 컴파일 기록 Cannot find name 'api' 12번 — 재요청 없이 코드가 import 를 넣는다.
+    screen 은 import 가 없으면 브라우저 전역(window.screen)으로 읽혀 TS2339 — 쓰는지로 판단한다."""
+    from task_spec.starter.ts_helpers import ensure_test_imports
+
+    hidden = (
+        "import { it } from 'vitest';\nimport {\n  renderApp,\n} from '../harness/grader';\n"
+        "it('x', async () => {\n  renderApp();\n  api.route('GET', '/a');\n"
+        "  await waitFor(() => screen.getByTestId('t'));\n  const w = window.screen.width;\n});\n"
+    )
+    public = "import { it } from 'vitest';\nit('p', async () => { await screen.findByTestId('x'); network.goOffline(); });\n"
+    mine = (
+        "import { it } from 'vitest';\nimport { screen } from '@testing-library/react';\n"
+        "const textOf = (x: string) => x;\nit('m', () => { screen.getByText(textOf('a')); });\n"
+    )
+    files, notes = ensure_test_imports(
+        [
+            _f(f"{CASES}/hc1.test.tsx", hidden),
+            _f("src/__public__/pt1.test.tsx", public),
+            _f("src/__public__/pt2.test.tsx", mine),
+        ],
+        "src/__grading__/harness/grader",
+    )
+    h, p, m = (f.content for f in files)
+    assert "import { renderApp, api } from '../harness/grader';" in h  # 있던 하네스 import 에 더함
+    assert "import { screen, waitFor } from '@testing-library/react';" in h
+    assert (
+        "import { network } from '../__grading__/harness/grader';" in p
+    )  # 파일 위치 기준 상대 경로
+    assert "import { screen } from '@testing-library/react';" in p
+    assert m == mine  # 직접 정의한 이름·이미 가져온 이름은 건드리지 않음
+    assert len(notes) == 2
+
+
+def test_bare_body_in_reply_slot_is_wrapped_by_code() -> None:
+    """api.once·always 의 응답 자리에 응답 칸(status·json·networkError) 없이 본문을 바로 넣으면 { json: … } 으로 감싼다.
+    응답 칸이 있거나·펼침·빈 객체·변수면 모양을 모르니 그대로 (tsc·재요청에 맡김)."""
+    from task_spec.starter.ts_helpers import wrap_bare_replies
+
+    src = (
+        "api.once('POST', '/m', { id: 1, note: 'a, b', tags: ['x', { y: 1 }] }, (c) => c.body.note === 'B');\n"
+        "api.always('GET', '/m', { status: 200, json: [] });\n"
+        "api.once('POST', '/m', { ...base });\n"
+        "api.once('POST', '/m', {});\n"
+        "api.once('POST', '/m', memo);\n"
+        "api.always<{ a: number }>('GET', '/n', { a: 1 });\n"
+    )
+    out, n = wrap_bare_replies(src)
+    assert n == 2
+    assert "{ json: { id: 1, note: 'a, b', tags: ['x', { y: 1 }] } }, (c) =>" in out
+    assert "api.always<{ a: number }>('GET', '/n', { json: { a: 1 } });" in out
+    for kept in ("{ status: 200, json: [] }", "{ ...base }", "'/m', {})", "'/m', memo)"):
+        assert kept in out

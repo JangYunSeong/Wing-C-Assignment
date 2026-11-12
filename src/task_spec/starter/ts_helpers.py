@@ -7,7 +7,9 @@ Java 템플릿의 ContractCase·PublicCase(starter/hidden_helpers.py)와 같은 
 from __future__ import annotations
 
 import json
+import posixpath
 import re
+from collections.abc import Callable
 from typing import Literal
 
 from task_spec.schemas.build import ContractResponse, GeneratedFile, HiddenPlan, TaskContract
@@ -122,6 +124,11 @@ def render_ts_contract(
             *[f"    {_ts(k)}: {v}," for k, v in ok_status.items()],
             "  },",
             "  testIds: Object.values(TID),",
+            *(
+                ["  idKinds: {", *[f"    {_ts(k)}: {_ts(v)}," for k, v in kinds.items()], "  },"]
+                if (kinds := id_kinds(contract)) and "contract_id_kinds" in rule.features
+                else []
+            ),
             "});",
             "",
         ]
@@ -248,6 +255,32 @@ def fault_lines(contract: TaskContract, plan: HiddenPlan) -> list[str]:
                 )
         out.append("}")
     return out
+
+
+def id_kinds(contract: TaskContract) -> dict[str, str]:
+    """목록 경로(MSW 꼴) → 항목 id 형식, 숫자 id 인 것만 — 하네스 api.collection 이 서버가 정하는 id 를 계약 형식으로 매기게 (React v12).
+    API 마다 성공 응답의 엔티티(returns) 또는 본문 칸의 `id` 형식을 본다. 항목 경로(`/memos/:id`)는 목록 경로(`/memos`)로.
+    한 목록 경로에 형식이 엇갈리면 알리지 않는다 (글자가 기본)."""
+    by_key = {m.entity_id: m for m in contract.entities} | {m.name: m for m in contract.entities}
+    seen: dict[str, set[str]] = {}
+    for e in contract.endpoints:
+        ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+        if not e.method or ok is None:
+            continue
+        if ok.returns:
+            ent = by_key.get(ok.returns.removesuffix("[]"))
+            fields = list(ent.fields) if ent is not None else []
+        else:
+            fields = list(ok.body)
+        f = next((x for x in fields if x.name == "id"), None)
+        if f is None:
+            continue
+        base = msw_path(e.path).rstrip("/")
+        if re.search(r"/:[A-Za-z]\w*$", base):
+            base = base.rsplit("/", 1)[0]
+        kind = "number" if parse_field(f.type).kind in ("integer", "number") else "string"
+        seen.setdefault(base or "/", set()).add(kind)
+    return {k: "number" for k, v in seen.items() if v == {"number"}}
 
 
 # 앱 쪽 계약 타입 — 시작 코드·참조 구현이 서버 응답을 같은 모양으로 읽게 (2026-11-10 알파 분류: 생성물끼리 계약 해석이 어긋난
@@ -437,4 +470,191 @@ def ensure_vitest_imports(files: list[GeneratedFile]) -> tuple[list[GeneratedFil
             content = f"import {{ {', '.join(missing)} }} from 'vitest';\n" + f.content
         out.append(GeneratedFile(path=f.path, content=content))
         notes.append(f"{f.path}: vitest import 에 {', '.join(missing)} 를 더함")
+    return out, notes
+
+
+# ── 숨은·공개 테스트의 하네스·testing-library import 보정 · 응답 자리 보정 (React v12) ──────────────────────────
+
+# 하네스(grader.ts)가 내보내는 값과 testing-library 의 화면 도구 — 쓰는 꼴(이름 뒤 '.' 또는 '(')로 찾는다.
+# screen 은 import 가 없어도 브라우저 전역(window.screen)으로 읽혀 'Cannot find name' 이 아니라 TS2339 가 난다 — 오류 문구가 아니라
+# 코드에서 쓰는지로 판단한다 (2026-11-12 #102 검토: 컴파일 기록 Cannot find name 'api' 12번 · within 1번).
+HARNESS_EXPORTS: dict[str, str] = {
+    "api": ".",
+    "network": ".",
+    "params": ".",
+    "renderApp": "(",
+    "byTestId": "(",
+    "textOf": "(",
+    "textsByRole": "(",
+    "flush": "(",
+    "openRoute": "(",
+    "reason": "(",
+    "tag": "(",
+}
+TESTING_LIBRARY: dict[str, str] = {"screen": ".", "waitFor": "(", "within": "("}
+TL_MODULE = "@testing-library/react"
+_IMPORT_STMT = re.compile(
+    r"^import\s+(?:type\s+)?(?P<what>[\s\S]*?)\s+from\s*['\"](?P<mod>[^'\"]+)['\"]\s*;?[ \t]*$",
+    re.M,
+)
+_REPLY_KEYS = frozenset({"status", "json", "networkError"})
+
+
+def _imported_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for m in _IMPORT_STMT.finditer(text):
+        what = m.group("what")
+        braces = re.search(r"\{([^}]*)\}", what)
+        if braces:
+            for part in braces.group(1).split(","):
+                part = part.strip().removeprefix("type ").strip()
+                if part:
+                    names.add(part.split(" as ")[-1].strip())
+        rest = re.sub(r"\{[^}]*\}", "", what)
+        names |= set(re.findall(r"(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)", rest.replace(",", " "))) - {
+            "as",
+            "type",
+        }
+    return names
+
+
+def _add_import(text: str, names: list[str], module: str, same: Callable[[str], bool]) -> str:
+    """names 를 module 의 import 에 더한다 — 같은 모듈(same) 의 중괄호 import 가 있으면 거기에, 없으면 마지막 import 뒤에 새 줄."""
+    for m in _IMPORT_STMT.finditer(text):
+        braces = re.search(r"\{([^}]*)\}", m.group("what"))
+        if same(m.group("mod")) and braces and not m.group(0).lstrip().startswith("import type"):
+            have = [x.strip() for x in braces.group(1).split(",") if x.strip()]
+            start = m.start("what") + braces.start(1)
+            end = m.start("what") + braces.end(1)
+            return text[:start] + " " + ", ".join([*have, *names]) + " " + text[end:]
+    line = f"import {{ {', '.join(names)} }} from '{module}';\n"
+    stmts = list(_IMPORT_STMT.finditer(text))
+    last = stmts[-1] if stmts else None
+    if last is None:
+        return line + text
+    at = last.end()
+    nl = text.find("\n", at)
+    at = len(text) if nl < 0 else nl + 1
+    return text[:at] + line + text[at:]
+
+
+def _uses(code: str, name: str, how: str) -> bool:
+    return re.search(rf"(?<![\w.$]){re.escape(name)}\s*{re.escape(how)}", code) is not None
+
+
+def _defines(code: str, name: str) -> bool:
+    return (
+        re.search(rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b", code) is not None
+        or re.search(rf"\b(?:const|let|var)\s*\{{[^}}]*\b{re.escape(name)}\b[^}}]*\}}\s*=", code)
+        is not None
+    )
+
+
+def _args(text: str, open_at: int) -> list[tuple[int, int]] | None:
+    """text[open_at] 이 '(' 인 호출의 인자 구간들 (괄호·문자열 안의 쉼표는 건너뜀). 닫는 ')' 를 못 찾으면 None."""
+    spans: list[tuple[int, int]] = []
+    depth, i, start = 0, open_at, open_at + 1
+    while i < len(text):
+        ch = text[i]
+        if ch in "'\"`":
+            j = i + 1
+            while j < len(text) and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            i = j + 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                spans.append((start, i))
+                return spans
+        elif ch == "," and depth == 1:
+            spans.append((start, i))
+            start = i + 1
+        i += 1
+    return None
+
+
+def _object_keys(literal: str) -> list[str] | None:
+    """객체 리터럴의 맨 바깥 칸 이름들 — 펼침(...)·계산된 이름이 있으면 None (모양을 모른다)."""
+    inner = literal.strip()[1:-1]
+    parts = _args("(" + inner + ")", 0)
+    if parts is None:
+        return None
+    keys: list[str] = []
+    for a, b in parts:
+        part = ("(" + inner + ")")[a:b].strip()
+        if not part:
+            continue
+        if part.startswith("...") or part.startswith("["):
+            return None
+        head = part.split(":", 1)[0].strip() if ":" in part else part
+        keys.append(head.strip("'\""))
+    return keys
+
+
+def wrap_bare_replies(content: str) -> tuple[str, int]:
+    """`api.once(메서드, 경로, 응답)`·`api.always(…)` 의 응답 자리에 응답 칸(status·json·networkError) 없이 본문을 바로 넣었으면
+    `{ json: 본문 }` 으로 감싼다. 펼침·계산된 이름·빈 객체·변수는 건드리지 않는다 (모양을 모르면 tsc·재요청에 맡긴다)."""
+    edits: list[tuple[int, int, str]] = []
+    for m in re.finditer(r"\bapi\.(?:once|always)\s*(?:<[^>()]*>)?\s*\(", content):
+        spans = _args(content, m.end() - 1)
+        if spans is None or len(spans) < 3:
+            continue
+        a, b = spans[2]
+        arg = content[a:b]
+        lit = arg.strip()
+        if not (lit.startswith("{") and lit.endswith("}")):
+            continue
+        keys = _object_keys(lit)
+        if not keys or _REPLY_KEYS & set(keys):
+            continue
+        lead = arg[: len(arg) - len(arg.lstrip())]
+        tail = arg[len(arg.rstrip()) :]
+        edits.append((a, b, f"{lead}{{ json: {lit} }}{tail}"))
+    for a, b, new in reversed(edits):
+        content = content[:a] + new + content[b:]
+    return content, len(edits)
+
+
+def ensure_test_imports(
+    files: list[GeneratedFile], harness_module: str
+) -> tuple[list[GeneratedFile], list[str]]:
+    """숨은·공개 테스트(*.test.ts·tsx)의 빠진 import 를 코드가 채우고, 응답 자리에 바로 넣은 본문을 감싼다 — LLM 재요청 없이.
+    vitest 이름 (ensure_vitest_imports) · 하네스 이름(harness_module 에서, 파일 위치 기준 상대 경로) · screen·waitFor·within
+    (testing-library) · `api.once/always` 응답 자리 (wrap_bare_replies). 파일이 같은 이름을 정의하거나 다른 곳에서 가져오면 건드리지 않는다."""
+    files, notes = ensure_vitest_imports(files)
+    out: list[GeneratedFile] = []
+    for f in files:
+        if not re.search(r"\.test\.tsx?$", f.path):
+            out.append(f)
+            continue
+        text = f.content
+        code = _TS_STRING_OR_COMMENT.sub(" ", text)
+        have = _imported_names(text)
+        rel = posixpath.relpath(harness_module, posixpath.dirname(f.path))
+        rel = rel if rel.startswith(".") else f"./{rel}"
+        added: list[str] = []
+        for group, module, same in (
+            (HARNESS_EXPORTS, rel, lambda mod: mod.rstrip("/").endswith("harness/grader")),
+            (TESTING_LIBRARY, TL_MODULE, lambda mod: mod == TL_MODULE),
+        ):
+            missing = [
+                n
+                for n, how in group.items()
+                if n not in have and not _defines(code, n) and _uses(code, n, how)
+            ]
+            if missing:
+                text = _add_import(text, missing, module, same)
+                added += missing
+        # 하네스 api 일 때만 (파일이 api 를 직접 정의했으면 그 객체의 once 는 하네스와 무관)
+        text, wrapped = wrap_bare_replies(text) if not _defines(code, "api") else (text, 0)
+        if added:
+            notes.append(f"{f.path}: import 에 {', '.join(added)} 를 더함")
+        if wrapped:
+            notes.append(
+                f"{f.path}: api.once·always 응답 자리에 바로 넣은 본문 {wrapped}곳을 {{ json: … }} 으로 감쌈"
+            )
+        out.append(GeneratedFile(path=f.path, content=text) if text != f.content else f)
     return out, notes

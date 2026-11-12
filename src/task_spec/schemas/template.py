@@ -272,7 +272,9 @@ class HiddenHelper(Schema):
     # 코드가 만드는 도우미가 쓰는 하네스 기능 (그 기능이 있는 템플릿 판만 켠다). contract_registry: React v8+ — contract.ts 가
     # api.contract 로 계약의 성공 상태·test id 를 알리고 TID 를 TestId 로 (2026-11-11 프론트 알파 fe8: 상태를 주지 않은 respond 가 200 이라
     # 계약이 201 인 생성 API 에서 허용 구현만 떨어짐 · textsByRole('listitem', TID.X) 가 컴파일되지 않음).
-    features: list[Literal["contract_registry"]] = Field(default_factory=list)
+    # contract_id_kinds: React v12+ — 목록 경로마다 항목 id 형식(숫자 id 계약)을 api.contract({ idKinds }) 로 알린다 (2026-11-12 #102 검토:
+    # 하네스 목록 id 가 늘 글자라 숫자 id 계약에서 `===` 비교가 어긋났다 — 저장 화면 계약 엔티티 id 의 4개 중 1개꼴이 숫자).
+    features: list[Literal["contract_registry", "contract_id_kinds"]] = Field(default_factory=list)
 
 
 class TemplateLimits(Schema):

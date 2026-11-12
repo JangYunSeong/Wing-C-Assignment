@@ -60,7 +60,12 @@ from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.skeleton import render_skeleton
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
 from task_spec.starter.templates import Template, is_java
-from task_spec.starter.ts_helpers import ensure_vitest_imports, fault_fn, render_app_types
+from task_spec.starter.ts_helpers import (
+    ensure_test_imports,
+    ensure_vitest_imports,
+    fault_fn,
+    render_app_types,
+)
 
 NONE = "(없음)"
 FLAG_FAILED = "시작 코드 생성 실패 (LLM 응답 없음·형식 오류): "
@@ -250,8 +255,16 @@ def helper_block(
 def test_import_fix(
     m: TemplateManifest,
 ) -> Callable[[list[GeneratedFile]], tuple[list[GeneratedFile], list[str]]] | None:
-    """숨은·공개 테스트의 빠진 import 를 코드가 채운다 — TypeScript 는 vitest, Java 는 JDK 표준 이름 (starter/java_imports)."""
-    return ensure_java_imports if is_java(m) else ensure_vitest_imports
+    """숨은·공개 테스트의 빠진 import 를 코드가 채운다 — Java 는 JDK 표준 이름 (starter/java_imports), TypeScript 는 vitest 이름과
+    (하네스가 있는 템플릿이면) 하네스·testing-library 이름 + api.once·always 응답 자리 보정 (ts_helpers.ensure_test_imports)."""
+    if is_java(m):
+        return ensure_java_imports
+    hl = m.hidden_layout
+    language = m.stack.language.lower() if m.stack else ""
+    if hl is not None and language == "typescript":
+        harness = f"{hl.harness.rstrip('/')}/grader"
+        return lambda files: ensure_test_imports(files, harness)
+    return ensure_vitest_imports
 
 
 def public_text(public: Overlay | None) -> str:
