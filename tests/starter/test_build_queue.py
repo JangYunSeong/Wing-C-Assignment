@@ -10,7 +10,7 @@ from datetime import timedelta
 
 import pytest
 
-from task_spec.schemas.build_record import StarterFile
+from task_spec.schemas.build_record import StarterFile, next_stage_log
 from task_spec.starter.store import (
     LEASE_EXPIRED,
     SUPERSEDED,
@@ -121,6 +121,15 @@ async def test_stage_and_cost_add_up_while_running() -> None:
     await s.record_stage(b.build_id, "contract", 0.25)
     got = await s.record_stage(b.build_id, "build", 0.5)
     assert (got.stage, got.cost_usd) == ("build", 0.75)
+    # 진행 기록 — 비용은 방금 끝난 단계(contract)에 쌓이고, 단계마다 한 줄 (화면 진행 막대)
+    assert [(m.stage, m.cost_usd, m.attempt) for m in got.stage_log] == [
+        ("contract", 0.75, 1),
+        ("build", 0.0, 1),
+    ]
+    same = await s.record_stage(b.build_id, "build", 0.1)  # 실패 단계의 비용 — 같은 단계에 더함
+    assert [m.stage for m in same.stage_log] == ["contract", "build"]
+    assert same.stage_log[-1].cost_usd == pytest.approx(0.1)
+    assert sum(m.cost_usd for m in same.stage_log) == pytest.approx(same.cost_usd)
     await s.set_status(b.build_id, "verifying")
     done = await s.set_status(b.build_id, "review")
     assert done.finished_at is not None and done.lease_until is None
@@ -172,3 +181,16 @@ async def test_expired_lease_is_retried_once_then_failed() -> None:
     (dead,) = await s.recover_expired(AT + timedelta(seconds=200))
     assert (dead.status, dead.error) == ("failed", LEASE_EXPIRED)
     assert dead.finished_at is not None
+
+
+def test_next_stage_log_starts_a_new_line_per_attempt() -> None:
+    at = AT
+    log = next_stage_log([], "contract", 0.0, at, 1)
+    log = next_stage_log(log, "build", 0.02, at + timedelta(minutes=1), 1)
+    # 죽은 작업 복구 뒤 다시 가져가면(시도 2) 같은 단계라도 새 줄
+    log = next_stage_log(log, "contract", 0.0, at + timedelta(minutes=30), 2)
+    assert [(m.stage, m.attempt, m.cost_usd) for m in log] == [
+        ("contract", 1, 0.02),
+        ("build", 1, 0.0),
+        ("contract", 2, 0.0),
+    ]

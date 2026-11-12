@@ -52,7 +52,13 @@ from task_spec.api.errors import (
 from task_spec.graph.build_approval import outcome_key, thread_id
 from task_spec.schemas.build import BuildStatus
 from task_spec.schemas.build_approval import BuildApprovalDecision, BuildApprovalState
-from task_spec.schemas.build_record import TARGET_NAME, BuildRecord, Delivery, DeliveryTarget
+from task_spec.schemas.build_record import (
+    TARGET_NAME,
+    BuildRecord,
+    Delivery,
+    DeliveryTarget,
+    StageMark,
+)
 from task_spec.schemas.package import (
     BUILD_ID,
     COMMON_ID,
@@ -96,6 +102,7 @@ class BuildSummary(BaseModel):
     packages_final_at: datetime | None = (
         None  # 묶음 확정 (#130 — builder 가 approved 묶음·평가 키트를 쓴 시각)
     )
+    stage_log: list[StageMark] = []  # 단계 진행 기록 — 단계·시각·시도·비용만 (화면 진행 막대)
 
 
 class FlagView(BaseModel):
@@ -183,6 +190,7 @@ def _summary(b: BuildRecord, label: TaskLabel | None = None) -> BuildSummary:
         started_at=b.started_at,
         finished_at=b.finished_at,
         packages_final_at=b.packages_final_at,
+        stage_log=b.stage_log,
     )
 
 

@@ -51,8 +51,10 @@ from task_spec.schemas.build_record import (
     BuildRecord,
     Delivery,
     DeliveryTarget,
+    StageMark,
     StarterFile,
     StoredFileKind,
+    next_stage_log,
 )
 from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.package import (
@@ -173,7 +175,8 @@ ALTER TABLE public.common_task_build
     ADD COLUMN IF NOT EXISTS error text,
     ADD COLUMN IF NOT EXISTS started_at timestamptz,
     ADD COLUMN IF NOT EXISTS finished_at timestamptz,
-    ADD COLUMN IF NOT EXISTS packages_final_at timestamptz;
+    ADD COLUMN IF NOT EXISTS packages_final_at timestamptz,
+    ADD COLUMN IF NOT EXISTS stage_log jsonb NOT NULL DEFAULT '[]';  -- 단계 진행 기록 (StageMark)
 -- 생성 요청으로 만든 빌드만 — eval 적재(new_build)는 같은 과제에 여러 빌드를 둘 수 있다 (수명 주기 시험·같은 판 동시 빌드)
 DROP INDEX IF EXISTS public.common_task_build_active;
 CREATE UNIQUE INDEX IF NOT EXISTS common_task_build_active_request ON public.common_task_build (common_id)
@@ -784,7 +787,9 @@ class InMemoryBuildStore:
     async def record_stage(self, build_id: str, stage: str, cost_usd: float = 0.0) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         _require_status(build, _RUNNING, "단계 기록")
-        return self._put(build, stage=stage, cost_usd=build.cost_usd + max(cost_usd, 0.0))
+        cost = max(cost_usd, 0.0)
+        log = next_stage_log(build.stage_log, stage, cost, datetime.now(UTC), build.attempt)
+        return self._put(build, stage=stage, cost_usd=build.cost_usd + cost, stage_log=log)
 
     async def fail(self, build_id: str, reason: str, at: datetime | None = None) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
@@ -942,6 +947,7 @@ class PgBuildStore:
             started_at=r["started_at"],
             finished_at=r["finished_at"],
             packages_final_at=r["packages_final_at"],
+            stage_log=[StageMark.model_validate(x) for x in r["stage_log"]],
         )
 
     @staticmethod
@@ -1438,11 +1444,14 @@ class PgBuildStore:
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
-            _require_status(await self._locked(cur, build_id), _RUNNING, "단계 기록")
+            build = await self._locked(cur, build_id)
+            _require_status(build, _RUNNING, "단계 기록")
+            cost = max(cost_usd, 0.0)
+            log = next_stage_log(build.stage_log, stage, cost, datetime.now(UTC), build.attempt)
             await cur.execute(
-                "UPDATE public.common_task_build SET stage = %s, cost_usd = cost_usd + %s "
-                "WHERE id = %s RETURNING *",
-                (stage, max(cost_usd, 0.0), build_id),
+                "UPDATE public.common_task_build SET stage = %s, cost_usd = cost_usd + %s, "
+                "stage_log = %s WHERE id = %s RETURNING *",
+                (stage, cost, Jsonb([m.model_dump(mode="json") for m in log]), build_id),
             )
             r = await cur.fetchone()
         return self._build(r)  # type: ignore[arg-type]

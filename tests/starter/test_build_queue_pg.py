@@ -139,6 +139,13 @@ async def test_lease_heartbeat_stage_and_recovery(env: Env) -> None:
     assert not await env.store.heartbeat(b.build_id, "w2", 60, T0)
     s = await env.store.record_stage(b.build_id, "contract", 0.25)
     assert (s.stage, s.cost_usd) == ("contract", 0.25)
+    s = await env.store.record_stage(b.build_id, "build", 0.5)
+    assert [(m.stage, m.cost_usd, m.attempt) for m in s.stage_log] == [
+        ("contract", 0.75, 1),
+        ("build", 0.0, 1),
+    ]
+    got = await env.store.get(b.build_id)
+    assert got is not None and got.stage_log == s.stage_log  # jsonb 왕복
     # lease 가 지나면 한 번은 다시 대기열로, 두 번째는 실패
     (back,) = [
         x for x in await env.store.recover_expired(T0 + timedelta(seconds=91)) if x.common_id == cid

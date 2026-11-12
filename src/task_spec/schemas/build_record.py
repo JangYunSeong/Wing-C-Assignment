@@ -57,6 +57,29 @@ class BuildOutcome(Schema):
     repairs: list[RepairRecord] = Field(default_factory=list)
 
 
+class StageMark(Schema):
+    """builder 가 단계에 들어간 기록 하나 — 화면의 진행 막대용 (단계·시각·시도·그 단계가 쓴 LLM 비용). 원문 없음."""
+
+    stage: str = Field(max_length=40)
+    at: datetime
+    attempt: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0)
+
+
+def next_stage_log(
+    log: list[StageMark], stage: str, cost_usd: float, at: datetime, attempt: int
+) -> list[StageMark]:
+    """`record_stage` 한 번 — 비용은 지금 단계(마지막 기록, 방금 끝난 단계)에 더하고, 단계가 바뀌면 새 기록을 붙인다."""
+    out = list(log)
+    if out and cost_usd > 0:
+        out[-1] = out[-1].model_copy(update={"cost_usd": out[-1].cost_usd + cost_usd})
+    if not out or out[-1].stage != stage or out[-1].attempt != attempt:
+        # 첫 기록이면 비용을 매길 앞 단계가 없다 — 그 단계에 둔다 (누계 cost_usd 와 합이 맞게)
+        first = cost_usd if not out and cost_usd > 0 else 0.0
+        out.append(StageMark(stage=stage, at=at, attempt=attempt, cost_usd=first))
+    return out
+
+
 class BuildRecord(Schema):
     """`common_task_build` 행."""
 
@@ -88,6 +111,7 @@ class BuildRecord(Schema):
     error: str | None = Field(default=None, max_length=ERROR_MAX)  # 실패 사유 — 원문·생성 코드 없이
     started_at: datetime | None = None  # 처음 가져간 시각
     finished_at: datetime | None = None  # review 또는 failed 가 된 시각
+    stage_log: list[StageMark] = Field(default_factory=list)  # 단계 진행 기록 (화면 진행 막대)
     # 묶음 확정 (#130 ③ A) — 승인 뒤 builder 가 descriptor 를 approved 로 다시 쓰고 평가 키트를 등록한 시각. 전달은 이것이 있어야
     packages_final_at: datetime | None = None
 

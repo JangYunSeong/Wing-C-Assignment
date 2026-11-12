@@ -25,6 +25,7 @@ FILES: dict[str, str] = {
     "app.js": "text/javascript; charset=utf-8",
     "builds.html": "text/html; charset=utf-8",  # 공통 과제 빌드 화면 (/builds API 만 부른다)
     "builds.js": "text/javascript; charset=utf-8",
+    "stages.js": "text/javascript; charset=utf-8",
 }
 
 
