@@ -4,6 +4,8 @@
   같은 판을 다시 빌드하면 새 빌드(`-b2`)다 — 다시 빌드한 이미지는 `image_id` 가 달라지므로 승인된 빌드의 파일은 바꾸지 않는다.
 - 오버레이 본문은 `starter_file` 에만. 지원자 README(`kind='readme'`, 코드가 렌더)도 같은 곳 — 승인자가 보고, 지원자에게 보인 문장 기록이 된다. 그래프 State(`BuildState`)에는 `FileRef`(본문 없음)만.
 - 전달은 승인(시작 코드 승인 — 그래프 interrupt 로 받은 결과)된 빌드만. 승인은 검토 표시마다 승인자 판단이 있어야 한다.
+- 빌드 큐 (#128): 명세 승인과 과제 생성은 따로다 [확정: 2026-11-12 사용자] — 사람이 생성을 요청하면(`requested_by`) pending 빌드가
+  생기고, builder 가 lease 를 잡고 가져간다. 같은 공통 과제에 진행 중(`ACTIVE_STATUSES`) 빌드는 하나만.
 """
 
 from __future__ import annotations
@@ -33,6 +35,9 @@ DeliveryStatus = Literal["requested", "sent", "failed"]
 StoredFileKind = FileKind | Literal["readme"]
 README_PATH = "README.md"
 TARGET_NAME = r"^[a-z0-9][a-z0-9_.-]{0,62}$"
+# 진행 중 — 같은 공통 과제에 하나만 (부분 유일 색인). review 는 사람이 볼 차례라 새 요청을 막지 않는다
+ACTIVE_STATUSES: tuple[BuildStatus, ...] = ("pending", "generating", "verifying")
+ERROR_MAX = 300
 _VARIANT = (
     r"^$|^[a-z0-9][a-z0-9_-]{0,39}$"  # 참조 구현 라벨 (naive-all · d1) — starter·hidden 은 빈 값
 )
@@ -68,6 +73,21 @@ class BuildRecord(Schema):
     retain_until: datetime | None = (
         None  # 재채점 기간 끝 — 그 전에는 묶음 파일을 지우지 않는다 [미정: 기간]
     )
+    # ── 큐 (#128) — 생성 요청으로 만든 빌드만 채운다 (eval 적재 빌드는 비어 있다) ──
+    requested_by: str | None = Field(default=None, max_length=80)  # 생성을 요청한 사람
+    requested_at: datetime | None = None
+    worker: str | None = Field(default=None, max_length=80)  # 지금 lease 를 쥔 builder
+    lease_until: datetime | None = None  # 이 시각까지 heartbeat 가 없으면 죽은 작업으로 본다
+    attempt: int = Field(
+        default=0, ge=0
+    )  # builder 가 가져간 횟수 (죽은 작업 복구 뒤 다시 가져가면 +1)
+    stage: str | None = Field(
+        default=None, max_length=40
+    )  # 세부 단계 (contract·build·images·load …)
+    cost_usd: float = Field(default=0.0, ge=0)  # 이 빌드에 쓴 LLM 비용 누계
+    error: str | None = Field(default=None, max_length=ERROR_MAX)  # 실패 사유 — 원문·생성 코드 없이
+    started_at: datetime | None = None  # 처음 가져간 시각
+    finished_at: datetime | None = None  # review 또는 failed 가 된 시각
 
     @model_validator(mode="after")
     def _ids_match(self) -> BuildRecord:

@@ -127,6 +127,14 @@ class BuildNotFound(DomainError):
         super().__init__(f"빌드를 찾을 수 없습니다: {build_id}")
 
 
+class CommonTaskNotFound(DomainError):
+    code = "common_task_not_found"
+    status_code = 404
+
+    def __init__(self, common_id: str) -> None:
+        super().__init__(f"공통 과제를 찾을 수 없습니다: {common_id}")
+
+
 class BuildRuleViolation(DomainError):
     """빌드 저장소 규칙 위반 (상태·역할 충돌) — 저장소 메시지는 id·상태·역할만 담는다."""
 

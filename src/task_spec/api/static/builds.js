@@ -1,5 +1,5 @@
 /* 공통 과제 빌드 — 임시 화면 (api/routers/ui.py 가 /ui/builds.html 로 내준다).
-   기존 API(/builds · /builds/{id} · /cases · /artifacts · /deliveries · /delivery-targets)만 부른다.
+   기존 API(/builds · /builds/{id} · /cases · /artifacts · /deliveries · /delivery-targets)만 부른다. 과제 생성 요청은 실행 화면(app.js)에서.
    '테스트' 절은 문제를 쓸지 정하는 승인자용 — 숨은 케이스의 상황·통과 조건·의도한 사유·허용 설계와 대상별 결과 (테스트 코드는 없다). */
 "use strict";
 
@@ -53,7 +53,7 @@ function renderList() {
       (b) => `<li><button type="button" data-id="${esc(b.build_id)}" aria-current="${b.build_id === current}">
         <span><span class="recent-name">${esc(b.title || b.common_id)}</span>
         <span class="sub mono">${esc(b.build_id)} · ${esc(stack(b.template_ref))} · ${esc(b.posting_id || "")}</span></span>
-        ${pill(b.status)}</button></li>`,
+        ${pill(b.status)}${b.stage && ["generating", "verifying"].includes(b.status) ? `<span class="sub">${esc(b.stage)}</span>` : ""}</button></li>`,
     )
     .join("");
 }
@@ -193,6 +193,18 @@ function deliveriesBlock(ds, targets) {
   return `<div class="eyebrow">전달 대상</div>${t}<div class="eyebrow">전달 기록</div>${d}`;
 }
 
+/* 큐 (#128) — 생성 요청으로 만든 빌드만: 요청자·단계·시도·비용·실패 사유 */
+function queueLine(b) {
+  if (!b.requested_by) return "";
+  const parts = [`<span>요청 ${esc(b.requested_by)} · ${when(b.requested_at)}</span>`];
+  if (b.stage) parts.push(`<span>단계 ${esc(b.stage)}</span>`);
+  if (b.attempt > 1) parts.push(`<span>시도 ${b.attempt}회</span>`);
+  if (b.cost_usd) parts.push(`<span>비용 $${Number(b.cost_usd).toFixed(2)}</span>`);
+  if (b.finished_at) parts.push(`<span>끝 ${when(b.finished_at)}</span>`);
+  const err = b.error ? `<p class="bad" style="margin:6px 0 0">${esc(b.error === "superseded" ? "대기 중에 공고의 새 판이 승인되어 만들지 않았습니다 (superseded)" : b.error)}</p>` : "";
+  return `<div class="meta">${parts.join("")}</div>${err}`;
+}
+
 async function show(id) {
   current = id;
   location.hash = encodeURIComponent(id);
@@ -218,7 +230,8 @@ async function show(id) {
         <div class="eyebrow">${esc(b.posting_id || "")}</div>
         <h2>${esc(b.title || b.common_id)}</h2>
         <div class="meta"><span class="mono">${esc(b.build_id)}</span><span>${esc(b.template_ref || "–")}</span><span>만든 시각 ${when(b.created_at)}</span>
-        ${b.approved_by ? `<span>승인 ${esc(b.approved_by)} · ${when(b.approved_at)}</span>` : ""}</div></div>
+        ${b.approved_by ? `<span>승인 ${esc(b.approved_by)} · ${when(b.approved_at)}</span>` : ""}</div>
+        ${queueLine(b)}</div>
         <div class="right">${pill(b.status)}</div></div>
       <nav class="jump" aria-label="빌드 안에서 이동"><a href="#" data-jump="b-verify">검증</a><a href="#" data-jump="b-cases">테스트</a><a href="#" data-jump="b-flags">검토 표시</a><a href="#" data-jump="b-arts">이미지 묶음</a><a href="#" data-jump="b-deliv">전달</a></nav>
       <section class="block" id="b-verify"><div class="block-head"><h3>검증 결과</h3><span class="aside">채점용 이미지로 채점한 구현별 통과 수</span></div>

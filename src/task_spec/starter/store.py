@@ -14,6 +14,15 @@
 - 승인은 review 에서만, 응시용·채점용 묶음이 현재 outcome 과 맞고 검토 표시마다 승인자 판단(flag_id)이 있어야 한다.
   승인 자체는 그래프 interrupt 로 받은 결과를 적는 것 (불변식 9).
 - 전달은 approved·published 빌드만, 등록된 대상이 그 역할을 받을 때만. 첫 전달이 성공하면 published.
+
+빌드 큐 (#128) — 명세 승인과 과제 생성은 따로다 [확정: 2026-11-12 사용자]:
+- 생성 요청(`request_build`)은 approved·기능형 공통 과제만. 같은 공통 과제에 진행 중(pending·generating·verifying) 빌드가
+  있으면 새로 만들지 않고 그 빌드를 돌려준다 (부분 유일 색인이 마지막 안전장치).
+- builder 는 `claim()` 으로 요청된 pending 빌드를 하나씩 가져간다 (Postgres: FOR UPDATE SKIP LOCKED). 가져갈 때 공통 과제가 더는
+  approved 가 아니면(새 판이 승인됨) 빌드하지 않고 failed + `superseded`. lease 는 `heartbeat()` 로 늘린다.
+- `recover_expired()`: lease 가 지난 generating·verifying 빌드는 시도가 남았으면 파일·결과를 지우고 pending 으로(인프라 오류
+  1회 자동 재시도), 아니면 failed + `lease_expired`. 생성 실패는 사람이 다시 요청한다.
+- eval 적재(`new_build`)로 만든 빌드는 요청 시각이 없어 builder 가 가져가지 않는다.
 """
 
 from __future__ import annotations
@@ -22,7 +31,7 @@ import re
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -32,6 +41,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from task_spec.schemas.build import BuildStatus, HiddenPlan, RepairRecord, TaskContract
 from task_spec.schemas.build_record import (
+    ACTIVE_STATUSES,
+    ERROR_MAX,
     README_PATH,
     BuildArtifact,
     BuildOutcome,
@@ -148,6 +159,24 @@ CREATE TABLE IF NOT EXISTS public.artifact_delivery (
     FOREIGN KEY (build_id, role) REFERENCES public.build_artifact (build_id, role) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS artifact_delivery_build ON public.artifact_delivery (build_id);
+-- 빌드 큐 (#128)
+ALTER TABLE public.common_task_build
+    ADD COLUMN IF NOT EXISTS requested_by text,
+    ADD COLUMN IF NOT EXISTS requested_at timestamptz,
+    ADD COLUMN IF NOT EXISTS worker text,
+    ADD COLUMN IF NOT EXISTS lease_until timestamptz,
+    ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS stage text,
+    ADD COLUMN IF NOT EXISTS cost_usd double precision NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS error text,
+    ADD COLUMN IF NOT EXISTS started_at timestamptz,
+    ADD COLUMN IF NOT EXISTS finished_at timestamptz;
+-- 생성 요청으로 만든 빌드만 — eval 적재(new_build)는 같은 과제에 여러 빌드를 둘 수 있다 (수명 주기 시험·같은 판 동시 빌드)
+DROP INDEX IF EXISTS public.common_task_build_active;
+CREATE UNIQUE INDEX IF NOT EXISTS common_task_build_active_request ON public.common_task_build (common_id)
+    WHERE status IN ('pending', 'generating', 'verifying') AND requested_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS common_task_build_queue ON public.common_task_build (requested_at)
+    WHERE status = 'pending' AND requested_at IS NOT NULL;
 """
 
 
@@ -161,6 +190,22 @@ class TaskLabel:
 
 class BuildRuleError(ValueError):
     """저장소 규칙 위반 (상태·승인·불변·전달 대상)."""
+
+
+# 큐 실패 사유 (error 칸) — 원문 없이 짧은 코드
+SUPERSEDED = "superseded"  # 대기 중에 공고의 새 판이 승인됨
+LEASE_EXPIRED = "lease_expired"  # builder 가 heartbeat 없이 사라짐 (시도를 다 씀)
+_RUNNING = ("generating", "verifying")  # builder 가 lease 를 쥐고 있는 상태
+_FINISHED = ("review", "failed")  # finished_at 을 적는 상태
+
+
+@dataclass(frozen=True)
+class CommonRef:
+    """생성 요청 판단에 필요한 공통 과제 칸 — 명세 본문은 넣지 않는다."""
+
+    status: str  # draft · approved · superseded
+    task_kind: str  # incident · feature (예전 판은 incident)
+    ontology_version: str
 
 
 # ── 경로 ──────────────────────────────────────────────────────────────
@@ -277,6 +322,25 @@ def check_target(target: DeliveryTarget | None, name: str, role: ArtifactRole) -
         raise BuildRuleError(f"전달 대상 {name} 은 {target.role} 만 받는다 ({role} 요청)")
 
 
+def check_requestable(common: CommonRef | None, common_id: str) -> CommonRef:
+    """생성 요청을 받을 수 있는 공통 과제인지 — 없으면 KeyError, approved·기능형이 아니면 규칙 위반."""
+    if common is None:
+        raise KeyError(common_id)
+    if common.status != "approved":
+        raise BuildRuleError(
+            f"{common_id}: 승인된 공통 과제만 생성 요청을 받는다 (지금 {common.status})"
+        )
+    if common.task_kind != "feature":
+        raise BuildRuleError(
+            f"{common_id}: 기능 개발형 과제만 시작 코드를 만든다 (지금 {common.task_kind})"
+        )
+    return common
+
+
+def _reason(text: str) -> str:
+    return " ".join(text.split())[:ERROR_MAX]
+
+
 def _require(build: BuildRecord | None, build_id: str) -> BuildRecord:
     if build is None:
         raise KeyError(build_id)
@@ -359,6 +423,39 @@ class BuildRepo(Protocol):
 
     async def deliveries(self, build_id: str) -> list[Delivery]: ...
 
+    # ── 큐 (#128) ──
+    async def request_build(
+        self, common_id: str, requested_by: str, at: datetime | None = None
+    ) -> tuple[BuildRecord, bool]:
+        """(빌드, 새로 만들었는가). 진행 중 빌드가 있으면 그것을 (False 와) 돌려준다."""
+        ...
+
+    async def claim(
+        self,
+        worker: str,
+        lease_s: float,
+        at: datetime | None = None,
+        daily_budget_usd: float | None = None,
+    ) -> BuildRecord | None:
+        """요청 순서대로 pending 하나 → generating + lease. 없거나 하루 비용 상한을 넘었으면 None."""
+        ...
+
+    async def heartbeat(
+        self, build_id: str, worker: str, lease_s: float, at: datetime | None = None
+    ) -> bool:
+        """lease 를 늘린다. 이 worker 의 진행 중 빌드가 아니면 False — builder 는 그 작업을 멈춘다."""
+        ...
+
+    async def record_stage(
+        self, build_id: str, stage: str, cost_usd: float = 0.0
+    ) -> BuildRecord: ...
+
+    async def fail(self, build_id: str, reason: str, at: datetime | None = None) -> BuildRecord: ...
+
+    async def recover_expired(
+        self, at: datetime | None = None, max_attempts: int = 2
+    ) -> list[BuildRecord]: ...
+
 
 class InMemoryBuildStore:
     """단위 테스트·DB 없는 실행용. 공통 과제 행 존재는 확인하지 않는다 (FK 는 Postgres 에서)."""
@@ -366,6 +463,7 @@ class InMemoryBuildStore:
     def __init__(self) -> None:
         self.labels: dict[str, TaskLabel] = {}  # 공통 과제 행 대신 (테스트가 채움)
         self.tasks: dict[str, TaskItem] = {}  # 공통 과제 명세 (테스트가 채움)
+        self.commons: dict[str, CommonRef] = {}  # 공통 과제 상태·유형 (테스트가 채움)
         self._builds: dict[str, BuildRecord] = {}
         self._files: dict[tuple[str, str, str, str], StarterFile] = {}
         self._artifacts: dict[tuple[str, str], BuildArtifact] = {}
@@ -413,7 +511,10 @@ class InMemoryBuildStore:
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         check_transition(build, status)
-        return self._put(build, status=status)
+        done = (
+            {"finished_at": datetime.now(UTC), "lease_until": None} if status in _FINISHED else {}
+        )
+        return self._put(build, status=status, **done)
 
     async def reopen(self, build_id: str) -> list[BuildArtifact]:
         build = _require(self._builds.get(build_id), build_id)
@@ -556,6 +657,116 @@ class InMemoryBuildStore:
             key=lambda d: d.requested_at,
         )
 
+    # ── 큐 (#128) ──
+    async def request_build(
+        self, common_id: str, requested_by: str, at: datetime | None = None
+    ) -> tuple[BuildRecord, bool]:
+        common = check_requestable(self.commons.get(common_id), common_id)
+        active = [b for b in await self.builds(common_id) if b.status in ACTIVE_STATUSES]
+        if active:
+            return active[-1], False
+        build = await self.new_build(common_id, common.ontology_version, at)
+        when = at or datetime.now(UTC)
+        return self._put(build, requested_by=requested_by, requested_at=when), True
+
+    async def claim(
+        self,
+        worker: str,
+        lease_s: float,
+        at: datetime | None = None,
+        daily_budget_usd: float | None = None,
+    ) -> BuildRecord | None:
+        now = at or datetime.now(UTC)
+        if daily_budget_usd is not None:
+            since = now - timedelta(days=1)
+            spent = sum(
+                b.cost_usd
+                for b in self._builds.values()
+                if b.started_at is not None and b.started_at > since
+            )
+            if spent >= daily_budget_usd:
+                return None
+        queue = sorted(
+            (b for b in self._builds.values() if b.status == "pending" and b.requested_at),
+            key=lambda b: (b.requested_at, b.build_id),
+        )
+        for b in queue:
+            common = self.commons.get(b.common_id)
+            if common is None or common.status != "approved":
+                self._put(b, status="failed", error=SUPERSEDED, finished_at=now)
+                continue
+            return self._put(
+                b,
+                status="generating",
+                worker=worker,
+                lease_until=now + timedelta(seconds=lease_s),
+                attempt=b.attempt + 1,
+                started_at=b.started_at or now,
+                stage=None,
+                error=None,
+            )
+        return None
+
+    async def heartbeat(
+        self, build_id: str, worker: str, lease_s: float, at: datetime | None = None
+    ) -> bool:
+        b = self._builds.get(build_id)
+        if b is None or b.status not in _RUNNING or b.worker != worker:
+            return False
+        self._put(b, lease_until=(at or datetime.now(UTC)) + timedelta(seconds=lease_s))
+        return True
+
+    async def record_stage(self, build_id: str, stage: str, cost_usd: float = 0.0) -> BuildRecord:
+        build = _require(self._builds.get(build_id), build_id)
+        _require_status(build, _RUNNING, "단계 기록")
+        return self._put(build, stage=stage, cost_usd=build.cost_usd + max(cost_usd, 0.0))
+
+    async def fail(self, build_id: str, reason: str, at: datetime | None = None) -> BuildRecord:
+        build = _require(self._builds.get(build_id), build_id)
+        check_transition(build, "failed")
+        return self._put(
+            build,
+            status="failed",
+            error=_reason(reason),
+            finished_at=at or datetime.now(UTC),
+            lease_until=None,
+        )
+
+    async def recover_expired(
+        self, at: datetime | None = None, max_attempts: int = 2
+    ) -> list[BuildRecord]:
+        now = at or datetime.now(UTC)
+        out: list[BuildRecord] = []
+        for b in list(self._builds.values()):
+            if b.status not in _RUNNING or b.lease_until is None or b.lease_until >= now:
+                continue
+            if b.attempt < max_attempts:  # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다
+                for key in [k for k in self._files if k[0] == b.build_id]:
+                    del self._files[key]
+                out.append(
+                    self._put(
+                        b,
+                        status="pending",
+                        outcome=None,
+                        worker=None,
+                        lease_until=None,
+                        stage=None,
+                        error=LEASE_EXPIRED,
+                    )
+                )
+            else:
+                out.append(
+                    self._put(
+                        b,
+                        status="failed",
+                        worker=None,
+                        lease_until=None,
+                        error=LEASE_EXPIRED,
+                        finished_at=now,
+                    )
+                )
+        return out
+
 
 class PgBuildStore:
     """Postgres 구현. `open()` 이 common_task·빌드 DDL 을 적용한다."""
@@ -607,6 +818,16 @@ class PgBuildStore:
             approved_by=r["approved_by"],
             approved_at=r["approved_at"],
             retain_until=r["retain_until"],
+            requested_by=r["requested_by"],
+            requested_at=r["requested_at"],
+            worker=r["worker"],
+            lease_until=r["lease_until"],
+            attempt=r["attempt"],
+            stage=r["stage"],
+            cost_usd=r["cost_usd"],
+            error=r["error"],
+            started_at=r["started_at"],
+            finished_at=r["finished_at"],
         )
 
     @staticmethod
@@ -725,9 +946,12 @@ class PgBuildStore:
             conn.cursor(row_factory=dict_row) as cur,
         ):
             check_transition(await self._locked(cur, build_id), status)
+            done = status in _FINISHED
             await cur.execute(
-                "UPDATE public.common_task_build SET status = %s WHERE id = %s RETURNING *",
-                (status, build_id),
+                "UPDATE public.common_task_build SET status = %s, "
+                "finished_at = CASE WHEN %s THEN now() ELSE finished_at END, "
+                "lease_until = CASE WHEN %s THEN NULL ELSE lease_until END WHERE id = %s RETURNING *",
+                (status, done, done, build_id),
             )
             r = await cur.fetchone()
         return self._build(r)  # type: ignore[arg-type]
@@ -991,3 +1215,169 @@ class PgBuildStore:
             )
             rows = await cur.fetchall()
         return [self._delivery(r) for r in rows]
+
+    # ── 큐 (#128) ──
+    async def request_build(
+        self, common_id: str, requested_by: str, at: datetime | None = None
+    ) -> tuple[BuildRecord, bool]:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            # 공통 과제 행을 잠가 같은 과제의 생성 요청을 한 줄로 세운다 (진행 중 확인 → 넣기 사이 경합 방지)
+            await cur.execute(
+                "SELECT status, ontology_version, COALESCE(task->>'task_kind', 'incident') AS kind "
+                "FROM public.common_task WHERE id = %s FOR UPDATE",
+                (common_id,),
+            )
+            r = await cur.fetchone()
+            common = check_requestable(
+                CommonRef(r["status"], r["kind"], r["ontology_version"]) if r else None, common_id
+            )
+            await cur.execute(
+                "SELECT * FROM public.common_task_build WHERE common_id = %s AND status = ANY(%s) "
+                "ORDER BY seq DESC LIMIT 1",
+                (common_id, list(ACTIVE_STATUSES)),
+            )
+            active = await cur.fetchone()
+            if active is not None:
+                return self._build(active), False
+            await cur.execute(
+                "INSERT INTO public.common_task_build (id, common_id, seq, ontology_version, created_at, "
+                "requested_by, requested_at) "
+                "SELECT %(c)s || '-b' || n, %(c)s, n, %(o)s, COALESCE(%(at)s, now()), %(by)s, "
+                "COALESCE(%(at)s, now()) FROM "
+                "(SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM public.common_task_build "
+                " WHERE common_id = %(c)s) s RETURNING *",
+                {"c": common_id, "o": common.ontology_version, "at": at, "by": requested_by},
+            )
+            created = await cur.fetchone()
+        return self._build(created), True  # type: ignore[arg-type]
+
+    async def claim(
+        self,
+        worker: str,
+        lease_s: float,
+        at: datetime | None = None,
+        daily_budget_usd: float | None = None,
+    ) -> BuildRecord | None:
+        now = at or datetime.now(UTC)
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            if daily_budget_usd is not None:
+                await cur.execute(
+                    "SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM public.common_task_build "
+                    "WHERE started_at > %s",
+                    (now - timedelta(days=1),),
+                )
+                spent = await cur.fetchone()
+                if spent is not None and spent["spent"] >= daily_budget_usd:
+                    return None
+            while True:  # 이전 판 요청은 실패로 적고 다음 것을 본다
+                await cur.execute(
+                    "SELECT b.id, c.status AS common_status FROM public.common_task_build b "
+                    "JOIN public.common_task c ON c.id = b.common_id "
+                    "WHERE b.status = 'pending' AND b.requested_at IS NOT NULL "
+                    "ORDER BY b.requested_at, b.id LIMIT 1 FOR UPDATE OF b SKIP LOCKED"
+                )
+                r = await cur.fetchone()
+                if r is None:
+                    return None
+                if r["common_status"] != "approved":
+                    await cur.execute(
+                        "UPDATE public.common_task_build SET status = 'failed', error = %s, "
+                        "finished_at = %s WHERE id = %s",
+                        (SUPERSEDED, now, r["id"]),
+                    )
+                    continue
+                await cur.execute(
+                    "UPDATE public.common_task_build SET status = 'generating', worker = %s, "
+                    "lease_until = %s, attempt = attempt + 1, started_at = COALESCE(started_at, %s), "
+                    "stage = NULL, error = NULL WHERE id = %s RETURNING *",
+                    (worker, now + timedelta(seconds=lease_s), now, r["id"]),
+                )
+                return self._build(await cur.fetchone())  # type: ignore[arg-type]
+
+    async def heartbeat(
+        self, build_id: str, worker: str, lease_s: float, at: datetime | None = None
+    ) -> bool:
+        now = at or datetime.now(UTC)
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE public.common_task_build SET lease_until = %s "
+                "WHERE id = %s AND worker = %s AND status = ANY(%s) RETURNING id",
+                (now + timedelta(seconds=lease_s), build_id, worker, list(_RUNNING)),
+            )
+            return await cur.fetchone() is not None
+
+    async def record_stage(self, build_id: str, stage: str, cost_usd: float = 0.0) -> BuildRecord:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            _require_status(await self._locked(cur, build_id), _RUNNING, "단계 기록")
+            await cur.execute(
+                "UPDATE public.common_task_build SET stage = %s, cost_usd = cost_usd + %s "
+                "WHERE id = %s RETURNING *",
+                (stage, max(cost_usd, 0.0), build_id),
+            )
+            r = await cur.fetchone()
+        return self._build(r)  # type: ignore[arg-type]
+
+    async def fail(self, build_id: str, reason: str, at: datetime | None = None) -> BuildRecord:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            check_transition(await self._locked(cur, build_id), "failed")
+            await cur.execute(
+                "UPDATE public.common_task_build SET status = 'failed', error = %s, "
+                "finished_at = COALESCE(%s, now()), lease_until = NULL WHERE id = %s RETURNING *",
+                (_reason(reason), at, build_id),
+            )
+            r = await cur.fetchone()
+        return self._build(r)  # type: ignore[arg-type]
+
+    async def recover_expired(
+        self, at: datetime | None = None, max_attempts: int = 2
+    ) -> list[BuildRecord]:
+        now = at or datetime.now(UTC)
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            await cur.execute(
+                "SELECT id, attempt FROM public.common_task_build WHERE status = ANY(%s) "
+                "AND lease_until < %s FOR UPDATE SKIP LOCKED",
+                (list(_RUNNING), now),
+            )
+            expired = await cur.fetchall()
+            out: list[BuildRecord] = []
+            for r in expired:
+                if r["attempt"] < max_attempts:  # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다
+                    await cur.execute(
+                        "DELETE FROM public.starter_file WHERE build_id = %s", (r["id"],)
+                    )
+                    await cur.execute(
+                        "UPDATE public.common_task_build SET status = 'pending', worker = NULL, "
+                        "lease_until = NULL, stage = NULL, error = %s, template_ref = NULL, "
+                        "template_sha256 = NULL, tree_sha256 = NULL, grader_sha256 = NULL, "
+                        "contract = NULL, hidden_plan = NULL, verification = '{}'::jsonb, "
+                        "review_flags = '[]'::jsonb, repairs = '[]'::jsonb WHERE id = %s RETURNING *",
+                        (LEASE_EXPIRED, r["id"]),
+                    )
+                else:
+                    await cur.execute(
+                        "UPDATE public.common_task_build SET status = 'failed', worker = NULL, "
+                        "lease_until = NULL, error = %s, finished_at = %s WHERE id = %s RETURNING *",
+                        (LEASE_EXPIRED, now, r["id"]),
+                    )
+                out.append(self._build(await cur.fetchone()))  # type: ignore[arg-type]
+        return out

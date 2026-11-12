@@ -301,3 +301,43 @@ async def test_cases_view_for_approvers_has_case_text_and_results(tmp_path: Path
     assert [d["design_id"] for d in body["accepted_designs"]] == ["d1", "d2"]
     assert body["acceptance_hidden"][0]["text"].startswith("HIDDEN-REQ")
     assert SECRET not in r.text  # 참조 구현 본문은 없다
+
+
+async def test_build_request_queues_once_and_needs_an_approved_feature_task(
+    tmp_path: Path,
+) -> None:
+    """과제 생성 요청 (#128) — 명세 승인과 따로, 사람이 요청할 때만 큐에 넣는다. 두 번 눌러도 진행 중 빌드는 하나."""
+    from task_spec.starter.store import CommonRef
+
+    store = InMemoryBuildStore()
+    store.commons = {
+        CID: CommonRef("approved", "feature", "onto-test"),
+        "ct-ba9876543210": CommonRef("draft", "feature", "onto-test"),
+        "ct-aaaaaaaaaaaa": CommonRef("approved", "incident", "onto-test"),
+    }
+    store.labels[CID] = TaskLabel(title="가상 과제 제목", posting_id="가상_공고#001")
+    async with await _client(tmp_path, store) as c:
+        r = await c.post(f"/common-tasks/{CID}/builds", json={"requested_by": "가상승인자"})
+        assert r.status_code == 202
+        body = r.json()
+        assert body["created"] is True and body["build"]["status"] == "pending"
+        assert (
+            body["build"]["requested_by"] == "가상승인자"
+            and body["build"]["title"] == "가상 과제 제목"
+        )
+        again = await c.post(f"/common-tasks/{CID}/builds", json={"requested_by": "다른승인자"})
+        assert again.status_code == 200 and again.json()["created"] is False
+        assert again.json()["build"]["build_id"] == body["build"]["build_id"]
+        detail = (await c.get(f"/builds/{body['build']['build_id']}")).json()
+        assert detail["requested_by"] == "가상승인자" and detail["attempt"] == 0
+        for cid, code in (
+            ("ct-ba9876543210", 409),  # 초안
+            ("ct-aaaaaaaaaaaa", 409),  # 이슈형
+            ("ct-000000000000", 404),  # 없음
+        ):
+            r = await c.post(f"/common-tasks/{cid}/builds", json={"requested_by": "가상승인자"})
+            assert r.status_code == code, cid
+        assert (await c.post(f"/common-tasks/{CID}/builds", json={})).status_code == 422
+        assert (
+            await c.post("/common-tasks/not-an-id/builds", json={"requested_by": "a"})
+        ).status_code == 422

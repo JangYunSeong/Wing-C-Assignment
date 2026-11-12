@@ -1,4 +1,8 @@
-"""공통 과제 빌드·전달 묶음 조회 API (이슈 #85) [제안].
+"""공통 과제 빌드·전달 묶음 조회 API (이슈 #85) [제안] + 과제 생성 요청 (#128).
+
+POST /common-tasks/{common_id}/builds : 과제 생성 요청 — 명세 승인과 과제 생성은 따로다 [확정: 2026-11-12 사용자].
+                                   큐에 넣기만 한다 (API 는 빌드하지 않음, builder 가 가져감). approved·기능형 공통 과제만(아니면 409),
+                                   진행 중 빌드가 있으면 새로 만들지 않고 그 빌드를 돌려준다 (200, 새로 만들면 202).
 
 GET  /builds[?common_id=]        : 공통 과제의 빌드 목록 (없으면 최근 빌드 — 화면 목록용, 제목·공고 id 함께)
 GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수
@@ -25,7 +29,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, Path, Query, Response
 from pydantic import BaseModel, Field
 
 from task_spec.api.deps import BuildsDep
@@ -33,6 +37,7 @@ from task_spec.api.errors import (
     BuildNotFound,
     BuildRuleViolation,
     CasesNotAvailable,
+    CommonTaskNotFound,
     FacilitatorNotAvailable,
     ReadmeNotAvailable,
 )
@@ -69,6 +74,15 @@ class BuildSummary(BaseModel):
     template_ref: str | None = None
     title: str | None = None  # 공통 과제 제목 (명세 본문은 넣지 않는다)
     posting_id: str | None = None
+    # 큐 (#128) — 생성 요청으로 만든 빌드만 채워진다
+    requested_by: str | None = None
+    requested_at: datetime | None = None
+    stage: str | None = None
+    attempt: int = 0
+    cost_usd: float = 0.0
+    error: str | None = None  # 실패 사유 (원문 없이 짧은 코드·문장)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class FlagView(BaseModel):
@@ -106,6 +120,15 @@ class ReadmeView(BaseModel):
 _README_READABLE: tuple[BuildStatus, ...] = ("review", "approved", "published")
 
 
+class BuildRequestIn(BaseModel):
+    requested_by: str = Field(min_length=1, max_length=80)  # 요청한 사람 (승인자 이름과 같은 칸)
+
+
+class BuildRequestOut(BaseModel):
+    created: bool  # False 면 이미 진행 중인 빌드
+    build: BuildSummary
+
+
 class TargetIn(BaseModel):
     name: str = Field(pattern=TARGET_NAME)  # 설정 키 — 주소·자격 증명은 받지 않는다
     role: ArtifactRole
@@ -124,6 +147,14 @@ def _summary(b: BuildRecord, label: TaskLabel | None = None) -> BuildSummary:
         template_ref=b.outcome.template_ref if b.outcome else None,
         title=label.title if label else None,
         posting_id=label.posting_id if label else None,
+        requested_by=b.requested_by,
+        requested_at=b.requested_at,
+        stage=b.stage,
+        attempt=b.attempt,
+        cost_usd=b.cost_usd,
+        error=b.error,
+        started_at=b.started_at,
+        finished_at=b.finished_at,
     )
 
 
@@ -143,6 +174,29 @@ async def list_builds(
     builds = await store.builds(common_id) if common_id else await store.recent(limit)
     labels = await store.task_labels({b.common_id for b in builds})
     return [_summary(b, labels.get(b.common_id)) for b in builds]
+
+
+@router.post(
+    "/common-tasks/{common_id}/builds",
+    status_code=202,
+    responses={200: {"model": BuildRequestOut, "description": "이미 진행 중인 빌드"}},
+)
+async def request_build(
+    common_id: Annotated[str, Path(pattern=COMMON_ID)],
+    body: BuildRequestIn,
+    store: BuildsDep,
+    response: Response,
+) -> BuildRequestOut:
+    try:
+        b, created = await store.request_build(common_id, body.requested_by)
+    except KeyError as e:
+        raise CommonTaskNotFound(common_id) from e
+    except BuildRuleError as e:
+        raise BuildRuleViolation(str(e)) from e
+    if not created:
+        response.status_code = 200
+    label = (await store.task_labels([common_id])).get(common_id)
+    return BuildRequestOut(created=created, build=_summary(b, label))
 
 
 @router.get("/builds/{build_id}")
