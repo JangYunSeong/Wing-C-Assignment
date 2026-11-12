@@ -156,13 +156,23 @@ def test_build_id_pattern_is_narrow(bad: str) -> None:
 
 
 def test_real_package_needs_approval_and_pinned_ontology() -> None:
-    with pytest.raises(ValidationError, match="approval=approved"):
+    with pytest.raises(ValidationError, match="approval=pending"):
         CandidateDescriptor.model_validate(_candidate(approval="none"))
     with pytest.raises(ValidationError, match=r"\+dirty"):
         CandidateDescriptor.model_validate(_candidate(ontology_version="onto@abc+dirty"))
     # 목은 둘 다 허용
     CandidateDescriptor.model_validate(
         _candidate(mock=True, approval="none", ontology_version="onto@abc+dirty")
+    )
+
+
+def test_pending_package_is_a_real_build_before_approval() -> None:
+    """builder(#129)가 review 에서 등록하는 승인 전 묶음 — 실제 빌드라 mock 이 아니고, 아직 전달하지 않으므로 고정 온톨로지 검사는
+    승인(approved)으로 다시 쓸 때 한다 (#130)."""
+    CandidateDescriptor.model_validate(_candidate(approval="pending"))
+    GraderDescriptor.model_validate(_grader(approval="pending"))
+    CandidateDescriptor.model_validate(
+        _candidate(approval="pending", ontology_version="onto@abc+dirty")
     )
 
 

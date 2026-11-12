@@ -182,10 +182,11 @@ CREATE INDEX IF NOT EXISTS common_task_build_queue ON public.common_task_build (
 
 @dataclass(frozen=True)
 class TaskLabel:
-    """화면 목록용 공통 과제 이름표 — 제목·공고 id 만 (명세 본문은 넣지 않는다)."""
+    """화면 목록용 공통 과제 이름표 — 제목·공고 id·판 (명세 본문은 넣지 않는다). 판은 묶음 머리(revision)에 쓴다 (#129)."""
 
     title: str | None
     posting_id: str
+    revision: int | None = None
 
 
 class BuildRuleError(ValueError):
@@ -926,12 +927,15 @@ class PgBuildStore:
             return {}
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, posting_id, task->>'title' AS title FROM public.common_task "
+                "SELECT id, posting_id, revision, task->>'title' AS title FROM public.common_task "
                 "WHERE id = ANY(%s)",
                 (ids,),
             )
             rows = await cur.fetchall()
-        return {r["id"]: TaskLabel(title=r["title"], posting_id=r["posting_id"]) for r in rows}
+        return {
+            r["id"]: TaskLabel(title=r["title"], posting_id=r["posting_id"], revision=r["revision"])
+            for r in rows
+        }
 
     async def task(self, common_id: str) -> TaskItem | None:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:

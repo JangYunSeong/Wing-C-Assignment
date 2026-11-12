@@ -393,6 +393,20 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
   배송 감사 회귀 2/2 통과 ($0.14). 화면 쪽 숨은 테스트 정적 검사(test id 만 쓰는지)는 ui 템플릿을 만들 때.
 - 검사를 고친 뒤 다시 (`data/eval/build/2026-11-07-paper-gpt41-v7b`, $0.26): **4/5 통과** (백엔드·프론트·데이터 엔지니어·ML). DBA 는 입력 환경에 숨은 요구 낱말(vacuum·트랜잭션 ID·정리 작업)을 재요청에도 써 누출 검사에 막힘 — 산출물 자체가 운영 설정·점검인 직군이라 계약에서 그 영역을 이름 없이 적기 어렵다 [확정: 2026-11-07 사용자 — DBA 는 문서·분석형 과제로 둔다 (시작 코드 빌드·숨은 테스트 대상 아님). 재료 `infra.dba` 의 과제 형태와 종이 단계 초안 manifest 는 그에 맞게 바꿀 일이 남음].
 
+### 11.2 서비스 builder (#129, 2026-11-12)
+
+명세 승인과 과제 생성은 따로다 [확정: 2026-11-12 사용자] — 사람이 `POST /common-tasks/{id}/builds` 로 생성을 요청하면 빌드 큐(#128)에
+들어가고, API 와 따로 도는 builder(`python -m task_spec.builder`, `src/task_spec/builder/`)가 하나씩 가져간다.
+
+- 순서는 알파(`eval/starter/run_alpha.py`)와 같다: 재료·직군 템플릿 → `plan_contract` → `build_and_repair`(검증은 격리 컨테이너 #127)
+  → README → 응시용·채점용 이미지·검증(응시용 오프라인 테스트, 제출물 채점, 응시용 레이어 금지 경로) → 빌드 저장소 적재(review).
+- 묶음은 승인 전이라 descriptor 의 `approval=pending` — 전달은 시작 코드 승인(#130) 뒤 approved 로 다시 쓴 묶음만.
+- 실행기(`builder/runner.py`)가 상태 전이·비용(작업당 `BUILD_BUDGET_USD`, 하루 `BUILD_DAILY_BUDGET_USD`)·lease heartbeat·실패 사유를 맡고,
+  단계(`builder/steps.py`)는 바꿔 끼운다 (시험은 가짜 단계). 실패 사유는 단계 + 원인 요약 또는 예외 종류만 — 생성 코드·명세 원문은
+  저장소·로그에 넣지 않는다 (예외 전문은 git 밖 작업 폴더의 error.txt).
+- 설정은 API 의 Settings 와 따로(`BuilderSettings`) — 지원자 데이터 경로·온톨로지를 받지 않는다 (불변식 3). 운영 배포(전용 사용자·
+  DB 역할·컨테이너)는 #129 PR 2.
+
 ## 12. 불변식 점검
 
 | 불변식 | 이 설계에서 |
