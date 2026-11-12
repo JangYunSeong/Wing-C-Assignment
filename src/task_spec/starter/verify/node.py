@@ -28,9 +28,7 @@ import json
 import os
 import shlex
 import shutil
-import subprocess
 import time
-import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -38,13 +36,18 @@ from typing import Any
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
 from task_spec.starter.conformance import CONFORM_CONFIG
 from task_spec.starter.grade import image_grade_node as judge
+from task_spec.starter.layers import NODE_IMAGE  # 응시용·채점용 이미지의 Node 기반과 같게
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 from task_spec.starter.verify import tools
-from task_spec.starter.verify.workspace import CI_ENV, assemble, run_logged, write_overlay
-
-# 응시용·채점용 이미지의 Node 기반과 같게 (starter/images.py 의 NODE 스택이 이 값을 쓴다)
-NODE_IMAGE = "docker.io/library/node:22-bookworm-slim"
+from task_spec.starter.verify.workspace import (
+    CI_ENV,
+    assemble,
+    isolated,
+    run_in_container,
+    run_logged,
+    write_overlay,
+)
 
 
 def node_modules_for(t: Template, timeout: int = 1800) -> Path:
@@ -86,23 +89,12 @@ def run_node(
     mounts: Sequence[Path] = (),
     network: bool = False,
 ) -> tuple[int | None, float]:
-    """Node 명령 하나를 이미지와 같은 기반 컨테이너에서 (`run_logged` 와 같은 반환). 경로는 같은 절대 경로로 붙인다."""
+    """Node 명령 하나를 이미지와 같은 기반 컨테이너에서 (`run_logged` 와 같은 반환). 경로는 같은 절대 경로로 붙인다.
+    `NODE_VERIFY_IMAGE=host` 또는 `VERIFY_ISOLATION=host` 면 호스트 Node."""
     image = node_image()
-    if image == "host":
+    if image == "host" or not isolated():
         return run_logged(cmd, cwd, log, timeout)
-    name = f"nv-{uuid.uuid4().hex[:12]}"
-    paths = sorted({str(p.resolve()) for p in (cwd, *mounts)})
-    full = ["podman", "run", "--rm", "--name", name, "-w", str(cwd.resolve())]
-    # SELinux 가 켜진 서버에서 붙인 폴더를 컨테이너가 못 읽는다 (2026-11-11 이 서버: 라벨 unlabeled_t → npm ci 'Permission denied').
-    # `:z` 는 호스트 파일의 보안 라벨을 바꾸므로 쓰지 않고, 이 컨테이너만 라벨 분리를 끈다 (SELinux 가 없는 서버에서는 영향 없음).
-    full += ["--security-opt", "label=disable"]
-    full += [] if network else ["--network", "none"]
-    full += [x for k, v in CI_ENV.items() for x in ("-e", f"{k}={v}")]
-    full += [x for p in paths for x in ("-v", f"{p}:{p}")]
-    code, seconds = run_logged([*full, image, *cmd], cwd, log, timeout)
-    if code is None:  # 시간 초과 — 클라이언트만 끊겨 컨테이너가 남지 않게
-        subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)
-    return code, seconds
+    return run_in_container(image, cmd, cwd, log, timeout, mounts, network, dict(CI_ENV))
 
 
 def tsc_errors(log_text: str, limit: int = 20) -> list[CompileError]:

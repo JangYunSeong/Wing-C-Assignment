@@ -33,7 +33,6 @@ from eval.starter.replay_contracts import _loose as loose_contract
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.starter.images import (
     Layers,
-    Podman,
     TaskImages,
     TaskMaterial,
     build_layers,
@@ -41,9 +40,9 @@ from task_spec.starter.images import (
     manifest_entry,
     save_archive,
     scan_candidates,
-    stack_for,
     verify_task_images,
 )
+from task_spec.starter.layers import Podman, stack_for
 from task_spec.starter.render import render_readme
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template, load_template, select_template

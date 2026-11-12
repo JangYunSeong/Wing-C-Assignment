@@ -8,8 +8,11 @@
 3. 채점 테스트 — 채점 설정(`commands.hidden_test`, grading/harness/grader-pytest.ini) → 자체 점검·숨은 케이스·공개 테스트.
 
 판정 함수는 채점용 이미지의 grade(starter/grade/image_grade_py.py)와 같은 코드 한 벌이다.
-의존성: 템플릿 uv.lock 으로 한 번 만든 가상 환경을 모든 대상이 쓴다 (<BUILD_TOOLS_DIR>/.py-envs/<템플릿>@v<n>-<lock 해시>/, git 밖 —
-환경 변수 PY_ENV_DIR 로 바꿀 수 있다, verify/tools.py). 2026-11-09 데이터 템플릿.
+
+격리 (#127): 기본은 검증용 템플릿 층(`layers.ensure_verify_layer` — 채점 이미지와 같은 python 3.11 + uv.lock 그대로 만든 /opt/venv)
+위 `--network none` 자식 컨테이너에서 돈다. `VERIFY_ISOLATION=host` 면 예전처럼 호스트 가상 환경 — 템플릿 uv.lock 으로 한 번 만든
+환경을 모든 대상이 쓴다 (<BUILD_TOOLS_DIR>/.py-envs/<템플릿>@v<n>-<lock 해시>/, 환경 변수 PY_ENV_DIR, verify/tools.py).
+2026-11-09 데이터 템플릿.
 """
 
 from __future__ import annotations
@@ -26,10 +29,18 @@ from pathlib import Path
 
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
 from task_spec.starter.grade import image_grade_py as judge
+from task_spec.starter.layers import PY_VENV, ensure_verify_layer
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 from task_spec.starter.verify import tools
-from task_spec.starter.verify.workspace import assemble, run_logged, write_overlay
+from task_spec.starter.verify.workspace import (
+    CI_ENV,
+    assemble,
+    isolated,
+    run_in_container,
+    run_logged,
+    write_overlay,
+)
 
 GRADING_INI = "grading/harness/grader-pytest.ini"
 GRADING_ROOTDIR = "grading/harness"
@@ -100,33 +111,44 @@ class PythonVerifier:
         self._python = python
         self.rounds = 0
         self.compiles = 0
+        self._image: str | None = None
 
     @property
     def python(self) -> Path:
+        """호스트 가상 환경의 python (`VERIFY_ISOLATION=host`)."""
         if self._python is None:
             self._python = python_for(self.template)
         return self._python
+
+    def _py(self) -> str:
+        """명령에 쓸 python — 컨테이너면 검증용 템플릿 층의 가상 환경."""
+        return f"{PY_VENV}/bin/python" if isolated() else str(self.python)
+
+    def _run(self, cmd: Sequence[str], dest: Path, log: Path) -> int | None:
+        if not isolated():
+            return run_logged(cmd, dest, log, self.timeout)[0]
+        if self._image is None:  # 처음 한 번 — 템플릿 내용이 같으면 있는 층을 쓴다
+            self._image = ensure_verify_layer(self.template, tools.tools_dir())
+        # 호스트 실행(run_logged)과 같은 CI 변수 — pytest 가 CI 에서 단언 diff 를 줄이지 않는다 (수리 근거 메시지가 같게)
+        return run_in_container(self._image, cmd, dest, log, self.timeout, env=dict(CI_ENV))[0]
 
     def _grading_targets(self, dest: Path) -> list[str]:
         """채점 명령의 대상 폴더 중 이 조립에 있는 것 (설정 파일 뒤의 인자들)."""
         return [w for w in grading_paths(self.template) if (dest / w).exists()]
 
     def _compile_check(self, dest: Path, log: Path) -> tuple[int | None, list[CompileError]]:
-        py = str(self.python)
+        py = self._py()
         start = log.stat().st_size if log.exists() else 0
         code_paths = [p for p in COMPILE_PATHS if (dest / p).exists()]
-        codes = [
-            run_logged([py, "-m", "compileall", "-q", *code_paths], dest, log, self.timeout)[0]
-        ]
+        codes = [self._run([py, "-m", "compileall", "-q", *code_paths], dest, log)]
         collect = [t for t in self._grading_targets(dest) if not t.endswith("selftest")]
         if collect:
             codes.append(
-                run_logged(
+                self._run(
                     [py, "-m", "pytest", "-c", GRADING_INI, "--collect-only", "-q", *collect],
                     dest,
                     log,
-                    self.timeout,
-                )[0]
+                )
             )
         if any(c is None for c in codes):
             return None, []
@@ -139,13 +161,13 @@ class PythonVerifier:
     def _pytest(
         self, dest: Path, log: Path, grading: bool
     ) -> tuple[int | None, list[TestResult] | None]:
-        py = str(self.python)
+        py = self._py()
         report = dest / (".grading.xml" if grading else ".existing.xml")
         if grading:
             cmd = [py, "-m", "pytest", "-c", GRADING_INI, *self._grading_targets(dest)]
         else:
             cmd = [py, "-m", "pytest", "-o", "junit_family=xunit1"]
-        code, _ = run_logged([*cmd, f"--junitxml={report}"], dest, log, self.timeout)
+        code = self._run([*cmd, f"--junitxml={report}"], dest, log)
         if not report.is_file():
             return code, None
         rows = judge.junit_results(

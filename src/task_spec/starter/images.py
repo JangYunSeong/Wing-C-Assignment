@@ -9,6 +9,7 @@
 
 검증 (모두 --network none): 응시용에서 기존 테스트가 오프라인으로 통과, 채점용으로 시작 코드만·허용 구현·흔한 구현 제출물을 채점.
 응시용 이미지의 모든 레이어에 금지 경로(숨은 테스트·하네스·manifest)가 없는지 저장한 묶음에서 확인한다 (`scan_candidates`).
+런타임 층(스택·Podman·Containerfile)은 `starter/layers.py` — 검증기도 같은 층 위에서 돈다 (#127).
 
 2026-11-12 eval/starter/build_mock_images.py 에서 옮김 (#126) — 빌드 폴더를 읽는 부분(`load_run`)과 명령줄은 eval 에 남았다.
 이 모듈은 재료(`TaskMaterial`)만 받는다. 지원자 데이터 없음 — 공고·재료·명세에서 만든 공통 과제.
@@ -18,10 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shlex
 import shutil
-import subprocess
 import tarfile
 import time
 from collections.abc import Callable
@@ -30,7 +29,13 @@ from pathlib import Path
 from typing import Any
 
 from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
-from task_spec.starter.grade import image_grade, image_grade_node, image_grade_py
+from task_spec.starter.layers import (  # 런타임 층 정의 — 검증기(#127)와 같이 쓴다
+    PY_VENV,
+    Podman,
+    containerfile,
+    labels,
+    stack_for,
+)
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import (
     Template,
@@ -41,84 +46,14 @@ from task_spec.starter.templates import (
 )
 from task_spec.starter.verify import python as python_verify
 from task_spec.starter.verify.gradle import case_ids
-from task_spec.starter.verify.node import NODE_IMAGE, layout_of
+from task_spec.starter.verify.node import layout_of
 from task_spec.starter.verify.workspace import write_overlay
-
-PYTHON3 = "RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*"
 
 Progress = Callable[[str], None]
 
 
 def _quiet(_: str) -> None:
     pass
-
-
-@dataclass(frozen=True)
-class Stack:
-    """스택마다 다른 것 — 런타임 이미지·의존성 설치·grade 스크립트·응시용 오프라인 확인 명령. 층 구조·검증 순서는 같다."""
-
-    base: str
-    install: tuple[str, ...]  # 템플릿 층 — WORKDIR(작업 경로)에 project/ 를 복사한 뒤
-    grade_script: Path
-    candidate_check: tuple[
-        str, ...
-    ]  # 응시용 이미지에서 네트워크 없이 — 의존성이 이미지 안에 다 있는가
-    scan_skip: tuple[str, ...]  # 레이어 검사에서 뺄 런타임 경로 (작업 경로가 아닌 곳)
-    grader_setup: tuple[str, ...] = (
-        PYTHON3,
-    )  # 채점 기반 층 — grade 스크립트를 돌릴 python3 (Python 런타임은 이미 있음)
-
-
-def _script(module: Any) -> Path:
-    return Path(module.__file__)
-
-
-JAVA = Stack(
-    base="docker.io/library/eclipse-temurin:17-jdk-jammy",
-    install=(
-        "ENV GRADLE_USER_HOME=/opt/gradle-home",
-        # 뼈대를 한 번 빌드·테스트해 Gradle 배포판·의존성(테스트 런타임 포함)을 캐시에 — 채점·응시 컨테이너는 네트워크 없음
-        "RUN chmod +x gradlew && ./gradlew --no-daemon --console=plain build && rm -rf build .gradle",
-    ),
-    grade_script=_script(image_grade),
-    candidate_check=("./gradlew", "--offline", "--no-daemon", "-q", "test"),
-    scan_skip=("usr/", "opt/java/", "etc/", "var/", "lib/"),
-)
-# Debian 12(bookworm) — Playwright 공식 지원 배포판이라 실제 브라우저 층도 같은 계열로 (alpine/musl 은 미지원, 2026-11-09 문서 확인)
-NODE = Stack(
-    base=NODE_IMAGE,
-    install=(
-        # lock 그대로 설치하고 뼈대의 타입 검사·테스트를 한 번 — 응시·채점 컨테이너는 네트워크 없음
-        "RUN npm ci --no-audit --no-fund && npx tsc --noEmit && npx vitest run && rm -rf node_modules/.vite node_modules/.vitest",
-    ),
-    grade_script=_script(image_grade_node),
-    candidate_check=("sh", "-c", "npx tsc --noEmit && npm test"),
-    scan_skip=("usr/", "opt/", "etc/", "var/", "lib/"),
-)
-
-
-# Python 3.11(템플릿 requires-python) Debian 12 slim — uv.lock 그대로 /opt/venv 에 설치, PATH 앞에. 응시용에서 `python -m pytest` 가 그 환경
-PY_VENV = "/opt/venv"
-UV_VERSION = "0.13.6"  # 개발 서버와 같은 uv (lock 형식이 같게)
-PY = Stack(
-    base="docker.io/library/python:3.11-slim-bookworm",
-    install=(
-        f"ENV UV_PROJECT_ENVIRONMENT={PY_VENV} UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy PATH={PY_VENV}/bin:$PATH",
-        # lock 그대로 설치하고 뼈대 테스트를 한 번 — 응시·채점 컨테이너는 네트워크 없음. 캐시·바이트코드는 지운다
-        f"RUN pip install --no-cache-dir uv=={UV_VERSION} && uv sync --frozen --no-install-project && uv cache clean "
-        "&& python -m pytest -q -p no:cacheprovider && find . -name __pycache__ -prune -exec rm -rf {} +",
-    ),
-    grade_script=_script(image_grade_py),
-    candidate_check=("python", "-m", "pytest", "-q", "-p", "no:cacheprovider"),
-    scan_skip=("usr/", "opt/", "etc/", "var/", "lib/", "root/"),
-    grader_setup=(),
-)
-
-
-def stack_for(t: Template) -> Stack:
-    if is_java(t.manifest):
-        return JAVA
-    return PY if is_python(t.manifest) else NODE
 
 
 PUBLIC_ID = r"\bpt\d{1,2}\b"  # 공개 테스트 클래스의 @DisplayName 에 적힌 공개 테스트 id
@@ -149,52 +84,6 @@ class TaskMaterial:
     def key(self) -> str:
         """작업 폴더·표본 이름 — 같은 공통 과제의 다른 판이 덮어쓰지 않게 (2026-11-10: r3 가 r1·r2 를 덮어 검증이 엇갈림)."""
         return f"{self.common_id}-r{self.revision}"
-
-
-class Podman:
-    """전용 저장소로만 podman 을 부른다 (기본 저장소의 이미지·컨테이너는 건드리지 않음)."""
-
-    def __init__(self, tmp: Path, store: Path | None = None) -> None:
-        # store 를 주면 그 경로를 podman 저장소로 (SELinux 컨테이너 레이블이 있는 경로여야 컨테이너가 돈다 — 2026-11-08: /ssd 아래
-        # 전용 저장소는 unlabeled_t 라 RUN 이 libc 로드에서 막힘). 기본은 시스템 저장소에 이 작업 이름(localhost/task…)으로만 추가.
-        self.flags = (
-            ["--root", str(store / "root"), "--runroot", str(store / "run")] if store else []
-        )
-        self.env = os.environ | {"TMPDIR": str(tmp)}  # 빌드 임시 파일은 여유가 큰 쪽에
-        tmp.mkdir(parents=True, exist_ok=True)
-
-    def __call__(
-        self, *args: str, log: Path | None = None, timeout: int = 3600, check: bool = True
-    ) -> str:
-        cmd = self.argv(*args)
-        if log is None:
-            res = subprocess.run(cmd, env=self.env, capture_output=True, text=True, timeout=timeout)
-            if check and res.returncode != 0:
-                raise RuntimeError(f"{' '.join(args[:3])} 실패: {res.stderr[-2000:]}")
-            return res.stdout
-        with log.open("a") as fh:
-            fh.write(f"\n$ podman {' '.join(args)}\n")
-            fh.flush()
-            res2 = subprocess.run(
-                cmd, env=self.env, stdout=fh, stderr=subprocess.STDOUT, timeout=timeout
-            )
-        if check and res2.returncode != 0:
-            raise RuntimeError(f"{' '.join(args[:3])} 실패 (로그 {log})")
-        return ""
-
-    def argv(self, *args: str) -> list[str]:
-        """이 저장소로 부르는 podman 명령줄."""
-        return ["podman", *self.flags, *args]
-
-    def run(self, *args: str, timeout: int) -> subprocess.CompletedProcess[str]:
-        """`podman run …` — 결과를 그대로 돌려준다 (실패해도 예외 없음, 검증이 종료 코드를 본다)."""
-        return subprocess.run(
-            self.argv("run", *args),
-            env=self.env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
 
 
 def _files_sha256(base: Path, files: list[Path]) -> str:
@@ -345,14 +234,6 @@ def py_config(t: Template, item: TaskMaterial) -> dict[str, Any]:
         "timeout_s": TIMEOUT_S,
         "cases": cases,
     }
-
-
-def containerfile(base: str, body: list[str]) -> str:
-    return "\n".join([f"FROM {base}", *body, ""])
-
-
-def labels(d: dict[str, Any]) -> list[str]:
-    return [f"LABEL {k}={json.dumps(str(v), ensure_ascii=False)}" for k, v in d.items()]
 
 
 def _layer_files(tar: tarfile.TarFile, layer: str) -> list[str]:

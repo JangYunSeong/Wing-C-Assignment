@@ -1,6 +1,15 @@
-"""검증기 공통 — 대상 조립(템플릿 project/ + 오버레이)과 로그를 남기는 명령 실행.
+"""검증기 공통 — 대상 조립(템플릿 project/ + 오버레이), 로그를 남기는 명령 실행, 격리 실행(`run_in_container`).
 
 조립 순서는 채점용 이미지와 같다 (`task_spec.starter.images.grader_overlay`). 세 검증기(gradle·node·python)와 이미지 만들기가 같이 쓴다.
+
+격리 (#127): LLM 이 만든 코드(시작 코드·숨은 테스트·참조 구현)는 `--network none` 자식 컨테이너에서만 돈다 — CPU·메모리 상한,
+조립 폴더는 호스트와 같은 절대 경로로 붙인다 (podman 소켓을 거쳐 불러도 `-v`·`-w` 가 호스트 기준으로 맞게, #129).
+
+| 환경 변수 | 뜻 | 기본 |
+|---|---|---|
+| `VERIFY_ISOLATION` | `container` · `host` (호스트에서 바로 — 개발용 탈출구, 격리 없음) | `container` |
+| `VERIFY_CPUS` | 검증 컨테이너 CPU 상한 (`0` 이면 상한 없음) | `2` |
+| `VERIFY_MEMORY` | 검증 컨테이너 메모리 상한 (`0` 이면 상한 없음) | `4g` |
 """
 
 from __future__ import annotations
@@ -11,6 +20,7 @@ import shutil
 import signal
 import subprocess
 import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -68,3 +78,60 @@ def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[
             p.wait()
             code = None
     return code, time.monotonic() - start
+
+
+def isolated() -> bool:
+    """생성 코드를 컨테이너에서 돌리는가 — `VERIFY_ISOLATION=host` 일 때만 아니다."""
+    return os.environ.get("VERIFY_ISOLATION", "container") != "host"
+
+
+def limits() -> list[str]:
+    out: list[str] = []
+    cpus = os.environ.get("VERIFY_CPUS", "2")
+    memory = os.environ.get("VERIFY_MEMORY", "4g")
+    if cpus not in ("", "0"):
+        out += ["--cpus", cpus]
+    if memory not in ("", "0"):
+        out += ["--memory", memory]
+    return out
+
+
+def container_argv(
+    image: str,
+    cmd: Sequence[str],
+    cwd: Path,
+    name: str,
+    mounts: Sequence[Path] = (),
+    network: bool = False,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """`podman run` 명령줄 — cwd·mounts 를 같은 절대 경로로 붙이고 그 cwd 에서 cmd 를 돈다."""
+    paths = sorted({str(p.resolve()) for p in (cwd, *mounts)})
+    full = ["podman", "run", "--rm", "--name", name, "-w", str(cwd.resolve())]
+    # SELinux 가 켜진 서버에서 붙인 폴더를 컨테이너가 못 읽는다 (2026-11-11 이 서버: 라벨 unlabeled_t → npm ci 'Permission denied').
+    # `:z` 는 호스트 파일의 보안 라벨을 바꾸므로 쓰지 않고, 이 컨테이너만 라벨 분리를 끈다 (SELinux 가 없는 서버에서는 영향 없음).
+    full += ["--security-opt", "label=disable", *limits()]
+    full += [] if network else ["--network", "none"]
+    full += [x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}")]
+    full += [x for p in paths for x in ("-v", f"{p}:{p}")]
+    return [*full, image, *cmd]
+
+
+def run_in_container(
+    image: str,
+    cmd: Sequence[str],
+    cwd: Path,
+    log: Path,
+    timeout: int,
+    mounts: Sequence[Path] = (),
+    network: bool = False,
+    env: dict[str, str] | None = None,
+) -> tuple[int | None, float]:
+    """명령 하나를 자식 컨테이너에서 (`run_logged` 와 같은 반환). 네트워크는 의존성 설치처럼 생성 코드가 없을 때만 켠다."""
+    name = f"vf-{uuid.uuid4().hex[:12]}"
+    code, seconds = run_logged(
+        container_argv(image, cmd, cwd, name, mounts, network, env), cwd, log, timeout
+    )
+    if code is None:  # 시간 초과 — 클라이언트만 끊겨 컨테이너가 남지 않게
+        subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)
+    return code, seconds
