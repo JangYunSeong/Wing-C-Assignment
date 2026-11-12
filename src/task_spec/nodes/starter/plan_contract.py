@@ -33,15 +33,18 @@ from task_spec.schemas.domain import HiddenAcceptance
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import fit_auth
 from task_spec.starter.contract import (
+    EVIDENCE_FRAGMENT,
     NO_EVIDENCE,
     ROW_NEEDS,
     SpecView,
     check_contract,
+    evidence_fragment,
     field_style,
     fit_covers,
     fit_forms,
     fit_traps,
     hidden_terms,
+    param_unit,
     timed_hints,
     unevidenced,
 )
@@ -254,6 +257,34 @@ def material_params(seed: FeatureSeed | None, m: TemplateManifest) -> set[str]:
     return set(seed.harness) & names
 
 
+def fit_evidence_fragments(
+    plan: HiddenPlan, m: TemplateManifest, spec: SpecView
+) -> tuple[HiddenPlan, list[str]]:
+    """근거 인용이 자료에 그대로 없으면(LLM 이 글자를 바꿈) 자료에 그대로 있는 가장 긴 조각으로 바꾼다 — 그 조각을 지금 판정(ok·ambiguous·
+    rounded)으로 다시 보고, 결과와 상관없이 승인자 표시를 붙인다 (값이 자료에서 왔다는 건 확인되지만 그 값이 이 조절값이라는 연결은 LLM 이
+    고친 부분이 만들 수 있다). 저장하는 근거도 자료 원문 조각 — 승인자가 실제 문장을 본다. 결정적이라 replay_contracts 가 다시 만든다.
+    [확정: 2026-11-12 사용자 — 날짜·시각 'T' 같은 하나씩 땜질 대신 일반적인 방법]"""
+    evidence = dict(plan.evidence)
+    notes: list[str] = []
+    for p in m.harness_params:
+        quote = evidence.get(p.name)
+        if not p.visible or p.name not in plan.harness or not quote or quote.strip() == NO_EVIDENCE:
+            continue
+        frag = evidence_fragment(
+            plan.harness[p.name], quote, spec.visible_texts, param_unit(p.name)
+        )
+        if frag is None:
+            continue
+        evidence[p.name] = frag
+        notes.append(
+            f"{EVIDENCE_FRAGMENT}{p.name}={plan.harness[p.name]}: 계약의 인용 {quote[:100]!r} 대신 자료 원문 조각 {frag!r} 을 근거로 — "
+            "값과 이 조절값의 연결은 승인자 확인"
+        )
+    if not notes:
+        return plan, []
+    return plan.model_copy(update={"evidence": evidence}), notes
+
+
 def fit_unevidenced(
     plan: HiddenPlan, m: TemplateManifest, spec: SpecView
 ) -> tuple[HiddenPlan, list[str]]:
@@ -408,6 +439,8 @@ def fit_output(
     trimmed, notes = fit_material_params(out.hidden_plan, seed, manifest)
     trimmed, free_notes = fit_unevidenced(trimmed, manifest, spec)
     notes += free_notes
+    trimmed, frag_notes = fit_evidence_fragments(trimmed, manifest, spec)
+    notes += frag_notes
     filled, fill_notes = fill_hidden_defaults(trimmed, manifest)
     notes += fill_notes
     named, fk_notes = fit_fk_targets(out.contract)
@@ -562,6 +595,9 @@ async def plan_contract(
     res.contract, res.hidden_plan = out.contract, out.hidden_plan
     res.raw = best_raw
     res.flags += review
+    res.flags += [
+        n for n in res.adjustments if n.startswith(EVIDENCE_FRAGMENT)
+    ]  # 일부만 일치한 근거 — 판정과 상관없이 승인자에게
     if res.spec_gaps:
         res.flags.append(FLAG_SPEC_GAP + "; ".join(res.spec_gaps))
     if res.problems:

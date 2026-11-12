@@ -813,3 +813,40 @@ def test_unevidenced_optional_param_is_dropped_by_code() -> None:
         HiddenPlan.model_validate(_plan()),
         [],
     )
+
+
+def test_partial_quote_uses_longest_verbatim_fragment_with_flag() -> None:
+    """2026-11-12 갱신 손실: 'YYYY-MM-DD HH:MM' 을 'YYYY-MM-DDTHH:MM' 로 인용해 막혔다 — 자료에 그대로 있는 가장 긴 조각으로 바꾸고
+    그 조각을 같은 판정으로 보되, 결과와 상관없이 승인자 표시 [확정: 2026-11-12 사용자]."""
+    from task_spec.nodes.starter.plan_contract import fit_evidence_fragments
+    from task_spec.starter.contract import EVIDENCE_FRAGMENT, evidence_fragment
+
+    src = "2024-11-15 10:00:01 시각대 로그에서 차감 요청이 1초 안에 30건 이상 기록되어 있습니다. 다음 줄"
+    texts = ["pool: 8\nthreads: 32", src]
+    llm = "2024-11-15T10:00:01 시각대 로그에서 차감 요청이 1초 안에 30건 이상 기록되어 있습니다"
+    assert evidence_check(30, llm, texts) == "bad"
+    frag = evidence_fragment(30, llm, texts)
+    # 가장 짧은 '30건 이상 기록되어'(ok)가 아니라 가장 긴 조각 — 후보 숫자 여럿이면 ambiguous 로 남는다
+    assert (
+        frag is not None
+        and frag.startswith("10:00:01")
+        and evidence_check(30, frag, texts) == "ambiguous"
+    )
+    assert evidence_fragment(30, "피크 동시 요청은 30건입니다", texts) is None  # 지어낸 인용
+    assert evidence_fragment(45, llm, texts) is None  # 조각에 그 값이 없음
+    assert evidence_fragment(30, src[:40], texts) is None  # 그대로 있으면 대상이 아니다
+
+    spec = _spec(visible_texts=tuple(texts))
+    plan = HiddenPlan.model_validate(
+        _plan(harness={"pool_size": 8, "concurrency": 30, "query_delay_ms": 20})
+        | {"evidence": {"concurrency": llm}}
+    )
+    fixed, notes = fit_evidence_fragments(plan, _manifest(), spec)
+    assert fixed.evidence["concurrency"] == frag
+    assert (
+        len(notes) == 1 and notes[0].startswith(EVIDENCE_FRAGMENT) and "concurrency=30" in notes[0]
+    )
+    assert fit_evidence_fragments(fixed, _manifest(), spec) == (
+        fixed,
+        [],
+    )  # 다시 돌려도 같다 (결정적)

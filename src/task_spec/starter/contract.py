@@ -225,6 +225,45 @@ def unevidenced(param: HarnessParam, value: HarnessValue, texts: Iterable[str]) 
     )
 
 
+EVIDENCE_FRAGMENT = "근거 인용 일부만 자료와 일치 — "
+
+
+def _common_spans(a: str, b: str) -> list[str]:
+    """a 와 b 에 함께 있는 연속 조각들 (각 끝 위치의 가장 긴 것, 긴 순)."""
+    best: dict[str, None] = {}
+    prev = [0] * (len(b) + 1)
+    for i in range(1, len(a) + 1):
+        cur = [0] * (len(b) + 1)
+        for j in range(1, len(b) + 1):
+            if a[i - 1] == b[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] >= MIN_QUOTE:
+                    best[a[i - cur[j] : i]] = None
+        prev = cur
+    return sorted(best, key=len, reverse=True)
+
+
+def evidence_fragment(
+    value: HarnessValue, quote: str, texts: Iterable[str], unit: str | None = None
+) -> str | None:
+    """인용이 자료에 그대로 없을 때, 자료에 그대로 있는 **가장 긴** 조각 중 값을 근거로 삼을 수 있는 것 (ok·ambiguous·rounded).
+    가장 짧은 조각을 고르면 후보 숫자가 여럿인 인용을 걸러내는 장치(ambiguous)를 피해 가므로 가장 긴 것부터 본다.
+    2026-11-12 백엔드 갱신 손실: 자료의 '2024-11-15 10:00:01 …' 을 '2024-11-15T10:00:01 …' 로 인용해 계약이 세 번 다 막혔다."""
+    texts = [_norm(t) for t in texts]
+    q = _norm(quote).strip(" \"'“”‘’…")
+    if any(q in t for t in texts):
+        return None  # 그대로 있음 — 이 보정의 대상이 아니다
+    spans = sorted({s for t in texts for s in _common_spans(q, t)}, key=len, reverse=True)
+    for span in spans:
+        frag = span.strip()
+        if (
+            MIN_QUOTE <= len(frag) <= MAX_QUOTE
+            and evidence_check(value, frag, texts, unit) != "bad"
+        ):
+            return frag
+    return None
+
+
 def param_unit(name: str) -> str | None:
     """조절값 이름의 시간 단위 — `…_ms` 는 ms, `…_s` 는 s, 그 밖은 없음."""
     return "ms" if name.endswith("_ms") else "s" if name.endswith("_s") else None
