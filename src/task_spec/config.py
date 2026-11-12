@@ -13,6 +13,8 @@ from typing import Literal
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from task_spec.delivery.target import SftpTarget
+
 
 class Settings(BaseSettings):
     """프로세스 설정 하나. 필드 목록은 `.env.example` 이 SSOT."""
@@ -22,6 +24,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         frozen=True,
+        env_nested_delimiter="__",
     )
 
     # Postgres (task_db). URL 에 비밀번호가 들어 있으므로 SecretStr.
@@ -48,6 +51,12 @@ class Settings(BaseSettings):
     @property
     def images_root(self) -> Path:
         return self.images_dir if self.images_dir is not None else self.data_dir / "images"
+
+    # SFTP 전달 대상 (이슈 #116). `SFTP_TARGETS__<이름>__HOST·PORT·USER·KEY_PATH·KNOWN_HOSTS·REMOTE_DIR` —
+    # 이름은 소문자로 읽힌다 (DB delivery_target.name 과 같게). 접속 정보는 DB 에 두지 않는다
+    sftp_targets: dict[str, SftpTarget] = Field(default_factory=dict)
+    # 역할 폴더 하나 보내는 시간 상한(초) — 묶음이 수백 MB
+    sftp_timeout_seconds: float = Field(default=1800.0, gt=0)
 
     # 자기소개서 사용 여부 [확정: 2026-11-03 사용자 — 검증할 주장은 이력서에서만].
     # false 면 API 가 자기소개서를 저장하지 않고, 그래프도 처리하지 않는다 (개인정보 최소 처리).

@@ -292,6 +292,38 @@ docker/builder/deliver.sh    # 이미지 빌드·금지 파일 검사 → 받는
 - `upgrade.sh`·유닛을 바꾸면 `deliver.sh --setup` 뒤 task-builder 로 `install-upgrader.sh` 를 다시 (자기 자신은 자동으로 바꾸지 않는다).
 - builder 설정 값(`~/builder-settings`)을 바꿀 때는 지금처럼 task-builder 로 고치고 다시 만든다 (`podman restart` 는 env 파일을 다시 읽지 않는다).
 
+### 2-11. SFTP 전달 대상 — #116
+
+승인된 빌드 묶음은 **API 가** SFTP 로 보낸다 (builder 는 만들기만 — 생성 코드·podman 소켓 옆에 전달 키를 두지 않는다).
+받는 곳 접속 정보는 DB 가 아니라 API env 파일에 둔다. DB `delivery_target` 에는 이름·역할만 있다.
+
+- 원격 경로: `<REMOTE_DIR>/<common_id>-r<판>/<role>/` — `*.tar.zst`·`<role>.json`·`SHA256SUMS` 를 `.part` 로 올려 이름을 바꾸고, 마지막에 빈 `.done`.
+  받는 쪽은 `.done` 이 있는 폴더만 가져가고 `sha256sum -c SHA256SUMS` 로 확인한다.
+- **다시 보내기는 막는다** — 원격에 `.done` 이 있으면 보내지 않는다 (`already_delivered`). 다시 보내려면 받는 쪽에서 폴더를 지운다.
+- 키 인증만 (비밀번호 없음), 호스트 키는 `known_hosts` 로 고정 — 처음 보는 키는 거부(`host_key`).
+- 실패 사유는 코드만 남는다: `local_mismatch`·`already_delivered`·`host_key`·`auth`·`timeout`·`io`. `io`·`timeout` 만 한 번 더 시도한다.
+
+처음 한 번 (운영 서버, 배포 사용자):
+
+```bash
+# 1) 키 폴더 — 배포 사용자만 (run.sh 가 700 이 아니면 거부)
+install -d -m 700 /etc/task-spec/sftp            # /etc/task-spec 가 root 소유면 sudo install -d -o "$(id -un)" …
+ssh-keygen -t ed25519 -N '' -f /etc/task-spec/sftp/grader_test_ed25519   # 공개키(.pub)를 받는 곳 계정에 등록
+ssh-keyscan -p 22 <받는 호스트> > /etc/task-spec/sftp/known_hosts         # 지문은 받는 쪽 담당자와 따로 맞춰 본다
+chmod 600 /etc/task-spec/sftp/*
+
+# 2) API env 파일 (docker/api/.env) — docker/api/env.example 의 SFTP 절. <이름> 은 소문자로 읽힌다
+#   SFTP_DIR=/etc/task-spec/sftp
+#   SFTP_TARGETS__GRADER_TEST__HOST=… / PORT / USER / KEY_PATH / KNOWN_HOSTS / REMOTE_DIR
+
+# 3) DB 에 대상 등록 (이름·역할) — POST /delivery-targets {"name": "grader_test", "role": "grader"}
+
+# 4) API 다시 만들기 (env 파일은 restart 로 다시 읽지 않는다)
+podman rm -f task-api && TASK_API_IMAGE=task-api:<버전> docker/api/run.sh
+```
+
+- 운영망에서 API 컨테이너가 받는 곳의 SFTP 포트로 나갈 수 있어야 한다 [미정: 방화벽 확인].
+
 ## 3. 확인
 
 ```bash
