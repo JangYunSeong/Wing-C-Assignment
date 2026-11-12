@@ -401,6 +401,10 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - 순서는 알파(`eval/starter/run_alpha.py`)와 같다: 재료·직군 템플릿 → `plan_contract` → `build_and_repair`(검증은 격리 컨테이너 #127)
   → README → 응시용·채점용 이미지·검증(응시용 오프라인 테스트, 제출물 채점, 응시용 레이어 금지 경로) → 빌드 저장소 적재(review).
 - 묶음은 승인 전이라 descriptor 의 `approval=pending` — 전달은 시작 코드 승인(#130) 뒤 approved 로 다시 쓴 묶음만.
+- 시작 코드 승인(#130)은 빌드 승인 그래프(`graph/build_approval.py`, interrupt — thread 는 빌드·결과마다)가 DB 에 기록하고, **묶음 확정은 builder**
+  (`builder/finalize.py`) [확정: 2026-11-12 사용자 ③ A]: 새 작업을 가져가기 전마다 "approved 인데 확정 전"인 빌드의 descriptor 를 approved 로
+  다시 쓰고(SHA256SUMS 갱신 — 저장소가 tar·README 는 그대로인지 검사) 평가 키트(승인자 판단 포함)를 등록한 뒤 `packages_final_at` 을 남긴다.
+  전달(#116)은 확정된 빌드만 (`store.request_delivery`). 확정 실패(예: `+dirty` 온톨로지)는 상태를 두고 사유만 남긴다.
 - 실행기(`builder/runner.py`)가 상태 전이·비용(작업당 `BUILD_BUDGET_USD`, 하루 `BUILD_DAILY_BUDGET_USD`)·lease heartbeat·실패 사유를 맡고,
   단계(`builder/steps.py`)는 바꿔 끼운다 (시험은 가짜 단계). 실패 사유는 단계 + 원인 요약 또는 예외 종류만 — 생성 코드·명세 원문은
   저장소·로그에 넣지 않는다 (예외 전문은 git 밖 작업 폴더의 error.txt).

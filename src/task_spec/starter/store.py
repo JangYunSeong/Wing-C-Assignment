@@ -14,6 +14,8 @@
 - 승인은 review 에서만, 응시용·채점용 묶음이 현재 outcome 과 맞고 검토 표시마다 승인자 판단(flag_id)이 있어야 한다.
   승인 자체는 그래프 interrupt 로 받은 결과를 적는 것 (불변식 9).
 - 전달은 approved·published 빌드만, 등록된 대상이 그 역할을 받을 때만. 첫 전달이 성공하면 published.
+- 묶음 확정 (#130 ③ A): 승인 뒤 builder 가 응시용·채점용 descriptor 를 approved 로 다시 쓰고(파일 목록에서 바뀌는 것은 descriptor·
+  SHA256SUMS 뿐 — 이미지 tar·README 는 그대로) 평가 키트를 등록한다 (`finalize_packages`). 전달은 확정된 빌드만.
 
 빌드 큐 (#128) — 명세 승인과 과제 생성은 따로다 [확정: 2026-11-12 사용자]:
 - 생성 요청(`request_build`)은 approved·기능형 공통 과제만. 같은 공통 과제에 진행 중(pending·generating·verifying) 빌드가
@@ -170,7 +172,8 @@ ALTER TABLE public.common_task_build
     ADD COLUMN IF NOT EXISTS cost_usd double precision NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS error text,
     ADD COLUMN IF NOT EXISTS started_at timestamptz,
-    ADD COLUMN IF NOT EXISTS finished_at timestamptz;
+    ADD COLUMN IF NOT EXISTS finished_at timestamptz,
+    ADD COLUMN IF NOT EXISTS packages_final_at timestamptz;
 -- 생성 요청으로 만든 빌드만 — eval 적재(new_build)는 같은 과제에 여러 빌드를 둘 수 있다 (수명 주기 시험·같은 판 동시 빌드)
 DROP INDEX IF EXISTS public.common_task_build_active;
 CREATE UNIQUE INDEX IF NOT EXISTS common_task_build_active_request ON public.common_task_build (common_id)
@@ -338,6 +341,39 @@ def check_requestable(common: CommonRef | None, common_id: str) -> CommonRef:
     return common
 
 
+def check_finalize(
+    build: BuildRecord,
+    current: list[BuildArtifact],
+    new_files: dict[str, list[ArtifactFile]],
+    kit: BuildArtifact,
+) -> None:
+    """묶음 확정 규칙 — 승인된 빌드에서 한 번, descriptor·SHA256SUMS 말고는 바뀌지 않게, 키트는 지금 결과의 것."""
+    if build.status != "approved":
+        raise BuildRuleError(f"{build.build_id}: 묶음 확정은 approved 빌드만 (지금 {build.status})")
+    if build.packages_final_at is not None:
+        raise BuildRuleError(f"{build.build_id}: 이미 확정한 묶음이다")
+    by_role = {a.role: a for a in current}
+    if "eval_kit" in by_role:
+        raise BuildRuleError(f"{build.build_id}: 평가 키트가 이미 등록돼 있다")
+    for role in _APPROVAL_NEEDS:
+        old = by_role.get(role)
+        if old is None:
+            raise BuildRuleError(f"{build.build_id}: {role} 묶음이 없다")
+        check_artifact_current(build, old)
+        keep = (f"{role}.json", "SHA256SUMS")
+        before = {f.name: f for f in old.files if f.name not in keep}
+        after = {f.name: f for f in new_files[role] if f.name not in keep}
+        if before != after:
+            raise BuildRuleError(
+                f"{build.build_id}/{role}: 확정 때는 descriptor·SHA256SUMS 말고 바꿀 수 없다"
+            )
+        if f"{role}.json" not in {f.name for f in new_files[role]}:
+            raise BuildRuleError(f"{build.build_id}/{role}: descriptor 가 없다")
+    if kit.role != "eval_kit" or kit.build_id != build.build_id:
+        raise BuildRuleError(f"{build.build_id}: 평가 키트 묶음이 아니다")
+    check_artifact_current(build, kit)
+
+
 def _reason(text: str) -> str:
     return " ".join(text.split())[:ERROR_MAX]
 
@@ -352,6 +388,13 @@ def _require_status(build: BuildRecord, allowed: tuple[str, ...], what: str) -> 
     if build.status not in allowed:
         raise BuildRuleError(
             f"{build.build_id}: {what} 는 {'/'.join(allowed)} 상태에서만 (지금 {build.status})"
+        )
+
+
+def _require_final(build: BuildRecord) -> None:
+    if build.packages_final_at is None:
+        raise BuildRuleError(
+            f"{build.build_id}: 묶음 확정 전이라 전달하지 않는다 — builder 가 approved 묶음·평가 키트를 쓴 뒤"
         )
 
 
@@ -456,6 +499,26 @@ class BuildRepo(Protocol):
     async def recover_expired(
         self, at: datetime | None = None, max_attempts: int = 2
     ) -> list[BuildRecord]: ...
+
+    # ── 묶음 확정 (#130 ③ A) ──
+    async def pending_finalize(self, limit: int = 20) -> list[BuildRecord]:
+        """승인됐는데 묶음이 아직 확정 전인 생성 요청 빌드 (확정 실패 사유가 남은 것은 뺀다 — 사람이 볼 때까지)."""
+        ...
+
+    async def finalize_packages(
+        self,
+        build_id: str,
+        candidate: list[ArtifactFile],
+        grader: list[ArtifactFile],
+        kit: BuildArtifact,
+        at: datetime | None = None,
+    ) -> BuildRecord:
+        """응시용·채점용 파일 목록 갱신(descriptor·SHA256SUMS 만 바뀜) + 평가 키트 등록 + 확정 표시 — 한 번에."""
+        ...
+
+    async def note_error(self, build_id: str, reason: str) -> BuildRecord:
+        """상태는 그대로 두고 사유만 (확정 실패 등)."""
+        ...
 
 
 class InMemoryBuildStore:
@@ -614,6 +677,7 @@ class InMemoryBuildStore:
     ) -> Delivery:
         build = _require(self._builds.get(build_id), build_id)
         _require_status(build, _DELIVERABLE, "전달")
+        _require_final(build)
         check_target(self._targets.get(target), target, role)
         artifact = self._artifacts.get((build_id, role))
         if artifact is None:
@@ -768,6 +832,39 @@ class InMemoryBuildStore:
                 )
         return out
 
+    # ── 묶음 확정 (#130 ③ A) ──
+    async def pending_finalize(self, limit: int = 20) -> list[BuildRecord]:
+        rows = [
+            b
+            for b in self._builds.values()
+            if b.status == "approved"
+            and b.packages_final_at is None
+            and b.requested_at is not None
+            and b.error is None
+        ]
+        return sorted(rows, key=lambda b: (b.approved_at or b.created_at, b.build_id))[:limit]
+
+    async def finalize_packages(
+        self,
+        build_id: str,
+        candidate: list[ArtifactFile],
+        grader: list[ArtifactFile],
+        kit: BuildArtifact,
+        at: datetime | None = None,
+    ) -> BuildRecord:
+        build = _require(self._builds.get(build_id), build_id)
+        new = {"candidate": candidate, "grader": grader}
+        check_finalize(build, await self.artifacts(build_id), new, kit)
+        for role, files in new.items():
+            key = (build_id, role)
+            self._artifacts[key] = self._artifacts[key].model_copy(update={"files": files})
+        self._artifacts[(build_id, "eval_kit")] = kit
+        return self._put(build, packages_final_at=at or datetime.now(UTC))
+
+    async def note_error(self, build_id: str, reason: str) -> BuildRecord:
+        build = _require(self._builds.get(build_id), build_id)
+        return self._put(build, error=_reason(reason))
+
 
 class PgBuildStore:
     """Postgres 구현. `open()` 이 common_task·빌드 DDL 을 적용한다."""
@@ -844,6 +941,7 @@ class PgBuildStore:
             error=r["error"],
             started_at=r["started_at"],
             finished_at=r["finished_at"],
+            packages_final_at=r["packages_final_at"],
         )
 
     @staticmethod
@@ -1171,6 +1269,7 @@ class PgBuildStore:
         ):
             build = await self._locked(cur, build_id)
             _require_status(build, _DELIVERABLE, "전달")
+            _require_final(build)
             await cur.execute("SELECT * FROM public.delivery_target WHERE name = %s", (target,))
             t = await cur.fetchone()
             check_target(self._target(t) if t else None, target, role)
@@ -1400,3 +1499,64 @@ class PgBuildStore:
                     )
                 out.append(self._build(await cur.fetchone()))  # type: ignore[arg-type]
         return out
+
+    # ── 묶음 확정 (#130 ③ A) ──
+    async def pending_finalize(self, limit: int = 20) -> list[BuildRecord]:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM public.common_task_build WHERE status = 'approved' "
+                "AND packages_final_at IS NULL AND requested_at IS NOT NULL AND error IS NULL "
+                "ORDER BY approved_at, id LIMIT %s",
+                (limit,),
+            )
+            rows = await cur.fetchall()
+        return [self._build(r) for r in rows]
+
+    async def finalize_packages(
+        self,
+        build_id: str,
+        candidate: list[ArtifactFile],
+        grader: list[ArtifactFile],
+        kit: BuildArtifact,
+        at: datetime | None = None,
+    ) -> BuildRecord:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            build = await self._locked(cur, build_id)
+            new = {"candidate": candidate, "grader": grader}
+            check_finalize(build, await self._artifacts_of(cur, build_id), new, kit)
+            for role, files in new.items():
+                await cur.execute(
+                    "UPDATE public.build_artifact SET files = %s WHERE build_id = %s AND role = %s",
+                    (Jsonb([f.model_dump(mode="json") for f in files]), build_id, role),
+                )
+            await cur.execute(
+                "INSERT INTO public.build_artifact (build_id, role, files, image_id, tree_sha256, "
+                "grader_sha256, created_at) VALUES (%s, 'eval_kit', %s, NULL, %s, %s, %s)",
+                (
+                    build_id,
+                    Jsonb([f.model_dump(mode="json") for f in kit.files]),
+                    kit.tree_sha256,
+                    kit.grader_sha256,
+                    kit.created_at,
+                ),
+            )
+            await cur.execute(
+                "UPDATE public.common_task_build SET packages_final_at = COALESCE(%s, now()) "
+                "WHERE id = %s RETURNING *",
+                (at, build_id),
+            )
+            r = await cur.fetchone()
+        return self._build(r)  # type: ignore[arg-type]
+
+    async def note_error(self, build_id: str, reason: str) -> BuildRecord:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE public.common_task_build SET error = %s WHERE id = %s RETURNING *",
+                (_reason(reason), build_id),
+            )
+            r = await cur.fetchone()
+        return _require(self._build(r) if r else None, build_id)

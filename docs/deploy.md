@@ -235,6 +235,8 @@ podman exec task-api ls /srv/task-spec/images/<build_id>/candidate   # (배포 �
   `find /srv/task-spec/builder/work -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} +`
 - 업그레이드: `podman stop task-builder` (지금 작업 뒤 멈춤, 60초 넘으면 강제 — lease 가 지나 다음 기동 때 다시 대기열로) → `podman rm task-builder` → 새 이미지 `podman load` → `run.sh`.
 - 비용 상한(작업당·하루)과 모델은 builder 설정 파일 — 모델을 바꾸면 상한도 같이 올린다.
+- 승인된 빌드의 묶음 확정(descriptor approved·평가 키트 `eval_kit/`)도 builder 가 한다 (#130) — 새 작업을 가져가기 전마다, 몇 초.
+  빌드 화면에 "묶음 확정 대기"가 오래 남으면 builder 로그와 빌드의 사유(`finalize: …`)를 본다. 전달은 확정된 빌드만.
 
 ## 3. 확인
 
