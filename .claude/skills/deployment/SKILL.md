@@ -12,7 +12,7 @@ description: P1 과제 명세 서비스의 컨테이너 구성·내부망 배포
 
 | 구성 | 이미지 | 네트워크·포트 | 볼륨 |
 |---|---|---|---|
-| API | `task-api:<버전>` (`docker/api/Dockerfile`) | `task-net`, 기본 `127.0.0.1:8001 → 8000` | `task_data:/data` (권한 700) |
+| API | `task-api:<버전>` (`docker/api/Dockerfile`) | `task-net`, 기본 `127.0.0.1:8001 → 8000` | `task_data:/data` (권한 700), 묶음 `IMAGES_DIR`(호스트 경로, 같은 경로 읽기 전용) — rootless 면 `--userns=keep-id:uid=10001,gid=10001` (docs/deploy.md 2-7) |
 | DB | `task-db:1` (`docker/db/Dockerfile`, PG16 + pgvector) | `task-net`(이름 `task_db`), `127.0.0.1:5434 → 5432` | `task_db_data` |
 | nginx (사내망 밖 접속 시 필수) | `nginx:1.27-alpine` + `docker/nginx/nginx.conf` | **호스트 네트워크**, `443`·`80` 직접 수신, API 는 `127.0.0.1:8001` | 인증서·htpasswd·ACME webroot 읽기 전용 마운트 |
 

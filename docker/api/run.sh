@@ -5,6 +5,10 @@
 #   TASK_API_ENV   기본 docker/api/.env (이 스크립트 옆, gitignore·권한 600) — 다른 파일을 쓸 때만 지정
 #   TASK_API_BIND  기본 127.0.0.1:8001 — 내부망 다른 PC 에서 접속하려면 <서버IP>:8001 (인증 전 — 접근 대상 제한 필수)
 #                  none = 호스트에 포트를 열지 않음 (nginx 앞단 구성 — docker/nginx/run.sh 가 task-net 으로 접속)
+#
+# 과제 전달 묶음 (#115 2-a): env 파일에 IMAGES_DIR=<호스트 절대 경로> 가 있으면 그 폴더를 **같은 경로로 읽기 전용** 마운트한다.
+#   묶음은 호스트 사용자(적재·builder)가 소유자 전용(0600/0700)으로 쓴다 → rootless 에서는 --userns=keep-id 로 컨테이너의 app(10001)을
+#   호스트 사용자로 맞춰 읽는다. 이때 task_data 볼륨의 주인도 호스트 사용자여야 한다 — 아니면 기동을 거부한다 (docs/deploy.md 2-7).
 set -euo pipefail
 
 NAME="${TASK_API_NAME:-task-api}"
@@ -21,6 +25,33 @@ db_host=$(sed -nE 's#^DATABASE_URL=[^@]*@([^:/?]+).*#\1#p' "$ENV_FILE" | tail -1
 [[ "$db_host" != localhost && "$db_host" != 127.0.0.1 ]] \
   || { echo "DATABASE_URL 호스트가 $db_host — 컨테이너에서는 task_db:5432 로 적으세요 ($ENV_FILE)" >&2; exit 1; }
 
+# 과제 전달 묶음 폴더 (선택). 값은 경로라 출력해도 된다 (비밀 아님)
+# podman --env-file 은 따옴표를 벗기지 않는다 — 컨테이너가 받는 값과 같게 그대로 읽고, 절대 경로가 아니면 거부
+images_dir=$(sed -nE 's#^IMAGES_DIR=(.*)$#\1#p' "$ENV_FILE" | tail -1)
+images=()
+if [[ -n "$images_dir" ]]; then
+  [[ "$images_dir" == /* ]] || { echo "IMAGES_DIR 는 따옴표 없는 호스트 절대 경로여야 합니다: $images_dir ($ENV_FILE)" >&2; exit 1; }
+  [[ -d "$images_dir" ]] || { echo "IMAGES_DIR 폴더 없음: $images_dir — docs/deploy.md 2-7 로 먼저 만드세요" >&2; exit 1; }
+  images=(-v "${images_dir}:${images_dir}:ro")
+fi
+
+# rootless 면 컨테이너 app(10001) = 호스트 사용자. rootful(개발 서버 root)에서는 keep-id 를 쓸 수 없어 기존 매핑 그대로
+userns=()
+if [[ "$(podman info --format '{{.Host.Security.Rootless}}')" == true ]]; then
+  userns=(--userns=keep-id:uid=10001,gid=10001)
+  if podman volume exists task_data; then
+    vol=$(podman volume inspect task_data --format '{{.Mountpoint}}')
+    owner=$(stat -c %u "$vol")
+    [[ "$owner" == "$(id -u)" ]] || {
+      echo "task_data 볼륨 주인이 호스트 uid $owner — keep-id 로는 app 이 /data 를 못 읽습니다." >&2
+      echo "  한 번만: podman rm -f $NAME (있으면) 후  podman unshare chown -R 0:0 '$vol'   (docs/deploy.md 2-7)" >&2
+      exit 1
+    }
+  fi
+elif [[ -n "$images_dir" ]]; then
+  echo "주의: rootful podman — keep-id 없이 띄웁니다. 묶음 파일이 컨테이너 app(10001)에게 읽히는지 따로 확인하세요" >&2
+fi
+
 podman network exists "$NET" || podman network create "$NET" >/dev/null
 
 if podman container exists "$NAME"; then
@@ -34,7 +65,9 @@ publish=(-p "${BIND}:8000")
 podman run -d --name "$NAME" \
   --network "$NET" \
   --env-file "$ENV_FILE" \
+  "${userns[@]}" \
   -v task_data:/data \
+  "${images[@]}" \
   "${publish[@]}" \
   --restart unless-stopped \
   --health-cmd "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status == 200 else 1)\"" \
