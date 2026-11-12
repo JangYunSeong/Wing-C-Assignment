@@ -16,6 +16,7 @@ from task_spec.api.errors import install_error_handlers
 from task_spec.api.launcher import RunLauncher
 from task_spec.api.routers import builds, health, postings, runs, ui
 from task_spec.config import Settings, get_settings
+from task_spec.delivery.sender import DeliverySender
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.graph.build_approval import build_approval_graph
 from task_spec.llm.factory import build_llm_client
@@ -62,6 +63,14 @@ def create_app(
         app.state.builds = await PgBuildStore.open(
             app.state.settings.database_url.get_secret_value()
         )
+        # 승인된 묶음 SFTP 전달 (#116) — API 프로세스 안에서만 보낸다 (builder 는 만들기만)
+        app.state.delivery = DeliverySender(
+            app.state.builds,
+            app.state.settings.images_root,
+            app.state.settings.sftp_targets,
+            app.state.settings.sftp_timeout_seconds,
+        )
+        await app.state.delivery.recover()
         app.state.common_store = common_store  # 명세 승인 전 공통 과제 확인 (runs.approve_run)
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
@@ -91,6 +100,7 @@ def create_app(
                 yield
             finally:
                 await app.state.launcher.shutdown()
+                await app.state.delivery.shutdown()
                 await app.state.ontology.close()
                 await store.close()
                 await common_store.close()

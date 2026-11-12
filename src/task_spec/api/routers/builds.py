@@ -12,6 +12,10 @@ GET  /builds[?common_id=]        : 공통 과제의 빌드 목록 (없으면 최
 GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수
 GET  /builds/{build_id}/artifacts: 역할별 묶음 파일(이름·sha256·크기)·image_id
 GET  /builds/{build_id}/deliveries: 전달 기록
+POST /builds/{build_id}/deliveries {role, target, requested_by} : SFTP 전달 요청 (#116) — 승인·확정된 빌드만, 기록(requested)을
+                                   만들고 202 로 바로 돌려준다. 보내기는 API 프로세스의 백그라운드(delivery/sender.py), 결과는 GET 으로 폴링
+                                   (sent·failed + 사유 코드). 같은 대상으로 보내는 중이거나 보낸 역할은 다시 보내지 않는다 (409).
+                                   접속 설정이 없는 대상이면 409 delivery_target_not_configured
 GET  /builds/{build_id}/readme   : 지원자 README 본문(응시용 이미지 작업 경로의 README.md 와 같음) + README 검토 표시 —
                                    지원자에게 보이는 공개 정보라 본문을 내준다. 검사·검증을 마친 빌드(review·approved·published)만
 GET  /builds/{build_id}/facilitator: 진행자(응시 플랫폼) 보기 — 요청하면 주는 자료(제목·본문), 질문 답(주제·매칭 낱말·구체·모호한 답),
@@ -24,7 +28,7 @@ GET  /delivery-targets · POST /delivery-targets : 전달 대상(이름 → 받�
 
 응답에 넣지 않는 것: 계약 원문·숨은 계획 원문(조절값·시드 행)·오버레이 파일 본문(특히 참조 구현·테스트 코드) — 응답 모델에 칸 자체가 없다.
 예외는 /cases: 문제를 쓸지 정하는 승인자에게 숨은 케이스의 상황·통과 조건·의도한 사유와 허용 설계를 보인다 [확정: 2026-11-11 사용자].
-사용자별 권한이 아직 없으므로(nginx 기본 인증뿐, docs/deploy.md §5) 이 화면·API 는 내부 승인자만 접근한다는 전제다. 승인은 그래프 interrupt 로만 받고(불변식 9), 전달 요청은 승인 경로와 함께 추가한다.
+사용자별 권한이 아직 없으므로(nginx 기본 인증뿐, docs/deploy.md §5) 이 화면·API 는 내부 승인자만 접근한다는 전제다. 승인은 그래프 interrupt 로만 받고(불변식 9), 전달은 승인·확정된 빌드만 받는다 (저장소 규칙).
 """
 
 from __future__ import annotations
@@ -38,13 +42,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from task_spec.api.deps import BuildApprovalDep, BuildsDep
+from task_spec.api.deps import BuildApprovalDep, BuildsDep, DeliveryDep
 from task_spec.api.errors import (
     BuildApprovalInvalid,
     BuildNotFound,
     BuildRuleViolation,
     CasesNotAvailable,
     CommonTaskNotFound,
+    DeliveryTargetNotConfigured,
     ErrorResponse,
     FacilitatorNotAvailable,
     ReadmeNotAvailable,
@@ -161,6 +166,12 @@ class BuildRequestIn(BaseModel):
 class BuildRequestOut(BaseModel):
     created: bool  # False 면 이미 진행 중인 빌드
     build: BuildSummary
+
+
+class DeliveryIn(BaseModel):
+    role: ArtifactRole
+    target: str = Field(pattern=TARGET_NAME)  # delivery_target.name — 접속 정보는 API 설정에만
+    requested_by: str = Field(min_length=1, max_length=80)
 
 
 class TargetIn(BaseModel):
@@ -359,6 +370,26 @@ async def list_artifacts(build_id: BuildIdPath, store: BuildsDep) -> list[Artifa
 async def list_deliveries(build_id: BuildIdPath, store: BuildsDep) -> list[Delivery]:
     await _build(store, build_id)
     return await store.deliveries(build_id)
+
+
+@router.post("/builds/{build_id}/deliveries", status_code=202)
+async def request_delivery(
+    build_id: BuildIdPath, body: DeliveryIn, store: BuildsDep, sender: DeliveryDep
+) -> Delivery:
+    b = await _build(store, build_id)
+    if not sender.has_target(body.target):
+        raise DeliveryTargetNotConfigured(body.target)
+    label = (await store.task_labels([b.common_id])).get(b.common_id)
+    if label is None or label.revision is None:
+        raise BuildRuleViolation(
+            f"{build_id}: 공통 과제 판을 알 수 없다 — 원격 경로를 만들 수 없음"
+        )
+    try:
+        d = await store.request_delivery(build_id, body.role, body.target, body.requested_by)
+    except BuildRuleError as e:
+        raise BuildRuleViolation(str(e)) from e
+    sender.launch(d, b.common_id, label.revision)
+    return d
 
 
 @router.get("/builds/{build_id}/readme")

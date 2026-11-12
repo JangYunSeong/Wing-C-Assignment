@@ -223,6 +223,19 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
     assert b.outcome.hidden_plan == _plan() and b.outcome.contract == _contract()
     assert b.outcome.tree_sha256 == H_NEW
     assert [d.status for d in await store.deliveries(bid)] == ["failed", "sent"]
+    # 다시 보내기 금지 (#116) — 보낸 역할·대상은 막고, 실패한 것은 다시 요청할 수 있다
+    with pytest.raises(BuildRuleError, match="이미 보냈다"):
+        await store.request_delivery(bid, "grader", f"{tag}-grader", "operator-fake", AT)
+    again = await store.request_delivery(
+        bid, "candidate", f"{tag}-candidate", "operator-fake", AT + timedelta(seconds=2)
+    )
+    with pytest.raises(BuildRuleError, match="보내는 중"):
+        await store.request_delivery(bid, "candidate", f"{tag}-candidate", "operator-fake", AT)
+    # API 재시작 — 보내는 중이던 전달은 실패(interrupted)로, 그다음 다시 요청할 수 있다
+    abandoned = {d.delivery_id: d for d in await store.abandon_deliveries("interrupted", AT)}
+    assert abandoned[again.delivery_id].status == "failed"
+    assert abandoned[again.delivery_id].error == "interrupted"
+    assert [d.status for d in await store.deliveries(bid)] == ["failed", "sent", "failed"]
 
     d3 = await store.request_delivery(bid, "eval_kit", f"{tag}-eval_kit", "operator-fake", AT)
     kit = next(a for a in await store.artifacts(bid) if a.role == "eval_kit")

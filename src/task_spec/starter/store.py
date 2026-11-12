@@ -329,6 +329,15 @@ def check_target(target: DeliveryTarget | None, name: str, role: ArtifactRole) -
         raise BuildRuleError(f"전달 대상 {name} 은 {target.role} 만 받는다 ({role} 요청)")
 
 
+def check_no_resend(previous: Iterable[Delivery], role: ArtifactRole, target: str) -> None:
+    """같은 빌드·역할·대상으로 보내는 중이거나 보낸 기록이 있으면 막는다 — 다시 보내기 금지 [확정: 2026-11-12 사용자].
+    실패한 전달은 다시 요청할 수 있다 (받는 쪽에 .done 이 없다)."""
+    for d in previous:
+        if d.role == role and d.target == target and d.status != "failed":
+            what = "이미 보냈다" if d.status == "sent" else "보내는 중이다"
+            raise BuildRuleError(f"{d.build_id}/{role} → {target}: {what} — 다시 보내기는 막는다")
+
+
 def check_requestable(common: CommonRef | None, common_id: str) -> CommonRef:
     """생성 요청을 받을 수 있는 공통 과제인지 — 없으면 KeyError, approved·기능형이 아니면 규칙 위반."""
     if common is None:
@@ -469,6 +478,10 @@ class BuildRepo(Protocol):
     ) -> Delivery: ...
 
     async def deliveries(self, build_id: str) -> list[Delivery]: ...
+
+    async def abandon_deliveries(self, reason: str, at: datetime) -> list[Delivery]:
+        """보내는 중(requested)인 전달을 전부 실패로 — API 가 시작할 때 (전송은 API 프로세스 안에서만 돈다, 작업자 1)."""
+        ...
 
     # ── 큐 (#128) ──
     async def request_build(
@@ -682,6 +695,7 @@ class InMemoryBuildStore:
         _require_status(build, _DELIVERABLE, "전달")
         _require_final(build)
         check_target(self._targets.get(target), target, role)
+        check_no_resend(await self.deliveries(build_id), role, target)
         artifact = self._artifacts.get((build_id, role))
         if artifact is None:
             raise BuildRuleError(f"{build_id}/{role}: 등록된 묶음이 없다")
@@ -724,6 +738,13 @@ class InMemoryBuildStore:
             (d for d in self._deliveries.values() if d.build_id == build_id),
             key=lambda d: d.requested_at,
         )
+
+    async def abandon_deliveries(self, reason: str, at: datetime) -> list[Delivery]:
+        out = []
+        for d in list(self._deliveries.values()):
+            if d.status == "requested":
+                out.append(await self.finish_delivery(d.delivery_id, False, at, reason))
+        return out
 
     # ── 큐 (#128) ──
     async def request_build(
@@ -1279,6 +1300,10 @@ class PgBuildStore:
             await cur.execute("SELECT * FROM public.delivery_target WHERE name = %s", (target,))
             t = await cur.fetchone()
             check_target(self._target(t) if t else None, target, role)
+            await cur.execute(
+                "SELECT * FROM public.artifact_delivery WHERE build_id = %s", (build_id,)
+            )
+            check_no_resend([self._delivery(r) for r in await cur.fetchall()], role, target)
             artifact = next(
                 (a for a in await self._artifacts_of(cur, build_id) if a.role == role), None
             )
@@ -1336,6 +1361,16 @@ class PgBuildStore:
             await cur.execute(
                 "SELECT * FROM public.artifact_delivery WHERE build_id = %s ORDER BY requested_at",
                 (build_id,),
+            )
+            rows = await cur.fetchall()
+        return [self._delivery(r) for r in rows]
+
+    async def abandon_deliveries(self, reason: str, at: datetime) -> list[Delivery]:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE public.artifact_delivery SET status = 'failed', error = %s "
+                "WHERE status = 'requested' RETURNING *",
+                (reason,),
             )
             rows = await cur.fetchall()
         return [self._delivery(r) for r in rows]

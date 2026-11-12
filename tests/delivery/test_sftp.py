@@ -63,7 +63,7 @@ async def _serve(
     (root / "inbox").mkdir(parents=True)
 
     def factory(chan: Any) -> asyncssh.SFTPServer:
-        return sftp_cls(chan, chroot=str(root))
+        return sftp_cls(chan, chroot=str(root).encode())
 
     server = await asyncssh.listen(
         "127.0.0.1",
