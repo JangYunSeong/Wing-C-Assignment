@@ -253,11 +253,11 @@ async function renderApproval(b) {
       ${v.error ? `<p class="bad">${esc(v.error)}</p>` : ""}
       ${
         v.flags.length
-          ? `<ul class="bflags">${v.flags
+          ? `<ul class="bflags approve-flags">${v.flags
               .map(
                 (f, i) => `<li><p>${esc(f.text)}</p>
-              <div class="row" style="gap:8px;flex-wrap:wrap"><select data-flag="${i}" aria-label="판단"><option value="">판단 선택</option>${opts}</select>
-              <input type="text" data-note="${i}" placeholder="메모 (선택)" style="flex:1;min-width:160px"></div></li>`,
+              <div class="verdict"><select data-flag="${i}" aria-label="판단"><option value="">판단 선택</option>${opts}</select>
+              <input type="text" data-note="${i}" placeholder="메모 (선택)"></div></li>`,
               )
               .join("")}</ul>`
           : `<p class="placeholder">검토 표시가 없습니다 — 테스트 절을 보고 승인하세요.</p>`
@@ -340,9 +340,10 @@ function queueLine(b) {
   if (!b.requested_by) return "";
   const approved = b.status === "approved" || b.status === "published";
   const parts = [`<span>요청 ${esc(b.requested_by)} · ${when(b.requested_at)}</span>`];
-  if (b.stage) parts.push(`<span>단계 ${esc(b.stage)}</span>`);
-  if (b.attempt > 1) parts.push(`<span>시도 ${b.attempt}회</span>`);
-  if (b.cost_usd) parts.push(`<span>비용 $${Number(b.cost_usd).toFixed(2)}</span>`);
+  const bar = (b.stage_log || []).length > 0; // 진행 막대가 단계·시도·비용을 보여 준다
+  if (b.stage && !bar) parts.push(`<span>단계 ${esc(b.stage)}</span>`);
+  if (b.attempt > 1 && !bar) parts.push(`<span>시도 ${b.attempt}회</span>`);
+  if (b.cost_usd && !bar) parts.push(`<span>비용 $${Number(b.cost_usd).toFixed(2)}</span>`);
   if (b.finished_at) parts.push(`<span>끝 ${when(b.finished_at)}</span>`);
   // 묶음 확정 (#130) — 승인 뒤 builder 가 descriptor 를 approved 로 다시 쓰고 평가 키트를 등록해야 전달할 수 있다
   if (approved) parts.push(`<span>${b.packages_final_at ? `묶음 확정 ${when(b.packages_final_at)}` : "묶음 확정 대기 (builder)"}</span>`);
@@ -376,7 +377,7 @@ async function show(id) {
         <h2>${esc(b.title || b.common_id)}</h2>
         <div class="meta"><span class="mono">${esc(b.build_id)}</span><span>${esc(b.template_ref || "–")}</span><span>만든 시각 ${when(b.created_at)}</span>
         ${b.approved_by ? `<span>승인 ${esc(b.approved_by)} · ${when(b.approved_at)}</span>` : ""}</div>
-        ${queueLine(b)}</div>
+        <div id="b-progress">${stageBar(b)}${queueLine(b)}</div></div>
         <div class="right">${pill(b.status)}<button type="button" class="btn small" data-problem>문제 보기</button></div></div>
       <nav class="jump" aria-label="빌드 안에서 이동"><a href="#" data-jump="b-verify">검증</a><a href="#" data-jump="b-cases">테스트</a><a href="#" data-jump="b-flags">검토 표시</a>${b.status === "review" || b.status === "failed" ? `<a href="#" data-jump="b-approve">${b.status === "review" ? "승인" : "다시 요청"}</a>` : ""}<a href="#" data-jump="b-arts">이미지 묶음</a><a href="#" data-jump="b-deliv">전달</a></nav>
       <section class="block" id="b-verify"><div class="block-head"><h3>검증 결과</h3><span class="aside">채점용 이미지로 채점한 구현별 통과 수</span></div>
@@ -540,5 +541,25 @@ $("#detail").addEventListener("click", async (ev) => {
   }
   setTimeout(() => (copy.textContent = "복사"), 1500);
 });
+
+/* 생성 중인 빌드는 5초마다 진행만 다시 읽는다 (상세 전체를 다시 그리지 않아 스크롤·모달이 그대로). 끝나면 상세·목록을 새로 */
+setInterval(async () => {
+  const b0 = builds.find((x) => x.build_id === current);
+  if (!current || !b0 || !BUILD_RUNNING.includes(b0.status) || document.hidden) return;
+  try {
+    const b = await api(`/builds/${encodeURIComponent(current)}`);
+    if (b.build_id !== current) return;
+    Object.assign(b0, b);
+    renderList();
+    if (BUILD_RUNNING.includes(b.status)) {
+      const el = $("#b-progress");
+      if (el) el.innerHTML = stageBar(b) + queueLine(b);
+    } else {
+      show(current);
+    }
+  } catch {
+    /* 다음 차례에 다시 */
+  }
+}, 5000);
 
 loadList();

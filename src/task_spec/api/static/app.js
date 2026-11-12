@@ -920,8 +920,16 @@ async function refreshBuildState(box, cid) {
     slot.innerHTML = last
       ? `<a href="builds.html#${encodeURIComponent(last.build_id)}" class="mono">${esc(last.build_id)}</a>
          <span class="pill b-${esc(last.status)}">${esc(BUILD_KO[last.status] || last.status)}${last.stage ? ` · ${esc(last.stage)}` : ""}</span>
-         ${last.error ? `<span class="bad">${esc(last.error)}</span>` : ""}`
+         ${last.error ? `<span class="bad">${esc(last.error)}</span>` : ""}${stageBar(last)}`
       : "아직 만든 빌드 없음";
+    // 생성 중이면 5초 뒤 다시 — 화면에서 이 칸이 사라졌으면(다른 실행을 열었으면) 멈춘다
+    if (last && BUILD_RUNNING.includes(last.status)) {
+      setTimeout(() => {
+        if (!box.isConnected) return;
+        if (!document.hidden) refreshBuildState(box, cid);
+        else document.addEventListener("visibilitychange", () => refreshBuildState(box, cid), { once: true });
+      }, 5000);
+    }
   } catch (e) {
     slot.textContent = e.message;
   }
