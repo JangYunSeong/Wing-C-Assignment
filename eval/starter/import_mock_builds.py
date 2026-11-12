@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -71,15 +72,37 @@ def overlay_files(build_id: str, item: dict[str, Any]) -> list[StarterFile]:
 
 
 def repairs_of(run: Path, builds_root: Path) -> list[RepairRecord]:
-    """수리 기록 — 빌드 폴더 report 에 없으면 원래 알파 폴더(report `source`)의 성공한 루프 report 에서."""
+    """수리 기록 — 빌드 폴더 report(run_alpha 는 `build.repairs`)에 없으면 원래 알파 폴더(report `source`)의 성공한 루프 report 에서."""
     report = json.loads((run / "report.json").read_text("utf-8"))
     raw = report.get("repairs")
+    if raw is None and isinstance(
+        report.get("build"), dict
+    ):  # 2026-11-12: run_alpha 보고서의 수리 기록이 적재되지 않았다
+        raw = report["build"].get("repairs")
     if raw is None and report.get("source"):
         for loop in sorted((builds_root / report["source"]).glob("loop-*/report.json")):
             r = json.loads(loop.read_text("utf-8"))
             if r.get("status") == "review":
                 raw = r.get("repairs")
     return [RepairRecord.model_validate({**x, "reason": str(x["reason"])[:300]}) for x in raw or []]
+
+
+def build_flags_of(run: Path, builds_root: Path) -> list[str]:
+    """빌드 단계의 검토 표시 — 변별 못 해 뺀 케이스·근거 확인·재생성 예산 등 (run_alpha 는 `build.review_flags`, 손 예시 루프는
+    원래 알파 폴더의 성공한 루프). 2026-11-12: 적재가 명세의 표시만 넣어 승인자가 빌드 단계의 판단 근거를 못 봤다."""
+    report = json.loads((run / "report.json").read_text("utf-8"))
+    raw = report["build"].get("review_flags") if isinstance(report.get("build"), dict) else None
+    if raw is None and report.get("source"):
+        for loop in sorted((builds_root / report["source"]).glob("loop-*/report.json")):
+            r = json.loads(loop.read_text("utf-8"))
+            if r.get("status") == "review":
+                raw = r.get("review_flags")
+    return [str(f) for f in raw or []]
+
+
+def merged_flags(task_flags: Sequence[str], build_flags: Sequence[str]) -> list[str]:
+    """명세의 표시 + 빌드 단계의 표시 (같은 글은 한 번)."""
+    return list(dict.fromkeys([*task_flags, *build_flags]))
 
 
 def case_results(cases: Any) -> list[dict[str, Any]]:
@@ -202,7 +225,9 @@ async def import_one(
                 contract=item["contract"],
                 hidden_plan=item["plan"],
                 verification=summaries(t["verification"]),
-                review_flags=list(item["task"].review_flags),
+                review_flags=merged_flags(
+                    item["task"].review_flags, build_flags_of(run, builds_root)
+                ),
                 repairs=repairs_of(run, builds_root),
             ),
         )
