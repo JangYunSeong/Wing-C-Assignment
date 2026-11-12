@@ -13,6 +13,8 @@
 - 응시용(candidate.json)에는 케이스·함정·사유 정보를 하나도 넣지 않는다.
 - 채점용(grader.json)에는 케이스 id 와 시작 코드 기대값(개수)만. 함정 id·의도한 사유는 이미지 안 config 와 `result.json` 에만 있다.
 - 평가 키트(kit.json)는 승인된 판에서 코드로 만든다. 지원자 문서에서 나온 칸(`slots`·`claims_to_verify`)은 넣지 않는다 (불변식 1·3).
+  결과 평가(케이스·숨은 요구) 말고 과정 평가 기준도 단계별로 담는다(`stage1`·`stage2` — 관찰 항목·자료 역할·질문이 단서가 되는 함정,
+  2026-11-12 사용자 결정 A: 2단계는 같은 함정의 진단 단계). 자료 본문·답 문장은 진행자 쪽에만 있다.
 - 2026-11-10 목 묶음(`ct-0683f8a1b8d6-r3`)을 기준으로 했다. 목과 다른 점: `build_id`·`grader_sha256` 추가,
   `acceptance_check`(글) → `starter_expected`(값), 결과 케이스 필드에 `message`, 키트 케이스에 `competency_ids`·승인자 판단.
 """
@@ -25,7 +27,12 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from task_spec.schemas.base import Schema
-from task_spec.schemas.domain import AcceptedDesign, BehavioralAnchors, TargetCompetency
+from task_spec.schemas.domain import (
+    AcceptedDesign,
+    BehavioralAnchors,
+    Observable,
+    TargetCompetency,
+)
 
 COMMON_ID = r"^ct-[0-9a-f]{12}$"
 BUILD_ID = (
@@ -220,6 +227,39 @@ class ReviewDecision(Schema):
         return cls(flag_id=flag_id(flag), flag=flag, verdict=verdict, note=note, reviewer=reviewer)
 
 
+class KitMaterial(Schema):
+    """요청 시 공개하는 자료 1건의 역할 — 평가 쪽이 진행자 기록(어떤 자료를 요청했는지)과 맞춰 본다.
+    본문은 진행자 쪽(진행자 보기)에 있어 넣지 않는다. 역할은 지원자에게 숨긴다."""
+
+    artifact_id: str = Field(pattern=r"^a\d{1,2}$")
+    title: str = Field(min_length=1)
+    role: Literal["key", "support", "distractor"]
+
+
+class KitClarification(Schema):
+    """추가 질문 주제 1건과 그 답이 단서가 되는 함정 — 숨은 요구에 닿는 질문을 했는지 평가 쪽이 본다. 답 문장은 진행자 쪽에."""
+
+    clarification_id: str = Field(pattern=r"^c\d{1,2}$")
+    topic: str = Field(min_length=1)
+    reveals: list[str] = Field(default_factory=list)  # trap_id
+
+
+class KitStage(Schema):
+    """한 단계의 진단(과정) 평가 기준 — 진행자 기록(먼저 말한 것·요청한 자료·질문)과 맞춰 본다.
+    2026-11-12 사용자 결정(A): 2단계는 1단계와 같은 함정의 증상을 주고 진단 과정을 보는 단계 — 새 숨은 요구·테스트는 없다."""
+
+    trap_ids: list[str] = Field(
+        default_factory=list
+    )  # 이 단계가 겨냥하는 함정 (2단계 = 증상의 원인 함정)
+    observables: list[Observable] = Field(default_factory=list)
+    materials: list[KitMaterial] = Field(default_factory=list)
+    max_requests: int | None = None
+    clarifications: list[KitClarification] = Field(
+        default_factory=list
+    )  # 1단계만 (EvalKit 이 확인)
+    max_clarifications: int | None = None  # 1단계만 — 진행자 보기의 max_questions 와 같은 값
+
+
 class KitImages(Schema):
     candidate: str = Field(pattern=IMAGE_ID)
     grader: str = Field(pattern=IMAGE_ID)
@@ -236,6 +276,10 @@ class EvalKit(PackageHeader):
     accepted_designs: list[AcceptedDesign] = Field(min_length=1)
     behavioral_anchors: BehavioralAnchors | None = None
     follow_up_questions: list[str] = Field(default_factory=list)
+    stage1: KitStage | None = (
+        None  # 1단계(구현) 진단 기준 — 기능형 명세의 observables·artifacts·clarifications
+    )
+    stage2: KitStage | None = None  # 2단계(디버깅) 진단 기준 — 명세 debug_stage (없는 과제는 None)
     target_competencies: list[TargetCompetency] = Field(min_length=1)
     verification: dict[
         str, VerifySummary
@@ -254,6 +298,7 @@ class EvalKit(PackageHeader):
         unknown = sorted({cid for c in self.cases for cid in c.competency_ids} - known)
         if unknown:
             raise ValueError(f"케이스 competency_ids 가 대상 역량에 없다: {unknown}")
+        self._check_stages(traps)
         if "starter-only" not in self.verification:
             raise ValueError("verification 에 starter-only(시작 코드 그대로) 결과가 없다")
         if not self.mock:
@@ -262,3 +307,33 @@ class EvalKit(PackageHeader):
             if missing:
                 raise ValueError(f"승인자 판단이 없는 검토 표시: {missing}")
         return self
+
+    def _check_stages(self, case_traps: set[str]) -> None:
+        """과정 기준의 참조 — 명세 생성 검증(spec/feature.py)과 같은 단계별 규칙. 진행자 기록은 단계마다 따로 맞춰 보므로
+        한 단계의 관찰 항목은 그 단계의 자료·질문만 가리킨다. 함정은 케이스의 것과 1단계 목록(명세의 traps 전부 —
+        변별 못 해 채점에서 뺀 케이스의 함정도 남는다)에서 찾는다."""
+        s1, s2 = self.stage1, self.stage2
+        if s1 is not None and (missing := sorted(case_traps - set(s1.trap_ids))):
+            raise ValueError(f"stage1 trap_ids 에 케이스의 함정이 없다: {missing}")
+        known = case_traps | (set(s1.trap_ids) if s1 is not None else set())
+        if s2 is not None and (s2.clarifications or s2.max_clarifications is not None):
+            raise ValueError("stage2 에 추가 질문이 있다 — 질문은 1단계에만")
+        for name, s in (("stage1", s1), ("stage2", s2)):
+            if s is None:
+                continue
+            mats = {m.artifact_id for m in s.materials}
+            asks = {c.clarification_id for c in s.clarifications}
+            refs = [*s.trap_ids, *(t for c in s.clarifications for t in c.reveals)]
+            for o in s.observables:
+                if o.kind == "requests_artifact" and o.value not in mats:
+                    raise ValueError(
+                        f"{name} 관찰 항목이 이 단계에 없는 자료를 가리킨다: {o.value}"
+                    )
+                if o.kind == "asks_clarification" and o.value not in asks:
+                    raise ValueError(
+                        f"{name} 관찰 항목이 이 단계에 없는 질문을 가리킨다: {o.value}"
+                    )
+                if o.kind == "catches_trap":
+                    refs.append(o.value)
+            if bad := sorted(set(refs) - known):
+                raise ValueError(f"{name} 이 키트에 없는 함정을 가리킨다: {bad}")

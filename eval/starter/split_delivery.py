@@ -32,6 +32,9 @@ from typing import Any
 
 import yaml
 
+from task_spec.schemas.domain import TaskItem
+from task_spec.starter.kit import kit_stages
+
 ROOT = Path(__file__).resolve().parents[2]
 MOCK = {"mock": True, "approval": "none", "note": "승인되지 않은 평가용 명세로 만든 목 판"}
 PLATFORM = "linux/amd64"
@@ -125,6 +128,8 @@ def main() -> None:
     t = next(x for x in m["tasks"] if x["common_id"] == a.task and x["revision"] == a.revision)
     run = Path(a.runs) / t["source_build"]
     task = json.loads((run / "task.json").read_text("utf-8"))
+    # 과정 기준은 명세를 읽자마자 — 현재 스키마에 맞지 않는 명세면 이미지 저장 전에 멈춘다 (반쪽 묶음 방지)
+    stage1, stage2 = kit_stages(TaskItem.model_validate(task))
     template_dir = ROOT / "templates" / t["template_ref"].replace("@", "/")
     reasons = {
         r["code"]: r["description"]
@@ -231,6 +236,9 @@ def main() -> None:
             "accepted_designs": task.get("accepted_designs", []),
             "behavioral_anchors": task.get("behavioral_anchors"),
             "follow_up_questions": task.get("follow_up_questions", []),
+            # 과정 평가 기준 — 단계별 관찰 항목·자료 역할·질문이 단서가 되는 함정 (진행자 기록과 맞춰 본다)
+            "stage1": stage1.model_dump(mode="json") if stage1 else None,
+            "stage2": stage2.model_dump(mode="json") if stage2 else None,
             "target_competencies": [
                 {"competency_id": x["competency_id"], "label": x["label"]}
                 for x in task.get("target_competencies", [])
