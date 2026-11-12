@@ -166,7 +166,7 @@ class Podman:
     def __call__(
         self, *args: str, log: Path | None = None, timeout: int = 3600, check: bool = True
     ) -> str:
-        cmd = ["podman", *self.flags, *args]
+        cmd = self.argv(*args)
         if log is None:
             res = subprocess.run(cmd, env=self.env, capture_output=True, text=True, timeout=timeout)
             if check and res.returncode != 0:
@@ -182,10 +182,14 @@ class Podman:
             raise RuntimeError(f"{' '.join(args[:3])} 실패 (로그 {log})")
         return ""
 
+    def argv(self, *args: str) -> list[str]:
+        """이 저장소로 부르는 podman 명령줄."""
+        return ["podman", *self.flags, *args]
+
     def run(self, *args: str, timeout: int) -> subprocess.CompletedProcess[str]:
         """`podman run …` — 결과를 그대로 돌려준다 (실패해도 예외 없음, 검증이 종료 코드를 본다)."""
         return subprocess.run(
-            ["podman", *self.flags, "run", *args],
+            self.argv("run", *args),
             env=self.env,
             capture_output=True,
             text=True,
@@ -193,24 +197,28 @@ class Podman:
         )
 
 
-def tree_sha256(root: Path) -> str:
+def _files_sha256(base: Path, files: list[Path]) -> str:
+    """파일 목록 해시 — 파일마다 (base 기준 경로 + NUL + 내용 sha256), 주어진 순서대로."""
     h = hashlib.sha256()
-    for p in sorted(x for x in root.rglob("*") if x.is_file()):
+    for p in files:
         h.update(
-            str(p.relative_to(root)).encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest()
+            str(p.relative_to(base)).encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest()
         )
     return h.hexdigest()
+
+
+def _files_under(root: Path) -> list[Path]:
+    return sorted(p for p in root.rglob("*") if p.is_file())
+
+
+def tree_sha256(root: Path) -> str:
+    """응시 작업 경로 해시 — 모든 파일 (schemas/package.py `tree_sha256`)."""
+    return _files_sha256(root, _files_under(root))
 
 
 def grader_sha256(kdir: Path) -> str:
     """채점용 내용 해시 — 숨은 overlay + config.json (Containerfile·라벨 제외, schemas/package.py `grader_sha256`)."""
-    h = hashlib.sha256()
-    files = sorted(p for p in (kdir / "overlay").rglob("*") if p.is_file()) + [kdir / "config.json"]
-    for p in files:
-        h.update(
-            str(p.relative_to(kdir)).encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest()
-        )
-    return h.hexdigest()
+    return _files_sha256(kdir, [*_files_under(kdir / "overlay"), kdir / "config.json"])
 
 
 def candidate_tree(t: Template, item: TaskMaterial, dest: Path) -> None:
@@ -254,11 +262,16 @@ def grader_overlay(t: Template, item: TaskMaterial, dest: Path) -> dict[str, Any
     write_overlay(item.hidden, dest)
     if item.public is not None:
         write_overlay(item.public, dest)
-    m = t.manifest
-    if is_python(m):
+    if is_python(t.manifest):
         return py_config(t, item)
-    if not is_java(m):
-        return node_config(t, item)
+    if is_java(t.manifest):
+        return java_config(t, item)
+    return node_config(t, item)
+
+
+def java_config(t: Template, item: TaskMaterial) -> dict[str, Any]:
+    """Java grade 설정 (image_grade) — 판정은 JUnit 테스트 클래스 이름 → 케이스 id (`classes`)로 결과를 찾는다."""
+    m = t.manifest
     classes = case_ids(item.hidden, m.hidden_rules.case_id_pattern)
     cases = _hidden_cases(item)
     public = item.public
@@ -342,25 +355,32 @@ def labels(d: dict[str, Any]) -> list[str]:
     return [f"LABEL {k}={json.dumps(str(v), ensure_ascii=False)}" for k, v in d.items()]
 
 
+def _layer_files(tar: tarfile.TarFile, layer: str) -> list[str]:
+    """묶음 안 레이어 하나(tar)의 파일 경로들."""
+    with tarfile.open(fileobj=tar.extractfile(layer)) as lt:  # type: ignore[arg-type]
+        return [m.name for m in lt.getmembers() if m.isfile()]
+
+
+def _forbidden_in_layers(tar: tarfile.TarFile, layers: list[str], t: Template) -> list[str]:
+    """레이어마다 금지 경로 — 런타임 경로(scan_skip)는 뺀다. 위 레이어에서 지워도 아래에 남으므로 레이어 단위로 본다."""
+    rules, skip = candidate_layer_rules(t), stack_for(t).scan_skip
+    bad: list[str] = []
+    for layer in layers:
+        bad += forbidden_in([p for p in _layer_files(tar, layer) if not p.startswith(skip)], rules)
+    return sorted(set(bad))
+
+
 def scan_candidates(archive: Path, targets: dict[str, Template]) -> dict[str, list[str]]:
-    """저장한 묶음에서 응시용 이미지의 레이어마다 파일 이름을 꺼내 금지 경로를 찾는다 (위 레이어에서 지워도 아래에 남으므로 레이어 단위).
-    targets: 응시용 이미지 이름 → 그 과제의 템플릿 (금지 경로는 템플릿 manifest 에서)."""
-    names = list(targets)
+    """저장한 묶음에서 응시용 이미지의 레이어마다 파일 이름을 꺼내 금지 경로를 찾는다.
+    targets: 응시용 이미지 이름 → 그 과제의 템플릿 (금지 경로는 템플릿 manifest 에서). 다른 이미지(채점용)는 보지 않는다."""
     out: dict[str, list[str]] = {}
     with tarfile.open(archive) as tar:
         manifest = json.loads(tar.extractfile("manifest.json").read())  # type: ignore[union-attr]
         for entry in manifest:
             tags = entry.get("RepoTags") or []
-            name = next((n for n in names if any(tag.startswith(n) for tag in tags)), None)
-            if name is None:
-                continue
-            rules, skip = candidate_layer_rules(targets[name]), stack_for(targets[name]).scan_skip
-            bad: list[str] = []
-            for layer in entry["Layers"]:
-                with tarfile.open(fileobj=tar.extractfile(layer)) as lt:  # type: ignore[arg-type]
-                    paths = [m.name for m in lt.getmembers() if m.isfile()]
-                bad += forbidden_in([p for p in paths if not p.startswith(skip)], rules)
-            out[name] = sorted(set(bad))
+            name = next((n for n in targets if any(tag.startswith(n) for tag in tags)), None)
+            if name is not None:
+                out[name] = _forbidden_in_layers(tar, entry["Layers"], targets[name])
     return out
 
 

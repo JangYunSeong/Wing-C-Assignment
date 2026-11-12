@@ -43,7 +43,7 @@ from task_spec.starter.templates import Template
 from task_spec.starter.verify import tools
 from task_spec.starter.verify.workspace import CI_ENV, assemble, run_logged, write_overlay
 
-# 응시용·채점용 이미지의 Node 기반과 같게 (build_mock_images 가 이 값을 쓴다)
+# 응시용·채점용 이미지의 Node 기반과 같게 (starter/images.py 의 NODE 스택이 이 값을 쓴다)
 NODE_IMAGE = "docker.io/library/node:22-bookworm-slim"
 
 
@@ -97,16 +97,12 @@ def run_node(
     # `:z` 는 호스트 파일의 보안 라벨을 바꾸므로 쓰지 않고, 이 컨테이너만 라벨 분리를 끈다 (SELinux 가 없는 서버에서는 영향 없음).
     full += ["--security-opt", "label=disable"]
     full += [] if network else ["--network", "none"]
-    full += [x for k, v in node_env_vars().items() for x in ("-e", f"{k}={v}")]
+    full += [x for k, v in CI_ENV.items() for x in ("-e", f"{k}={v}")]
     full += [x for p in paths for x in ("-v", f"{p}:{p}")]
     code, seconds = run_logged([*full, image, *cmd], cwd, log, timeout)
     if code is None:  # 시간 초과 — 클라이언트만 끊겨 컨테이너가 남지 않게
         subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)
     return code, seconds
-
-
-def node_env_vars() -> dict[str, str]:
-    return dict(CI_ENV)
 
 
 def tsc_errors(log_text: str, limit: int = 20) -> list[CompileError]:

@@ -17,12 +17,14 @@ import subprocess
 import tarfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from task_spec.schemas.build_record import BuildRecord, StarterFile
 from task_spec.schemas.package import ArtifactFile, ArtifactRole, ImageArchive, VerifySummary
-from task_spec.starter.images import TaskMaterial
 from task_spec.starter.store import archive_name, role_dir, sha256sums
+
+if TYPE_CHECKING:  # 타입만 — 묶음·평가 키트 쪽이 이미지 만들기·검증기를 불러오지 않게
+    from task_spec.starter.images import TaskMaterial
 
 # 채점 결과 파일(result.json)의 칸 — 채점용 descriptor 의 `result` 계약
 RESULT_FIELDS = ["common_id", "revision", "setup", "seconds", "cases", "summary", "report_path"]

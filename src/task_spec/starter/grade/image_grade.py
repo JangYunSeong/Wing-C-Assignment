@@ -70,7 +70,7 @@ def run_tests(cfg: dict, log: Path) -> tuple[int | None, float]:
 
 def junit(results: Path, classes: dict[str, str]) -> list[dict]:
     """클래스마다 결과 하나 (첫 실패를 대표로) — gradle_verify.junit_results 와 같은 판정."""
-    out = []
+    out: list[dict[str, str | None]] = []
     for xml in sorted(results.glob("TEST-*.xml")):
         root = ET.parse(xml).getroot()
         classname = root.get("name", xml.stem)
@@ -96,15 +96,14 @@ def junit(results: Path, classes: dict[str, str]) -> list[dict]:
             continue
         kind, message = first
         reason = REASON.search(message)
-        out.append(
-            {
-                "group": group,
-                "name": name,
-                "result": "ASSERT" if kind.rsplit(".", 1)[-1] in ASSERTION else "HARNESS_ERR",
-                "reason": reason.group(1) if reason else None,
-                "message": " ".join(message.split())[:400],
-            }
-        )
+        row: dict[str, str | None] = {
+            "group": group,
+            "name": name,
+            "result": "ASSERT" if kind.rsplit(".", 1)[-1] in ASSERTION else "HARNESS_ERR",
+            "reason": reason.group(1) if reason else None,
+            "message": " ".join(message.split())[:400],
+        }
+        out.append(row)
     return out
 
 

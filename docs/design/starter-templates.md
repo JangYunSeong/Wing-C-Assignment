@@ -394,7 +394,7 @@ templates/<직군>/<스택>/CURRENT
    묶음은 한 벌). 응시용: 네트워크 없이 기존 테스트 7개 통과, 레이어 금지 경로 0. 채점용(네트워크 없음): 시작 코드 숨은 0/3·공개 0/2, 허용 구현 숨은 3/3·공개 2/2,
    흔한 구현 공개 2/2·숨은 0/3(late_data_missed·duplicate_counted·partial_output_visible) — 개발 서버 검증기와 케이스·사유 단위로 같음. 채점 6~21초.
    이미지(2026-11-09): Python 응시용·채점용 — 런타임 python:3.11-slim-bookworm, 템플릿 층에 uv.lock 그대로 만든 /opt/venv(PATH 앞),
-   grade 는 image_grade_py.py(개발 서버 Python 검증기와 같은 판정 코드 한 벌, 채점 대상·설정 파일도 python_verify 에서).
+   grade 는 image_grade_py.py(Python 검증기와 같은 판정 코드 한 벌, 채점 대상·설정 파일도 검증기 `starter/verify/python.py` 에서).
    배관 확인(알파 3회차 빌드 사본 — failed 라 전달물 아님): 응시용 오프라인 기존 테스트 통과, 채점 결과가 개발 서버 검증기와 케이스 단위로 같음,
    응시용 레이어 금지 경로 0, 이미지 각 약 428 MB. 성공 빌드가 나오면 build_mock_images --run 으로 전달용을 만든다.
 7. DBA PostgreSQL.
