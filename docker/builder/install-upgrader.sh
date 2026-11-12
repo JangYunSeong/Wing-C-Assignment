@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # builder 자동 업그레이드 설치 (docs/deploy.md 2-10) — task-builder 사용자로 **처음 한 번**. 배포 사용자가 deliver.sh --setup 으로
-# 받는 폴더의 setup/ 에 넣어 둔 파일을 쓴다:  sh /srv/task-spec/builder-inbox/setup/install-upgrader.sh
+# 받는 폴더의 setup/ 에 넣어 둔 파일을 쓴다:  bash /srv/task-spec/builder-inbox/setup/install-upgrader.sh
 set -euo pipefail
 SRC=$(cd "$(dirname "$0")" && pwd)
 BIN="$HOME/builder-bin"
