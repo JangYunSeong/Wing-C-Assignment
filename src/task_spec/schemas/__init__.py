@@ -45,6 +45,11 @@ from task_spec.schemas.build import (
     TaskContract,
     UiElement,
 )
+from task_spec.schemas.build_approval import (
+    BuildApprovalDecision,
+    BuildApprovalResult,
+    BuildApprovalState,
+)
 from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
 from task_spec.schemas.domain import (
@@ -119,6 +124,7 @@ from task_spec.schemas.ingest import (
     SectionHeader,
 )
 from task_spec.schemas.judge_overlap import JudgeOverlapInput, JudgeOverlapOutput, OverlapVerdict
+from task_spec.schemas.package import ReviewDecision
 from task_spec.schemas.postings import (
     AnalyzedLine,
     Candidate,
@@ -179,6 +185,10 @@ from task_spec.schemas.verify_report import (
 )
 
 __all__ = [
+    "BuildApprovalDecision",
+    "BuildApprovalResult",
+    "BuildApprovalState",
+    "ReviewDecision",
     "CompileError",
     "ResultClass",
     "TargetRun",

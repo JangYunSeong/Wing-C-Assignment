@@ -72,3 +72,71 @@ async def test_cancelled_query_does_not_break_later_requests(test_db_url: str) -
 
         assert await cp.aget_tuple(cfg) is None
         assert await _ping(cp)
+
+
+async def test_build_approval_roundtrip_on_postgres(test_db_url: str) -> None:
+    """빌드 승인 그래프 (#130) — 실제 체크포인터로 interrupt → (새 그래프 인스턴스 = 재시작) → 판단이 빠진 resume(다시 기다림)
+    → 승인. State 의 승인 결정·판단 모델이 직렬화 허용 목록을 지나 저장·복원되는지 본다. 가상 과제만."""
+    import uuid
+    from datetime import UTC, datetime
+
+    from task_spec.graph.build_approval import build_approval_graph, outcome_key, thread_id
+    from task_spec.schemas.build_record import README_PATH, StarterFile
+    from task_spec.schemas.package import ReviewDecision, flag_id
+    from task_spec.spec.store import CommonKey, CommonTaskStore
+    from task_spec.starter.store import PgBuildStore
+    from tests.spec.test_store_pg import _task
+    from tests.starter.test_build_store import FLAG, H_OLD, _artifact, _outcome
+
+    common = await CommonTaskStore.open(test_db_url)
+    store = await PgBuildStore.open(test_db_url)
+    key = CommonKey(f"test-{uuid.uuid4().hex[:8]}", "onto-test", "draft_task@1")
+    row = await common.save_draft(key, _task(), [])
+    b = await store.new_build(row.id, "onto-test")
+    await store.set_status(b.build_id, "generating")
+    await store.put_readme(StarterFile.of(b.build_id, "readme", README_PATH, "# 가상"))
+    await store.save_outcome(b.build_id, _outcome(H_OLD))
+    await store.set_status(b.build_id, "verifying")
+    b = await store.set_status(b.build_id, "review")
+    for role in ("candidate", "grader"):
+        await store.put_artifact(_artifact(b.build_id, role, H_OLD))  # type: ignore[arg-type]
+    cfg = {"configurable": {"thread_id": thread_id(b)}}
+    good = {
+        "status": "approved",
+        "reviewer": "가상승인자",
+        "at": datetime(2026, 11, 12, tzinfo=UTC).isoformat(),
+        "decisions": [
+            ReviewDecision(
+                flag_id=flag_id(FLAG), flag=FLAG, verdict="accepted_risk", reviewer="가상승인자"
+            ).model_dump(mode="json")
+        ],
+    }
+    async with make_checkpointer(kind="postgres", conn_string=test_db_url) as cp:
+        try:
+            first = await build_approval_graph(store, cp).ainvoke(
+                {"build_id": b.build_id, "outcome_key": outcome_key(b)}, cfg
+            )
+            assert first["__interrupt__"]
+            graph2 = build_approval_graph(store, cp)  # 재시작 뒤
+            await graph2.ainvoke(Command(resume={**good, "decisions": []}), cfg)
+            snap = await graph2.aget_state(cfg)
+            assert snap.next == ("build_approval",)
+            final = await graph2.ainvoke(Command(resume=good), cfg)
+            assert final["result"] == "approved"
+            assert final["decision"].decisions[0].verdict == "accepted_risk"  # 모델로 복원
+            done = await store.get(b.build_id)
+            assert done is not None and done.status == "approved"
+        finally:
+            await cp.adelete_thread(thread_id(b))
+            async with store._pool.connection() as conn:
+                for sql in (
+                    "DELETE FROM public.build_artifact WHERE build_id = %s",
+                    "DELETE FROM public.starter_file WHERE build_id = %s",
+                    "DELETE FROM public.common_task_build WHERE id = %s",
+                ):
+                    await conn.execute(sql, (b.build_id,))  # type: ignore[arg-type]
+                await conn.execute(
+                    "DELETE FROM public.common_task WHERE posting_id = %s", (key.posting_id,)
+                )
+            await store.close()
+            await common.close()
