@@ -1,5 +1,9 @@
 """반입 묶음을 받는 곳별로 나눈다 — 응시용·채점용 이미지 tar 와 평가 키트 (이슈 #85 P6, 목 판).
 
+2026-11-12: 응시용·채점용은 적재(import_mock_builds)가 빌드 저장소 묶음(`<images_root>/<build_id>/<역할>/`)에 스키마로 검증해 둔 것을
+그대로 복사하고, 평가 키트는 `EvalKit` 모델로 만들어 검증한 뒤 쓴다 — 예전에는 세 파일을 dict 로 다시 만들어 build_id·grader_sha256
+이 빠지고 숨김 수용 기준에 스키마 밖 칸(items·faults)이 들어가 평가 쪽이 스키마로 읽으면 거부됐다. 묶음이 없으면 먼저 적재한다.
+
 build_mock_images 의 통합 묶음(images.tar 에 응시용·채점용 12개, manifest.json 에 trap_id·intended_reason, samples/ 에 단언
 문구)을 그대로 보내면 응시 쪽에 채점 정보가 넘어간다. 이 스크립트는 로컬 podman 저장소의 이미지를 다시 빌드하지 않고
 역할마다 따로 저장(zstd -3)하고 json·SHA256SUMS 를 붙인다 — image_id 가 바뀌지 않는다.
@@ -25,6 +29,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
@@ -33,11 +38,17 @@ from typing import Any
 import yaml
 
 from task_spec.schemas.domain import TaskItem
+from task_spec.schemas.package import (
+    CandidateDescriptor,
+    EvalKit,
+    GraderDescriptor,
+    KitAcceptance,
+    KitCase,
+    KitImages,
+)
 from task_spec.starter.kit import kit_stages
 
 ROOT = Path(__file__).resolve().parents[2]
-MOCK = {"mock": True, "approval": "none", "note": "승인되지 않은 평가용 명세로 만든 목 판"}
-PLATFORM = "linux/amd64"
 
 
 def sha256(path: Path) -> str:
@@ -111,25 +122,138 @@ def write_role(d: Path, info: dict[str, Any], json_name: str) -> None:
     os.chmod(d, 0o700)
 
 
+def find_build(images_root: Path, common_id: str, tree: str, grader: str) -> Path:
+    """적재한 빌드 묶음 — 같은 시작 코드(tree_sha256)·같은 채점 내용(grader_sha256)의 `<common_id>-b<n>` 폴더 (마지막 것)."""
+    found: list[Path] = []
+    for d in sorted(images_root.glob(f"{common_id}-b*")):
+        cj, gj = d / "candidate" / "candidate.json", d / "grader" / "grader.json"
+        if not (cj.is_file() and gj.is_file()):
+            continue
+        c, g = json.loads(cj.read_text("utf-8")), json.loads(gj.read_text("utf-8"))
+        if c.get("tree_sha256") == tree and g.get("grader_sha256") == grader:
+            found.append(d)
+    if not found:
+        raise SystemExit(
+            f"{common_id}: 이 이미지(tree {tree[:12]}·grader {grader[:12]})로 적재한 빌드 묶음이 {images_root} 에 없다 — "
+            "먼저 import_mock_builds 로 적재한다"
+        )
+    return found[-1]
+
+
+def copy_role(src: Path, dst: Path) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+    for p in sorted(src.iterdir()):
+        if p.is_file():
+            shutil.copy2(p, dst / p.name)
+            os.chmod(dst / p.name, 0o600)
+    os.chmod(dst, 0o700)
+    lines = (dst / "SHA256SUMS").read_text("utf-8").splitlines()
+    for line in lines:  # 복사본이 저장소 묶음과 같은지
+        digest, name = line.split(maxsplit=1)
+        if sha256(dst / name.strip()) != digest:
+            raise SystemExit(f"{dst / name}: SHA256SUMS 와 다르다")
+
+
+def build_kit(
+    t: dict[str, Any],
+    task: dict[str, Any],
+    cand: CandidateDescriptor,
+    grad: GraderDescriptor,
+    reasons: dict[str, str],
+    build_flags: list[str],
+) -> EvalKit:
+    """평가 키트 — 스키마 모델로 만들어 검증한다 (빠진 칸·스키마 밖 칸이 있으면 쓰기 전에 멈춤)."""
+    # import_mock_builds 가 이 모듈(save_image 등)을 import 하므로 여기서
+    from eval.starter.import_mock_builds import merged_flags, summaries
+
+    item = TaskItem.model_validate(task)
+    stage1, stage2 = kit_stages(item)
+    traps = {x.trap_id: x for x in item.traps}
+    header = cand.model_dump(
+        include={
+            "mock",
+            "approval",
+            "note",
+            "common_id",
+            "revision",
+            "build_id",
+            "template_ref",
+            "template_sha256",
+            "ontology_version",
+            "tree_sha256",
+            "platform",
+            "title",
+        }
+    )
+    hidden = [x for x in t["grader"]["cases"] if x.get("kind") == "hidden"]
+    return EvalKit(
+        **header,
+        images=KitImages(candidate=cand.image.image_id, grader=grad.image.image_id),
+        grader_sha256=grad.grader_sha256,
+        cases=[
+            KitCase(
+                id=x["id"],
+                trap_id=x.get("trap_id") or "",
+                intended_reason=x.get("intended_reason") or "",
+                reason_description=reasons.get(x.get("intended_reason") or "", ""),
+                hidden_requirement=(
+                    traps[x["trap_id"]].description if x.get("trap_id") in traps else ""
+                ),
+            )
+            for x in hidden
+        ],
+        # 숨김 수용 기준은 스키마 칸만 — 실패 지정(items·faults)은 채점용 이미지 안에서 처리된다
+        acceptance_hidden=[
+            KitAcceptance(ac_id=a.ac_id, trap_id=a.trap_id, text=a.text)
+            for a in item.acceptance_hidden
+        ],
+        accepted_designs=list(item.accepted_designs),
+        behavioral_anchors=item.behavioral_anchors,
+        follow_up_questions=list(item.follow_up_questions),
+        stage1=stage1,
+        stage2=stage2,
+        target_competencies=list(item.target_competencies),
+        verification=summaries(t["verification"]),
+        verification_note=(
+            "starter-only = 시작 코드 그대로, naive-all = 흔한 구현, d* = 허용 설계별 참조 구현 (참조 구현 자체는 넣지 않음)"
+        ),
+        review_flags=merged_flags(item.review_flags, build_flags),
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
     ap.add_argument(
         "--runs",
         required=True,
-        help="build_mock_images 에 넘긴 빌드 폴더들의 상위 (task.json·contract.json)",
+        help="build_mock_images 에 넘긴 빌드 폴더들의 상위 (task.json·report.json)",
     )
     ap.add_argument("--task", required=True, help="common_id")
     ap.add_argument("--revision", type=int, required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--images-root", default="data/images", help="적재한 빌드 묶음 (Settings.images_root)"
+    )
+    ap.add_argument(
+        "--builds", default="data/eval/build", help="알파 결과 상위 (손 예시 루프의 원래 report)"
+    )
     a = ap.parse_args()
 
     m = json.loads(Path(a.manifest).read_text("utf-8"))
     t = next(x for x in m["tasks"] if x["common_id"] == a.task and x["revision"] == a.revision)
     run = Path(a.runs) / t["source_build"]
     task = json.loads((run / "task.json").read_text("utf-8"))
-    # 과정 기준은 명세를 읽자마자 — 현재 스키마에 맞지 않는 명세면 이미지 저장 전에 멈춘다 (반쪽 묶음 방지)
-    stage1, stage2 = kit_stages(TaskItem.model_validate(task))
+    src = find_build(
+        Path(a.images_root),
+        a.task,
+        t["candidate"]["labels"]["tree_sha256"],
+        t["grader"]["grader_sha256"],
+    )
+    cand = CandidateDescriptor.model_validate_json(
+        (src / "candidate" / "candidate.json").read_text("utf-8")
+    )
+    grad = GraderDescriptor.model_validate_json((src / "grader" / "grader.json").read_text("utf-8"))
     template_dir = ROOT / "templates" / t["template_ref"].replace("@", "/")
     reasons = {
         r["code"]: r["description"]
@@ -137,119 +261,17 @@ def main() -> None:
             "failure_reasons"
         ]
     }
-    key = f"{a.task}-r{a.revision}"
-    base = Path(a.out) / key
-    for role in ("candidate", "grader", "eval_kit"):
-        (base / role).mkdir(parents=True, exist_ok=True)
-    trace = {
-        "common_id": a.task,
-        "revision": a.revision,
-        "template_ref": t["template_ref"],
-        "ontology_version": t["candidate"]["labels"].get("ontology_version"),
-        "tree_sha256": t["candidate"]["labels"].get("tree_sha256"),
-        "platform": PLATFORM,
-    }
+    from eval.starter.import_mock_builds import build_flags_of
 
-    c = t["candidate"]
-    cimg = save_image(c["name"], c["image_id"], base / "candidate" / f"{key}-candidate.tar.zst")
-    (base / "candidate" / "README.md").write_text(
-        extract_readme(c["image_id"], c["workspace"]), "utf-8"
-    )
-    write_role(
-        base / "candidate",
-        {
-            **MOCK,
-            **trace,
-            "role": "candidate",
-            "title": t["title"],
-            "image": cimg,
-            "workspace": c["workspace"],
-            "readme": "README.md",  # 이미지 안 <workspace>/README.md 와 같은 본문
-            "run": f"podman run -it --name <응시자> {c['name']} bash",
-            # 숨은 테스트 실행 명령(hidden_test)은 빼고 응시자가 쓰는 명령만
-            "commands": {k: v for k, v in c["commands"].items() if k != "hidden_test"},
-            "load": f"podman load -i {cimg['file']}",
-        },
-        "candidate.json",
-    )
+    # 키트를 먼저 만들어 검증 — 맞지 않으면 아무것도 쓰지 않고 멈춘다 (반쪽 묶음 방지)
+    kit = build_kit(t, task, cand, grad, reasons, build_flags_of(run, Path(a.builds)))
 
-    g = t["grader"]
-    gimg = save_image(g["name"], g["image_id"], base / "grader" / f"{key}-grader.tar.zst")
-    grade = f"podman run --rm --network none -v <제출물>:/submission:ro,z -v <결과>:/out:z {g['name']} grade"
-    write_role(
-        base / "grader",
-        {
-            **MOCK,
-            **trace,
-            "role": "grader",
-            "image": gimg,
-            "load": f"podman load -i {gimg['file']}",
-            "grade": grade,
-            "grade_without_selinux_relabel": grade.replace(":ro,z", ":ro")
-            .replace(":/out:z", ":/out")
-            .replace("--network none", "--network none --security-opt label=disable"),
-            "network": "none (필수)",
-            "timeout_s": g["timeout_s"],
-            "result": {
-                "path": "/out/result.json",
-                "fields": [
-                    "common_id",
-                    "revision",
-                    "setup",
-                    "seconds",
-                    "cases",
-                    "summary",
-                    "report_path",
-                ],
-                "case_fields": ["id", "trap_id", "kind", "passed", "reason", "intended_reason"],
-                "note": "result.json 에 trap_id·intended_reason·실패 메시지가 들어 있다 — 채점·평가 쪽 권한으로만 다룬다",
-            },
-            "case_ids": [x["id"] for x in g["cases"]],
-            "acceptance_check": "시작 코드(응시용 이미지의 /workspace)를 제출물로 grade → setup == 'ok' 이고 숨은 케이스 0/N",
-        },
-        "grader.json",
-    )
-
-    hidden = [x for x in g["cases"] if x.get("kind") == "hidden"]
-    traps = {x["trap_id"]: x for x in task.get("traps", [])}
-    write_role(
-        base / "eval_kit",
-        {
-            **MOCK,
-            **trace,
-            "role": "eval_kit",
-            "title": t["title"],
-            "images": {"candidate": cimg["image_id"], "grader": gimg["image_id"]},
-            "cases": [
-                {
-                    "id": x["id"],
-                    "trap_id": x.get("trap_id"),
-                    "intended_reason": x.get("intended_reason"),
-                    "reason_description": reasons.get(x.get("intended_reason") or ""),
-                    "hidden_requirement": (traps.get(x.get("trap_id") or "") or {}).get(
-                        "description"
-                    ),
-                }
-                for x in hidden
-            ],
-            "acceptance_hidden": task.get("acceptance_hidden", []),
-            "accepted_designs": task.get("accepted_designs", []),
-            "behavioral_anchors": task.get("behavioral_anchors"),
-            "follow_up_questions": task.get("follow_up_questions", []),
-            # 과정 평가 기준 — 단계별 관찰 항목·자료 역할·질문이 단서가 되는 함정 (진행자 기록과 맞춰 본다)
-            "stage1": stage1.model_dump(mode="json") if stage1 else None,
-            "stage2": stage2.model_dump(mode="json") if stage2 else None,
-            "target_competencies": [
-                {"competency_id": x["competency_id"], "label": x["label"]}
-                for x in task.get("target_competencies", [])
-            ],
-            "verification": {k: v["summary"] for k, v in t["verification"].items()},
-            "verification_note": "starter-only = 시작 코드 그대로, naive-all = 흔한 구현, d* = 허용 설계별 참조 구현 (참조 구현 자체는 넣지 않음)",
-            "review_flags": task.get("review_flags", []),
-        },
-        "kit.json",
-    )
-    print(f"→ {base}")
+    base = Path(a.out) / f"{a.task}-r{a.revision}"
+    copy_role(src / "candidate", base / "candidate")
+    copy_role(src / "grader", base / "grader")
+    (base / "eval_kit").mkdir(parents=True, exist_ok=True)
+    write_role(base / "eval_kit", kit.model_dump(mode="json"), "kit.json")
+    print(f"→ {base}  (빌드 {cand.build_id})")
     for role in ("candidate", "grader", "eval_kit"):
         for p in sorted((base / role).iterdir()):
             print(f"   {role}/{p.name}  {p.stat().st_size / 1e6:.1f} MB")
