@@ -142,6 +142,13 @@ class BuildRuleViolation(DomainError):
     status_code = 409
 
 
+class BuildApprovalInvalid(DomainError):
+    """빌드 승인 그래프가 resume 값을 받지 않고 다시 기다린다 — 사유는 검토 표시 판단·저장소 규칙 (원문 없음)."""
+
+    code = "build_approval_invalid"
+    status_code = 422
+
+
 class InvalidUpload(DomainError):
     code = "invalid_upload"
     status_code = 422

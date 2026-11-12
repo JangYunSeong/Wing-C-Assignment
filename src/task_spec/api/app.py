@@ -17,6 +17,7 @@ from task_spec.api.launcher import RunLauncher
 from task_spec.api.routers import builds, health, postings, runs, ui
 from task_spec.config import Settings, get_settings
 from task_spec.graph import build_graph, make_checkpointer
+from task_spec.graph.build_approval import build_approval_graph
 from task_spec.llm.factory import build_llm_client
 from task_spec.logging_setup import configure_logging
 from task_spec.nodes.ingest import FileIngestor
@@ -83,6 +84,8 @@ def create_app(
                 feature_task_default=app.state.settings.feature_task_default,
             )
             app.state.launcher = RunLauncher(app.state.graph)
+            # 빌드(시작 코드) 승인 — 실행 그래프와 같은 체크포인터, thread 는 빌드·결과마다 (#130)
+            app.state.build_approval = build_approval_graph(app.state.builds, cp)
             try:
                 yield
             finally:

@@ -27,6 +27,8 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 | `GET` | `/runs/{run_id}/events` | SSE. 노드 진행·interrupt 발생 이벤트 |
 | `POST` | `/runs/{run_id}/approve` | `ApprovalDecision` 로 `Command(resume=...)`. 승인 대기 상태가 아니면 `409` |
 | `GET` | `/runs/{run_id}/spec` | 확정 명세 (승인된 경우만, 아니면 `404`) |
+| `GET` | `/builds/{build_id}/approval` | 빌드(시작 코드) 승인 (#130) — review 빌드면 빌드 승인 그래프 thread(`build-<build_id>-<결과 키>`)를 시작해 interrupt 까지, 검토 표시·사유. 끝난 빌드는 결과 |
+| `POST` | `/builds/{build_id}/approve` | `BuildApprovalDecision` 으로 resume 만. review 가 아니면 `409`, 그래프가 다시 기다리면(판단 누락·저장소 규칙) `422` + 사유 |
 | `GET` | `/healthz` | 프로세스·Postgres 연결·온톨로지 산출물 버전 (키 값은 노출하지 않고 설정 여부만) |
 | `GET` | `/postings?q=` | 공고 찾기 — 회사·직무명·id·직군 이름으로 임시 공고와 온톨로지 공고(기본 시범만, `pilot_only`), 최대 `limit` 건. 검색어는 공백으로 나눠 AND, LIKE 특수문자는 글자 그대로 [제안: 2026-11-04] |
 | `GET` | `/postings/{id}` | 공고 프로필 — 임시 공고(`prov-…`)와 온톨로지 공고 모두 (`#` 이 든 id 는 URL 인코딩) |

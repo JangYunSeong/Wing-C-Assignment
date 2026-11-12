@@ -1,5 +1,9 @@
 """공통 과제 빌드·전달 묶음 조회 API (이슈 #85) [제안] + 과제 생성 요청 (#128).
 
+GET  /builds/{build_id}/approval  : 빌드(시작 코드) 승인 (#130) — review 빌드면 승인 thread 를 시작(interrupt 까지)하고 검토 표시·사유를,
+                                   끝난 빌드면 결과(approved·rejected)를 준다. 시작은 승인이 아니다 (`POST /runs` 와 같은 자리)
+POST /builds/{build_id}/approve   : 승인·반려 — 그래프 resume 만 (불변식 9). 판단이 빠진 표시·저장소 규칙 위반이면 그래프가 다시 기다리고
+                                   422 + 사유. 묶음을 approved 로 다시 쓰고 평가 키트를 만드는 일은 builder [확정: 2026-11-12 사용자, ③ A]
 POST /common-tasks/{common_id}/builds : 과제 생성 요청 — 명세 승인과 과제 생성은 따로다 [확정: 2026-11-12 사용자].
                                    큐에 넣기만 한다 (API 는 빌드하지 않음, builder 가 가져감). approved·기능형 공통 과제만(아니면 409),
                                    진행 중 빌드가 있으면 새로 만들지 않고 그 빌드를 돌려준다 (200, 새로 만들면 202).
@@ -27,21 +31,27 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Path, Query, Response
+from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from task_spec.api.deps import BuildsDep
+from task_spec.api.deps import BuildApprovalDep, BuildsDep
 from task_spec.api.errors import (
+    BuildApprovalInvalid,
     BuildNotFound,
     BuildRuleViolation,
     CasesNotAvailable,
     CommonTaskNotFound,
+    ErrorResponse,
     FacilitatorNotAvailable,
     ReadmeNotAvailable,
 )
+from task_spec.graph.build_approval import outcome_key, thread_id
 from task_spec.schemas.build import BuildStatus
+from task_spec.schemas.build_approval import BuildApprovalDecision, BuildApprovalState
 from task_spec.schemas.build_record import TARGET_NAME, BuildRecord, Delivery, DeliveryTarget
 from task_spec.schemas.package import (
     BUILD_ID,
@@ -120,6 +130,20 @@ class ReadmeView(BaseModel):
 _README_READABLE: tuple[BuildStatus, ...] = ("review", "approved", "published")
 
 
+class BuildApprovalView(BaseModel):
+    """빌드 승인 화면 — 검토 표시(문장·판단)와 대기 상태. 숨은 테스트·참조 구현 본문은 없다 (테스트 정보는 /cases)."""
+
+    build_id: str
+    status: BuildStatus  # 빌드 상태
+    state: Literal[
+        "awaiting", "approved", "rejected", "closed"
+    ]  # 승인 대기·승인됨·반려됨·그 밖에 끝남
+    flags: list[FlagView] = Field(default_factory=list)
+    error: str | None = None  # 다시 기다리는 사유 (판단이 빠진 표시·저장소 규칙)
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+
+
 class BuildRequestIn(BaseModel):
     requested_by: str = Field(min_length=1, max_length=80)  # 요청한 사람 (승인자 이름과 같은 칸)
 
@@ -174,6 +198,95 @@ async def list_builds(
     builds = await store.builds(common_id) if common_id else await store.recent(limit)
     labels = await store.task_labels({b.common_id for b in builds})
     return [_summary(b, labels.get(b.common_id)) for b in builds]
+
+
+def _pending(snapshot: Any) -> dict[str, Any] | None:
+    for task in snapshot.tasks:
+        for itr in task.interrupts:
+            if isinstance(itr.value, dict):
+                return itr.value
+    return None
+
+
+def _closed_view(b: BuildRecord) -> BuildApprovalView:
+    verdicts = {d.flag_id: d.verdict for d in b.review_decisions}
+    flags = [
+        FlagView(flag_id=flag_id(f), text=f, verdict=verdicts.get(flag_id(f)))
+        for f in (b.outcome.review_flags if b.outcome else [])
+    ]
+    if b.status in ("approved", "published"):
+        state: Literal["approved", "rejected", "closed"] = "approved"
+    elif b.status == "failed" and (b.error or "").startswith("승인자 반려"):
+        state = "rejected"
+    else:
+        state = "closed"
+    return BuildApprovalView(
+        build_id=b.build_id,
+        status=b.status,
+        state=state,
+        flags=flags,
+        error=b.error if state == "rejected" else None,
+        approved_by=b.approved_by,
+        approved_at=b.approved_at,
+    )
+
+
+async def _approval_view(graph: Any, b: BuildRecord, start: bool) -> BuildApprovalView | None:
+    """review 빌드의 승인 thread — 없으면(start) 시작해 interrupt 까지. 기다리는 중이 아니면 None."""
+    cfg = {"configurable": {"thread_id": thread_id(b)}}
+    snap = await graph.aget_state(cfg)
+    if not snap.values and start:
+        state = BuildApprovalState(build_id=b.build_id, outcome_key=outcome_key(b))
+        await graph.ainvoke(state.model_dump(), cfg)
+        snap = await graph.aget_state(cfg)
+    payload = _pending(snap)
+    if payload is None:
+        return None
+    return BuildApprovalView(
+        build_id=b.build_id,
+        status=b.status,
+        state="awaiting",
+        flags=[FlagView(flag_id=f["flag_id"], text=f["text"]) for f in payload.get("flags", [])],
+        error=payload.get("error"),
+    )
+
+
+@router.get("/builds/{build_id}/approval")
+async def get_build_approval(
+    build_id: BuildIdPath, store: BuildsDep, graph: BuildApprovalDep
+) -> BuildApprovalView:
+    b = await _build(store, build_id)
+    if b.status != "review" or b.outcome is None:
+        return _closed_view(b)
+    view = await _approval_view(graph, b, start=True)
+    if view is None:  # thread 가 끝났는데 빌드는 그대로 — 다른 요청이 처리 중이거나 낡은 thread
+        raise BuildRuleViolation(f"{build_id}: 승인 대기 중이 아니다 — 다시 열어 보세요")
+    return view
+
+
+@router.post("/builds/{build_id}/approve", responses={422: {"model": ErrorResponse}})
+async def approve_build(
+    build_id: BuildIdPath,
+    body: BuildApprovalDecision,  # TODO(auth): reviewer 는 인증 전까지 요청 본문에서 받는다
+    store: BuildsDep,
+    graph: BuildApprovalDep,
+) -> BuildApprovalView:
+    """그래프 resume 만 한다. 승인·반려가 끝나면 결과, 그래프가 다시 기다리면 422 + 사유."""
+    b = await _build(store, build_id)
+    if b.status != "review" or b.outcome is None:
+        raise BuildRuleViolation(f"{build_id}: review 상태에서만 승인·반려 (지금 {b.status})")
+    if await _approval_view(graph, b, start=True) is None:
+        raise BuildRuleViolation(f"{build_id}: 승인 대기 중이 아니다")
+    cfg: RunnableConfig = {"configurable": {"thread_id": thread_id(b)}}
+    await graph.ainvoke(Command(resume=body.model_dump(mode="json")), cfg)
+    after = await _build(store, build_id)
+    if after.status == "review":
+        waiting = await _approval_view(graph, after, start=False)
+        raise BuildApprovalInvalid(
+            (waiting.error if waiting is not None else None)
+            or "승인이 적용되지 않았다 — 다시 열어 보세요"
+        )
+    return _closed_view(after)
 
 
 @router.post(
