@@ -120,6 +120,66 @@ nginx 설정(`docker/nginx/nginx.conf`, HTTP 단계는 `nginx.http.conf`) 요점
 `run.sh` 가 만드는 설정 조각(upstream·빈 허용 목록)은 `/etc/task-spec/nginx/` 에 둔다 — `/tmp` 에 두면 재부팅 뒤 재시작이 실패한다.
 `TASK_NGINX_NETWORK=bridge` 는 예전 방식(`task-net`, 포트 전달) — 접속자 IP 를 모르게 되므로 쓰지 않는다.
 
+### 2-7. 과제 전달 묶음 폴더 (`IMAGES_DIR`) — #115 2-a
+
+과제 묶음(응시용·채점용 이미지 tar, 설명 파일)은 **호스트 사용자**(적재 스크립트, 나중에 builder #129)가 쓰고, API(#116 전달)가 읽는다.
+그래서 `task_data` 볼륨이 아니라 호스트 디렉터리에 두고, API 에는 **같은 절대 경로로 읽기 전용** 마운트한다 (`docker/api/run.sh`).
+
+- 묶음 파일은 소유자 전용(파일 0600·폴더 0700)으로 쓴다 — 채점용에는 숨은 테스트가 들어 있다.
+- rootless podman 에서 API 컨테이너의 app(uid 10001)은 기본 매핑이면 호스트 하위 uid(예: 110000)가 되어 이 파일을 못 읽는다.
+  `run.sh` 는 rootless 면 `--userns=keep-id:uid=10001,gid=10001` 로 app 을 호스트 사용자로 맞춘다 (런타임 runc 라 keep-groups 는 못 쓰고,
+  SELinux 가 꺼져 있어 라벨 옵션은 필요 없다 — 2026-11-12 운영 서버 확인).
+- keep-id 로 바꾸면 `task_data` 볼륨(지원자 데이터)의 기존 파일 주인(호스트 하위 uid)이 컨테이너 안에서 app 이 아니게 된다 →
+  **한 번** 볼륨 주인을 호스트 사용자로 옮긴다. 주인이 맞지 않으면 `run.sh` 가 기동을 거부한다.
+
+처음 한 번 (운영 서버, 배포 사용자로 — 디렉터리 만들기만 sudo):
+
+```bash
+# 0) 지금 상태 기록 (되돌릴 때 비교용)
+podman exec task-api ls -ld /data /data/* | head
+vol=$(podman volume inspect task_data --format '{{.Mountpoint}}'); stat -c '%u %a %n' "$vol"
+
+# 1) 묶음 디렉터리 — 배포 사용자 소유, 다른 사용자 접근 없음
+sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 700 /srv/task-spec
+install -d -m 700 /srv/task-spec/images
+
+# 2) API 를 멈추고 기존 묶음을 옮긴다 (레포 data/images/<build_id>/ — 빌드 저장소에는 경로가 아니라 파일 이름·해시만 있어 옮겨도 된다)
+podman rm -f task-api
+mv <레포>/data/images/* /srv/task-spec/images/          # 다른 파일시스템이면 cp -a 후 sha256sum -c 로 확인하고 지운다
+for d in /srv/task-spec/images/*/*/; do (cd "$d" && sha256sum -c --quiet SHA256SUMS) || echo "불일치: $d"; done
+
+# 3) task_data 볼륨 주인을 호스트 사용자로 (unshare 안의 0 = 호스트 사용자) — 한 번만
+podman unshare chown -R 0:0 "$vol"
+
+# 4) 설정 — API env 와 호스트 .env(적재 스크립트가 읽음)에 같은 경로, 따옴표 없이
+echo 'IMAGES_DIR=/srv/task-spec/images' >> docker/api/.env
+#   레포 .env 의 IMAGES_DIR 도 같은 값으로 (주석 해제)
+
+# 5) 기동
+TASK_API_IMAGE=task-api:<버전> docker/api/run.sh
+```
+
+확인:
+
+```bash
+podman exec task-api sh -c 'id; ls -ld /data; ls /srv/task-spec/images | head'          # uid=10001, /data 읽힘, 묶음 목록
+podman exec task-api python -c "import json,glob; f=sorted(glob.glob('/srv/task-spec/images/*/candidate/candidate.json'))[0]; print(json.load(open(f))['build_id'])"
+podman exec task-api sh -c 'touch /srv/task-spec/images/x' && echo "쓰기 되면 안 됨" || echo "읽기 전용 ok"
+curl -s http://127.0.0.1:8001/healthz     # database ok
+# 실행 하나 (가상 지원서) — /data 에 업로드가 써지는지: §3 의 POST /runs
+```
+
+되돌리기 (keep-id 이전으로):
+
+```bash
+podman rm -f task-api
+podman unshare chown -R 10001:10001 "$vol"     # 볼륨 주인을 기본 매핑의 app 으로
+# 이전 버전의 run.sh(keep-id 없음)로 기동. 묶음은 /srv 에 그대로 두되 API 는 못 읽는다 (#116 전)
+```
+
+builder(#129)가 다른 호스트 사용자로 쓰게 되면 소유자 전용 권한으로는 API 가 못 읽는다 — 그때(2-b) 권한 모드를 0640/0750 으로 바꾸고
+기본 ACL(`u:<배포 사용자>:rX`)을 건다. 0600 으로 chmod 하면 ACL 마스크가 비어 ACL 이 꺼지므로 둘을 같이 바꾼다.
+
 ## 3. 확인
 
 ```bash
@@ -144,6 +204,7 @@ TASK_API_IMAGE=task-api:<새 버전> docker/api/run.sh
 ```
 
 DB·`task_data` 볼륨은 그대로 남는다. 새 테이블은 앱이 기동할 때 만든다.
+2-7 이전 버전에서 올라올 때는 2-7 의 1)~4) 를 먼저 한다 (`run.sh` 가 볼륨 주인이 맞지 않으면 기동을 거부한다). 2-7 이후 버전에서 그 이전으로 내릴 때는 2-7 의 되돌리기.
 
 ## 5. 정해야 할 것 [미정]
 
