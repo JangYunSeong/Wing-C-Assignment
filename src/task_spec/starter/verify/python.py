@@ -1,4 +1,4 @@
-"""개발 서버 Python verifier — 데이터(Python) 템플릿 대상을 조립해 컴파일 확인 → pytest 를 돌리고 `VerifyReport` 로 (평가 전용).
+"""Python verifier — 데이터(Python) 템플릿 대상을 조립해 컴파일 확인 → pytest 를 돌리고 `VerifyReport` 로 (알파·builder 공용, #126).
 
 `GradleVerifier`·`NodeVerifier` 와 같은 자리·같은 인터페이스(compile_tests · compile_overlays · verify):
 템플릿 project/ + 오버레이(+ 숨은·공개 테스트면 잠긴 하네스·자체 점검)를 채점용 이미지와 같은 순서로 조립하고, 대상마다
@@ -7,9 +7,9 @@
 2. 기존 테스트 — 지원자 pytest 설정(pyproject, tests/) → group existing.
 3. 채점 테스트 — 채점 설정(`commands.hidden_test`, grading/harness/grader-pytest.ini) → 자체 점검·숨은 케이스·공개 테스트.
 
-판정 함수는 채점용 이미지의 grade(eval/starter/image_grade_py.py)와 같은 코드 한 벌이다.
-의존성: 템플릿 uv.lock 으로 한 번 만든 가상 환경을 모든 대상이 쓴다 (data/.py-envs/<템플릿>@v<n>-<lock 해시>/, git 밖 —
-환경 변수 PY_ENV_DIR 로 바꿀 수 있다). 2026-11-09 데이터 템플릿.
+판정 함수는 채점용 이미지의 grade(starter/grade/image_grade_py.py)와 같은 코드 한 벌이다.
+의존성: 템플릿 uv.lock 으로 한 번 만든 가상 환경을 모든 대상이 쓴다 (<BUILD_TOOLS_DIR>/.py-envs/<템플릿>@v<n>-<lock 해시>/, git 밖 —
+환경 변수 PY_ENV_DIR 로 바꿀 수 있다, verify/tools.py). 2026-11-09 데이터 템플릿.
 """
 
 from __future__ import annotations
@@ -24,15 +24,13 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from eval.starter import image_grade_py as judge
-from eval.starter.gradle_verify import assemble, write_overlay
-from eval.starter.node_verify import run_logged
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
+from task_spec.starter.grade import image_grade_py as judge
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
+from task_spec.starter.verify import tools
+from task_spec.starter.verify.workspace import assemble, run_logged, write_overlay
 
-ROOT = Path(__file__).resolve().parents[2]
-PY_CACHE = ROOT / "data" / ".py-envs"
 GRADING_INI = "grading/harness/grader-pytest.ini"
 GRADING_ROOTDIR = "grading/harness"
 COMPILE_PATHS = ("pipeline", "tests", "scripts")  # 문법 확인 대상 (있는 것만)
@@ -45,7 +43,10 @@ def python_for(t: Template, timeout: int = 1800) -> Path:
         return Path(env) / "bin" / "python"
     lock = t.project / "uv.lock"
     digest = hashlib.sha256(lock.read_bytes()).hexdigest()[:10]
-    d = PY_CACHE / f"{t.manifest.template_id.replace('/', '__')}@v{t.manifest.version}-{digest}"
+    d = (
+        tools.py_cache()
+        / f"{t.manifest.template_id.replace('/', '__')}@v{t.manifest.version}-{digest}"
+    )
     py = d / "venv" / "bin" / "python"
     if (d / ".installed").is_file() and py.is_file():
         return py

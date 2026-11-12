@@ -1,4 +1,4 @@
-"""채점용 이미지의 grade 스크립트 (eval/starter/image_grade.py) — 제출물 정리·판정. 가상 데이터만, Gradle 없이."""
+"""채점용 이미지의 grade 스크립트 (task_spec/starter/grade/image_grade.py) — 제출물 정리·판정. 가상 데이터만, Gradle 없이."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from eval.starter import image_grade
+from task_spec.starter.grade import image_grade
 
 XML = """<?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="{cls}" tests="1">

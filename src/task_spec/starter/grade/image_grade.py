@@ -5,7 +5,7 @@
 
 /submission(응시 작업 경로 사본)을 복사해 잠긴 파일은 템플릿 원본으로 되돌리고, 채점 자리(reserved)에 지원자가 둔 파일은 지운 뒤
 숨은·공개 테스트와 하네스를 얹어 오프라인 Gradle 로 돌린다. 결과는 /out/result.json + JUnit 보고서·로그.
-판정은 개발 서버 검증기(eval/starter/gradle_verify.py)와 같다. 표준 라이브러리만 쓴다 (이미지 안에서 돈다).
+판정은 Gradle 검증기(task_spec/starter/verify/gradle.py)와 같다. 표준 라이브러리만 쓴다 (이미지 안에서 돈다).
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def run_tests(cfg: dict, log: Path) -> tuple[int | None, float]:
 
 def junit(results: Path, classes: dict[str, str]) -> list[dict]:
     """클래스마다 결과 하나 (첫 실패를 대표로) — gradle_verify.junit_results 와 같은 판정."""
-    out = []
+    out: list[dict[str, str | None]] = []
     for xml in sorted(results.glob("TEST-*.xml")):
         root = ET.parse(xml).getroot()
         classname = root.get("name", xml.stem)
@@ -96,15 +96,14 @@ def junit(results: Path, classes: dict[str, str]) -> list[dict]:
             continue
         kind, message = first
         reason = REASON.search(message)
-        out.append(
-            {
-                "group": group,
-                "name": name,
-                "result": "ASSERT" if kind.rsplit(".", 1)[-1] in ASSERTION else "HARNESS_ERR",
-                "reason": reason.group(1) if reason else None,
-                "message": " ".join(message.split())[:400],
-            }
-        )
+        row: dict[str, str | None] = {
+            "group": group,
+            "name": name,
+            "result": "ASSERT" if kind.rsplit(".", 1)[-1] in ASSERTION else "HARNESS_ERR",
+            "reason": reason.group(1) if reason else None,
+            "message": " ".join(message.split())[:400],
+        }
+        out.append(row)
     return out
 
 

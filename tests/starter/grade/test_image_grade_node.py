@@ -1,4 +1,4 @@
-"""채점용 이미지의 Node grade (eval/starter/image_grade_node.py) — 제출물 정리·결과 모양. 가상 데이터만, node 없이."""
+"""채점용 이미지의 Node grade (task_spec/starter/grade/image_grade_node.py) — 제출물 정리·결과 모양. 가상 데이터만, node 없이."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from eval.starter import image_grade_node as g
+from task_spec.starter.grade import image_grade_node as g
 
 
 def _w(path: Path, text: str = "x") -> None:
@@ -85,53 +85,3 @@ def test_result_maps_config_cases_to_judged_files() -> None:
     )
     assert all(c["reason"] == "compile_error" for c in broken["cases"])
     assert broken["compile_errors"][0]["path"] == "src/App.tsx"
-
-
-def test_mock_image_builder_picks_stack_and_writes_node_grade_config(tmp_path: Path) -> None:
-    """빌드 폴더의 직군으로 템플릿 → 스택(Java/Node), Node grade 설정은 판정에 필요한 명령·배치·케이스를 담는다."""
-    import json
-
-    from eval.starter import build_mock_images as b
-    from task_spec.starter.templates import load_template
-    from tests.starter.test_frontend_template import _contract, _plan
-
-    for sub, ref in (
-        ("sw.frontend", "frontend/react-vite-ts@v12"),
-        ("sw.backend", "backend/java-spring-boot3-jpa@v2"),
-    ):
-        run = tmp_path / sub
-        run.mkdir()
-        (run / "report.json").write_text(json.dumps({"sub": sub}), "utf-8")
-        assert b.template_of(run).manifest.ref == ref
-    hand = tmp_path / "hand"
-    hand.mkdir()
-    (hand / "report.json").write_text("{}", "utf-8")
-    assert b.template_of(hand).manifest.ref.startswith("backend/java")  # 직군 없는 손 예시 루프
-    pinned = tmp_path / "pinned"
-    pinned.mkdir()
-    (pinned / "report.json").write_text(
-        json.dumps({"sub": "sw.backend", "template_pinned": "backend/java-spring-boot3-jpa@v1"}),
-        "utf-8",
-    )
-    assert (
-        b.template_of(pinned).manifest.ref == "backend/java-spring-boot3-jpa@v1"
-    )  # 알파가 고정한 판
-    fe = load_template("frontend/react-vite-ts")
-    assert b.stack_for(fe) is b.NODE and "bookworm" in b.NODE.base
-    cfg = b.node_config(
-        fe,
-        {
-            "common_id": "c",
-            "revision": 1,
-            "plan": _plan(),
-            "contract": _contract(),
-            "public": object(),
-        },
-    )
-    assert cfg["compile_command"] == ["npx", "tsc", "--noEmit"]
-    assert cfg["grading_command"][-1].endswith("vitest.grading.config.ts")
-    assert (
-        cfg["layout"]["cases"] == "src/__grading__/cases"
-        and cfg["layout"]["public"] == "src/__public__"
-    )
-    assert [(c["id"], c["kind"]) for c in cfg["cases"]] == [("hc1", "hidden"), ("pt1", "public")]

@@ -1,6 +1,6 @@
-"""개발 서버 Node verifier — 프론트엔드(TypeScript) 템플릿 대상을 조립해 tsc → vitest 를 돌리고 `VerifyReport` 로 (평가 전용).
+"""Node verifier — 프론트엔드(TypeScript) 템플릿 대상을 조립해 tsc → vitest 를 돌리고 `VerifyReport` 로 (알파·builder 공용, #126).
 
-`GradleVerifier`(eval/starter/gradle_verify.py)와 같은 자리·같은 인터페이스(compile_tests · compile_overlays · verify):
+`GradleVerifier`(verify/gradle.py)와 같은 자리·같은 인터페이스(compile_tests · compile_overlays · verify):
 템플릿 project/ + 오버레이(+ 숨은·공개 테스트면 잠긴 하네스·자체 점검)를 채점용 이미지와 같은 순서로 조립하고, 대상마다
 
 1. 타입 검사 (`commands.test_compile`, tsc) — 오류면 compile_error 로 끝 (Java 의 compileJava 실패와 같은 자리).
@@ -13,7 +13,7 @@ Java 의 "단언이 아닌 예외"와 같은 자리라 수리는 구현끼리 �
 파일 하나 = 결과 하나 (첫 실패를 대표로) — Java 의 테스트 클래스 하나 = 결과 하나와 같다.
 
 의존성: 템플릿 package-lock.json 으로 한 번 설치한 node_modules 를 대상마다 링크한다
-(data/.node-modules/<템플릿>@v<n>-<lock 해시>/, git 밖. 환경 변수 NODE_MODULES_DIR 로 바꿀 수 있다).
+(<BUILD_TOOLS_DIR>/.node-modules/<템플릿>@v<n>-<lock 해시>/, git 밖. 환경 변수 NODE_MODULES_DIR 로 바꿀 수 있다 — verify/tools.py).
 
 Node 는 이미지와 같은 기반 컨테이너(`NODE_IMAGE`, node:22)에서 돌린다 — 설치·tsc·vitest 모두. 조립 폴더와 node_modules 를
 같은 절대 경로로 붙여 링크가 그대로 풀린다. 2026-11-10 프론트 알파: 호스트 Node 24 에서는 jsdom 의 AbortSignal 을 fetch 가
@@ -28,7 +28,6 @@ import json
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import time
 import uuid
@@ -36,21 +35,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from eval.starter import image_grade_node as judge
-from eval.starter.gradle_verify import assemble, write_overlay
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
 from task_spec.starter.conformance import CONFORM_CONFIG
+from task_spec.starter.grade import image_grade_node as judge
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
+from task_spec.starter.verify import tools
+from task_spec.starter.verify.workspace import CI_ENV, assemble, run_logged, write_overlay
 
-ROOT = Path(__file__).resolve().parents[2]
-NODE_CACHE = ROOT / "data" / ".node-modules"
-# 응시용·채점용 이미지의 Node 기반과 같게 (build_mock_images 가 이 값을 쓴다)
+# 응시용·채점용 이미지의 Node 기반과 같게 (starter/images.py 의 NODE 스택이 이 값을 쓴다)
 NODE_IMAGE = "docker.io/library/node:22-bookworm-slim"
-
-
-def node_env() -> dict[str, str]:
-    return os.environ | node_env_vars()
 
 
 def node_modules_for(t: Template, timeout: int = 1800) -> Path:
@@ -61,7 +55,7 @@ def node_modules_for(t: Template, timeout: int = 1800) -> Path:
     lock = t.project / "package-lock.json"
     digest = hashlib.sha256(lock.read_bytes()).hexdigest()[:10]
     name = t.manifest.template_id.replace("/", "__")
-    d = NODE_CACHE / f"{name}@v{t.manifest.version}-{digest}"
+    d = tools.node_cache() / f"{name}@v{t.manifest.version}-{digest}"
     if (d / ".installed").is_file():
         return d / "node_modules"
     d.mkdir(parents=True, exist_ok=True)
@@ -78,29 +72,6 @@ def node_modules_for(t: Template, timeout: int = 1800) -> Path:
         raise RuntimeError(f"npm ci 실패 ({code}) — {d / 'install.log'}")
     (d / ".installed").write_text("", "utf-8")
     return d / "node_modules"
-
-
-def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[int | None, float]:
-    """명령 하나 — 출력은 log 에 덧붙인다. 시간 초과면 프로세스 묶음(vitest 일꾼 포함)을 끊고 None."""
-    start = time.monotonic()
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(f"$ {shlex.join(cmd)}\n")
-        fh.flush()
-        p = subprocess.Popen(
-            list(cmd),
-            cwd=cwd,
-            stdout=fh,
-            stderr=subprocess.STDOUT,
-            env=node_env(),
-            start_new_session=True,
-        )
-        try:
-            code: int | None = p.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            p.wait()
-            code = None
-    return code, time.monotonic() - start
 
 
 def node_image() -> str:
@@ -126,16 +97,12 @@ def run_node(
     # `:z` 는 호스트 파일의 보안 라벨을 바꾸므로 쓰지 않고, 이 컨테이너만 라벨 분리를 끈다 (SELinux 가 없는 서버에서는 영향 없음).
     full += ["--security-opt", "label=disable"]
     full += [] if network else ["--network", "none"]
-    full += [x for k, v in node_env_vars().items() for x in ("-e", f"{k}={v}")]
+    full += [x for k, v in CI_ENV.items() for x in ("-e", f"{k}={v}")]
     full += [x for p in paths for x in ("-v", f"{p}:{p}")]
     code, seconds = run_logged([*full, image, *cmd], cwd, log, timeout)
     if code is None:  # 시간 초과 — 클라이언트만 끊겨 컨테이너가 남지 않게
         subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)
     return code, seconds
-
-
-def node_env_vars() -> dict[str, str]:
-    return {"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"}
 
 
 def tsc_errors(log_text: str, limit: int = 20) -> list[CompileError]:

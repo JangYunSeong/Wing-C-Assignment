@@ -1,12 +1,12 @@
-"""개발 서버 Gradle verifier 의 보고서 읽기 (eval/starter/gradle_verify.py) — 가상 보고서만, Gradle 은 돌리지 않는다."""
+"""개발 서버 Gradle verifier 의 보고서 읽기 (task_spec/starter/verify/gradle.py) — 가상 보고서만, Gradle 은 돌리지 않는다."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from eval.starter.gradle_verify import case_ids, compile_errors, junit_results
 from task_spec.schemas import GeneratedFile
 from task_spec.starter.static_check import Overlay
+from task_spec.starter.verify.gradle import case_ids, compile_errors, junit_results
 
 SUITE = """<?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="{cls}" tests="1" failures="{n}" errors="0">
@@ -79,9 +79,9 @@ async def test_verify_runs_bare_starter_with_hidden_tests_only_when_starter_buil
     tmp_path: Path,
 ) -> None:
     """2026-11-07 알파 테스트: 시작 코드 그대로 + 숨은 테스트를 돌려야 '이미 풀린 과제'를 잡는다 (repair._starter_solves)."""
-    from eval.starter.gradle_verify import GradleVerifier
     from task_spec.schemas import TargetRun
     from task_spec.starter.templates import load_template
+    from task_spec.starter.verify.gradle import GradleVerifier
 
     def overlay(kind: str, label: str = "") -> Overlay:
         return Overlay(kind=kind, files=(GeneratedFile(path="x", content="x"),), label=label)  # type: ignore[arg-type]
@@ -127,7 +127,7 @@ async def test_verify_runs_bare_starter_with_hidden_tests_only_when_starter_buil
 
 def test_boot_cause_is_the_deepest_caused_by(tmp_path: Path) -> None:
     """2026-11-08 알파 4케이스: 수리 요청에 'boot_error' 한 단어만 가 같은 스키마 문법 오류를 되풀이 — 근본 원인 문장을 뽑는다."""
-    from eval.starter.gradle_verify import boot_cause
+    from task_spec.starter.verify.gradle import boot_cause
 
     stack = (
         "java.lang.IllegalStateException: Failed to load ApplicationContext\n"

@@ -1,5 +1,5 @@
 """채점 코드 컴파일 루프 (build.compile_and_fix) — 구현 만들기 전에 숨은·공개 테스트를 컴파일하고 오류를 쓴 생성기에 돌려준다.
-가상 데이터만 — 컴파일러는 가짜 (실제 Gradle 은 eval/starter/gradle_verify.GradleVerifier.compile_tests)."""
+가상 데이터만 — 컴파일러는 가짜 (실제 Gradle 은 task_spec/starter/verify/gradle.GradleVerifier.compile_tests)."""
 
 from __future__ import annotations
 

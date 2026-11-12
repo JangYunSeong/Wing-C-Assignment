@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from eval.starter import image_grade_py as g
+from task_spec.starter.grade import image_grade_py as g
 
 LAYOUT = {"cases": "grading/cases", "selftest": "grading/selftest", "public": "public_tests"}
 XML = """<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">
@@ -89,42 +89,6 @@ def test_prepare_drops_candidate_venv_and_reserved_and_restores_locked(
     assert (work / "pipeline/run.py").read_text() == "job" and not (work / ".venv").exists()
     assert (work / "pyproject.toml").read_text() == "템플릿 원본"
     assert (work / "grading/cases/test_hc1.py").read_text() == "진짜 숨은 테스트"
-
-
-def test_mock_image_builder_python_stack_and_grade_config(tmp_path: Path) -> None:
-    """데이터 직군 → Python 스택(python 3.11 slim-bookworm, /opt/venv), grade 설정은 개발 서버 검증기와 같은 대상·설정 파일."""
-    import json
-
-    from eval.starter import build_mock_images as b
-    from task_spec.starter.templates import load_template
-    from tests.starter.test_data_template import _contract, _plan
-
-    run = tmp_path / "de"
-    run.mkdir()
-    (run / "report.json").write_text(json.dumps({"sub": "data.eng"}), "utf-8")
-    t = b.template_of(run)
-    assert t.manifest.ref == "data/python-duckdb@v1"
-    assert b.stack_for(t) is b.PY and "3.11-slim-bookworm" in b.PY.base
-    assert b.PY.grader_setup == () and b.NODE.grader_setup == (
-        b.PYTHON3,
-    )  # Python 런타임엔 python3 설치 생략
-    assert b.stack_for(load_template("frontend/react-vite-ts")) is b.NODE
-    cfg = b.py_config(
-        t,
-        {
-            "common_id": "c",
-            "revision": 1,
-            "plan": _plan(),
-            "contract": _contract(),
-            "public": object(),
-        },
-    )
-    assert cfg["python"] == "/opt/venv/bin/python" and cfg["template_dir"] == "/workspace"
-    assert cfg["grading_paths"] == ["grading/selftest", "grading/cases", "public_tests"]
-    assert cfg["grading_ini"] == "grading/harness/grader-pytest.ini"
-    assert cfg["layout"] == LAYOUT and "pipeline" in cfg["compile_paths"]
-    assert "uv.lock" in cfg["locked"] and "grading/**" in cfg["reserved"]
-    assert [(c["id"], c["kind"]) for c in cfg["cases"]] == [("hc1", "hidden"), ("pt1", "public")]
 
 
 def test_pytest_collection_syntax_error_is_located_relative_to_the_assembly() -> None:

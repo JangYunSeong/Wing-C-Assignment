@@ -1,9 +1,9 @@
-"""개발 서버 Gradle verifier — Java 템플릿 대상을 조립해 `gradle test` 를 돌리고 `VerifyReport` 로 (평가 전용).
+"""Gradle verifier — Java 템플릿 대상을 조립해 `gradle test` 를 돌리고 `VerifyReport` 로 (알파·builder 공용, #126).
 
 실제 verifier(#55)는 네트워크 없는 채점용 이미지·반복·자원 축소까지 한다 (spec-to-code §7.1). 이것은 그 전에 수리 루프를 실제 빌드로 돌려 보는 대용품이다.
 템플릿 project/ + 오버레이(+ 숨은 테스트면 잠긴 하네스·자체 점검)를 채점용 이미지와 같은 순서로 조립한다.
 
-Gradle 의존성 캐시: 환경 변수 GRADLE_USER_HOME, 없으면 data/.gradle-home (git 밖).
+Gradle 실행 파일·의존성 캐시 경로는 `verify/tools.py` (환경 변수 GRADLE_BIN·GRADLE_USER_HOME·BUILD_TOOLS_DIR).
 """
 
 from __future__ import annotations
@@ -21,43 +21,17 @@ from pathlib import Path
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
+from task_spec.starter.verify import tools
+from task_spec.starter.verify.workspace import assemble, write_overlay
 
-ROOT = Path(__file__).resolve().parents[2]
-GRADLE = ROOT / "data" / "feature_starters" / ".tools" / "dist" / "gradle-8.10.2" / "bin" / "gradle"
 _JAVAC = re.compile(r"^(/\S+\.java):(\d+): error: (.+)$")
 _REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
 _ASSERTION_TYPES = ("AssertionError", "AssertionFailedError", "MultipleFailuresError")
 _BOOT = ("Failed to load ApplicationContext", "ApplicationContext failure threshold")
 
 
-def write_overlay(overlay: Overlay, root: Path) -> None:
-    for f in overlay.files:
-        p = root / f.path
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f.content, "utf-8")
-
-
-def assemble(t: Template, work: Path, *overlays: Overlay) -> None:
-    """템플릿 project/ + 오버레이 (+ 숨은·공개 테스트가 있으면 잠긴 하네스·자체 점검) — 채점용 이미지 조립과 같은 순서.
-    공개 테스트(PublicCase)도 하네스(GraderSupport)를 상속한다 — 2026-11-08: 숨은 테스트일 때만 하네스를 넣어 시작 코드 + 공개 테스트가
-    컴파일되지 않았다 (실제 Gradle 로 확인)."""
-    if work.exists():
-        shutil.rmtree(work)
-    shutil.copytree(t.project, work)
-    hl = t.manifest.hidden_layout
-    if hl is not None and any(o.kind in ("hidden", "public_test") for o in overlays):
-        for sub, dest in (("hidden/harness", hl.harness), ("hidden/selftest", hl.selftest)):
-            for rel in t.files(sub):
-                target = work / dest / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(t.root / sub / rel, target)
-    for o in overlays:
-        write_overlay(o, work)
-
-
 def gradle_env() -> dict[str, str]:
-    home = os.environ.get("GRADLE_USER_HOME") or str(ROOT / "data" / ".gradle-home")
-    return os.environ | {"GRADLE_USER_HOME": home}
+    return os.environ | {"GRADLE_USER_HOME": str(tools.gradle_user_home())}
 
 
 def run_gradle(
@@ -68,7 +42,7 @@ def run_gradle(
     with log.open("w") as fh:
         try:
             proc = subprocess.run(
-                [str(GRADLE), task, "--console=plain", "--no-daemon", "--continue"],
+                [str(tools.gradle_bin()), task, "--console=plain", "--no-daemon", "--continue"],
                 cwd=work,
                 env=gradle_env(),
                 stdout=fh,

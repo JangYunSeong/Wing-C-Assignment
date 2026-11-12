@@ -1,13 +1,16 @@
-"""템플릿 스택에 맞는 개발 서버 verifier — Java 는 Gradle, TypeScript(프론트엔드)는 Node (평가 전용). 2026-11-09 React 템플릿 연결."""
+"""템플릿 스택에 맞는 verifier — Java 는 Gradle, TypeScript(프론트엔드)는 Node, 데이터는 Python.
+
+빌드(`build_and_repair`)의 verifier·compiler 로 쓴다. 2026-11-12 eval/starter 에서 옮김 (#126) — 알파(eval)와 builder(#129)가 같은 코드.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from eval.starter.gradle_verify import GradleVerifier
-from eval.starter.node_verify import NodeVerifier
-from eval.starter.python_verify import PythonVerifier
 from task_spec.starter.templates import Template, is_java, is_python
+from task_spec.starter.verify.gradle import GradleVerifier
+from task_spec.starter.verify.node import NodeVerifier
+from task_spec.starter.verify.python import PythonVerifier
 
 
 def verifier_for(
@@ -19,3 +22,6 @@ def verifier_for(
     if is_python(template.manifest):  # 데이터 템플릿 (2026-11-09)
         return PythonVerifier(template, work, timeout=timeout or 600, keep_code=keep_code)
     return NodeVerifier(template, work, timeout=timeout or 600, keep_code=keep_code)
+
+
+__all__ = ["GradleVerifier", "NodeVerifier", "PythonVerifier", "verifier_for"]

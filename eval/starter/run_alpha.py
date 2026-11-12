@@ -29,11 +29,8 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client, run_one, sample_md
-from eval.starter.gradle_verify import assemble
-from eval.starter.gradle_verify import write_overlay as _write
 from eval.starter.run_generate import PinnedVersions, _run_row, usage_by_prompt, write_rejected
 from eval.starter.run_plan_contract import JAVA
-from eval.starter.verifiers import verifier_for
 from task_spec.config import Settings
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.nodes.starter.generate import BuildInputs, plan_text
@@ -53,6 +50,9 @@ from task_spec.spec.incidents import (
 )
 from task_spec.starter.render import render_readme
 from task_spec.starter.templates import load_template, select_template
+from task_spec.starter.verify import verifier_for
+from task_spec.starter.verify.workspace import assemble
+from task_spec.starter.verify.workspace import write_overlay as _write
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "eval" / "build"

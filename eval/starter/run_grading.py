@@ -28,16 +28,16 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client
-from eval.starter.gradle_verify import write_overlay as _write
 from eval.starter.run_generate import PinnedVersions
 from eval.starter.run_paper import template_for
-from eval.starter.verifiers import verifier_for
 from task_spec.nodes.starter.build import compile_and_fix
 from task_spec.nodes.starter.generate import BuildInputs, GenResult, gen_hidden, gen_public
 from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import CompileError, HiddenPlan, TaskContract, TaskItem
 from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
+from task_spec.starter.verify import verifier_for
+from task_spec.starter.verify.workspace import write_overlay as _write
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "eval" / "build"
