@@ -11,6 +11,7 @@ import asyncio
 import logging
 import signal
 
+from task_spec.builder.finalize import PackageFinalizer
 from task_spec.builder.runner import RunConfig, Worker
 from task_spec.builder.settings import BuilderSettings
 from task_spec.builder.steps import RealSteps
@@ -47,6 +48,7 @@ async def main(once: bool) -> None:
             daily_budget_usd=s.build_daily_budget_usd,
             poll_seconds=s.build_poll_seconds,
             max_attempts=s.build_max_attempts,
+            finalizer=PackageFinalizer(store, s.images_dir.resolve()),
         )
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):

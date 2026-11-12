@@ -338,11 +338,14 @@ function renderRequestAgain(b) {
 /* 큐 (#128) — 생성 요청으로 만든 빌드만: 요청자·단계·시도·비용·실패 사유 */
 function queueLine(b) {
   if (!b.requested_by) return "";
+  const approved = b.status === "approved" || b.status === "published";
   const parts = [`<span>요청 ${esc(b.requested_by)} · ${when(b.requested_at)}</span>`];
   if (b.stage) parts.push(`<span>단계 ${esc(b.stage)}</span>`);
   if (b.attempt > 1) parts.push(`<span>시도 ${b.attempt}회</span>`);
   if (b.cost_usd) parts.push(`<span>비용 $${Number(b.cost_usd).toFixed(2)}</span>`);
   if (b.finished_at) parts.push(`<span>끝 ${when(b.finished_at)}</span>`);
+  // 묶음 확정 (#130) — 승인 뒤 builder 가 descriptor 를 approved 로 다시 쓰고 평가 키트를 등록해야 전달할 수 있다
+  if (approved) parts.push(`<span>${b.packages_final_at ? `묶음 확정 ${when(b.packages_final_at)}` : "묶음 확정 대기 (builder)"}</span>`);
   const err = b.error ? `<p class="bad" style="margin:6px 0 0">${esc(b.error === "superseded" ? "대기 중에 공고의 새 판이 승인되어 만들지 않았습니다 (superseded)" : b.error)}</p>` : "";
   return `<div class="meta">${parts.join("")}</div>${err}`;
 }

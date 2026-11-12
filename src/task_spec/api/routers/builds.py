@@ -93,6 +93,9 @@ class BuildSummary(BaseModel):
     error: str | None = None  # 실패 사유 (원문 없이 짧은 코드·문장)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    packages_final_at: datetime | None = (
+        None  # 묶음 확정 (#130 — builder 가 approved 묶음·평가 키트를 쓴 시각)
+    )
 
 
 class FlagView(BaseModel):
@@ -179,6 +182,7 @@ def _summary(b: BuildRecord, label: TaskLabel | None = None) -> BuildSummary:
         error=b.error,
         started_at=b.started_at,
         finished_at=b.finished_at,
+        packages_final_at=b.packages_final_at,
     )
 
 

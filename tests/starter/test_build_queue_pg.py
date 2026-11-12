@@ -23,6 +23,7 @@ from task_spec.starter.store import (
 )
 from tests.postings.test_postings_pg import _Urls
 from tests.spec.test_store_pg import _task
+from tests.starter.test_build_store import H_OLD, _artifact, _rewritten
 
 pytestmark = pytest.mark.pg
 
@@ -66,6 +67,9 @@ async def env() -> AsyncIterator[Env]:
             ids = (
                 "SELECT b.id FROM public.common_task_build b JOIN public.common_task c "
                 "ON c.id = b.common_id WHERE c.posting_id = %s"
+            )
+            await conn.execute(
+                f"DELETE FROM public.build_artifact WHERE build_id IN ({ids})", (posting,)
             )
             await conn.execute(
                 f"DELETE FROM public.starter_file WHERE build_id IN ({ids})", (posting,)
@@ -190,6 +194,18 @@ async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: En
             )
             failed = await store.fail(b.build_id, "가상 실패")
             assert failed.status == "failed"
+            # 묶음 확정 (#130) — 승인은 API(표 주인)가, 확정은 builder 역할이
+            appr = await _approved_request(env, await env.feature_task(prompt=9))
+            assert appr in [x.build_id for x in await store.pending_finalize()]
+            arts = {x.role: x for x in await store.artifacts(appr)}
+            done = await store.finalize_packages(
+                appr,
+                _rewritten(arts["candidate"]),
+                _rewritten(arts["grader"]),
+                _artifact(appr, "eval_kit", H_OLD),
+            )
+            assert done.packages_final_at is not None
+            assert (await store.note_error(appr, "가상 사유")).error == "가상 사유"
         finally:
             await store.close()
         async with await psycopg.AsyncConnection.connect(url) as c:
@@ -209,3 +225,26 @@ async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: En
             await a.execute(f"REASSIGN OWNED BY {role} TO CURRENT_USER")  # type: ignore[arg-type]
             await a.execute(f"DROP OWNED BY {role}")  # type: ignore[arg-type]
             await a.execute(f"DROP ROLE {role}")  # type: ignore[arg-type]
+
+
+async def _approved_request(env: Env, cid: str) -> str:
+    """생성 요청 → (builder 가 만든 것처럼) review·묶음 → 승인 — 표 주인 저장소로."""
+    from task_spec.schemas.build_record import README_PATH, StarterFile
+    from task_spec.schemas.package import ReviewDecision
+    from tests.starter.test_build_store import FLAG, _outcome
+
+    s = env.store
+    await s.request_build(cid, "가상승인자")
+    await _queue_only(env, cid)
+    b = await s.claim("w-admin", 60, T0)
+    assert b is not None and b.common_id == cid
+    await s.put_readme(StarterFile.of(b.build_id, "readme", README_PATH, "# 가상"))
+    await s.set_status(b.build_id, "verifying")
+    await s.save_outcome(b.build_id, _outcome(H_OLD))
+    await s.set_status(b.build_id, "review")
+    for role in ("candidate", "grader"):
+        await s.put_artifact(_artifact(b.build_id, role, H_OLD))  # type: ignore[arg-type]
+    await s.approve(
+        b.build_id, "가상승인자", T0, [ReviewDecision.of(FLAG, "confirmed", "가상승인자")]
+    )
+    return b.build_id

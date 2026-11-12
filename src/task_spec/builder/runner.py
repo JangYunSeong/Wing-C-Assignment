@@ -88,6 +88,12 @@ class ImagesResult:
     package: object | None = None  # Steps.register 가 쓰는 것 (실제: loader.PackageInputs 재료)
 
 
+class Finalizer(Protocol):
+    """승인된 빌드의 묶음 확정 (#130 ③ A, `builder/finalize.py`)."""
+
+    async def run_pending(self) -> int: ...
+
+
 class Steps(Protocol):
     async def contract(self, job: Job) -> ContractResult: ...
 
@@ -288,7 +294,20 @@ class Worker:
     daily_budget_usd: float
     poll_seconds: float
     max_attempts: int
+    finalizer: Finalizer | None = None  # 승인된 빌드의 묶음 확정 — 새 작업을 가져가기 전마다
     stopping: bool = False
+
+    async def finalize_pending(self) -> None:
+        if self.finalizer is None:
+            return
+        try:
+            n = await self.finalizer.run_pending()
+            if n:
+                logger.info("묶음 확정 %d건", n)
+        except (
+            Exception
+        ) as e:  # 확정 실패가 빌드 큐를 막지 않게 (빌드마다 사유는 finalizer 가 남긴다)
+            logger.error("묶음 확정 처리 실패: %s", type(e).__name__)
 
     async def once(self, now: datetime | None = None) -> BuildRecord | None:
         """가져갈 것이 있으면 하나 처리하고 그 결과, 없으면 None."""
@@ -312,6 +331,9 @@ class Worker:
         for b in await self.store.recover_expired(max_attempts=self.max_attempts):
             logger.warning("죽은 작업 복구: %s → %s", b.build_id, b.status)
         while not self.stopping:
+            await (
+                self.finalize_pending()
+            )  # 승인된 빌드를 먼저 (몇 초, LLM 없음) — 전달이 기다리지 않게
             got = await self.once()
             if once:
                 return

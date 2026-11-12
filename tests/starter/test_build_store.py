@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from task_spec.config import Settings
-from task_spec.schemas.build_record import README_PATH, BuildArtifact, BuildOutcome, StarterFile
+from task_spec.schemas.build_record import (
+    README_PATH,
+    BuildArtifact,
+    BuildOutcome,
+    BuildRecord,
+    StarterFile,
+)
 from task_spec.schemas.package import ArtifactFile, ArtifactRole, ReviewDecision, VerifySummary
 from task_spec.starter.store import (
     BuildRepo,
@@ -57,6 +63,23 @@ def _artifact(
         tree_sha256=tree,
         grader_sha256=tree,
         created_at=AT,
+    )
+
+
+def _rewritten(a: BuildArtifact) -> list[ArtifactFile]:
+    """descriptor 를 다시 쓴 뒤의 파일 목록 — descriptor 해시만 바뀐다 (가상 해시)."""
+    desc = f"{a.role}.json"
+    return [f.model_copy(update={"sha256": "a" * 64}) if f.name == desc else f for f in a.files]
+
+
+async def finalize(store: BuildRepo, bid: str, tree: str) -> BuildRecord:
+    arts = {a.role: a for a in await store.artifacts(bid)}
+    return await store.finalize_packages(
+        bid,
+        _rewritten(arts["candidate"]),
+        _rewritten(arts["grader"]),
+        _artifact(bid, "eval_kit", tree),
+        AT,
     )
 
 
@@ -153,11 +176,15 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
         await store.set_status(bid, "generating")
     with pytest.raises(BuildRuleError, match="수리"):
         await store.reopen(bid)  # 승인된 빌드는 되돌리지 않는다 — 새 빌드로
-    await store.put_artifact(_artifact(bid, "eval_kit", H_NEW))
-
     # 전달 대상: 대상마다 받을 수 있는 역할 하나 (리뷰 #91-2)
     for role in ("candidate", "grader", "eval_kit"):
         await store.add_target(f"{tag}-{role}", role)  # type: ignore[arg-type]
+    with pytest.raises(BuildRuleError, match="묶음 확정 전"):
+        await store.request_delivery(bid, "candidate", f"{tag}-candidate", "operator-fake", AT)
+    # 묶음 확정 (#130 ③ A) — descriptor 를 approved 로 다시 쓴 파일 목록 + 평가 키트
+    await finalize(store, bid, H_NEW)
+    with pytest.raises(BuildRuleError, match="이미 확정"):
+        await finalize(store, bid, H_NEW)
     assert (
         await store.add_target(f"{tag}-grader", "grader")
     ).role == "grader"  # 같은 등록은 그대로
@@ -183,7 +210,10 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
     b = await store.get(bid)
     assert b is not None and b.status == "approved"  # 실패한 전달은 발행이 아니다
 
-    d2 = await store.request_delivery(bid, "grader", f"{tag}-grader", "operator-fake", AT)
+    # 요청 시각을 다르게 — 같은 시각이면 Postgres 가 순서를 정하지 않아 아래 순서 확인이 흔들렸다 (2026-11-12)
+    d2 = await store.request_delivery(
+        bid, "grader", f"{tag}-grader", "operator-fake", AT + timedelta(seconds=1)
+    )
     sent = await store.finish_delivery(d2.delivery_id, True, AT)
     assert sent.status == "sent" and sent.sent_at == AT
     with pytest.raises(BuildRuleError, match="이미 끝난"):
@@ -286,3 +316,72 @@ def test_review_decision_id_must_match_text() -> None:
     d = ReviewDecision.of(FLAG, "confirmed", "reviewer-fake")
     with pytest.raises(ValueError, match="flag_id"):
         ReviewDecision.model_validate({**d.model_dump(), "flag": "문구가 바뀐 표시"})
+
+
+async def _approved(store: InMemoryBuildStore, tree: str = H_NEW) -> str:
+    bid = (await store.new_build("ct-0123456789ab", "onto-test", AT)).build_id
+    await store.set_status(bid, "generating")
+    readme = StarterFile.of(bid, "readme", README_PATH, "# 가상")
+    await store.put_readme(readme)
+    await store.save_outcome(bid, _outcome(tree))
+    await store.set_status(bid, "verifying")
+    await store.set_status(bid, "review")
+    await store.put_artifact(_artifact(bid, "candidate", tree, readme))
+    await store.put_artifact(_artifact(bid, "grader", tree))
+    ok = ReviewDecision.of(FLAG, "confirmed", "reviewer-fake")
+    await store.approve(bid, "reviewer-fake", AT, [ok])
+    return bid
+
+
+async def test_finalize_changes_only_descriptors_and_registers_the_kit() -> None:
+    """확정 때 바뀌어도 되는 것은 descriptor·SHA256SUMS 뿐 — 이미지 tar·README 가 바뀌면 다른 묶음이다."""
+    store = InMemoryBuildStore()
+    bid = await _approved(store)
+    arts = {a.role: a for a in await store.artifacts(bid)}
+    tar = archive_name(bid, "candidate")
+    swapped = [
+        f.model_copy(update={"sha256": "b" * 64}) if f.name == tar else f
+        for f in arts["candidate"].files
+    ]
+    with pytest.raises(BuildRuleError, match="descriptor·SHA256SUMS 말고"):
+        await store.finalize_packages(
+            bid, swapped, arts["grader"].files, _artifact(bid, "eval_kit", H_NEW)
+        )
+    with pytest.raises(BuildRuleError, match="평가 키트 묶음이 아니다"):
+        await store.finalize_packages(
+            bid,
+            _rewritten(arts["candidate"]),
+            _rewritten(arts["grader"]),
+            _artifact(bid, "grader", H_NEW),
+        )
+    with pytest.raises(BuildRuleError, match="현재 결과와 다르다"):
+        await store.finalize_packages(
+            bid,
+            _rewritten(arts["candidate"]),
+            _rewritten(arts["grader"]),
+            _artifact(bid, "eval_kit", H_OLD),
+        )
+    done = await finalize(store, bid, H_NEW)
+    assert done.packages_final_at == AT
+    now = {a.role: a for a in await store.artifacts(bid)}
+    assert set(now) == {"candidate", "grader", "eval_kit"}
+    assert next(f for f in now["candidate"].files if f.name == "candidate.json").sha256 == "a" * 64
+
+
+async def test_finalize_only_after_approval_and_pending_list() -> None:
+    store = InMemoryBuildStore()
+    bid = (await store.new_build("ct-0123456789ab", "onto-test", AT)).build_id
+    with pytest.raises(BuildRuleError, match="approved 빌드만"):
+        await store.finalize_packages(bid, [], [], _artifact(bid, "eval_kit", H_NEW))
+    approved = await _approved(store)
+    assert (
+        await store.pending_finalize() == []
+    )  # 생성 요청으로 만든 빌드만 (eval 적재 빌드는 builder 가 확정하지 않는다)
+    b = await store.get(approved)
+    assert b is not None
+    store._builds[approved] = b.model_copy(update={"requested_at": AT})  # 생성 요청 빌드로
+    assert [x.build_id for x in await store.pending_finalize()] == [approved]
+    await store.note_error(approved, "finalize: 가상 실패")
+    assert (
+        await store.pending_finalize() == []
+    )  # 실패 사유가 남은 것은 사람이 볼 때까지 다시 하지 않는다

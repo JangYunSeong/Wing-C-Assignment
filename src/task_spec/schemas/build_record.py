@@ -88,6 +88,8 @@ class BuildRecord(Schema):
     error: str | None = Field(default=None, max_length=ERROR_MAX)  # 실패 사유 — 원문·생성 코드 없이
     started_at: datetime | None = None  # 처음 가져간 시각
     finished_at: datetime | None = None  # review 또는 failed 가 된 시각
+    # 묶음 확정 (#130 ③ A) — 승인 뒤 builder 가 descriptor 를 approved 로 다시 쓰고 평가 키트를 등록한 시각. 전달은 이것이 있어야
+    packages_final_at: datetime | None = None
 
     @model_validator(mode="after")
     def _ids_match(self) -> BuildRecord:

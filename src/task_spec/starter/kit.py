@@ -21,6 +21,7 @@ from task_spec.schemas.package import (
     KitImages,
     KitMaterial,
     KitStage,
+    ReviewDecision,
     VerifySummary,
 )
 from task_spec.starter.artifacts import merged_flags
@@ -69,6 +70,7 @@ def build_kit(
     verification: dict[str, VerifySummary],
     reasons: Mapping[str, str],
     build_flags: Sequence[str],
+    review_decisions: Sequence[ReviewDecision] = (),
 ) -> EvalKit:
     """평가 키트 — 스키마 모델로 만들어 검증한다 (빠진 칸·스키마 밖 칸이 있으면 쓰기 전에 멈춤).
 
@@ -126,4 +128,7 @@ def build_kit(
             "starter-only = 시작 코드 그대로, naive-all = 흔한 구현, d* = 허용 설계별 참조 구현 (참조 구현 자체는 넣지 않음)"
         ),
         review_flags=merged_flags(task.review_flags, build_flags),
+        review_decisions=list(
+            review_decisions
+        ),  # 승인된(목 아닌) 키트는 표시마다 판단이 있어야 한다
     )
