@@ -31,6 +31,17 @@ RESULT_FIELDS = ["common_id", "revision", "setup", "seconds", "cases", "summary"
 CASE_FIELDS = ["id", "trap_id", "kind", "passed", "reason", "intended_reason", "message"]
 
 
+def file_mode() -> int:
+    """묶음 파일 권한 — 기본 소유자 전용 0600. builder 를 다른 호스트 사용자로 둘 때(#129 2-b) 0640 + 기본 ACL 로 API 가 읽게.
+    chmod 0600 이면 ACL 마스크가 비어 ACL 이 꺼지므로 둘을 같이 바꾼다 (docs/deploy.md 2-8)."""
+    return int(os.environ.get("PACKAGE_FILE_MODE") or "600", 8)
+
+
+def dir_mode() -> int:
+    """묶음 폴더 권한 — 기본 0700, 2-b 에서는 0750."""
+    return int(os.environ.get("PACKAGE_DIR_MODE") or "700", 8)
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -63,7 +74,7 @@ def save_image(name: str, image_id: str, dst: Path) -> dict[str, Any]:
             f"{name}: 다시 load 한 image_id {got} 가 manifest {image_id} 와 다름 ({loaded.stdout.strip()})"
         )
     part.rename(dst)
-    os.chmod(dst, 0o600)
+    os.chmod(dst, file_mode())
     return {
         "file": dst.name,
         "sha256": sha256(dst),
@@ -103,8 +114,8 @@ def write_role(d: Path, descriptor: str, body: str) -> list[ArtifactFile]:
     ]
     (d / "SHA256SUMS").write_text(sha256sums(files), "utf-8")
     for p in d.iterdir():
-        os.chmod(p, 0o600)
-    os.chmod(d, 0o700)
+        os.chmod(p, file_mode())
+    os.chmod(d, dir_mode())
     return files
 
 
@@ -114,8 +125,8 @@ def copy_role(src: Path, dst: Path) -> None:
     for p in sorted(src.iterdir()):
         if p.is_file():
             shutil.copy2(p, dst / p.name)
-            os.chmod(dst / p.name, 0o600)
-    os.chmod(dst, 0o700)
+            os.chmod(dst / p.name, file_mode())
+    os.chmod(dst, dir_mode())
     lines = (dst / "SHA256SUMS").read_text("utf-8").splitlines()
     for line in lines:  # 복사본이 저장소 묶음과 같은지
         digest, name = line.split(maxsplit=1)

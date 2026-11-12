@@ -178,7 +178,63 @@ podman unshare chown -R 10001:10001 "$vol"     # 볼륨 주인을 기본 매핑�
 ```
 
 builder(#129)가 다른 호스트 사용자로 쓰게 되면 소유자 전용 권한으로는 API 가 못 읽는다 — 그때(2-b) 권한 모드를 0640/0750 으로 바꾸고
-기본 ACL(`u:<배포 사용자>:rX`)을 건다. 0600 으로 chmod 하면 ACL 마스크가 비어 ACL 이 꺼지므로 둘을 같이 바꾼다.
+기본 ACL(`u:<배포 사용자>:rX`)을 건다. 0600 으로 chmod 하면 ACL 마스크가 비어 ACL 이 꺼지므로 둘을 같이 바꾼다 (2-8).
+
+### 2-8. 과제 생성 builder (`task-builder`) — #129
+
+명세 승인과 과제 생성은 따로다 — 승인자가 화면에서 "과제 생성"을 누르면 큐(`common_task_build`)에 들어가고, builder 가 하나씩 가져가
+계약 → 시작 코드·테스트 → 응시용·채점용 이미지 → 묶음(승인 전 `approval=pending`)까지 만든다. API 는 빌드하지 않는다.
+
+경계 (#115):
+- **builder 전용 호스트 사용자**(예: `task-builder`)의 rootless podman — 그 사용자로는 task-api·task-db 컨테이너와 `task_data` 볼륨이 보이지 않는다.
+- **builder 전용 DB 역할**(`task_builder`, `docker/builder/db-role.sql`) — 공통 과제 읽기, 빌드 표 쓰기만. 체크포인트(지원자 파생물)에는 권한이 없다.
+  builder 는 표를 만들거나 바꾸지 않는다 (표·칸은 API 가 기동할 때) → **API 를 새 버전으로 먼저** 띄운다.
+- LLM 이 만든 코드는 builder 사용자의 podman 에서 `--network none` 자식 컨테이너로만 돈다 (#127). 이미지에는 JDK·Gradle·Node 가 없다.
+- 묶음은 builder 가 쓰고(권한 0640/0750) API(배포 사용자, keep-id)가 기본 ACL 로 읽는다. 0600 이면 ACL 마스크가 비어 못 읽는다.
+
+처음 한 번 (sudo 가 필요한 줄은 `sudo`):
+
+```bash
+# 1) 전용 사용자 — 로그아웃 뒤에도 소켓·컨테이너가 돌게 linger. 하위 uid 범위가 있어야 rootless podman 이 돈다
+sudo useradd -m -s /bin/bash task-builder
+sudo loginctl enable-linger task-builder
+grep task-builder /etc/subuid /etc/subgid          # 없으면: sudo usermod --add-subuids 200000-265535 --add-subgids 200000-265535 task-builder
+
+# 2) 폴더 — 작업·도구는 builder 소유, 묶음 폴더(2-7)는 배포 사용자 소유 그대로 두고 ACL 로 builder 쓰기 + 배포 사용자 읽기 상속
+sudo install -d -o task-builder -g task-builder -m 700 /srv/task-spec/builder /srv/task-spec/builder/work /srv/task-spec/builder/tools
+sudo setfacl -m u:task-builder:x /srv/task-spec                                  # 지나가기만
+sudo setfacl -m u:task-builder:rwx /srv/task-spec/images
+sudo setfacl -d -m u:task-builder:rwx,u:<배포 사용자>:rx /srv/task-spec/images    # 새 묶음: builder 가 쓰고 배포 사용자(=API)가 읽음
+getfacl /srv/task-spec/images
+
+# 3) DB 역할 (표 주인으로, API 를 새 버전으로 한 번 띄운 뒤) — 비밀번호는 셸 기록에 남지 않게 \password 로
+podman exec -i task_db psql -U task -d task_db < docker/builder/db-role.sql
+podman exec -it task_db psql -U task -d task_db -c '\password task_builder'
+
+# 4) builder 사용자로 — 소켓·이미지·설정 파일·기동 (반입 묶음 폴더를 그 사용자가 읽을 수 있는 곳에 둔다)
+sudo -iu task-builder
+systemctl --user enable --now podman.socket
+podman load -i <반입 묶음>/images.tar                     # task-builder:<버전> (이 사용자 저장소에)
+install -m 600 <반입 묶음>/docker/builder/env.example ~/builder-settings
+vi ~/builder-settings                                     # task_builder 비밀번호·LLM 키·폴더 (따옴표 없이)
+TASK_BUILDER_ENV=~/builder-settings TASK_BUILDER_IMAGE=task-builder:<버전> <반입 묶음>/docker/builder/run.sh
+```
+
+확인:
+
+```bash
+podman logs --tail 20 task-builder                        # "builder 시작 (worker …, 작업당 $0.50, 하루 $5.00)"
+podman ps --format '{{.Names}}'                           # (builder 사용자) task-api·task_db 가 보이지 않아야 함
+# 화면에서 승인된 기능형 공통 과제의 "과제 생성" → 빌드 화면에서 단계(contract·build·images·package) → review
+getfacl /srv/task-spec/images/<build_id>/candidate         # user:<배포 사용자>:r-x, mask::r-x
+podman exec task-api ls /srv/task-spec/images/<build_id>/candidate   # (배포 사용자) API 가 읽힘
+```
+
+- 첫 빌드는 검증용 템플릿 층(Java 약 0.7GB·Python 약 0.5GB)과 Node 의존성 캐시를 builder 사용자 저장소·`/srv/task-spec/builder/tools` 에 만든다 — 몇 분, 그때만 인터넷 필요.
+- 실패한 빌드의 작업 폴더(`/srv/task-spec/builder/work/<build_id>`, 생성 코드 평문 — git·외부 반출 금지)는 원인 확인용으로 남는다. 일주일 지난 것 정리 [제안]:
+  `find /srv/task-spec/builder/work -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} +`
+- 업그레이드: `podman stop task-builder` (지금 작업 뒤 멈춤, 60초 넘으면 강제 — lease 가 지나 다음 기동 때 다시 대기열로) → `podman rm task-builder` → 새 이미지 `podman load` → `run.sh`.
+- 비용 상한(작업당·하루)과 모델은 builder 설정 파일 — 모델을 바꾸면 상한도 같이 올린다.
 
 ## 3. 확인
 

@@ -25,7 +25,8 @@ logger = logging.getLogger("task_spec.builder")
 async def main(once: bool) -> None:
     s = BuilderSettings()  # type: ignore[call-arg]
     configure_logging(s.log_level, s.log_format)
-    store = await PgBuildStore.open(s.database_url.get_secret_value())
+    # 표는 API(표 주인)가 만든다 — builder 전용 DB 역할은 DDL 을 못 돌린다
+    store = await PgBuildStore.open(s.database_url.get_secret_value(), ddl=False)
     try:
         worker = Worker(
             store=store,

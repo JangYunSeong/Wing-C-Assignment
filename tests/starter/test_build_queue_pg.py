@@ -148,3 +148,64 @@ async def test_lease_heartbeat_stage_and_recovery(env: Env) -> None:
         if x.common_id == cid
     ]
     assert (dead.status, dead.error) == ("failed", LEASE_EXPIRED) and dead.finished_at is not None
+
+
+async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: Env) -> None:
+    """builder 전용 DB 역할(docker/builder/db-role.sql) — 큐·빌드 표는 쓰고, DDL·체크포인트(지원자 파생물)는 못 한다 (#129).
+    시험 DB 에 임시 역할로 같은 SQL 을 적용해 본다 (역할은 클러스터 단위라 시험 뒤 지운다)."""
+    import secrets
+    from pathlib import Path
+
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    from task_spec.schemas.build_record import README_PATH, StarterFile
+
+    u = _Urls().test_database_url
+    assert u is not None
+    admin_url = u.get_secret_value()
+    role = f"tb_{uuid.uuid4().hex[:8]}"
+    pw = secrets.token_hex(12)
+    sql = Path("docker/builder/db-role.sql").read_text("utf-8").replace("task_builder", role)
+    async with await psycopg.AsyncConnection.connect(admin_url, autocommit=True) as a:
+        await a.execute(sql)  # type: ignore[arg-type]
+        await a.execute(f"ALTER ROLE {role} PASSWORD '{pw}'")  # type: ignore[arg-type]
+    url = make_conninfo(**{**conninfo_to_dict(admin_url), "user": role, "password": pw})
+    try:
+        cid = await env.feature_task()
+        await env.store.request_build(cid, "가상승인자")  # 생성 요청은 API(표 주인)
+        await _queue_only(env, cid)
+        with pytest.raises(Exception, match="(?i)owner|permission"):
+            await PgBuildStore.open(url)  # DDL — 표 주인이 아니라 못 한다
+        store = await PgBuildStore.open(url, ddl=False)
+        try:
+            b = await store.claim("w-role", 60, T0)
+            assert b is not None and b.common_id == cid
+            assert (
+                await store.task(cid) is not None and (await store.task_labels([cid]))[cid].revision
+            )
+            await store.record_stage(b.build_id, "build", 0.01)
+            await store.put_files(
+                b.build_id, [StarterFile.of(b.build_id, "readme", README_PATH, "# 가상")]
+            )
+            failed = await store.fail(b.build_id, "가상 실패")
+            assert failed.status == "failed"
+        finally:
+            await store.close()
+        async with await psycopg.AsyncConnection.connect(url) as c:
+            for table in (
+                "public.checkpoints",
+                "public.checkpoint_writes",
+                "public.provisional_posting",
+            ):
+                cur = await c.execute("SELECT to_regclass(%s) IS NOT NULL", (table,))
+                row = await cur.fetchone()
+                if row and row[0]:  # 표가 있으면 읽기가 막혀야 한다
+                    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                        await c.execute(f"SELECT 1 FROM {table} LIMIT 1")  # type: ignore[arg-type]
+                    await c.rollback()
+    finally:
+        async with await psycopg.AsyncConnection.connect(admin_url, autocommit=True) as a:
+            await a.execute(f"REASSIGN OWNED BY {role} TO CURRENT_USER")  # type: ignore[arg-type]
+            await a.execute(f"DROP OWNED BY {role}")  # type: ignore[arg-type]
+            await a.execute(f"DROP ROLE {role}")  # type: ignore[arg-type]

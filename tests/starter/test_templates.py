@@ -257,3 +257,20 @@ def test_contract_check_with_real_java_manifest(java) -> None:  # type: ignore[n
         java.manifest,
     )
     assert any("버스트 행 수를 확인할 조절값" in p and "bursts" in p for p in res.problems)
+
+
+def test_templates_dir_can_come_from_the_environment(tmp_path: Path) -> None:
+    """패키지로 설치한 이미지(builder #129)에서는 소스 위치 기준 경로가 맞지 않아 TEMPLATES_DIR 로 준다."""
+    import os
+    import subprocess
+    import sys
+
+    code = "from task_spec.starter import templates as t; print(t.TEMPLATES_ROOT)"
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=os.environ | {"TEMPLATES_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert out == str(tmp_path)

@@ -776,14 +776,29 @@ class PgBuildStore:
         self._pool = pool
 
     @classmethod
-    async def open(cls, conninfo: str) -> PgBuildStore:
+    async def open(cls, conninfo: str, ddl: bool = True) -> PgBuildStore:
+        """ddl=False 면 표를 만들거나 바꾸지 않고 있는지만 본다 — builder 전용 DB 역할은 표 주인이 아니라
+        DDL(ALTER TABLE …)을 못 돌린다 (#129). 표·칸은 API(표 주인)가 기동할 때 만든다."""
         pool = AsyncConnectionPool(
             conninfo, min_size=1, max_size=4, open=False, kwargs={"autocommit": True}
         )
         await pool.open(wait=True)
         async with pool.connection() as conn:
-            await conn.execute(COMMON_TASK_DDL)
-            await conn.execute(DDL)
+            if ddl:
+                await conn.execute(COMMON_TASK_DDL)
+                await conn.execute(DDL)
+            else:
+                try:  # 큐 칸까지 있는지 (#128) — 없으면 API 를 새 버전으로 먼저 띄워야 한다
+                    await conn.execute(
+                        "SELECT requested_at, lease_until, cost_usd FROM public.common_task_build "
+                        "LIMIT 0"
+                    )
+                except Exception as exc:
+                    await pool.close()
+                    raise RuntimeError(
+                        "common_task_build 큐 칸이 없거나 읽을 권한이 없다 — API 를 새 버전으로 먼저 "
+                        "기동하고 builder DB 역할 권한을 확인 (docs/deploy.md 2-8)"
+                    ) from exc
         return cls(pool)
 
     async def close(self) -> None:

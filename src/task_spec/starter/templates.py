@@ -11,6 +11,7 @@ LLM·네트워크 없음. 하는 일
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -20,7 +21,10 @@ import yaml
 
 from task_spec.schemas.template import SlotKind, TemplateManifest
 
-TEMPLATES_ROOT = Path(__file__).resolve().parents[3] / "templates"
+# 레포의 templates/ — 패키지로 설치한 이미지(builder #129)에서는 TEMPLATES_DIR 로 준다
+TEMPLATES_ROOT = Path(
+    os.environ.get("TEMPLATES_DIR") or Path(__file__).resolve().parents[3] / "templates"
+)
 MANIFEST = "manifest.yaml"
 
 
