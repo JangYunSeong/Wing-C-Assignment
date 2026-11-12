@@ -24,6 +24,7 @@ from task_spec.nodes.starter.generate import (
     gen_starter,
     hidden_input,
     naive_input,
+    public_input,
     repair_targets,
     starter_input,
 )
@@ -266,10 +267,18 @@ def test_generator_prompts_assemble_with_compact_schema() -> None:
         "gen_naive": naive_input(b.task, b.contract, b.template, _starter_overlay(), BACKEND_SEED),  # type: ignore[arg-type]
         "gen_accepted": accepted_input(b.task, b.contract, b.template, _starter_overlay(), D1),
     }
+    inputs["gen_public"] = public_input(b.task, b.contract, b.plan, b.template)
     for task, inp in inputs.items():
         t = PROMPTS.get(task)
         prompt = assemble(t, fit_input(inp, t.input_model), ontology_version="v")
         assert "files: [{" in prompt.messages[0].content, task
+        # 허용 설계는 조립된 숨은 테스트 프롬프트에만 — 입력 모델에 있어도 프롬프트 머리말의 스키마에 칸이 없으면
+        # fit_input 이 소리 없이 버린다 (gen_hidden v4: GenHiddenInputV2 라 허용 설계가 빠졌다, 2026-11-12 리뷰)
+        sent = "\n".join(m.content for m in prompt.messages)
+        if task == "gen_hidden":
+            assert D1.summary in sent and D2.summary in sent, task
+        elif task != "gen_accepted":  # gen_accepted 는 자기 설계 1건(D1)만 받는다
+            assert D1.summary not in sent and D2.summary not in sent, task
 
 
 def test_gen_starter_v2_asks_for_independent_existing_tests() -> None:

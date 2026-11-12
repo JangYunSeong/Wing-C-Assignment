@@ -4,7 +4,7 @@
 | 생성기 | 보는 것 | 보지 않는 것 | 산출 kind |
 |---|---|---|---|
 | gen_starter | 계약, 명세 공개 부분, 템플릿 뼈대·쓸 수 있는 경로, 이미 있는 API | HiddenPlan, 숨은 요구, 허용 설계 | starter |
-| gen_hidden | 계약, HiddenPlan, 숨은 요구·숨김 수용 기준, 하네스 API | 시작 코드, 참조 구현 | hidden |
+| gen_hidden | 계약, HiddenPlan, 숨은 요구·숨김 수용 기준, 하네스 API, 허용 설계 요약·조건 | 시작 코드, 참조 구현 | hidden |
 | gen_naive | 계약, 시작 코드, 재료의 흔한 구현(+하나만 놓친 판의 지킬 것) | 숨은 테스트, 허용 설계 | ref_naive |
 | gen_accepted | 계약, 시작 코드, 허용 설계 1건 + 스택 조건 | 숨은 테스트, 다른 허용 설계 | ref_accepted |
 

@@ -1142,6 +1142,10 @@ _RESET = re.compile(r"GraderJdbcHarness\.reset\(\)")
 # 응답이 그 값(들)이어야 한다는 단언 — '성공 아님'(isNotEqualTo·isGreaterThanOrEqualTo…)은 그대로 둔다
 _STATUS_UPPER = re.compile(r"\.(?:isLessThan|isLessThanOrEqualTo|isBetween|isStrictlyBetween)\(")
 _STATUS_IS = re.compile(r"\.(?:isEqualTo|isIn|isOneOf)\(([^()]*)\)")
+# 값과 같다(_STATUS_IS)·위로 막힘(_STATUS_UPPER) 밖의 응답 코드 단언 — '성공이 아님'(isNotEqualTo·아래로 막힘·isNotIn)
+_STATUS_OTHER = re.compile(
+    r"\.(?:isNotEqualTo|isNotIn|isGreaterThan|isGreaterThanOrEqualTo|isNotBetween)\("
+)
 
 
 def _injected_status_asserts(
@@ -1149,7 +1153,9 @@ def _injected_status_asserts(
 ) -> list[str]:
     """저장 실패를 주입한 케이스가 응답 코드를 특정 값·범위로 단정함 — 계약은 저장 실패 때의 응답을 정하지 않는다.
     2026-11-09 알파 (2df170e2): hc2 가 커밋 실패 주입 뒤 `statusCode() < 500` 을 rollback_left_success 사유로 단언해,
-    실패를 그대로 알린(500) 흔한 구현·허용 구현 모두 같은 줄에서 떨어졌다 (두 회차). 계약이 선언한 5xx 와 같다고 보는 것은 둔다."""
+    실패를 그대로 알린(500) 흔한 구현·허용 구현 모두 같은 줄에서 떨어졌다 (두 회차). 계약이 선언한 5xx 와 같다고 보는 것은 둔다.
+    2026-11-12 코드 리뷰(PR #121): '성공이 아님'(isNotEqualTo(200)·isGreaterThanOrEqualTo(400))도 단정이다 — 응답을 먼저 주고 뒤에
+    저장·기록하는 허용 설계는 주입해도 2xx 라 떨어진다. gen_hidden v6 과 같이 응답 코드는 아예 보지 않게 한다."""
     inject = [
         re.compile(p)
         for r in m.failure_reasons
@@ -1178,15 +1184,23 @@ def _injected_status_asserts(
                 )
             ):
                 continue
-            pinned = _STATUS_UPPER.search(stmt) or any(
-                {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))} - declared
+            # 계약이 선언한 5xx 와 같다고만 보는 단언은 둔다 — 그 밖의 값·범위·'성공이 아님'은 모두 단정
+            codes = [
+                {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))}
                 for mt in _STATUS_IS.finditer(stmt)
+            ]
+            declared_only = (
+                bool(codes)
+                and not _STATUS_UPPER.search(stmt)
+                and not _STATUS_OTHER.search(stmt)
+                and all(c and c <= declared for c in codes)
             )
-            if pinned:
+            if not declared_only:
                 out.append(
                     f"숨은 테스트 {f.path} 가 저장 실패를 주입한 요청의 응답 코드를 단정함: {' '.join(stmt.split())[:120]} — "
-                    "계약은 저장 실패 때의 응답을 정하지 않아, 실패를 그대로 알린(5xx) 올바른 구현도 떨어진다. "
-                    "응답은 보지 않거나 '성공이 아님'(isGreaterThanOrEqualTo(400))만 보고, 사유는 기록 단언에 붙인다"
+                    "계약은 저장 실패 때의 응답을 정하지 않는다. 실패를 그대로 알린(5xx) 구현도, 응답을 먼저 주고 뒤에 저장하는(2xx) "
+                    "허용 설계도 있다. 주입한 요청의 응답 코드는 보지 않고(isNotEqualTo(200)·isGreaterThanOrEqualTo(400) 도 쓰지 않음), "
+                    "판정과 사유는 그 행의 상태·성공 기록을 조회해 보는 단언에 붙인다"
                 )
                 break
     return out

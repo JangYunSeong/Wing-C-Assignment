@@ -137,7 +137,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | 노드 | 프롬프트 (테스트 먼저 흐름의 버전) | 보는 것 | 보지 않는 것 | 산출 `kind` |
 |---|---|---|---|---|
 | `gen_public` | `gen_public/v1` | 계약, 공개 수용 기준, 공개 테스트 문서(`hidden/PUBLIC.md`) + 코드가 쓴 `PublicCase` 소스 | `HiddenPlan`, 숨은 요구, 하네스 동시 요청·주입, 시작 코드 | `public_test` |
-| `gen_hidden` | `gen_hidden/v3` | 계약, `HiddenPlan`(케이스별 id 범위), h* 기준, 숨은 요구 설명, 하네스 **API 문서**(`HARNESS.md`) + 코드가 쓴 `ContractCase` 소스 | 시작 코드 본문, 공개 테스트, 참조 구현 | `hidden` |
+| `gen_hidden` | `gen_hidden/v3` | 계약, `HiddenPlan`(케이스별 id 범위), h* 기준, 숨은 요구 설명, 하네스 **API 문서**(`HARNESS.md`) + 코드가 쓴 `ContractCase` 소스. v5~(2026-11-12): + **허용 설계 요약·조건**(모든 허용 설계에서 같은 결과만 단언하도록 — 숨은 요구를 이미 보므로 새는 것 없음, 참조 구현 코드는 여전히 안 봄) | 시작 코드 본문, 공개 테스트, 참조 구현 | `hidden` |
 | `gen_starter` | `gen_starter/v7` | 계약, 명세 공개 부분(제목·상황·요구·공개 기준), 템플릿 골격·`fill_slots`, **공개 테스트** | `HiddenPlan`, 숨은 요구, 허용 설계, 숨은 테스트 | `starter` |
 | `gen_naive` | `gen_naive/v4` | 계약, 시작 코드, **공개 테스트**, seed `naive_impl`, (하나만 놓친 판이면) 지킬 숨은 요구 목록 | 숨은 테스트 | `ref_naive` |
 | `gen_accepted` | `gen_accepted/v4` | 계약, 시작 코드, **공개 테스트**, 허용 설계 1건(`summary`·`conditions`) + **그 스택의 조건**(§4.2) | 숨은 테스트, 다른 허용 설계 | `ref_accepted` |
