@@ -13,6 +13,7 @@ from task_spec.api.launcher import RunLauncher
 from task_spec.api.run_view import load_run_view
 from task_spec.api.schemas import RunView
 from task_spec.config import Settings
+from task_spec.delivery.sender import DeliverySender
 from task_spec.llm import LLMClient
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
@@ -86,6 +87,17 @@ def get_builds(request: Request) -> BuildRepo:
 
 
 BuildsDep = Annotated[BuildRepo, Depends(get_builds)]
+
+
+def get_delivery(request: Request) -> DeliverySender:
+    """승인된 묶음 전달기 (#116) — lifespan 이 만든다 (테스트는 app.state.delivery 에)."""
+    sender = getattr(request.app.state, "delivery", None)
+    if sender is None:
+        raise ServiceUnavailable("전달기가 준비되지 않았습니다")
+    return sender  # type: ignore[no-any-return]
+
+
+DeliveryDep = Annotated[DeliverySender, Depends(get_delivery)]
 
 
 def get_common_store(request: Request) -> CommonTaskRepo | None:

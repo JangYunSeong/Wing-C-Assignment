@@ -156,6 +156,16 @@ class BuildRuleViolation(DomainError):
     status_code = 409
 
 
+class DeliveryTargetNotConfigured(DomainError):
+    """DB 에 등록된 대상이지만 API 설정(SFTP_TARGETS__<이름>__*)에 접속 정보가 없다 — 이름만 담는다."""
+
+    code = "delivery_target_not_configured"
+    status_code = 409
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"전달 대상 {name} 의 접속 설정이 없습니다 (docs/deploy.md 2-11)")
+
+
 class BuildApprovalInvalid(DomainError):
     """빌드 승인 그래프가 resume 값을 받지 않고 다시 기다린다 — 사유는 검토 표시 판단·저장소 규칙 (원문 없음)."""
 

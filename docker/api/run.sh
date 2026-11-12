@@ -35,6 +35,24 @@ if [[ -n "$images_dir" ]]; then
   images=(-v "${images_dir}:${images_dir}:ro")
 fi
 
+# SFTP 전달 (#116, 선택): SFTP_DIR(키·known_hosts 폴더)를 같은 경로로 읽기 전용 마운트.
+# SFTP_TARGETS__<이름>__KEY_PATH·KNOWN_HOSTS 는 전부 그 아래여야 한다 (값은 경로라 출력해도 된다 — 호스트·계정은 출력하지 않음)
+sftp_dir=$(sed -nE 's#^SFTP_DIR=(.*)$#\1#p' "$ENV_FILE" | tail -1)
+sftp=()
+sftp_paths=$(sed -nE 's#^SFTP_TARGETS__[A-Za-z0-9_]+__(KEY_PATH|KNOWN_HOSTS)=(.*)$#\2#p' "$ENV_FILE")
+if [[ -n "$sftp_dir" ]]; then
+  [[ "$sftp_dir" == /* && -d "$sftp_dir" ]] || { echo "SFTP_DIR 폴더 없음(호스트 절대 경로): $sftp_dir — docs/deploy.md 2-11" >&2; exit 1; }
+  sperm=$(stat -c %a "$sftp_dir")
+  [[ "$sperm" == 700 || "$sperm" == 500 ]] || { echo "SFTP_DIR 권한이 $sperm — chmod 700 $sftp_dir" >&2; exit 1; }
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    [[ "$p" == "$sftp_dir"/* && -f "$p" ]] || { echo "SFTP 키·known_hosts 가 SFTP_DIR 아래 파일이 아닙니다: $p" >&2; exit 1; }
+  done <<< "$sftp_paths"
+  sftp=(-v "${sftp_dir}:${sftp_dir}:ro")
+elif [[ -n "$sftp_paths" ]]; then
+  echo "SFTP_TARGETS__* 가 있는데 SFTP_DIR 가 없습니다 — 키 폴더를 지정하세요 (docs/deploy.md 2-11)" >&2; exit 1
+fi
+
 # rootless 면 컨테이너 app(10001) = 호스트 사용자. rootful(개발 서버 root)에서는 keep-id 를 쓸 수 없어 기존 매핑 그대로
 userns=()
 if [[ "$(podman info --format '{{.Host.Security.Rootless}}')" == true ]]; then
@@ -68,6 +86,7 @@ podman run -d --name "$NAME" \
   "${userns[@]}" \
   -v task_data:/data \
   "${images[@]}" \
+  "${sftp[@]}" \
   "${publish[@]}" \
   --restart unless-stopped \
   --health-cmd "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status == 200 else 1)\"" \
