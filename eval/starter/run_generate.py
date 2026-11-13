@@ -343,7 +343,12 @@ async def main() -> None:
         action="store_true",
         help="수리 루프 (nodes/starter/build.py) — 생성 → 정적 검사 → Gradle 검증 → 배정 → 그 생성기만 다시",
     )
-    ap.add_argument("--designs", type=int, default=1, help="--loop 에서 만들 허용 설계 수")
+    ap.add_argument(
+        "--designs",
+        type=int,
+        default=None,
+        help="--loop 에서 만들 허용 설계 수 (기본: 전부 — #171)",
+    )
     ap.add_argument(
         "--pin",
         action="append",

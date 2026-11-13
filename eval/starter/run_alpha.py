@@ -81,7 +81,12 @@ async def main() -> None:
     )
     ap.add_argument("--openai-key-env", default=None)
     ap.add_argument("--budget-usd", type=float, default=0.5)
-    ap.add_argument("--designs", type=int, default=1, help="참조 구현을 만들 허용 설계 수")
+    ap.add_argument(
+        "--designs",
+        type=int,
+        default=None,
+        help="참조 구현을 만들 허용 설계 수 (기본: 명세의 허용 설계 전부 — #171)",
+    )
     ap.add_argument(
         "--task-json",
         default=None,
@@ -317,6 +322,12 @@ async def main() -> None:
         "variant_dropped": built_out.variant_dropped,
         "variant_verify": [
             [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.variant_reports
+        ],
+        # 숨은 테스트 함정 관문 (#171) — 허용 설계의 함정에 빠진 변형마다 잡힘·살아남음·무효
+        "traps": [r.line() for r in built_out.traps],
+        "trap_dropped": built_out.trap_dropped,
+        "trap_verify": [
+            [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.trap_reports
         ],
     }
     report["cost_usd"] = round(spent, 4)

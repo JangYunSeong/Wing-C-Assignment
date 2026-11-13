@@ -54,7 +54,9 @@ async def main() -> None:
     ap.add_argument(
         "--loops", type=int, default=0, help="통과한 첫 계약으로 돌릴 수리 루프 횟수 (Java 만)"
     )
-    ap.add_argument("--designs", type=int, default=1, help="루프에서 만들 허용 설계 수")
+    ap.add_argument(
+        "--designs", type=int, default=None, help="루프에서 만들 허용 설계 수 (기본: 전부 — #171)"
+    )
     ap.add_argument("--pin", action="append", default=[], help="예: --pin gen_starter=2")
     ap.add_argument(
         "--model-for",

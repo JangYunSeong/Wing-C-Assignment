@@ -41,7 +41,8 @@ class BuilderSettings(BaseSettings):
     build_max_attempts: int = Field(
         default=2, ge=1
     )  # lease 만료 뒤 다시 대기열로 (인프라 오류 1회 재시도)
-    build_designs: int = Field(default=1, ge=1)  # 참조 구현을 만들 허용 설계 수
+    # 참조 구현을 만들 허용 설계 수 — 비우면 명세의 허용 설계 전부 (#171: d1 만 돌려 숨은 테스트가 d2·d3 에 너무 엄격한 것을 못 걸렀다)
+    build_designs: int | None = Field(default=None, ge=1)
     build_keep_failed_work: bool = True  # 실패한 빌드의 작업 폴더를 남긴다 (원인 확인용, git 밖)
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

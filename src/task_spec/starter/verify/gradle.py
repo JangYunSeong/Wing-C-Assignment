@@ -346,9 +346,13 @@ class GradleVerifier:
         return VerifyReport(runs=runs)
 
     async def verify_variants(
-        self, starter: Overlay, variants: Sequence[Overlay], public: Overlay
+        self,
+        starter: Overlay,
+        variants: Sequence[Overlay],
+        public: Overlay,
+        hidden: Overlay | None = None,
     ) -> VerifyReport:
-        """공개 테스트 변별 관문 (#164) — 변형마다 시작 코드 + 변형 + 공개 테스트 (숨은 테스트 없음). 마지막 verify 와 같은 회차 폴더에
+        """공개 테스트 변별 관문 (#164) — 변형마다 시작 코드 + 변형 + 공개 테스트. hidden 을 주면 숨은 테스트도 (함정 관문 ⑪, #171). 마지막 verify 와 같은 회차 폴더에
         라벨(var-…)로 따로 남는다."""
         if self.keep_code:
             code = self.work / f"r{self.rounds}-code"
@@ -356,7 +360,11 @@ class GradleVerifier:
                 write_overlay(v, code / (v.label or v.kind))
         runs = [
             await asyncio.to_thread(
-                self._target, v.label or v.kind, v.kind, (starter, v, public), None
+                self._target,
+                v.label or v.kind,
+                v.kind,
+                (starter, v, public, *((hidden,) if hidden is not None else ())),
+                hidden,
             )
             for v in variants
         ]

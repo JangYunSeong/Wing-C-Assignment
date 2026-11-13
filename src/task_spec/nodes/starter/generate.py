@@ -41,6 +41,8 @@ from task_spec.schemas import (
     GenRefInputV3,
     GenStarterInput,
     GenStarterInputV3,
+    GenTrapInput,
+    GenTrapOutput,
     GenVariantInput,
     GenVariantOutput,
     HiddenPlan,
@@ -66,6 +68,7 @@ from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.skeleton import render_skeleton
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
 from task_spec.starter.templates import Template, is_java
+from task_spec.starter.traps import TrapSpec, TrapTarget, build_traps
 from task_spec.starter.ts_helpers import (
     ensure_test_imports,
     ensure_vitest_imports,
@@ -1111,5 +1114,81 @@ async def gen_variants(
         len(out.dropped),
         len(out.fail_reasons),
         len(retry),
+    )
+    return out
+
+
+@dataclass
+class TrapGen:
+    """숨은 테스트 함정 관문의 변형 생성 결과 (#171) — 허용 설계 하나."""
+
+    variants: list[tuple[Overlay, TrapSpec]] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    provenance: list[Provenance] = field(default_factory=list)
+    fail_reasons: list[str] = field(default_factory=list)
+
+
+def trap_input(
+    task: TaskItem,
+    contract: TaskContract,
+    template: Template,
+    impl: Mapping[str, str],
+    target: TrapTarget,
+    note: str | None = None,
+) -> GenTrapInput:
+    """숨은 테스트는 주지 않는다 — 테스트를 쓴 쪽의 맹점을 모르는 독립 검사. 숨은 요구·설계는 빌드 안쪽이라 준다."""
+    m = template.manifest
+    return GenTrapInput(
+        stack=stack_text(m),
+        contract=contract_markdown(contract, tables=m.naming.table),
+        hidden_requirements=_lines(
+            [f"{t.trap_id} {t.description}" for t in task.traps if t.trap_id in target.trap_ids]
+        )
+        or NONE,
+        design=f"{target.design_id} {target.summary}\n{target.conditions}",
+        trap=target.trap,
+        impl_files=files_text([GeneratedFile(path=p, content=c) for p, c in impl.items()]),
+        revision_note=note or NONE,
+    )
+
+
+async def gen_traps(
+    task: TaskItem,
+    contract: TaskContract,
+    template: Template,
+    starter: Overlay,
+    design: Overlay,
+    target: TrapTarget,
+    *,
+    llm: LLMClient,
+    prompts: PromptRegistry,
+    ontology_version: str,
+    taken: set[str] | None = None,
+) -> TrapGen:
+    """허용 설계 구현(시작 코드 + design)에서 그 설계의 함정에 빠진 변형."""
+    prompt_t = prompts.get("gen_trap")
+    impl = app_files(starter, design)
+    out = TrapGen()
+    prompt = assemble(
+        prompt_t,
+        trap_input(task, contract, template, impl, target),
+        ontology_version=ontology_version,
+    )
+    try:
+        r = await llm.call(prompt, GenTrapOutput, reasoning_off_last=True)
+    except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
+        out.fail_reasons.append(
+            f"{target.design_id} 함정 생성 실패: {type(exc).__name__}: {str(exc)[:200]}"
+        )
+        if (spent := getattr(exc, "provenance", None)) is not None:
+            out.provenance.append(spent)
+        return out
+    out.provenance.append(r.provenance)
+    out.variants, out.dropped = build_traps(target, r.parsed, design, impl, taken)
+    logger.info(
+        "gen_trap design=%s variants=%d dropped=%d",
+        target.design_id,
+        len(out.variants),
+        len(out.dropped),
     )
     return out

@@ -855,6 +855,28 @@ class GenVariantOutput(Schema):
     variants: list[ViolationVariant] = Field(default_factory=list, max_length=6)
 
 
+class GenTrapInput(Schema):
+    """gen_trap 프롬프트 변수 — 숨은 테스트 검증 (#171). 허용 설계 구현을 그 설계에 적힌 함정에 빠진 구현으로 바꾼다.
+    숨은 테스트는 주지 않는다 (테스트를 쓴 쪽의 맹점을 모르는 독립 검사). 숨은 요구·설계는 준다 — 빌드 안쪽이라 새는 곳이 없다."""
+
+    stack: str = Field(min_length=1)
+    contract: str = Field(min_length=1)
+    hidden_requirements: str = Field(min_length=1)  # 그 설계가 푸는 숨은 요구
+    design: str = Field(min_length=1)  # 허용 설계 요약·조건
+    trap: str = Field(min_length=1)  # 그 설계의 함정 문장
+    impl_files: str = Field(min_length=1)  # 그 허용 설계 구현 (시작 코드 + 구현을 합친 앱 파일)
+    revision_note: str
+
+
+class TrapVariant(Schema):
+    note: str = Field(min_length=1, max_length=200)  # 어떻게 함정에 빠졌나 한 줄
+    files: list[GeneratedFile] = Field(min_length=1, max_length=3)  # 바꾼 파일 — 내용 전체
+
+
+class GenTrapOutput(Schema):
+    variants: list[TrapVariant] = Field(default_factory=list, max_length=2)
+
+
 class FileRef(Schema):
     """State 에 남기는 오버레이 파일 참조 — 본문 없음."""
 

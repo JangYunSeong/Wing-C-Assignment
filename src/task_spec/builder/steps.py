@@ -67,7 +67,7 @@ class RealSteps:
         prompts: PromptRegistry,
         incidents_dir: Path,
         images_root: Path,
-        designs: int = 1,
+        designs: int | None = None,  # None = 허용 설계 전부 (#171)
     ) -> None:
         self.llm, self.prompts = llm, prompts
         self.incidents = load_incidents(incidents_dir)
