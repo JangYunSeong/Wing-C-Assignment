@@ -6,6 +6,12 @@
 
 어느 칸을 고칠지는 검사 메시지가 정한다 — 메시지마다 그 검사가 보는 칸(RULES)과 걸린 낱말을 짝지어, 그 낱말이 든 칸만 고친다.
 여러 칸의 관계가 문제인 검사(행동 기준의 수행준거 인용 등)는 여기서 다루지 않는다 (전체 재요청에 남는다).
+
+칸 단위로 고치는 것은 그 칸에서 말을 **빼기만** 하면 끝나는 문제다 — 다른 칸과의 관계가 바뀌지 않는다. 값을 **바꿔야** 하거나
+여러 칸이 함께 맞아야 하는 문제는 다루지 않는다 (전체 재요청 → 승인자 표시). #167: '원 사례 문구·수치를 그대로 씀'은 그 수치가
+과제의 조건이라(설정·추가 요구 답·숨은 수용 기준·로그) 검사가 짚은 표지(total=10)가 든 칸만 바꾸면 다른 꼴의 같은 값
+(maximum-pool-size: 10, '연결 가능 수(10)')과 어긋났다 (2026-11-13 #006 재현). '핵심 자료가 결론을 직접 말함'은 그 자료의
+결론 문장(·판정·요약 줄)만 빼면 되므로 다룬다.
 """
 
 from __future__ import annotations
@@ -55,7 +61,7 @@ _TERMS = re.compile(r"(?:나옴|드러남)[^:]*:\s*([^—\n]+)|지시함 \(([^)]
 
 @dataclass(frozen=True)
 class Target:
-    path: str  # 예: scenario · requirements[1].text · clarifications[3].answer
+    path: str  # 예: scenario · clarifications[3].answer · artifacts[2].content
     text: str
     terms: tuple[str, ...]
     why: str  # 걸린 검사 메시지의 머리
@@ -123,11 +129,42 @@ def _clar_hint_target(out: Any, problem: str) -> Target | None:
     return None
 
 
+# 자료 하나의 본문이 결론을 말함 — 그 자료(1·2단계 어느 쪽이든 id 로 — 번호가 이어져 겹치지 않는다) 본문만 고친다
+# (spec/draft.py check_artifact_list). 두 사유 모두 빼기만 하면 된다: 결론 표현 · 판정·요약 줄('Pattern: …' — 60자로 잘린 줄머리).
+# 지금 메시지에는 단계 이름(label)이 붙지 않지만, 붙어도 받는다.
+_CONCLUSION = re.compile(
+    r"^(?:2단계 )?(?:핵심 자료 (?P<aid>a\d+) 가 결론을 직접 말함 \((?P<terms>[^)]*)\)"
+    r"|자료 (?P<aid2>a\d+) 에 판정·요약 줄이 있음 \('(?P<line>[^\n]*?)'\) —)"
+)
+
+
+def _conclusion_target(out: Any, problem: str) -> Target | None:
+    m = _CONCLUSION.match(problem.strip())
+    if m is None:
+        return None
+    aid = m.group("aid") or m.group("aid2")
+    if m.group("line") is not None:
+        terms: tuple[str, ...] = (m.group("line"),)
+        why = "자료에 판정·요약 줄이 있음 — 그 줄을 지울 것, 원시 로그·지표·설정 줄은 그대로"
+    else:
+        terms = tuple(t.strip() for t in m.group("terms").split(",") if t.strip())
+        why = "핵심 자료가 결론을 직접 말함 — 원시 로그·지표·설정만"
+    dbg = getattr(out, "debug_stage", None)
+    for prefix, arts in (
+        ("artifacts", out.artifacts),
+        ("debug_stage.artifacts", dbg.artifacts if dbg else []),
+    ):
+        for i, a in enumerate(arts):
+            if a.artifact_id == aid:
+                return Target(f"{prefix}[{i}].content", a.content, terms, why)
+    return None
+
+
 def targets(out: Any, problems: list[str]) -> list[Target]:
     """고칠 칸 — 문제마다 그 검사가 보는 칸 중 걸린 낱말이 든 칸. 같은 칸은 낱말을 모은다."""
     found: dict[str, Target] = {}
     for p in problems:
-        hint = _clar_hint_target(out, p)
+        hint = _conclusion_target(out, p) or _clar_hint_target(out, p)
         if hint is not None:
             old = found.get(hint.path)
             found[hint.path] = Target(
