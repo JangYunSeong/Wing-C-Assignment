@@ -234,6 +234,17 @@ def test_seed_markdown_states_values_code_fills_for_ungrouped_fields() -> None:
     assert (
         "`status`=READY" in line and "그 밖의 필드는 행마다: `status`" not in line
     )  # 그룹이 정한 필드는 그대로
+    # 날짜·시각 칸은 행마다 다르고 id 순서와 무관하다고 적는다 (2026-11-13 — 예전엔 '고정 시각' 하나)
+    timed = order.model_copy(
+        update={
+            "fields": [
+                *order.fields,
+                ContractField(name="createdAt", type="string", constraints="ISO 8601", refs=["r1"]),
+            ]
+        }
+    )
+    line = seed_markdown(contract.seed[0], "Order", timed)
+    assert "`createdAt`=행마다 다른 값, id 순서와 무관 (예: id 1 → '2026-01-05T04:07:00')" in line
 
 
 def test_shortage_states_the_exact_rows_needed() -> None:
