@@ -47,12 +47,12 @@ def _rate(rows: list[dict[str, Any]], result: str) -> float | None:
     return (sum(x["result"] == result for x in rows) / len(rows)) if rows else None
 
 
-def run(items: list[Answer], questions: list[dict[str, Any]]) -> dict[str, Any]:
+def run(items: list[Answer], questions: list[dict[str, Any]], request: str = "") -> dict[str, Any]:
     """질문마다 처음 묻는 것으로(상태 없음) 답 규칙에 넣고 센다. 판정은 한 주제 질문으로 — 정답 항목 구체 답 ≥ CORRECT_MIN,
     "한 가지씩" ≤ ONE_AT_A_TIME_MAX. 정보 없음·다른 항목·주제 밖 잘못 열림은 같이 기록한다."""
     rows = []
     for q in questions:
-        r = answer(q["q"], items, {})
+        r = answer(q["q"], items, {}, request)
         rows.append(
             {
                 "q": q["q"],
@@ -91,7 +91,7 @@ def main() -> None:
     a = ap.parse_args()
     m: Material = load_material(a.mid)
     qs = json.loads((m.dir / "questions" / f"{a.set}.json").read_text("utf-8"))
-    out = run(facilitator_items(m, "new", m.synonyms() if a.synonyms else None), qs)
+    out = run(facilitator_items(m, "new", m.synonyms() if a.synonyms else None), qs, m.request)
     suffix = "-syn" if a.synonyms else ""
     (m.dir / "questions" / f"{a.set}{suffix}.result.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=1), "utf-8"

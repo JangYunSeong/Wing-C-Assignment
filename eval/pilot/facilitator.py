@@ -47,6 +47,7 @@ class Session(Schema):
     token: str = Field(min_length=16)
     mode: Mode
     items: list[Answer]
+    request: str = ""  # 요청 글 — §4.6 규칙 4 주제 낱말에서 뺀다
     materials: list[Material]
     max_questions: int | None = None  # None = 한도 없음 (§4.4)
     max_requests: int | None = None
@@ -92,7 +93,9 @@ def handle(
         msg = QUESTION_LIMIT.format(n=s.max_questions)
         return msg, Entry(t=t, kind="refused", arg=arg, text=msg)
     reply = (
-        answer_legacy(arg, s.items) if s.mode == "legacy" else answer(arg, s.items, states(entries))
+        answer_legacy(arg, s.items)
+        if s.mode == "legacy"
+        else answer(arg, s.items, states(entries), s.request)
     )
     return reply.text, Entry(t=t, kind="question", arg=arg, reply=reply, text=reply.text)
 

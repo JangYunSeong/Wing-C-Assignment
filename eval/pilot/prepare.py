@@ -131,6 +131,7 @@ def prepare_one(
             token=secrets.token_hex(16),
             mode=arm.ask,
             items=facilitator_items(m, arm.ask, m.synonyms() if synonyms else None),
+            request=m.request if arm.ask == "new" else "",
             materials=stage1_materials(task),
             max_questions=q,
             max_requests=r,

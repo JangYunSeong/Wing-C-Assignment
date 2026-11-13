@@ -115,11 +115,17 @@ def test_topic_overlap_gives_the_hint_with_half_credit_when_unique() -> None:
 
 
 def test_topic_overlap_on_two_items_gives_no_credit() -> None:
-    r = answer("이벤트 때 접속량은 어떤가요?", ITEMS, NONE)  # c1 은 둘(이벤트·접속량), f2 는 하나
-    assert (r.rule, r.item_id, r.hit) == (4, "c1", 0.0)
-    assert r.candidates == ["f2", "c1"]
-    tie = answer("이벤트 운영 방식이 궁금해요", ITEMS, NONE)  # 같으면 id 순, f 먼저
-    assert (tie.item_id, tie.text, tie.hit) == ("f2", F2.answer_hint, 0.0)
+    r = answer(
+        "회원별 접속량 발급 제한은요?", ITEMS, NONE
+    )  # f1 은 셋(회원별·발급·제한), c1 은 하나(접속량)
+    assert (r.rule, r.item_id, r.hit) == (4, "f1", 0.0)
+    assert r.candidates == ["f1", "c1"]
+    tie = answer("회원별 접속량은요?", ITEMS, NONE)  # 같으면 id 순, f 먼저
+    assert (tie.item_id, tie.text, tie.hit) == ("f1", F1.answer, 0.0)
+    # '이벤트'는 f2·c1 주제에 함께 있어 가르지 못함 — 규칙 4 에 쓰지 않는다 (§4.6 (iii))
+    only = answer("이벤트 때 접속량은 어떤가요?", ITEMS, NONE)
+    assert (only.item_id, only.hit, only.candidates) == ("c1", 0.5, ["c1"])
+    assert answer("이벤트 운영 방식이 궁금해요", ITEMS, NONE).rule == 5
 
 
 def test_topic_overlap_without_hint_gives_the_answer_and_opens() -> None:
@@ -202,3 +208,38 @@ def test_general_word_filter_applies_to_clarifications_only() -> None:
     assert (r.rule, r.item_id, r.layer) == (4, "f5", "hint")  # f# 은 두 글자 주제 낱말도 겹침
     clar = fact.model_copy(update={"id": "c9"})
     assert answer("정렬은 어떻게 하나요?", [clar], NONE).text == NO_INFO  # c# 은 그대로 막음
+
+
+def test_one_letter_word_inside_multi_word_term_is_ignored() -> None:
+    """§4.6 (i) — '동시 요청 수'의 '수'가 거의 모든 문장에 걸려 함정 단서가 열렸다 (#151 손 시범 질문 목록)."""
+    c = Answer(
+        id="c1",
+        topic="동시 처리",
+        match_terms=["동시 요청 수"],
+        answer="초당 수천 건",
+        answer_hint=None,
+    )
+    assert answer("락은 어떤 수준으로 잡나요?", [c], NONE).rule == 5  # '수' 하나로는 안 걸림
+    assert answer("동시에 들어오는 요청 수는요?", [c], NONE).item_id == "c1"
+    one = Answer(id="f1", topic="수수료", match_terms=["수"], answer="네", answer_hint=None)
+    assert answer("수가 몇인가요?", [one], NONE).item_id == "f1"  # 한 글자 단어뿐이면 그대로
+
+
+def test_topic_words_in_request_or_shared_by_items_are_dropped() -> None:
+    """§4.6 (ii)(iii) — 요청 글에 있는 말, 두 항목 이상의 주제에 함께 나오는 말은 규칙 4 에 쓰지 않는다
+    (kb005: f1·f3 주제가 '감사·기록'을 같이 써 동점이면 f1 이 열렸다)."""
+    f1 = Answer(
+        id="f1", topic="감사 기록 대상", match_terms=["누가"], answer="a1", answer_hint=None
+    )
+    f3 = Answer(
+        id="f3", topic="감사 기록 보관 기간", match_terms=["얼마나"], answer="a3", answer_hint=None
+    )
+    items = [f1, f3]
+    assert (
+        answer("감사 기록은 어떻게 하나요?", items, NONE).rule == 5
+    )  # 둘 다 쓰는 말뿐 — 정보 없음
+    assert answer("보관 기간이 궁금해요", items, NONE).item_id == "f3"  # 한 항목에만 있는 말
+    assert (
+        answer("대상이 누구인가요", items, NONE, request="이번 대상 고객").rule == 5
+    )  # 요청 글에 있는 말
+    assert answer("대상이 누구인가요", items, NONE).item_id == "f1"

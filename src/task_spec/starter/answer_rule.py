@@ -16,6 +16,14 @@
   일반 질문에 새지 않게 정한 것(2026-11-06)이고, 요청자 지식(`f#`)은 잘못 열려도 함정이 아니다. `f#` 은 한 글자 낱말만 뺀다.
 - `answer_legacy`(판 3 비교용)만 지금 규칙 그대로 구절째 맞춘다 (`spec.feature.find_terms`).
 
+§4.6 낱말 다듬기 [확정: 2026-11-13 사용자 — #151 손 시범 질문 목록 미달(kb005 구체 답 25%)]:
+- (i) 여러 단어로 된 매칭 낱말 안의 **한 글자 단어는 무시**한다 — 한글 단어는 부분 문자열로 맞추므로 "동시 요청 수"의 "수"가
+  거의 모든 질문에 걸려 락을 묻는 질문에 함정 단서(c1)가 열렸다. 낱말이 한 글자 단어뿐이면 그대로 둔다.
+- (ii) 주제 낱말에서 **요청 글에 있는 말**은 뺀다 — §5.1 이 매칭 낱말에서 공개 글의 말을 빼는 것과 같은 원칙
+  ("감사·기록"이 요청 글에 있어 거의 모든 질문에 걸렸다).
+- (iii) **두 항목 이상의 주제에 함께 나오는 말**도 뺀다 — 항목을 가르지 못하고 동점이면 id 순으로 엉뚱한 항목이 열린다.
+  (ii)(iii) 은 `answer` 의 규칙 4 에만 — 판 3 지금 규칙 모드는 그대로.
+
 순수 함수다 — 입출력·시각·기록 없음. 기록은 부르는 쪽(진행자 CLI) 몫.
 """
 
@@ -117,9 +125,18 @@ def word_in(word: str, text: str) -> bool:
     )
 
 
+def term_words(term: str) -> list[str]:
+    """맞출 단어 — 여러 단어로 된 낱말이면 한 글자 단어를 뺀다 (§4.6 (i)). 한 글자 단어뿐이면 그대로."""
+    words = term.split()
+    if len(words) < 2:
+        return words
+    kept = [w for w in words if len(_norm(w)) >= 2]
+    return kept or words
+
+
 def term_in(term: str, question: str) -> bool:
     """매칭 낱말 하나가 걸리나 (§4.6) — 낱말의 단어가 질문에 모두 있으면 (순서·사이에 낀 말 무관)."""
-    words = term.split()
+    words = term_words(term)
     return bool(words) and all(word_in(w, question) for w in words)
 
 
@@ -149,6 +166,20 @@ def topic_hits(item: Answer, question: str, general: bool | None = None) -> int:
     return sum(word_in(w, question) for w in topic_words(item.topic, general=g))
 
 
+def distinct_topic_words(items: Sequence[Answer], request: str = "") -> dict[str, list[str]]:
+    """규칙 4 의 항목별 주제 낱말 (§4.6 (ii)(iii)) — 요청 글에 있는 말과 두 항목 이상의 주제에 함께 나오는 말을 뺀다.
+    일반어는 추가 요구(c#)에서만 뺀다 (topic_words)."""
+    words = {i.id: topic_words(i.topic, general=is_clarification(i.id)) for i in items}
+    seen: dict[str, int] = {}
+    for ws in words.values():
+        for w in ws:
+            seen[w] = seen.get(w, 0) + 1
+    return {
+        k: [w for w in ws if seen[w] < 2 and not (request and word_in(w, request))]
+        for k, ws in words.items()
+    }
+
+
 def _best(ids: Iterable[str], counts: Mapping[str, int]) -> str:
     """가장 많이 맞은 항목, 같으면 id 순."""
     return min(ids, key=lambda k: (-counts[k], item_order(k)))
@@ -158,8 +189,11 @@ def _sorted(ids: Iterable[str]) -> list[str]:
     return sorted(ids, key=item_order)
 
 
-def answer(question: str, items: Sequence[Answer], states: Mapping[str, State]) -> Reply:
-    """§4.6 답 규칙. items = 요청자 지식(f#)과 추가 요구(c#), states = 이 지원자의 항목 상태 (없는 항목은 '없음')."""
+def answer(
+    question: str, items: Sequence[Answer], states: Mapping[str, State], request: str = ""
+) -> Reply:
+    """§4.6 답 규칙. items = 요청자 지식(f#)과 추가 요구(c#), states = 이 지원자의 항목 상태 (없는 항목은 '없음'),
+    request = 지원자가 받은 요청 글 (규칙 4 주제 낱말에서 뺀다)."""
     by_id = {i.id: i for i in items}
     state: dict[str, State] = {i.id: states.get(i.id, "none") for i in items}
     hits = {k: term_hits(i, question) for k, i in by_id.items()}
@@ -197,7 +231,8 @@ def answer(question: str, items: Sequence[Answer], states: Mapping[str, State]) 
             candidates=_sorted(opened),
             states=state,
         )
-    overlap = {k: topic_hits(i, question) for k, i in by_id.items() if state[k] != "open"}
+    topic = distinct_topic_words(items, request)
+    overlap = {k: sum(word_in(w, question) for w in topic[k]) for k in by_id if state[k] != "open"}
     touched = [k for k, n in overlap.items() if n]
     if touched:  # 4. 낱말은 안 걸리고 주제만 겹침 — 모호한 답
         k = _best(touched, overlap)
