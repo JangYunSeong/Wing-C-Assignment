@@ -463,7 +463,7 @@ def test_simulation_classifies_questions() -> None:
         "여러 주제·한 가지씩",
         "주제 밖·잘못 열림",
     ]
-    assert out["single_topic"] == 3  # 판정은 한 주제 질문으로만
+    assert out["single_topic"] == 3  # 판정은 사실(f#) 한 항목 질문으로만
     assert out["rates"]["구체 답"] == 1 / 3 and out["rates"]["한 가지씩"] == 1 / 3
     assert out["off_topic_wrong_open"] == 1.0 and not out["passed"]
     assert classify(None, Reply(text=NO, rule=5, layer="none", hit=0.0)) == "주제 밖·정보 없음"
@@ -478,6 +478,10 @@ def test_simulation_passes_at_the_thresholds() -> None:
     assert out["rates"]["구체 답"] == 0.8 and out["rates"]["한 가지씩"] == 0.1 and out["passed"]
     out = simulate_run([F1, F2, C1], qs + [{"q": "수량이랑 회원당은요?", "about": "f1"}])
     assert not out["passed"]  # 구체 답 8/11 < 80%
+    out = simulate_run([F1, F2, C1], qs + [{"q": "점심은요?", "about": "c1"}] * 5)
+    assert (
+        out["passed"] and out["clarification_rates"]["정보 없음"] == 1.0
+    )  # 추가 요구(c#)는 기준 밖
 
 
 def test_freeze_preflight_needs_validity_and_check_questions(

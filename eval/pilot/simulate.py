@@ -6,7 +6,8 @@
 - 한 주제 질문: 맞는 항목의 구체 답 / 맞는 항목의 모호한 답 / 정보 없음 / 한 가지씩 / 다른 항목이 열림
 - 여러 주제 질문: 한 가지씩 / 그 밖 — 기록만
 - 주제 밖 질문: 정보 없음 / 잘못 열림 — 기록만
-판정(`passed`)은 한 주제 질문으로만 — 구체 답 ≥ 80%, 한 가지씩 ≤ 10% (§9.1 질문 목록).
+판정(`passed`)은 요청자 지식(f#) 한 항목만 묻는 질문으로만 — 구체 답 ≥ 80%, 한 가지씩 ≤ 10% (§9.1 질문 목록).
+추가 요구(c#)는 생성기가 만든 그대로 쓰고 손으로 다듬지 않으므로 기준에 넣지 않고 따로 기록한다.
 튜닝용 목록(tune)으로 사실 낱말을 다듬고, 다른 에이전트가 따로 쓴 확인용 목록(check)으로 고정 전에 한 번만 잰다 — 한 목록에 맞춰지지 않게.
 
   uv run python -m eval.pilot.simulate --mid <재료> --set tune [--synonyms]
@@ -20,7 +21,7 @@ from collections import Counter
 from typing import Any
 
 from eval.pilot.model import Material, facilitator_items, load_material
-from task_spec.starter.answer_rule import NO_INFO, Reply, answer
+from task_spec.starter.answer_rule import NO_INFO, Reply, answer, is_clarification
 from task_spec.starter.facilitator import Answer
 
 CORRECT_MIN = 0.8  # 한 주제 질문 중 정답 항목의 구체 답 비율 하한 (§9.1, 확인용 목록 기준)
@@ -61,17 +62,18 @@ def run(items: list[Answer], questions: list[dict[str, Any]]) -> dict[str, Any]:
                 "rule": r.rule,
             }
         )
-    single = [x for x in rows if isinstance(x["about"], str)]
-    rates = {
-        name: _rate(single, name)
-        for name in ("구체 답", "모호한 답", "정보 없음", "한 가지씩", "다른 항목")
-    }
+    one = [x for x in rows if isinstance(x["about"], str)]
+    single = [x for x in one if not is_clarification(x["about"])]  # 판정 — 사실(f#) 한 항목 질문
+    clar = [x for x in one if is_clarification(x["about"])]  # 추가 요구(c#) — 기록만
+    names = ("구체 답", "모호한 답", "정보 없음", "한 가지씩", "다른 항목")
+    rates = {name: _rate(single, name) for name in names}
     off = [x for x in rows if x["about"] is None]
     correct, broad = rates["구체 답"], rates["한 가지씩"]
     return {
         "counts": dict(Counter(x["result"] for x in rows)),
         "single_topic": len(single),
         "rates": rates,
+        "clarification_rates": {name: _rate(clar, name) for name in names},
         "off_topic_wrong_open": _rate(off, "주제 밖·잘못 열림"),
         "passed": correct is not None
         and broad is not None
@@ -96,7 +98,14 @@ def main() -> None:
     )
     for x in out["rows"]:
         print(f"  {x['result']:10s} {str(x['item']):4s} ← [{x['about']}] {x['q']}")
-    keys = ("counts", "single_topic", "rates", "off_topic_wrong_open", "passed")
+    keys = (
+        "counts",
+        "single_topic",
+        "rates",
+        "clarification_rates",
+        "off_topic_wrong_open",
+        "passed",
+    )
     print(json.dumps({k: out[k] for k in keys}, ensure_ascii=False))
 
 
