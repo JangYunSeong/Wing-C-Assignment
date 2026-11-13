@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from task_spec.schemas.approval import ApprovalDecision, ApprovalStatus, TaskKind
 from task_spec.schemas.build import (
+    AppSetting,
     AuthRule,
     BuildState,
     BuildStatus,
@@ -235,6 +236,7 @@ __all__ = [
     "PlanContractInputAll",
     "PlanContractOutput",
     "PublicTest",
+    "AppSetting",
     "ResponseShape",
     "RepairRecord",
     "CaseRows",

@@ -87,6 +87,7 @@ TaskContract                         ← 지원자에게 보임 (README "계약"
                 · state(상태를 바꾸는 엔티티만: field · values · transitions "A→B" · rejected_status) [확정: 2026-11-08, plan_contract v10]
     필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
   response_shapes[]: id(v1…) · name · fields — 응답에만 있는 모양, 테이블 아님 (시드·외래 키·state·existing 없음) [2026-11-13]
+  settings[]:    key(스프링 속성, 점 표기) · type(int) · default · meaning · refs — 구현이 읽어야 하는 설정 (스프링 템플릿만) [2026-11-13, #161]
   seed[]:       entity id · rows(정확한 행 수, id 1~rows) · groups(id 범위마다 처음 값, 1~rows 를 빈틈·겹침 없이) · 값 규칙 (가상 데이터만, §10-16)
   public_tests[]: id(pt1…) · ac_id(p*) · 무엇을 확인하나 (공개 수용 기준 1:1 이상)
                   — README 에는 공개 테스트를 지원자에게 줄 때만 싣는다 (§4.3)
@@ -102,6 +103,11 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - 구현: `src/task_spec/schemas/build.py`(`TaskContract`·`HiddenPlan`·`GeneratedFiles`·`FileRef`·`BuildState`), `src/task_spec/schemas/template.py`(manifest 중 이 파이프라인이 쓰는 부분 — `harness_params`·`failure_reasons`·`naming`·`interfaces`·`stack_conditions`). 필드마다 `refs` 를 두어 양방향 대응(§3.3)을 필드 단위로 본다.
 
 - 계약은 **무엇을**만 적고 어떻게(트랜잭션 경계·잠금·캐시)는 적지 않는다. 숨은 요구 핵심어(seed `leak_terms`·`trigger_terms`)는 계약에 나오면 안 된다 (§3.3).
+- **설정(`settings`)** [2026-11-13, #161]: 요구가 '설정에 따름'인 값(예: 목록 표시 건수)은 계약에 스프링 속성 키·기본값을 적는다. README 계약 절에 '설정' 표,
+  시작 코드 설정 파일에 기본값(정적 검사), 테스트 도우미에 `SETTING_<키>_KEY`·`_DEFAULT`·`_PROBE`(덮을 값 — 기본값과 다른 작은 값, 코드가 정함).
+  그 요구를 보는 공개 테스트는 자기 클래스의 `@DynamicPropertySource` 로 KEY 를 PROBE 로 덮고 PROBE 를 단언한다(정적 검사) — 기본값만 단언하면
+  값을 코드에 박은 구현·제한 없는 구현이 둘 다 통과한다 (#161: 송금 내역·거래소 알파). 시드는 그 조건의 행이 PROBE 보다 많으면 된다.
+  덮어쓴 클래스는 컨텍스트가 하나 더 뜨고 임베디드 DB 가 따로라 시드가 다시 들어간다 (2026-11-13 실제 채점으로 확인).
 - **응답 모양(`response_shapes`, v1…)** [2026-11-13, plan_contract v24]: 다른 엔티티에서 읽는 값(조인)·집계가 있는 응답(예: 고객 이름·상품 수가 붙은 주문 목록)은
   테이블 엔티티에 칸을 더하지 않고 응답 모양으로 적어 `returns` 로 가리킨다 (칸마다 constraints 에 출처). 엔티티는 테이블만이라 시드·테이블 이름·외래 키·숨은 케이스
   data 를 읽는 곳은 그대로이고, 타입·예시·README·필드 이름처럼 모양을 읽는 곳은 `TaskContract.data_shapes()`(엔티티 + 응답 모양)를 읽는다. README 는

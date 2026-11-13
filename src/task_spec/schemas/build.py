@@ -437,6 +437,37 @@ class SeedRule(Schema):
     rules: list[str] = Field(default_factory=list)  # 그 밖의 값 규칙 (예: 송장 번호 형식)
 
 
+class AppSetting(Schema):
+    """애플리케이션 설정 1개 — 구현이 이 키에서 읽어야 하는 값 (예: 목록 한 번에 돌려줄 최대 개수). 공개 계약 — 키·뜻·기본값이 README 에 보인다.
+
+    2026-11-13 #161: 표시 건수를 '설정에 따름'이라 해 놓고 계약에 설정 칸이 없어, 시작 코드 설정 파일에 LLM 이 키를 그때그때 넣고
+    공개 테스트는 시드 행 수(제한 이하)에 기대 '≤ 제한'·'= 제한'을 단언했다 — 제한 없는 구현·값을 코드에 박은 구현도 통과.
+    계약에 키를 두면 테스트가 그 키를 다른 값(도우미 SETTING_…_PROBE)으로 덮어 '정확히 그 값만큼'을 단언할 수 있다."""
+
+    key: str = Field(
+        pattern=r"^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$",
+        max_length=80,
+        description="스프링 속성 키, 점 표기 (예: marketplace.listing.page-size)",
+    )
+    type: Literal["int"] = "int"
+    default: int = Field(
+        ge=1, le=100_000, description="기본값 — 시작 코드 설정 파일에 이 값으로 둔다"
+    )
+    meaning: str = Field(
+        min_length=1,
+        max_length=120,
+        description="무엇을 정하는 값인가 (예: 목록 한 번에 돌려줄 최대 개수)",
+    )
+    refs: list[str] = Field(
+        min_length=1, description="이 설정을 따르라는 공개 요구(r*)·공개 수용 기준(p*)"
+    )
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return _check_refs(v)
+
+
 class ResponseShape(Schema):
     """응답에만 있는 모양 — 테이블이 아니다 (저장·시드·외래 키 없음). 다른 엔티티에서 읽는 값(조인)이나 집계를 담는 목록 항목·상세 응답.
 
@@ -475,6 +506,12 @@ class TaskContract(Schema):
         max_length=4,
         description="응답에만 있는 모양 (테이블 아님 — 저장·시드 없음): 다른 엔티티에서 읽는 값·집계를 담는 응답. returns 가 v1·v1[] 로 가리킨다",
     )
+    # 구현이 읽어야 하는 애플리케이션 설정 (키·기본값) — 2026-11-13 #161. 스프링 템플릿만
+    settings: list[AppSetting] = Field(
+        default_factory=list,
+        max_length=4,
+        description="요구가 '설정에 따름'인 값만 (예: 목록 표시 건수): 스프링 속성 키·기본값·뜻·근거 요구. 없으면 빈 목록",
+    )
     seed: list[SeedRule] = Field(default_factory=list)  # DB 행을 바꾸는 과제만 (템플릿 seed_rows)
     fixtures: list[Fixture] = Field(default_factory=list, max_length=8)  # 그 밖의 입력 환경
     screens: list[Screen] = Field(default_factory=list, max_length=8)  # interface_kind ui 일 때만
@@ -489,6 +526,13 @@ class TaskContract(Schema):
         min_length=1,
         description='공개 요구 id → 그 요구를 담는 엔드포인트·엔티티·화면 id 목록 (예: {"r1": ["e1", "m1"]})',
     )
+
+    @model_validator(mode="after")
+    def _setting_keys(self) -> TaskContract:
+        keys = [s.key for s in self.settings]
+        if len(keys) != len(set(keys)):
+            raise ValueError(f"settings 키가 겹침: {keys}")
+        return self
 
     @model_validator(mode="after")
     def _screens(self) -> TaskContract:
