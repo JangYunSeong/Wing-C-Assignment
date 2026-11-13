@@ -30,14 +30,14 @@ podman save -o "$INBOX/.task-builder-$VER.tar.part" "task-builder:${VER}"
 mv -f "$INBOX/.task-builder-$VER.tar.part" "$INBOX/task-builder-$VER.tar"
 install -m 644 docker/builder/run.sh "$INBOX/run-$VER.sh"
 (cd "$INBOX" && sha256sum "task-builder-$VER.tar" "run-$VER.sh" >".sum.part" && mv -f .sum.part "task-builder-$VER.sha256")
-echo "보냄: task-builder:$VER — task-builder 의 업그레이드를 기다립니다 (지금 작업이 있으면 끝난 뒤)"
+echo "보냄: task-builder:$VER — task-builder 의 업그레이드를 기다립니다 (지금 작업이 있으면 끝난 뒤, 최대 60분 + 기동)"
 
-for _ in $(seq 1 120); do  # 최대 20분
+for _ in $(seq 1 450); do  # 최대 75분 — 업그레이드 유닛 TimeoutStartSec 과 같게
   sleep 10
   if [[ -f "$INBOX/last-upgrade.json" ]] && grep -q "\"version\": \"$VER\"" "$INBOX/last-upgrade.json"; then
     cat "$INBOX/last-upgrade.json"
     grep -q '"result": "ok"' "$INBOX/last-upgrade.json" && exit 0 || exit 1
   fi
 done
-echo "20분 안에 결과가 없습니다 — task-builder 의 'systemctl --user status task-builder-upgrade.path' 를 확인하세요" >&2
+echo "75분 안에 결과가 없습니다 — task-builder 의 'systemctl --user status task-builder-upgrade.path' 를 확인하세요" >&2
 exit 1

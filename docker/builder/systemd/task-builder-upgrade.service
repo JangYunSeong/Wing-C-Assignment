@@ -7,5 +7,6 @@ Type=oneshot
 # 끝나는 순간 builder 가 SIGTERM 을 받아 멈췄다가 재시작 정책으로 다시 뜬다 (2026-11-12 첫 자동 배포에서 확인)
 KillMode=process
 ExecStart=%h/builder-bin/upgrade.sh
-# 이미지 load(수백 MB) + 지금 작업 끝날 때까지 정지 + 기동 확인
-TimeoutStartSec=20min
+# 이미지 load(수백 MB) + 지금 작업 끝날 때까지 정지(upgrade.sh DRAIN_SECONDS, 기본 60분) + 기동 확인 — 정지 대기보다 길어야
+# 한다 (짧으면 systemd 가 업그레이드 도중에 서비스를 죽인다)
+TimeoutStartSec=75min

@@ -2,8 +2,8 @@
 # builder 자동 업그레이드 (docs/deploy.md 2-10) — task-builder 사용자로 돈다. systemd path 유닛(task-builder-upgrade.path)이
 # 받는 폴더에 task-builder-<버전>.sha256 이 생기면 부른다. 배포 사용자는 docker/builder/deliver.sh 로 이미지·run.sh·체크섬을 넣기만 한다.
 #
-# 순서: 받은 파일을 작업 폴더로 옮김(실패해도 같은 파일로 다시 돌지 않게) → 체크섬 → podman load → 지금 builder 정지(작업 끝날 때까지,
-# 컨테이너 --stop-timeout) → 새 run.sh 로 기동 → 'builder 시작' 로그 확인 → 실패면 이전 이미지·run.sh 로 되돌림.
+# 순서: 받은 파일을 작업 폴더로 옮김(실패해도 같은 파일로 다시 돌지 않게) → 체크섬 → podman load → 지금 builder 정지(지금 작업이
+# 끝날 때까지, 최대 TASK_BUILDER_DRAIN_SECONDS) → 새 run.sh 로 기동 → 'builder 시작' 로그 확인 → 실패면 이전 이미지·run.sh 로 되돌림.
 # 결과는 받는 폴더의 last-upgrade.json (배포 사용자가 읽는다). 설정 파일(~/builder-settings, 비밀값)은 건드리지 않는다.
 set -uo pipefail
 
@@ -13,6 +13,10 @@ ENV_FILE="${TASK_BUILDER_ENV:-$HOME/builder-settings}"
 NAME="${TASK_BUILDER_NAME:-task-builder}"
 REPO="${TASK_BUILDER_REPO:-task-builder}"  # 이미지 이름 (시험할 때만 바꾼다)
 STATUS="$INBOX/last-upgrade.json"
+# 정지 때 지금 작업을 기다리는 최대 시간 — builder 는 SIGTERM 을 받으면 새 작업을 잡지 않고 지금 작업만 끝낸 뒤 스스로 끝난다.
+# 컨테이너 기본(run.sh --stop-timeout 60)만 기다리면 시작 코드 단계(수십 분) 중의 빌드가 끊긴다 — 2026-11-13: 15:34 업그레이드가
+# 15:28 에 시작한 ct-d10c43442f07-b3 를 끊어, 임대가 지난 뒤 두 번째(마지막) 시도로 다시 돌았다. 유닛 TimeoutStartSec 이 이보다 길어야 한다.
+DRAIN_SECONDS="${TASK_BUILDER_DRAIN_SECONDS:-3600}"
 
 mkdir -p "$BIN"
 exec 9>"$BIN/.upgrade.lock"
@@ -60,7 +64,9 @@ for sum in "$INBOX"/task-builder-*.sha256; do
   prev_image=$(podman inspect "$NAME" --format '{{.ImageName}}' 2>/dev/null || true)
   [[ -n "$prev_image" ]] || prev_image=$(podman ps -a --filter "name=^${NAME}\$" --format '{{.Image}}' 2>/dev/null | head -1)
   install -m 755 "$work/run-$ver.sh" "$BIN/run.sh.new"
-  podman stop "$NAME" >/dev/null 2>&1 9>&-  # SIGTERM → 지금 작업 뒤 멈춤 (--stop-timeout 뒤 강제, lease 가 지나 다시 대기열로)
+  echo "지금 builder 정지 — 지금 작업이 끝나기를 기다림 (최대 $((DRAIN_SECONDS / 60))분)"
+  # SIGTERM → 지금 작업 뒤 멈춤. 최대 DRAIN_SECONDS 뒤 강제 — 끊긴 빌드는 임대가 지나 다시 대기열로 (시도가 남았으면)
+  podman stop -t "$DRAIN_SECONDS" "$NAME" >/dev/null 2>&1 9>&-
   if launch "$image" "$BIN/run.sh.new"; then
     [[ -f "$BIN/run.sh" ]] && mv -f "$BIN/run.sh" "$BIN/run.sh.prev"
     mv -f "$BIN/run.sh.new" "$BIN/run.sh"
