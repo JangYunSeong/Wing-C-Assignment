@@ -548,6 +548,55 @@ def check_hints(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     return problems
 
 
+# 함정 단서가 아닌 추가 요구가 요청·응답 형식을 정하는 주제 — 상태 코드·오류 코드·응답 칸·요청 규격은 계약(plan_contract)이 정한다 (#165)
+_FORMAT_TOPIC = re.compile(
+    r"응답\s*(?:형식|형태|코드|본문|필드|처리|구성)|요청\s*(?:규격|형식|형태|본문|파라미터)|API\s*의?\s*파라미터"
+    r"|상태\s*코드|(?:오류|에러)\s*코드|HTTP|(?<!\d)[1-5]\d{2}(?!\d)|JSON\s*(?:필드|본문|구성|형식)"
+)
+_OVERLAP_RATIO = 0.35  # 추가 요구 답의 말 중 한 공식 요구·공개 수용 기준과 겹친 비율
+_OVERLAP_WORDS = 5  # …과 겹친 말 수 (둘 다 넘어야) — 2026-11-13 운영 명세 14건의 단서 아닌 추가 요구 25개 중 0.44·8 하나만 걸림
+
+
+def _content_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[0-9A-Za-z가-힣_]+", text) if len(w) >= 2}
+
+
+def clarification_overlaps(out: DraftFeatureOutput) -> dict[str, str]:
+    """함정 단서가 아닌 추가 요구(reveals 없음) 중 공식 요구를 되풀이하거나 응답 형식을 정하는 것 — id → 사유 (#165).
+
+    진행자는 질문이 묻는 항목을 고른다. 추가 요구가 공식 요구(요청자 지식으로 물어 알게 됨)나 계약(응답 형식)과 같은 내용을 다루면
+    한 가지를 물어도 두 항목이 골라져 "한 가지씩 물어봐 주세요"가 나간다 — 2026-11-13 손 시범 쿠폰 재료: c3 "거절 시 응답 형식"(409·사유 코드)이
+    r2(남은 수량이 모자라면 거절)와 같은 상황이라 사실 질문 9개 중 2개가 거절됐다. 되풀이한 추가 요구는 새 정보가 없어 빼도 잃는 것이 없다.
+    함정 단서(reveals 있음)는 숨은 요구의 단서 자리라 보지 않는다."""
+    public = [(r.req_id, r.text) for r in out.requirements] + [
+        (a.ac_id, a.text) for a in out.acceptance_public
+    ]
+    found: dict[str, str] = {}
+    for c in out.clarifications:
+        if c.reveals:
+            continue
+        if _FORMAT_TOPIC.search(c.topic):
+            found[c.clarification_id] = (
+                f"추가 요구 {c.clarification_id} 가 요청·응답 형식을 정함 ('{c.topic}') — 상태 코드·오류 코드·응답 칸·요청 규격은 계약이 정한다. "
+                "함정 단서가 아닌 추가 요구로 두지 않는다 (빼거나, 공식 요구가 정하지 않은 업무 사실로 바꾼다)"
+            )
+            continue
+        words = _content_words(c.answer)
+        if not words:
+            continue
+        rid, shared = max(
+            ((pid, words & _content_words(text)) for pid, text in public),
+            key=lambda x: len(x[1]),
+            default=("", set()),
+        )
+        if len(shared) >= _OVERLAP_WORDS and len(shared) / len(words) >= _OVERLAP_RATIO:
+            found[c.clarification_id] = (
+                f"추가 요구 {c.clarification_id} 가 공식 요구 {rid} 를 되풀이함 (겹친 말 {len(shared)}개: "
+                f"{', '.join(sorted(shared)[:6])}) — 공식 요구가 이미 말한 것은 추가 요구로 두지 않는다 (빼거나, 그 요구가 말하지 않은 사실만)"
+            )
+    return found
+
+
 # 실패를 순번으로 정하는 말 — 재료가 fault_by="item" 일 때만 본다 ('첫 재연결'·'메모 B 의 첫 전송' 같은 정상 글은 걸리지 않게 수·서수만)
 ORDINAL_FAULT = re.compile(
     r"(?:처음|앞|먼저 온|최초)\s*\d+\s*(?:건|개|번|회)|\d+\s*번째\s*(?:요청|전송|호출|저장)"
@@ -655,6 +704,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     if out.max_clarifications > len(out.clarifications):
         problems.append("max_clarifications 가 추가 요구 수보다 큼")
     problems += check_hints(out, ctx)
+    problems += list(clarification_overlaps(out).values())
     problems += check_hidden_faults(out, ctx.incident.feature if ctx.incident is not None else None)
 
     # 2단계
@@ -823,6 +873,18 @@ def repair_feature(out: DraftFeatureOutput, ctx: DraftContext) -> tuple[DraftFea
     """재요청 후에도 어긋나면 잘못된 id 참조만 걷어낸다 (이슈형 repair + 기능형 참조). 문장은 고치지 않는다."""
     fixed_any, anchors_ok = repair(cast(Any, out), ctx)
     fixed = cast(DraftFeatureOutput, fixed_any)
+    # 재요청 뒤에도 공식 요구를 되풀이하거나 응답 형식을 정하는 단서 아닌 추가 요구는 뺀다 — 새 정보가 없다 (#165, 검토 표시는 남은 문제로)
+    overlaps = clarification_overlaps(fixed)
+    if overlaps and len(overlaps) < len(
+        fixed.clarifications
+    ):  # 하나는 남긴다 (질문 한도·관찰 항목이 기댐)
+        fixed = fixed.model_copy(
+            update={
+                "clarifications": [
+                    c for c in fixed.clarifications if c.clarification_id not in overlaps
+                ]
+            }
+        )
     traps = {t.trap_id for t in fixed.traps}
     clar = {c.clarification_id for c in fixed.clarifications}
     s1 = {a.artifact_id for a in fixed.artifacts}

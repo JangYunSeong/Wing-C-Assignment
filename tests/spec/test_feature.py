@@ -21,6 +21,7 @@ from task_spec.spec.draft import FLAG_DRAFT_INVALID, DraftResult
 from task_spec.spec.feature import (
     apply_feature,
     check_feature,
+    clarification_overlaps,
     draft_feature_task,
     repair_feature,
     shuffle_feature,
@@ -321,3 +322,53 @@ def test_slots_see_feature_public_parts_and_hide_both_stage_concepts() -> None:
     assert "동시 32건" not in visible and "배포 다음 날" not in visible  # 숨김 기준·2단계는 안 보임
     secrets = common_secrets(task, _ctx())
     assert "점유 범위" in secrets and "자원 고갈" in secrets  # 2단계 원인 개념도 슬롯에 쓰면 안 됨
+
+
+def test_non_clue_clarification_repeating_requirement_or_format_is_flagged_and_dropped() -> None:
+    """#165 — 함정 단서가 아닌 추가 요구가 공식 요구를 되풀이하거나 응답 형식을 정하면 진행자가 두 항목을 골라 "한 가지씩"이 나간다."""
+    d = _fdraft()
+    d["requirements"][0]["text"] = (
+        "상태 변경이 실패하거나 거절된 요청도 실패 사유와 함께 이력을 남긴다"
+    )
+    d["clarifications"].append(
+        {
+            "clarification_id": "c3",
+            "topic": "실패한 변경 기록",
+            "answer": "상태 변경이 실패하거나 거절된 요청도 실패 사유와 함께 이력을 남깁니다",
+            "reveals": [],
+        }
+    )
+    d["clarifications"].append(
+        {
+            "clarification_id": "c4",
+            "topic": "거절 시 응답 형식",
+            "answer": "409 와 사유 코드",
+            "reveals": [],
+        }
+    )
+    out = _out(d)
+    got = clarification_overlaps(out)
+    assert set(got) == {"c3", "c4"}
+    assert "공식 요구 r1 를 되풀이" in got["c3"] and "응답 형식을 정함" in got["c4"]
+    problems = check_feature(out, _ctx())
+    assert any("c3 가 공식 요구 r1" in p for p in problems)
+    assert any("c4 가 요청·응답 형식" in p for p in problems)
+    # 재요청 뒤에도 남으면 빼고(새 정보 없음), 관찰 항목도 따라 정리된다 — 함정 단서 c1·업무 사실 c2 는 그대로
+    fixed, _ = repair_feature(out, _ctx())
+    assert [c.clarification_id for c in fixed.clarifications] == ["c1", "c2"]
+    assert all(o.value not in ("c3", "c4") for o in fixed.observables)
+
+
+def test_clue_and_new_rule_clarifications_are_kept() -> None:
+    """함정 단서(reveals 있음)는 보지 않는다. 답에 상태 코드가 있어도 주제가 새 규칙(인가 등)이면 응답 형식이 아니다."""
+    d = _fdraft()
+    d["clarifications"][1] = {
+        "clarification_id": "c2",
+        "topic": "차감 API의 인증·인가 방식",
+        "answer": "토큰의 차량과 요청 대상이 다르면 403 을 반환합니다",
+        "reveals": [],
+    }
+    d["clarifications"][0]["topic"] = (
+        "피크 시 HTTP 요청량"  # 단서는 주제에 HTTP 가 있어도 보지 않음
+    )
+    assert clarification_overlaps(_out(d)) == {}
