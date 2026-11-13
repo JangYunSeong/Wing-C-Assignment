@@ -173,6 +173,24 @@ def _lists_entity(e: Endpoint, m: Entity) -> bool:
     return False
 
 
+def _lists_shape(e: Endpoint, contract: TaskContract) -> bool:
+    """성공 응답이 응답 모양(response_shapes)의 목록인가 — 조인한 칸이 붙은 목록 항목(`v1[]`·`{items: v1[]}`)도 목록 API 다.
+    2026-11-13 송금 내역(ct-4fb4cffa89b4-b1): plan_contract v24 대로 고객별 목록을 `GET /customers/{customerId}/remittances` → `v1[]` 로
+    적으면 '한 행을 찾는 API' 로 짚고 '값에서 customerId 를 빼라'(목록이면 틀린 지시)를 줘, 다시 요청해도 못 고쳐 계약이 실패했다.
+    모양에는 어느 엔티티의 모양인지 칸이 없어 모양의 목록이면 모두 목록 API 로 본다."""
+    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    if ok is None:
+        return False
+    keys = {k for s in contract.response_shapes for k in (s.shape_id, s.name)}
+    if ok.returns and ok.returns.endswith("[]") and ok.returns[:-2] in keys:
+        return True
+    for f in ok.body:
+        ft = parse_field(f.type)
+        if ft.kind == "list" and ft.items[0].kind == "ref" and ft.items[0].name in keys:
+            return True
+    return False
+
+
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
     """경로 변수로 한 행을 찾는데 여러 행 그룹이 그 필드를 모두 같은 값으로 고정 — 조회가 여러 건이 된다.
 
@@ -185,6 +203,8 @@ def _lookup_key_problems(contract: TaskContract) -> list[str]:
         params = _PATH_PARAM.findall(e.path)
         if any(p in _ID_FIELDS for p in params):
             continue  # id 로 찾으면 행마다 다르다
+        if _lists_shape(e, contract):
+            continue  # 응답 모양의 목록 — 같은 경로 변수 값이 여러 행에 있는 것이 정상
         for s in contract.seed:
             m = entities.get(s.entity_id)
             if m is None:

@@ -416,3 +416,30 @@ def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
     assert _has(got, "한 행을 찾는", "shopId") and not _has(
         got, "목록을 돌려주는"
     )  # 이미 다른 것의 목록
+
+
+def test_list_of_response_shape_with_a_shared_path_key_is_fine() -> None:
+    """응답 모양(조인한 칸이 붙은 목록 항목)의 목록도 목록 API — 2026-11-13 송금 내역(ct-4fb4cffa89b4-b1): plan_contract v24 대로
+    GET /shops/{shopId}/orders → v1[] 로 적은 계약을 '한 행을 찾는 API' 로 짚어 다시 요청해도 못 고쳤다. 한 건 응답은 지금처럼 잡는다."""
+    c = _contract()
+    c["entities"][0]["fields"] += [{"name": "shopId", "type": "integer", "refs": ["r1"]}]
+    c["endpoints"][1]["path"] = "/shops/{shopId}/orders"
+    c["endpoints"][0]["path"] = "/orders/{id}/status"
+    c["seed"] = [_seed(200, (1, 200, {"status": "READY", "shopId": 7}))]
+    c["response_shapes"] = [
+        {
+            "shape_id": "v1",
+            "name": "OrderSummary",
+            "fields": [
+                {"name": "id", "type": "integer", "refs": ["r1"]},
+                {"name": "shopName", "type": "string", "refs": ["r1"], "constraints": "Shop.name"},
+            ],
+        }
+    ]
+    ok = next(r for r in c["endpoints"][1]["responses"] if 200 <= r["status"] < 300)
+    ok.update({"returns": "v1[]", "body": []})
+    assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")
+    ok.update({"returns": None, "body": [{"name": "items", "type": "v1[]", "refs": ["r1"]}]})
+    assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")  # 감싼 목록
+    ok.update({"returns": "v1", "body": []})  # 한 건 — 경로 변수로 한 행을 찾는다
+    assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
