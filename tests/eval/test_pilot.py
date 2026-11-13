@@ -23,7 +23,7 @@ from eval.pilot.facilitator import (
 from eval.pilot.grade import Method, SuiteRun, methods
 from eval.pilot.llm_facilitator import Chooser, apply_choice, render_items
 from eval.pilot.model import Fact, Material, parse_label, run_label, term_overlaps
-from eval.pilot.simulate import classify
+from eval.pilot.simulate import classify, pooled, record_official
 from eval.pilot.simulate import run as simulate_run
 from eval.pilot.validity import judge
 from task_spec.schemas import AskedItem, FacilitatorChooseOutput
@@ -486,7 +486,7 @@ def test_simulation_passes_at_the_thresholds() -> None:
     )  # 추가 요구(c#)는 기준 밖
 
 
-def test_freeze_preflight_needs_validity_and_llm_judged_question_lists(
+def test_freeze_preflight_reads_only_the_official_judgments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("eval.pilot.model.DATA", tmp_path)
@@ -494,26 +494,83 @@ def test_freeze_preflight_needs_validity_and_llm_judged_question_lists(
     monkeypatch.setattr(freeze, "load_material", lambda mid: m)
     monkeypatch.setattr(freeze, "check_material", lambda mat: [])
     monkeypatch.setattr(freeze, "judged_version", lambda: 2)  # 진행자 프롬프트 지금 판
-    (m.dir / "questions").mkdir(parents=True)
-    assert len(freeze.preflight("m1")) == 3  # 유효성·확인용 목록·모호한 질문 목록 결과 모두 없음
+    qdir = m.dir / "questions"
+    qdir.mkdir(parents=True)
+    assert len(freeze.preflight("m1")) == 3  # 유효성 결과·공식 판정 둘 다 없음
 
-    def put(name: str, data: dict[str, Any]) -> None:
-        (m.dir / name).write_text(json.dumps(data), "utf-8")
-
-    put("validity.json", {"baseline_ok": True, "usable": False, "measured_unmentioned": ["r1"]})
-    put("questions/check-llm-v2.result.json", {"passed": False})
-    put("questions/vague-check-llm-v2.result.json", {"vague_passed": False})
+    (m.dir / "validity.json").write_text(json.dumps({"baseline_ok": True, "usable": True}), "utf-8")
+    record_official(
+        qdir,
+        {
+            "kind": "general",
+            "sets": ["check"],
+            "version": 2,
+            "stage": "result",
+            "result": "check-llm-v2.result.json",
+            "passed": False,
+        },
+    )
+    record_official(
+        qdir, {"kind": "vague", "sets": ["vague-check"], "version": 2, "stage": "declared"}
+    )
     assert [p.split(":")[0] for p in freeze.preflight("m1")] == [
-        "유효성",
-        "확인용 질문 목록이 기준에 못 미침",
-        "모호한 질문에 구체 답이 기준보다 많이 열림",
+        "확인용 질문 목록이 기준에 못 미침 (질문 수가 모자라면 목록을 더 받아 합친다)",
+        "모호한 질문 목록 공식 판정이 끝나지 않음",
     ]
-    put("validity.json", {"baseline_ok": True, "usable": True})
-    put("questions/check5-llm-v2.result.json", {"passed": True})  # 마지막 확인용 목록으로 본다
-    put("questions/check9.result.json", {"passed": False})  # 낱말 규칙 결과는 보지 않는다
-    put("questions/check9-llm-v1.result.json", {"passed": False})  # 다른 판의 결과도 보지 않는다
-    put("questions/vague-check2-llm-v2.result.json", {"vague_passed": True})
+    # 사실 질문이 모자라 목록을 더해 다시 — 마지막 공식 결과로 본다. 다른 판의 결과는 보지 않는다
+    record_official(
+        qdir,
+        {
+            "kind": "general",
+            "sets": ["check", "check2"],
+            "version": 2,
+            "stage": "result",
+            "result": "check+check2-llm-v2.result.json",
+            "passed": True,
+        },
+    )
+    record_official(
+        qdir,
+        {
+            "kind": "vague",
+            "sets": ["vague-check"],
+            "version": 2,
+            "stage": "result",
+            "result": "vague-check-llm-v2.result.json",
+            "passed": True,
+        },
+    )
+    record_official(
+        qdir,
+        {
+            "kind": "general",
+            "sets": ["x"],
+            "version": 1,
+            "stage": "result",
+            "result": "x",
+            "passed": False,
+        },
+    )
     assert freeze.preflight("m1") == []
+
+
+def test_simulation_needs_enough_questions_and_pools_lists(tmp_path: Path) -> None:
+    few = simulate_run([F1, F2, C1], [{"q": "회원당 몇 번이요?", "about": "f1"}] * 7)
+    assert (
+        few["rates"]["구체 답"] == 1.0 and not few["facts_enough"] and not few["passed"]
+    )  # 사실 질문 7 < 8
+    enough = simulate_run([F1, F2, C1], [{"q": "회원당 몇 번이요?", "about": "f1"}] * 8)
+    assert enough["facts_enough"] and enough["passed"]
+    vague = simulate_run([F1, F2, C1], [{"q": "주의할 점이 있나요?", "about": "vague"}] * 19)
+    assert vague["vague_open_rate"] == 0.0 and not vague["vague_passed"]  # 모호 질문 19 < 20
+    one_open = [{"q": "회원당 몇 번이요?", "about": "vague"}] + [
+        {"q": "주의할 점이 있나요?", "about": "vague"}
+    ] * 19
+    r = simulate_run([F1, F2, C1], one_open)
+    assert r["vague_open_rate"] == 0.05 and r["vague_passed"]  # 20개 중 1개까지
+    (tmp_path / "a.json").write_text(json.dumps([{"q": "1", "about": None}]), "utf-8")
+    (tmp_path / "b.json").write_text(json.dumps([{"q": "2", "about": "f1"}]), "utf-8")
+    assert [q["q"] for q in pooled(tmp_path, ["a", "b"])] == ["1", "2"]  # 만든 순서대로
 
 
 def test_session_drops_request_words_from_topic_hints() -> None:

@@ -29,7 +29,14 @@ from typing import Any
 
 from eval.pilot.llm_facilitator import TASK as FACILITATOR_TASK
 from eval.pilot.model import DATA, ROOT, check_material, load_material
-from eval.pilot.simulate import CORRECT_MIN, ONE_AT_A_TIME_MAX, VAGUE_OPEN_MAX
+from eval.pilot.simulate import (
+    CORRECT_MIN,
+    MIN_FACT_QUESTIONS,
+    MIN_VAGUE_QUESTIONS,
+    OFFICIAL,
+    ONE_AT_A_TIME_MAX,
+    VAGUE_OPEN_MAX,
+)
 from eval.pilot.validity import MIN_MEASURED
 from task_spec.prompting import PromptRegistry
 
@@ -54,6 +61,8 @@ CRITERIA = {
     "check_questions_correct_min": CORRECT_MIN,
     "check_questions_one_at_a_time_max": ONE_AT_A_TIME_MAX,
     "vague_questions_concrete_open_max": VAGUE_OPEN_MAX,
+    "min_fact_questions": MIN_FACT_QUESTIONS,
+    "min_vague_questions": MIN_VAGUE_QUESTIONS,
 }
 
 
@@ -62,9 +71,26 @@ def judged_version() -> int:
     return PromptRegistry(ROOT / "prompts").current_version(FACILITATOR_TASK)
 
 
-def _latest(m_dir: Path, pattern: str) -> Path | None:
-    found = sorted(p for p in (m_dir / "questions").glob(pattern) if "-syn" not in p.name)
-    return found[-1] if found else None
+def _official_problems(qdir: Path, version: int) -> list[str]:
+    """공식 판정 기록(questions/official.json) — 지금 판으로 돌린 마지막 결과만 본다. 대상은 돌리기 전에 적었다 (simulate --official)."""
+    path = qdir / OFFICIAL
+    log = json.loads(path.read_text("utf-8")) if path.exists() else []
+    out: list[str] = []
+    for kind, what in (("general", "확인용 질문 목록"), ("vague", "모호한 질문 목록")):
+        rows = [r for r in log if r["kind"] == kind and r["version"] == version]
+        if not rows:
+            out.append(
+                f"{what} 공식 판정 없음 — simulate --official {kind} --llm (진행자 판 v{version}) 먼저"
+            )
+            continue
+        last = rows[-1]
+        if last["stage"] != "result":
+            out.append(f"{what} 공식 판정이 끝나지 않음: {'+'.join(last['sets'])}")
+        elif not last["passed"]:
+            out.append(
+                f"{what}이 기준에 못 미침 (질문 수가 모자라면 목록을 더 받아 합친다): {last['result']}"
+            )
+    return out
 
 
 def _git(*args: str) -> str:
@@ -118,21 +144,7 @@ def preflight(mid: str) -> list[str]:
             problems.append(
                 f"유효성: 묻지 않고는 모르는 측정 요구 {v.get('measured_unmentioned')} — {MIN_MEASURED}개 미만이라 쓰지 않는 재료"
             )
-    v = judged_version()
-    check = _latest(m.dir, f"check*-llm-v{v}.result.json")
-    if check is None:
-        problems.append(
-            f"확인용 질문 목록 결과 없음 — simulate --set check… --llm (진행자 판 v{v}) 먼저"
-        )
-    elif not json.loads(check.read_text("utf-8")).get("passed"):
-        problems.append(f"확인용 질문 목록이 기준에 못 미침: {check.name}")
-    vague = _latest(m.dir, f"vague-check*-llm-v{v}.result.json")
-    if vague is None:
-        problems.append(
-            f"모호한 질문 목록 결과 없음 — simulate --set vague-check… --llm (진행자 판 v{v}) 먼저"
-        )
-    elif not json.loads(vague.read_text("utf-8")).get("vague_passed"):
-        problems.append(f"모호한 질문에 구체 답이 기준보다 많이 열림: {vague.name}")
+    problems += _official_problems(m.dir / "questions", judged_version())
     return problems
 
 
