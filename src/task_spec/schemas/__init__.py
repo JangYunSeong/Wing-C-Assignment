@@ -126,7 +126,14 @@ from task_spec.schemas.ingest import (
 )
 from task_spec.schemas.judge_overlap import JudgeOverlapInput, JudgeOverlapOutput, OverlapVerdict
 from task_spec.schemas.package import ReviewDecision
-from task_spec.schemas.pilot import ExpandedTerms, ExpandTermsInput, ExpandTermsOutput
+from task_spec.schemas.pilot import (
+    AskedItem,
+    ExpandedTerms,
+    ExpandTermsInput,
+    ExpandTermsOutput,
+    FacilitatorChooseInput,
+    FacilitatorChooseOutput,
+)
 from task_spec.schemas.postings import (
     AnalyzedLine,
     Candidate,
@@ -268,6 +275,9 @@ __all__ = [
     "GradeSoloOutput",
     "ExpandTermsInput",
     "ExpandTermsOutput",
+    "AskedItem",
+    "FacilitatorChooseInput",
+    "FacilitatorChooseOutput",
     "ExpandedTerms",
     "SolveTaskInput",
     "SolveSelectInput",

@@ -18,9 +18,12 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
+from eval.pilot.llm_facilitator import Chooser, apply_choice
 from eval.pilot.model import Material, facilitator_items, load_material
+from task_spec.schemas import AskedItem
 from task_spec.starter.answer_rule import NO_INFO, Reply, answer, is_clarification
 from task_spec.starter.facilitator import Answer
 
@@ -28,8 +31,15 @@ CORRECT_MIN = 0.8  # 한 주제 질문 중 정답 항목의 구체 답 비율 �
 ONE_AT_A_TIME_MAX = 0.1  # 한 주제 질문 중 "한 가지씩" 비율 상한
 
 
+VAGUE = "vague"  # 특정 항목을 콕 집지 않는 넓은 질문 — 구체 답이 열리면 안 된다 (2026-11-13 사용자: 모호하게 물어 여럿 여는 것 조심)
+VAGUE_OPEN_MAX = 0.1  # 모호한 질문 중 구체 답이 열리는 비율 상한 [제안]
+
+
 def classify(about: str | list[str] | None, r: Reply) -> str:
-    """about — 한 항목 id(한 주제 질문) / 여러 id(여러 주제 질문) / None(주제 밖)."""
+    """about — 한 항목 id(한 주제 질문) / 여러 id(여러 주제 질문) / None(주제 밖) / "vague"(넓은 질문)."""
+    if about == VAGUE:
+        opened = r.layer == "answer" and r.item_id is not None and not r.repeat
+        return "모호·구체 열림" if opened else "모호·막음"
     if about is None:
         return "주제 밖·정보 없음" if r.text == NO_INFO else "주제 밖·잘못 열림"
     if isinstance(about, list):
@@ -47,12 +57,22 @@ def _rate(rows: list[dict[str, Any]], result: str) -> float | None:
     return (sum(x["result"] == result for x in rows) / len(rows)) if rows else None
 
 
-def run(items: list[Answer], questions: list[dict[str, Any]], request: str = "") -> dict[str, Any]:
+def run(
+    items: list[Answer],
+    questions: list[dict[str, Any]],
+    request: str = "",
+    choose: Callable[[str], list[AskedItem]] | None = None,
+) -> dict[str, Any]:
     """질문마다 처음 묻는 것으로(상태 없음) 답 규칙에 넣고 센다. 판정은 한 주제 질문으로 — 정답 항목 구체 답 ≥ CORRECT_MIN,
-    "한 가지씩" ≤ ONE_AT_A_TIME_MAX. 정보 없음·다른 항목·주제 밖 잘못 열림은 같이 기록한다."""
+    "한 가지씩" ≤ ONE_AT_A_TIME_MAX. 정보 없음·다른 항목·주제 밖 잘못 열림은 같이 기록한다.
+    choose 를 주면 낱말 규칙 대신 그것(진행자 LLM — 응시 플랫폼 흉내)이 항목을 고른다."""
     rows = []
     for q in questions:
-        r = answer(q["q"], items, {}, request)
+        r = (
+            apply_choice(choose(q["q"]), items, {}, legacy=False)
+            if choose is not None
+            else answer(q["q"], items, {}, request)
+        )
         rows.append(
             {
                 "q": q["q"],
@@ -62,7 +82,8 @@ def run(items: list[Answer], questions: list[dict[str, Any]], request: str = "")
                 "rule": r.rule,
             }
         )
-    one = [x for x in rows if isinstance(x["about"], str)]
+    vague = [x for x in rows if x["about"] == VAGUE]
+    one = [x for x in rows if isinstance(x["about"], str) and x["about"] != VAGUE]
     single = [x for x in one if not is_clarification(x["about"])]  # 판정 — 사실(f#) 한 항목 질문
     clar = [x for x in one if is_clarification(x["about"])]  # 추가 요구(c#) — 기록만
     names = ("구체 답", "모호한 답", "정보 없음", "한 가지씩", "다른 항목")
@@ -74,6 +95,8 @@ def run(items: list[Answer], questions: list[dict[str, Any]], request: str = "")
         "single_topic": len(single),
         "rates": rates,
         "clarification_rates": {name: _rate(clar, name) for name in names},
+        "vague_open_rate": _rate(vague, "모호·구체 열림"),
+        "vague_passed": (v := _rate(vague, "모호·구체 열림")) is not None and v <= VAGUE_OPEN_MAX,
         "off_topic_wrong_open": _rate(off, "주제 밖·잘못 열림"),
         "passed": correct is not None
         and broad is not None
@@ -88,11 +111,29 @@ def main() -> None:
     ap.add_argument("--mid", required=True)
     ap.add_argument("--set", required=True, help="questions/<목록>.json")
     ap.add_argument("--synonyms", action="store_true", help="고정한 동의어 목록을 더해서")
+    ap.add_argument(
+        "--llm", action="store_true", help="진행자 LLM 이 고른다 (응시 플랫폼과 같게, 판 1·4)"
+    )
+    ap.add_argument(
+        "--prompt-version", type=int, default=None, help="facilitator_choose 판 (기본 CURRENT)"
+    )
     a = ap.parse_args()
     m: Material = load_material(a.mid)
     qs = json.loads((m.dir / "questions" / f"{a.set}.json").read_text("utf-8"))
-    out = run(facilitator_items(m, "new", m.synonyms() if a.synonyms else None), qs, m.request)
-    suffix = "-syn" if a.synonyms else ""
+    items = facilitator_items(m, "new", m.synonyms() if a.synonyms else None)
+    choose = None
+    if a.llm:
+        chooser = Chooser(version=a.prompt_version)
+
+        def choose(q: str) -> list[AskedItem]:
+            return chooser.choose_sync(q, items, False, m.request)
+
+    out = run(items, qs, m.request, choose)
+    suffix = (
+        ("-syn" if a.synonyms else "")
+        + ("-llm" if a.llm else "")
+        + (f"-v{a.prompt_version}" if a.llm and a.prompt_version else "")
+    )
     (m.dir / "questions" / f"{a.set}{suffix}.result.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=1), "utf-8"
     )
@@ -103,6 +144,7 @@ def main() -> None:
         "single_topic",
         "rates",
         "clarification_rates",
+        "vague_open_rate",
         "off_topic_wrong_open",
         "passed",
     )

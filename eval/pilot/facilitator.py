@@ -20,10 +20,23 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from eval.pilot.llm_facilitator import Chooser, apply_choice
 from eval.pilot.model import RUNS, Mode
 from task_spec.schemas.base import Schema
 from task_spec.starter.answer_rule import Reply, State, answer, answer_legacy
 from task_spec.starter.facilitator import Answer, Material
+
+_CHOOSER: Chooser | None = None
+_CHOOSER_LOCK = threading.Lock()
+
+
+def _chooser() -> Chooser:
+    global _CHOOSER
+    with _CHOOSER_LOCK:
+        if _CHOOSER is None:
+            _CHOOSER = Chooser()
+        return _CHOOSER
+
 
 PORT = 8765
 FAC = RUNS / "facilitator"
@@ -47,7 +60,9 @@ class Session(Schema):
     token: str = Field(min_length=16)
     mode: Mode
     items: list[Answer]
-    request: str = ""  # 요청 글 — §4.6 규칙 4 주제 낱말에서 뺀다
+    request: str = ""  # 요청 글 — §4.6 규칙 4 주제 낱말에서 뺀다 (judge=llm 이면 LLM 에 함께 준다)
+    # 누가 항목을 고르나 — llm: 응시 플랫폼처럼 LLM (eval/pilot/llm_facilitator.py, 2026-11-13 사용자), rule: 낱말 규칙 함수
+    judge: Literal["rule", "llm"] = "rule"
     materials: list[Material]
     max_questions: int | None = None  # None = 한도 없음 (§4.4)
     max_requests: int | None = None
@@ -92,11 +107,16 @@ def handle(
     ):  # 지금 규칙 모드 — 모든 질문이 한도에 든다
         msg = QUESTION_LIMIT.format(n=s.max_questions)
         return msg, Entry(t=t, kind="refused", arg=arg, text=msg)
-    reply = (
-        answer_legacy(arg, s.items)
-        if s.mode == "legacy"
-        else answer(arg, s.items, states(entries), s.request)
-    )
+    if s.judge == "llm":
+        legacy = s.mode == "legacy"
+        picked = _chooser().choose_sync(arg, s.items, legacy, s.request)
+        reply = apply_choice(picked, s.items, {} if legacy else states(entries), legacy)
+    else:
+        reply = (
+            answer_legacy(arg, s.items)
+            if s.mode == "legacy"
+            else answer(arg, s.items, states(entries), s.request)
+        )
     return reply.text, Entry(t=t, kind="question", arg=arg, reply=reply, text=reply.text)
 
 

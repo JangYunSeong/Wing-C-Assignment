@@ -131,7 +131,8 @@ def prepare_one(
             token=secrets.token_hex(16),
             mode=arm.ask,
             items=facilitator_items(m, arm.ask, m.synonyms() if synonyms else None),
-            request=m.request if arm.ask == "new" else "",
+            request=m.request,
+            judge="llm",  # 응시 플랫폼처럼 LLM 이 고른다 (2026-11-13 사용자)
             materials=stage1_materials(task),
             max_questions=q,
             max_requests=r,

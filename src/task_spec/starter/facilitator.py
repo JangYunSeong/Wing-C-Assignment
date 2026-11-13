@@ -20,6 +20,13 @@ ANSWER_RULE = (
     "질문에 match_terms 중 하나라도 들어 있으면 answer, 아니면 answer_hint 를 문장 그대로 준다 (answer_hint 가 없으면 answer). "
     "어느 주제에도 맞지 않으면 추가로 줄 정보가 없다고 한다."
 )
+# 새 규칙 글 (docs/design/analysis-stage.md §4.6, 손 시범으로 확인 중 — 아직 FacilitatorView.rule 에 쓰지 않는다).
+# 응시 플랫폼의 진행자 LLM 이 읽는다. 항목의 구체 조건은 문장(ask_when)으로, 없으면 매칭 낱말을 예시 표현으로 본다 (2026-11-13 사용자).
+ANSWER_RULE_ASK = (
+    "질문이 실제로 묻는 항목에만 답한다. 질문이 어떤 항목의 구체 조건(ask_when, 없으면 match_terms 를 예시 표현으로)에 해당하면 그 항목의 answer 를, "
+    "구체 조건에는 해당하지 않고 주제(topic)만 맞으면 answer_hint 를 문장 그대로 준다. 질문이 두 항목 이상을 함께 물으면 "
+    "'한 가지씩 물어봐 주세요'라고 한다. 어느 항목에도 해당하지 않으면 추가로 줄 정보가 없다고 한다. 묻지 않은 항목의 내용은 말하지 않는다."
+)
 
 
 class Material(BaseModel):
@@ -43,6 +50,9 @@ class Answer(BaseModel):
     match_terms: list[str]
     answer: str
     answer_hint: str | None
+    ask_when: str | None = (
+        None  # 구체 답 조건 문장 (§4.2 새 형식, 손 시범에서 확인 중) — 없으면 match_terms 를 예시 표현으로
+    )
 
 
 class Clarifications(BaseModel):

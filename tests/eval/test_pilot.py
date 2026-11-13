@@ -21,10 +21,12 @@ from eval.pilot.facilitator import (
     states,
 )
 from eval.pilot.grade import Method, SuiteRun, methods
+from eval.pilot.llm_facilitator import Chooser, apply_choice, render_items
 from eval.pilot.model import Fact, Material, parse_label, run_label, term_overlaps
 from eval.pilot.simulate import classify
 from eval.pilot.simulate import run as simulate_run
 from eval.pilot.validity import judge
+from task_spec.schemas import AskedItem, FacilitatorChooseOutput
 from task_spec.starter.answer_rule import NO_INFO as NO
 from task_spec.starter.answer_rule import ONE_AT_A_TIME, Reply
 from task_spec.starter.facilitator import Answer
@@ -484,28 +486,33 @@ def test_simulation_passes_at_the_thresholds() -> None:
     )  # 추가 요구(c#)는 기준 밖
 
 
-def test_freeze_preflight_needs_validity_and_check_questions(
+def test_freeze_preflight_needs_validity_and_llm_judged_question_lists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("eval.pilot.model.DATA", tmp_path)
     m = _material()
     monkeypatch.setattr(freeze, "load_material", lambda mid: m)
     monkeypatch.setattr(freeze, "check_material", lambda mat: [])
+    monkeypatch.setattr(freeze, "judged_version", lambda: 2)  # 진행자 프롬프트 지금 판
     (m.dir / "questions").mkdir(parents=True)
-    assert len(freeze.preflight("m1")) == 2  # 유효성 결과·확인용 목록 결과 둘 다 없음
+    assert len(freeze.preflight("m1")) == 3  # 유효성·확인용 목록·모호한 질문 목록 결과 모두 없음
 
     def put(name: str, data: dict[str, Any]) -> None:
         (m.dir / name).write_text(json.dumps(data), "utf-8")
 
     put("validity.json", {"baseline_ok": True, "usable": False, "measured_unmentioned": ["r1"]})
-    put("questions/check.result.json", {"passed": False})
+    put("questions/check-llm-v2.result.json", {"passed": False})
+    put("questions/vague-check-llm-v2.result.json", {"vague_passed": False})
     assert [p.split(":")[0] for p in freeze.preflight("m1")] == [
         "유효성",
         "확인용 질문 목록이 기준에 못 미침",
+        "모호한 질문에 구체 답이 기준보다 많이 열림",
     ]
     put("validity.json", {"baseline_ok": True, "usable": True})
-    put("questions/check2.result.json", {"passed": True})  # 마지막(두 번째) 확인용 목록으로 본다
-    put("questions/check2-syn.result.json", {"passed": False})  # 동의어를 더한 결과는 보지 않는다
+    put("questions/check5-llm-v2.result.json", {"passed": True})  # 마지막 확인용 목록으로 본다
+    put("questions/check9.result.json", {"passed": False})  # 낱말 규칙 결과는 보지 않는다
+    put("questions/check9-llm-v1.result.json", {"passed": False})  # 다른 판의 결과도 보지 않는다
+    put("questions/vague-check2-llm-v2.result.json", {"vague_passed": True})
     assert freeze.preflight("m1") == []
 
 
@@ -516,3 +523,76 @@ def test_session_drops_request_words_from_topic_hints() -> None:
         request="이벤트 쿠폰을 발급해 주세요"
     )  # 요청 글에 있는 말은 주제 단서가 아님 (§4.6 (ii))
     assert _ask(s, [], "question", q) == NO
+
+
+# ── 진행자 LLM (응시 플랫폼 흉내, eval/pilot/llm_facilitator.py) — 가짜 LLM ──
+
+
+def _picked(*pairs: tuple[str, bool]) -> list[AskedItem]:
+    return [AskedItem(item_id=k, concrete=c) for k, c in pairs]
+
+
+def test_llm_choice_follows_the_answer_rule_states() -> None:
+    items = [F1, F2, C1]  # F1 모호한 답 없음, F2·C1 있음
+    r = apply_choice(_picked(("f1", True)), items, {}, legacy=False)
+    assert (r.rule, r.item_id, r.layer, r.hit, r.states["f1"]) == (2, "f1", "answer", 1.0, "open")
+    both = _picked(("f1", True), ("f2", True))
+    assert apply_choice(both, items, {}, legacy=False).text == ONE_AT_A_TIME
+    r = apply_choice(both, items, {"f1": "open"}, legacy=False)  # 열린 것은 세지 않는다 — 이어 묻기
+    assert (r.rule, r.item_id) == (2, "f2")
+    again = apply_choice(_picked(("f1", True)), items, {"f1": "open"}, legacy=False)
+    assert (again.rule, again.repeat, again.hit) == (3, True, None)
+    assert apply_choice(_picked(("f2", False)), items, {}, legacy=False).text == "설정에 따라요."
+    assert apply_choice(_picked(("f1", False)), items, {}, legacy=False).text == NO  # §4.6 (iv)
+    assert apply_choice([], items, {}, legacy=False).text == NO
+    assert apply_choice(_picked(("f9", True)), items, {}, legacy=False).text == NO  # 모르는 id
+    legacy = apply_choice(_picked(("c1", False), ("f2", True)), [C1], {}, legacy=True)
+    assert (legacy.rule, legacy.item_id, legacy.layer, legacy.hit) == (2, "c1", "hint", None)
+
+
+def test_render_items_shows_condition_sentence_or_current_terms() -> None:
+    fact = F1.model_copy(update={"ask_when": "회원 한 명이 몇 번 받을 수 있는지 물을 때"})
+    new = render_items([fact, C1], legacy=False)
+    assert (
+        "구체 조건(ask_when): 회원 한 명이" in new
+        and "매칭 낱말(match_terms, 예시 표현): 요청량" in new
+    )
+    old = render_items([C1], legacy=True)
+    assert "매칭 낱말(match_terms): 요청량" in old and "ask_when" not in old
+
+
+class _FakeLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def call(self, prompt: Any, out: Any) -> Any:
+        self.calls += 1
+        parsed = FacilitatorChooseOutput(asked=_picked(("f1", True), ("zz", True)))
+        return SimpleNamespace(
+            parsed=parsed,
+            provenance=SimpleNamespace(model_dump=lambda mode="json": {"model": "fake"}),
+        )
+
+
+def test_chooser_caches_answers_and_drops_unknown_ids(tmp_path: Path) -> None:
+    fake = _FakeLLM()
+    cache = tmp_path / "cache.json"
+    c = Chooser(llm=fake, cache=cache)  # type: ignore[arg-type]
+    first = c.choose_sync("회원당 몇 번?", [F1, F2], False, "요청 글")
+    second = c.choose_sync("회원당   몇 번?", [F1, F2], False, "요청 글")  # 공백만 다름 — 같은 질문
+    assert [x.item_id for x in first] == ["f1"] and first == second and fake.calls == 1
+    again = Chooser(llm=fake, cache=cache)  # type: ignore[arg-type]
+    assert (
+        again.choose_sync("회원당 몇 번?", [F1, F2], False, "요청 글") == first and fake.calls == 1
+    )
+    assert json.loads(cache.read_text("utf-8"))  # provenance 와 함께 남음
+
+
+def test_simulation_can_use_the_llm_chooser() -> None:
+    out = simulate_run(
+        [F1, F2, C1],
+        [{"q": "한 사람이 여러 번 받나요?", "about": "f1"}, {"q": "배포는요?", "about": None}],
+        "",
+        choose=lambda q: _picked(("f1", True)) if "사람" in q else [],
+    )
+    assert [x["result"] for x in out["rows"]] == ["구체 답", "주제 밖·정보 없음"]

@@ -42,6 +42,8 @@ class Fact(Schema):
     match_terms: list[str] = Field(min_length=1)
     answer: str = Field(min_length=1)
     answer_hint: str | None = None
+    # 구체 답 조건 문장 — 진행자 LLM 이 질문과 견준다 (§4.2 새 형식, 2026-11-13 사용자: 낱말 대신 문장 단위로)
+    ask_when: str | None = None
     layer: FactLayer = "base"
     # 시작 코드·계약이 이미 보여 주는 사실 — 정보 값 0. 기존 기능 코드는 지우지 않고 이렇게 표시만 한다 (§9.1 재료, #151 검토 4차)
     info_zero: bool = False
@@ -165,6 +167,7 @@ def fact_items(m: Material, layers: tuple[FactLayer, ...] = ("base", "pilot")) -
             match_terms=list(f.match_terms),
             answer=f.answer,
             answer_hint=f.answer_hint,
+            ask_when=f.ask_when,
         )
         for f in m.facts
         if f.layer in layers

@@ -27,9 +27,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from eval.pilot.llm_facilitator import TASK as FACILITATOR_TASK
 from eval.pilot.model import DATA, ROOT, check_material, load_material
-from eval.pilot.simulate import CORRECT_MIN, ONE_AT_A_TIME_MAX
+from eval.pilot.simulate import CORRECT_MIN, ONE_AT_A_TIME_MAX, VAGUE_OPEN_MAX
 from eval.pilot.validity import MIN_MEASURED
+from task_spec.prompting import PromptRegistry
 
 FROZEN = DATA / "FROZEN.json"
 DESIGN = "docs/design/analysis-stage.md"
@@ -41,14 +43,28 @@ TOOLS = (
     "src/task_spec/starter/templates.py",
     "src/task_spec/spec/feature.py",
     "src/task_spec/schemas/pilot.py",
+    "src/task_spec/llm/client.py",  # 진행자 LLM 호출 (Gemini 설정 허용)
+    "src/task_spec/llm/openai_compat.py",
     "prompts/expand_match_terms",
+    "prompts/facilitator_choose",  # 진행자 LLM — 응시 플랫폼 흉내 (판 1·3·4)
 )
 ORDER = "gate-first: 판 2 opus 2번 → 관문 → 판 0 → (라) → 판 2 나머지 → 판 1·3·4"
 CRITERIA = {
     "min_measured_needs_asking": MIN_MEASURED,
     "check_questions_correct_min": CORRECT_MIN,
     "check_questions_one_at_a_time_max": ONE_AT_A_TIME_MAX,
+    "vague_questions_concrete_open_max": VAGUE_OPEN_MAX,
 }
+
+
+def judged_version() -> int:
+    """진행자 프롬프트의 지금 판 — 질문 목록 점검은 이 판으로 LLM 이 판정한 결과만 본다."""
+    return PromptRegistry(ROOT / "prompts").current_version(FACILITATOR_TASK)
+
+
+def _latest(m_dir: Path, pattern: str) -> Path | None:
+    found = sorted(p for p in (m_dir / "questions").glob(pattern) if "-syn" not in p.name)
+    return found[-1] if found else None
 
 
 def _git(*args: str) -> str:
@@ -102,13 +118,21 @@ def preflight(mid: str) -> list[str]:
             problems.append(
                 f"유효성: 묻지 않고는 모르는 측정 요구 {v.get('measured_unmentioned')} — {MIN_MEASURED}개 미만이라 쓰지 않는 재료"
             )
-    checks = sorted(
-        p for p in (m.dir / "questions").glob("check*.result.json") if "-syn" not in p.name
-    )
-    if not checks:
-        problems.append("확인용 질문 목록 결과 없음 — eval.pilot.simulate --set check 먼저")
-    elif not json.loads(checks[-1].read_text("utf-8")).get("passed"):
-        problems.append(f"확인용 질문 목록이 기준에 못 미침: {checks[-1].name}")
+    v = judged_version()
+    check = _latest(m.dir, f"check*-llm-v{v}.result.json")
+    if check is None:
+        problems.append(
+            f"확인용 질문 목록 결과 없음 — simulate --set check… --llm (진행자 판 v{v}) 먼저"
+        )
+    elif not json.loads(check.read_text("utf-8")).get("passed"):
+        problems.append(f"확인용 질문 목록이 기준에 못 미침: {check.name}")
+    vague = _latest(m.dir, f"vague-check*-llm-v{v}.result.json")
+    if vague is None:
+        problems.append(
+            f"모호한 질문 목록 결과 없음 — simulate --set vague-check… --llm (진행자 판 v{v}) 먼저"
+        )
+    elif not json.loads(vague.read_text("utf-8")).get("vague_passed"):
+        problems.append(f"모호한 질문에 구체 답이 기준보다 많이 열림: {vague.name}")
     return problems
 
 
@@ -131,6 +155,8 @@ def write() -> None:
         # §9.1 순서 (#151 검토 4차): 판 2 opus 를 판 0 보다 먼저 돌린다 — 판 2 결과를 근거로 한 고침은 없다
         "order": ORDER,
         "criteria": CRITERIA,
+        # 진행자 — 응시 플랫폼처럼 LLM 이 항목을 고른다 (2026-11-13 사용자)
+        "facilitator": {"judge": "llm", "prompt": f"{FACILITATOR_TASK}@{judged_version()}"},
         "code": code_state(),
         "prompts": file_hashes(DATA / "prompts"),
         "materials": {mid: material_hashes(mid) for mid in mids},
