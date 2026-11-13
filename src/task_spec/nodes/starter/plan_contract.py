@@ -107,6 +107,7 @@ def for_material(template: Template, seed: FeatureSeed | None) -> Template:
         return template
     need = set(seed.harness)
     notes = seed.harness_notes
+    mechanics = template_mechanics(template.manifest)
     params = [
         p.model_copy(
             update={
@@ -121,6 +122,8 @@ def for_material(template: Template, seed: FeatureSeed | None) -> Template:
         if not seed.harness
         or p.name
         in need  # 조절값을 나열한 재료는 그것만 — 검사·입력·기본값 채우기가 같은 목록을 본다
+        or p.name
+        in mechanics  # 숨은 장치(기본값 있는 안 보이는 값)는 재료 나열과 무관하게 템플릿 것 — template_mechanics
     ]
     return replace(
         template, manifest=template.manifest.model_copy(update={"harness_params": params})
@@ -254,7 +257,14 @@ def material_params(seed: FeatureSeed | None, m: TemplateManifest) -> set[str]:
     names = {p.name for p in m.harness_params}
     if seed is None or not seed.harness:
         return names
-    return set(seed.harness) & names
+    return (set(seed.harness) | template_mechanics(m)) & names
+
+
+def template_mechanics(m: TemplateManifest) -> set[str]:
+    """재료가 조절값을 나열해도 남기는 숨은 장치 — 지원자에게 보이지 않고 기본값이 있는 조절값(예: bursts 반복 수).
+    재료 나열은 지원자가 자료에서 찾을 **운영 값**을 고르는 것이고, 숨은 장치는 재료와 무관한 템플릿 것이라 코드가 기본값으로 채운다
+    (fill_hidden_defaults). 2026-11-13 갱신 손실 재료가 concurrency 를 나열하자 bursts 까지 걸러져 버스트 행 수를 못 정했다."""
+    return {p.name for p in m.harness_params if not p.visible and p.default is not None}
 
 
 def fit_evidence_fragments(

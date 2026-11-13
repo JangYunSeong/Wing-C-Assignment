@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from task_spec.nodes.starter.generate import fault_text, plan_text
-from task_spec.nodes.starter.plan_contract import fit_faults
+from task_spec.nodes.starter.plan_contract import fill_hidden_defaults, fit_faults
 from task_spec.schemas import HiddenPlan, TaskContract
 from task_spec.schemas.build import Fault
 from task_spec.schemas.domain import HiddenAcceptance, HiddenFault
@@ -197,10 +197,25 @@ def test_material_listing_params_keeps_only_those() -> None:
         json.loads((root / "sw.backend.lost-update.json").read_text("utf-8"))
     ).feature
     t = for_material(java, nplus1)
-    assert material_params(nplus1, t.manifest) == {"query_delay_ms", "request_timeout_s"}
-    assert {p.name for p in t.manifest.harness_params} == {"query_delay_ms", "request_timeout_s"}
+    # 나열한 운영 값 + 숨은 장치(지원자에게 안 보이고 기본값 있는 값 — bursts): 재료 나열은 운영 값만 고른다
+    assert material_params(nplus1, t.manifest) == {"query_delay_ms", "request_timeout_s", "bursts"}
+    assert {p.name for p in t.manifest.harness_params} == {
+        "query_delay_ms",
+        "request_timeout_s",
+        "bursts",
+    }
     lt = for_material(java, lost)
-    assert "concurrency" in material_params(lost, lt.manifest)  # [] — 필수 없음일 뿐, 거르지 않는다
+    assert "concurrency" in material_params(lost, lt.manifest)
+    # 갱신 손실 재료는 버스트 조절값 concurrency 를 자료에서 읽는다 (필수·보임·이 과제 설명) — 2026-11-13
+    conc = lt.manifest.param("concurrency")
+    assert conc is not None and conc.required and conc.visible and "— 이 과제:" in conc.description
+    # 숨은 장치(bursts)는 재료 나열과 무관하게 남아 기본값으로 채워진다 (이름이 아니라 visible·default 로 가른다)
+    burst_plan = HiddenPlan.model_validate(
+        _with({"data": [{"entity_id": "m1", "rows": 200, "burst": True}]})
+        | {"harness": {"concurrency": 17}}
+    )
+    filled, filled_notes = fill_hidden_defaults(burst_plan, lt.manifest)
+    assert filled.harness.get("bursts") == 3 and filled_notes
     plan = HiddenPlan.model_validate(
         _with({"data": [{"entity_id": "m1", "rows": 200, "burst": True}]})
         | {
@@ -216,7 +231,10 @@ def test_material_listing_params_keeps_only_those() -> None:
     assert fixed.harness == {"query_delay_ms": 12, "request_timeout_s": 1}
     assert not any(d.burst for c in fixed.cases for d in c.data)
     assert "concurrency, pool_size" in notes[0] and "버스트 표시도 끔" in notes[0]
-    assert fit_material_params(plan, lost, lt.manifest) == (plan, [])
+    # 갱신 손실 재료는 concurrency 만 나열 — 다른 운영 값은 빼지만 버스트 장치(bursts)는 남아 버스트 표시를 끄지 않는다
+    fixed, notes = fit_material_params(plan, lost, lt.manifest)
+    assert fixed.harness == {"concurrency": 1} and all(d.burst for c in fixed.cases for d in c.data)
+    assert "버스트 표시도 끔" not in notes[0]
 
 
 def test_fault_items_must_list_test_items_and_leave_one_unfailed() -> None:
