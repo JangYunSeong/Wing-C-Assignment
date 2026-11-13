@@ -117,7 +117,10 @@ install -d -m 755 /etc/task-spec/acme
 nginx 설정(`docker/nginx/nginx.conf`, HTTP 단계는 `nginx.http.conf`) 요점: HTTP→HTTPS(certbot 확인 경로만 예외), TLS 1.2+, HSTS·보안 헤더,
 모든 경로 Basic 인증(`/healthz`·certbot 확인 경로만 예외), SSE(`/runs/{id}/events`) 버퍼링 끔·1시간, 일반 요청 600초(과제 생성),
 업로드 25 MB, IP 당 10 r/s 제한(순간 20), 접근 로그에 쿼리·본문 없음, Basic 인증 헤더는 앱으로 넘기지 않음.
-`run.sh` 가 만드는 설정 조각(upstream·빈 허용 목록)은 `/etc/task-spec/nginx/` 에 둔다 — `/tmp` 에 두면 재부팅 뒤 재시작이 실패한다.
+CORS: 다른 origin 의 프론트가 브라우저에서 직접 부를 때만. 허용 origin 은 `docker/nginx/.allow_list`(gitignore, `TASK_NGINX_CORS` 로 경로 변경)에
+한 줄에 하나(`http://203.0.113.5:3000`, 끝 `/` 없이) — 파일이 없으면 CORS 헤더를 내지 않는다. preflight(`OPTIONS`)는 인증 전에 204 로 끝낸다.
+목록을 바꾸면 `podman rm -f task-nginx` 후 `run.sh` 를 다시 실행한다 (run.sh 가 nginx map 조각으로 바꿔 마운트).
+`run.sh` 가 만드는 설정 조각(upstream·빈 허용 목록·CORS origin)은 `/etc/task-spec/nginx/` 에 둔다 — `/tmp` 에 두면 재부팅 뒤 재시작이 실패한다.
 `TASK_NGINX_NETWORK=bridge` 는 예전 방식(`task-net`, 포트 전달) — 접속자 IP 를 모르게 되므로 쓰지 않는다.
 
 ### 2-7. 과제 전달 묶음 폴더 (`IMAGES_DIR`) — #115 2-a

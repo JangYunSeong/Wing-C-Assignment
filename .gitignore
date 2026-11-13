@@ -27,3 +27,6 @@ build/
 .claude/settings.local.json
 .claude/worktrees/
 .claude/agent-memory/
+
+# CORS 허용 origin (docker/nginx/run.sh) — 운영 주소라 git 밖
+docker/nginx/.allow_list

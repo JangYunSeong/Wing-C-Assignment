@@ -11,6 +11,8 @@
 #   TASK_NGINX_AUTH     htpasswd 파일 (htpasswd -B -C 12) — 필수
 #   TASK_NGINX_ACME     (선택) certbot --webroot 경로 (기본 /etc/task-spec/acme) — 80 의 확인 경로로 냄
 #   TASK_NGINX_ALLOW    (선택) IP 허용 목록 파일 ('allow 203.0.113.0/24;' 줄들 + 'deny all;')
+#   TASK_NGINX_CORS     (선택) CORS 허용 origin 목록 (기본 docker/nginx/.allow_list, gitignore) — 한 줄에 origin 하나
+#                       ('http://203.0.113.5:3000', 끝 '/' 없이, '#' 주석). 없으면 CORS 헤더를 내지 않는다. tls 모드만
 #   TASK_NGINX_STATE    (선택) run.sh 가 만드는 설정 조각 위치 (기본 /etc/task-spec/nginx) — 재부팅 후 재시작에도 남아야 해서 /tmp 금지
 #   TASK_NGINX_HTTPS / TASK_NGINX_HTTP  공개 포트 (기본 443 / 80) — bridge 만. host 는 설정 파일의 80·443
 # rootless podman 으로 띄운다. 80·443 은 net.ipv4.ip_unprivileged_port_start=80 필요.
@@ -25,6 +27,7 @@ NETWORK="${TASK_NGINX_NETWORK:-host}"
 AUTH="${TASK_NGINX_AUTH:?TASK_NGINX_AUTH (htpasswd) 를 지정하세요 — 앱에 인증이 없어 필수}"
 ACME="${TASK_NGINX_ACME:-/etc/task-spec/acme}"
 ALLOW="${TASK_NGINX_ALLOW:-}"
+CORS="${TASK_NGINX_CORS:-$PWD/.allow_list}"
 STATE="${TASK_NGINX_STATE:-/etc/task-spec/nginx}"
 HTTPS="${TASK_NGINX_HTTPS:-443}"
 HTTP="${TASK_NGINX_HTTP:-80}"
@@ -43,7 +46,20 @@ case "$MODE" in
     done
     [[ "$(stat -c %a "$CERTS/privkey.pem")" =~ ^[46]00$ ]] || { echo "privkey.pem 권한을 600 으로 (chmod 600)" >&2; exit 1; }
     conf=nginx.conf
-    mode_args=(-v "$CERTS:/etc/nginx/certs:ro,Z")
+    # CORS 허용 origin → nginx map 줄. 형식이 아닌 줄은 거부한다 (설정 파일에 그대로 들어가므로)
+    cors_conf="$STATE/cors_origins.conf"; : > "$cors_conf"
+    if [[ -f "$CORS" ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"; line="${line//[[:space:]]/}"
+        [[ -z "$line" ]] && continue
+        [[ "$line" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] \
+          || { echo "$CORS: origin 형식이 아닙니다 (예 http://203.0.113.5:3000, 끝 '/' 없이): $line" >&2; exit 1; }
+        printf '"%s" $http_origin;\n' "$line" >> "$cors_conf"
+      done < "$CORS"
+    fi
+    mode_args=(-v "$CERTS:/etc/nginx/certs:ro,Z"
+               -v "$cors_conf:/etc/nginx/conf.d/cors_origins.conf:ro,Z"
+               -v "$PWD/cors_headers.conf:/etc/nginx/cors_headers.conf:ro,Z")
     ports=(-p "${HTTPS}:443" -p "${HTTP}:80")
     health="wget -q --no-check-certificate -O /dev/null https://127.0.0.1/healthz"
     url="https://<서버 주소>/healthz"
@@ -101,3 +117,4 @@ podman run -d --name "$NAME" \
   --health-cmd "$health" --health-interval 30s \
   "$IMAGE"
 echo "기동: $NAME ($MODE, $NETWORK → $UPSTREAM) → $url"
+[[ "$MODE" == tls ]] && echo "CORS 허용 origin: $(grep -c . "$cors_conf" || true)개 ($CORS)"
