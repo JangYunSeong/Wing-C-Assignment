@@ -747,3 +747,28 @@ def test_patch_targets_the_vague_answer_of_the_named_clarification() -> None:
     i, cid = 1, out.clarifications[1].clarification_id
     tg = targets(out, [f"추가 요구 {cid} 의 모호한 답에 숨은 요구를 드러내는 말: 캐시 키"])
     assert [(t.path, t.terms) for t in tg] == [(f"clarifications[{i}].answer_hint", ("캐시 키",))]
+
+
+def test_conclusion_targets_that_artifact_only_and_copied_values_are_not_patched() -> None:
+    """#167 — '핵심 자료가 결론을 직접 말함'은 그 자료 본문의 결론 말만 뺀다. '원 사례 문구·수치를 그대로 씀'은 칸 단위로 고치지
+    않는다 — 그 수치가 설정·답·숨은 기준에 다른 꼴로 함께 있어, 걸린 칸만 바꾸면 서로 어긋난다 (2026-11-13 #006 재현)."""
+    from task_spec.spec.patch import apply, targets
+    from tests.spec.test_feature import _out
+
+    out = _out()
+    key = next(a for a in out.artifacts if a.role == "key")
+    i = next(i for i, a in enumerate(out.artifacts) if a.artifact_id == key.artifact_id)
+    tg = targets(
+        out,
+        [
+            f"핵심 자료 {key.artifact_id} 가 결론을 직접 말함 (원인은, 고갈) — 원시 로그·지표·설정만",
+            "2단계·공개 요구가 원 사례 문구·수치를 그대로 씀 (원 사례 문구·수치 total=10 — 숫자 10 가 …) — 새로 만들 것",
+        ],
+    )
+    assert [(t.path, t.terms) for t in tg] == [(f"artifacts[{i}].content", ("원인은", "고갈"))]
+    assert targets(out, ["핵심 자료 a99 가 결론을 직접 말함 (원인은) — …"]) == []  # 없는 자료
+    fixed = apply(out, {f"artifacts[{i}].content": "가상 로그 줄"})
+    assert fixed.artifacts[i].content == "가상 로그 줄"
+    assert [a for j, a in enumerate(fixed.artifacts) if j != i] == [
+        a for j, a in enumerate(out.artifacts) if j != i
+    ]
