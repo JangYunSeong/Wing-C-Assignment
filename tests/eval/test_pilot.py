@@ -507,3 +507,12 @@ def test_freeze_preflight_needs_validity_and_check_questions(
     put("questions/check2.result.json", {"passed": True})  # 마지막(두 번째) 확인용 목록으로 본다
     put("questions/check2-syn.result.json", {"passed": False})  # 동의어를 더한 결과는 보지 않는다
     assert freeze.preflight("m1") == []
+
+
+def test_session_drops_request_words_from_topic_hints() -> None:
+    q = "이벤트 언제 해요?"
+    assert _ask(_session(), [], "question", q) == "설정에 따라요."  # f2 주제 '이벤트' 가 겹침
+    s = _session(
+        request="이벤트 쿠폰을 발급해 주세요"
+    )  # 요청 글에 있는 말은 주제 단서가 아님 (§4.6 (ii))
+    assert _ask(s, [], "question", q) == NO
