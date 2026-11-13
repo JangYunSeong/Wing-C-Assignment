@@ -91,6 +91,7 @@ _ARTIFACT_OPEN: dict[str, tuple[str, ...]] = {
 }
 _APPROVAL_NEEDS: tuple[ArtifactRole, ...] = ("candidate", "grader")
 _DELIVERABLE = ("approved", "published")
+DELIVERABLE = _DELIVERABLE  # 전달할 수 있는 빌드 상태 (api/routers/pull.py)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.common_task_build (
