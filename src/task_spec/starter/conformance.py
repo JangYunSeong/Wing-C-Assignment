@@ -45,9 +45,9 @@ class _Examples:
     def __init__(self, contract: TaskContract) -> None:
         # 앱 계약 타입(ts_helpers)과 같은 기준 — id·이름 원문에 기호를 뗀 이름도 (엔티티 'Daily Sales' 를 필드 타입 DailySales 로 쓸 때)
         self.by_key = (
-            {e.entity_id: e for e in contract.entities}
-            | {e.name: e for e in contract.entities}
-            | {_ident(e.name): e for e in contract.entities}
+            {e.entity_id: e for e in contract.data_shapes()}
+            | {e.name: e for e in contract.data_shapes()}
+            | {_ident(e.name): e for e in contract.data_shapes()}
         )
         self._depth = 0
 

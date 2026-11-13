@@ -51,6 +51,8 @@ feature 블록 (기능형 재료 — "어떤 기능을 만들 때 흔한 구현�
 | `reviewed` | 사람 검토 여부. false 면 명세 review_flags 에 남긴다 |
 - 생성(`draft_feature_task` v2)은 숨은 요구·허용 설계·2단계 원인을 블록 그대로 쓰고 LLM 은 겉모습만 쓴다.
 - 사례 지문(`incident_ref`)은 feature 를 빼고 계산한다 — 블록을 붙이거나 고쳐도 이슈형 판은 그대로. 기능형 판 키는 `feature_ref`.
+- 행마다 조회(`sw.backend.n-plus-one`)는 `contract_needs` 에 `related_entities` 를 둔다 (2026-11-13) — 딸린 정보(고객 이름·상품 수)가 대상 테이블 칸·시드
+  값으로 복사되면 그 칸만 읽어도 되어 숨은 요구가 사라진다 (2026-11-12 알파 계약). 응답에 필요한 모양은 계약 `response_shapes`(테이블 아님)에 둔다.
 
 쓰는 규칙
 - draft_task 에는 원리·증상·원인·함정·인정할 조치·표면만 넣는다. 조직명·제목·URL·`notes` 는 넣지 않는다 (`notes` 는 큐레이터 메모 — 생성에 필요한 내용은 구조화 필드로 옮긴다).

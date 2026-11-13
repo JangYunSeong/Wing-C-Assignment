@@ -85,8 +85,8 @@ def render_endpoints(contract: TaskContract) -> GeneratedFile | None:
     eps = [e for e in contract.endpoints if e.method]
     if not eps:
         return None
-    names = {m.entity_id: _ident(m.name) for m in contract.entities} | {
-        _ident(m.name): _ident(m.name) for m in contract.entities
+    names = {m.entity_id: _ident(m.name) for m in contract.data_shapes()} | {
+        _ident(m.name): _ident(m.name) for m in contract.data_shapes()
     }
     imports: list[str] = []
     lines: list[str] = []

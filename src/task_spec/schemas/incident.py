@@ -16,6 +16,7 @@ NeedKind = Literal[
     "mutation_endpoint",
     "result_screen",
     "dated_input_folders",
+    "related_entities",
 ]
 
 
@@ -30,6 +31,8 @@ class ContractNeed(Schema):
     - mutation_endpoint: 화면이 부르는 바꾸는 API (POST·PUT·PATCH·DELETE) — 프론트엔드 재료 (2026-11-09: 중복 제출·낙관적 갱신)
     - result_screen: 그 결과를 보여 주는 화면 요소 (계약 screens) — 바뀐 값이 화면에 보여야 판정할 수 있다
     - dated_input_folders: 입력이 날짜별 폴더(예 <raw>/YYYY-MM-DD/*.jsonl)로 쌓이고 명령은 그 상위 폴더와 날짜를 옵션으로 받는다 — 데이터 배치 재료 (2026-11-09)
+    - related_entities: 딸린 정보는 다른 엔티티에서 읽는다 — 시드 있는 두 테이블 엔티티가 foreign_keys 로 이어져 있고, 딸린 정보가 시드 있는
+      테이블 칸으로 복사돼 있지 않다 (응답에 필요하면 response_shapes). 2026-11-12 행마다 조회 알파: 고객 이름·상품 수를 주문 칸으로 복사 → 함정이 사라짐
     """
 
     kind: NeedKind

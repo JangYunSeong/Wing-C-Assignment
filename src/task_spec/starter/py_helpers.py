@@ -87,7 +87,7 @@ def render_py_contract(
     if rule is None:
         return None
     who = "숨은 케이스" if audience == "hidden" else "공개 테스트"
-    entities = {py_ident(m.name): py_ident(m.name) for m in contract.entities}
+    entities = {py_ident(m.name): py_ident(m.name) for m in contract.data_shapes()}
     lines = [
         f'"""이 과제의 공개 계약에서 빌드 파이프라인이 만든 도우미 — 손으로 고치지 않는다. {who}가 import 한다.',
         "",
@@ -104,9 +104,11 @@ def render_py_contract(
         "__all__ = [",
     ]
     commands = [e for e in contract.endpoints if not e.method]
-    names = [py_ident(m.name) for m in contract.entities] + [command_name(e.path) for e in commands]
+    names = [py_ident(m.name) for m in contract.data_shapes()] + [
+        command_name(e.path) for e in commands
+    ]
     lines += [f"    {n!r}," for n in names] + ["]", ""]
-    for m in contract.entities:
+    for m in contract.data_shapes():  # 테이블 엔티티 + 응답 모양
         lines += [
             "",
             f"class {py_ident(m.name)}(TypedDict):",

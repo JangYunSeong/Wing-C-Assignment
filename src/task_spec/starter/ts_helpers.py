@@ -138,12 +138,12 @@ def render_ts_contract(
         *[f"  api.route({_ts(e.method or '')}, {_ts(msw_path(e.path))});" for e in endpoints],
         "}",
     ]
-    names = {m.entity_id: _ident(m.name) for m in contract.entities}
-    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities} | {
-        m.entity_id: _ident(m.name) for m in contract.entities
+    names = {m.entity_id: _ident(m.name) for m in contract.data_shapes()}
+    by_name = {_ident(m.name): _ident(m.name) for m in contract.data_shapes()} | {
+        m.entity_id: _ident(m.name) for m in contract.data_shapes()
     }  # 필드 타입에 엔티티 id(m2[]) 를 써도 (스모크 예시와 같게)
     lines += ["", "/** 계약 데이터 모양 (entities) — 응답 본문의 타입 */"]
-    for m in contract.entities:
+    for m in contract.data_shapes():  # 테이블 엔티티 + 응답 모양
         lines.append(f"export interface {names[m.entity_id]} {{")
         lines += [
             f"  {_prop(f.name)}{'' if f.required else '?'}: {ts_type(f.type, by_name)};"
@@ -261,7 +261,9 @@ def id_kinds(contract: TaskContract) -> dict[str, str]:
     """목록 경로(MSW 꼴) → 항목 id 형식, 숫자 id 인 것만 — 하네스 api.collection 이 서버가 정하는 id 를 계약 형식으로 매기게 (React v12).
     API 마다 성공 응답의 엔티티(returns) 또는 본문 칸의 `id` 형식을 본다. 항목 경로(`/memos/:id`)는 목록 경로(`/memos`)로.
     한 목록 경로에 형식이 엇갈리면 알리지 않는다 (글자가 기본)."""
-    by_key = {m.entity_id: m for m in contract.entities} | {m.name: m for m in contract.entities}
+    by_key = {m.entity_id: m for m in contract.data_shapes()} | {
+        m.name: m for m in contract.data_shapes()
+    }
     seen: dict[str, set[str]] = {}
     for e in contract.endpoints:
         ok = next((r for r in e.responses if 200 <= r.status < 300), None)
@@ -306,7 +308,7 @@ def options_lines(contract: TaskContract, how: str) -> list[str]:
 
 def app_type_names(contract: TaskContract) -> list[str]:
     """앱 계약 타입 파일이 내보내는 이름 — 엔티티 이름 + API 마다 <Api>Ok·<Api>Error (+ 본문 있는 요청은 <Api>Body)."""
-    out = [_ident(m.name) for m in contract.entities]
+    out = [_ident(m.name) for m in contract.data_shapes()]
     for e in contract.endpoints:
         if e.method:
             base = method_name(e)[:1].upper() + method_name(e)[1:]
@@ -320,9 +322,9 @@ def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> Gene
     language = manifest.stack.language.lower() if manifest.stack else ""
     if language != "typescript" or manifest.public_helper is None or not contract.screens:
         return None  # Java·Python 템플릿은 켜지 않는다 (백엔드는 2단계에서 타입 대응표로)
-    names = {m.entity_id: _ident(m.name) for m in contract.entities}
-    by_name = {_ident(m.name): _ident(m.name) for m in contract.entities} | {
-        m.entity_id: _ident(m.name) for m in contract.entities
+    names = {m.entity_id: _ident(m.name) for m in contract.data_shapes()}
+    by_name = {_ident(m.name): _ident(m.name) for m in contract.data_shapes()} | {
+        m.entity_id: _ident(m.name) for m in contract.data_shapes()
     }  # 필드 타입에 엔티티 id(m2[]) 를 써도 (스모크 예시와 같게)
     lines = [
         "// 이 과제의 공개 계약에서 빌드 파이프라인이 만든 타입 — 손으로 고치지 않는다 (잠김).",
@@ -331,7 +333,7 @@ def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> Gene
         *options_lines(contract, "선택 목록은 이 값을 그대로 그린다 (안내 문구는 따로)"),
         "/** 계약 데이터 모양 (entities) */",
     ]
-    for m in contract.entities:
+    for m in contract.data_shapes():  # 테이블 엔티티 + 응답 모양
         lines.append(f"export interface {names[m.entity_id]} {{")
         lines += [
             f"  {_prop(f.name)}{'' if f.required else '?'}: {ts_type(f.type, by_name)};"

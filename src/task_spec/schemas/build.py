@@ -70,8 +70,8 @@ class ContractResponse(Schema):
     body: list[ContractField] = Field(default_factory=list)
     returns: str | None = Field(
         default=None,
-        pattern=r"^m\d{1,2}(\[\])?$",
-        description="본문이 엔티티 하나면 그 id (예: m1), 엔티티 목록이면 m1[] — 필드는 엔티티 정의를 따른다",
+        pattern=r"^[mv]\d{1,2}(\[\])?$",
+        description="본문이 엔티티·응답 모양 하나면 그 id (예: m1·v1), 목록이면 m1[]·v1[] — 칸은 그 정의를 따른다",
     )
 
     @model_validator(mode="before")
@@ -437,6 +437,26 @@ class SeedRule(Schema):
     rules: list[str] = Field(default_factory=list)  # 그 밖의 값 규칙 (예: 송장 번호 형식)
 
 
+class ResponseShape(Schema):
+    """응답에만 있는 모양 — 테이블이 아니다 (저장·시드·외래 키 없음). 다른 엔티티에서 읽는 값(조인)이나 집계를 담는 목록 항목·상세 응답.
+
+    2026-11-12 행마다 조회 알파: 계약에 '응답에만 있는 모양'을 적을 자리가 없어, 고객 이름·상품 수를 주문 테이블 칸·시드 값으로 복사하거나
+    (칸만 읽으면 숨은 요구가 사라짐) 응답 모양을 빈 테이블로 만들었다(order_list_item). 엔티티(entities)는 테이블만 — 시드·테이블 이름·외래 키를
+    읽는 곳은 그대로 두고, 타입·예시·README 처럼 모양을 읽는 곳만 이것도 읽는다 (TaskContract.data_shapes)."""
+
+    shape_id: str = Field(pattern=r"^v\d{1,2}$")  # v = view (s 는 화면 id)
+    name: str = Field(min_length=1, max_length=60)
+    fields: list[ContractField] = Field(
+        min_length=1,
+        description="응답 칸 — 다른 엔티티에서 읽거나 계산하는 칸은 constraints 에 출처를 적는다 (예: 'Customer.name — 주문의 customerId 로')",
+    )
+
+    @property
+    def entity_id(self) -> str:
+        """모양 id — 엔티티와 같은 자리 이름 (타입·예시를 렌더하는 곳이 엔티티와 함께 읽는다)."""
+        return self.shape_id
+
+
 class PublicTest(Schema):
     test_id: str = Field(pattern=r"^pt\d{1,2}$")
     ac_id: str = Field(pattern=r"^p\d{1,2}$")
@@ -449,6 +469,12 @@ class TaskContract(Schema):
     interface_kind: InterfaceKind
     endpoints: list[Endpoint] = Field(min_length=1, max_length=6)
     entities: list[Entity] = Field(min_length=1, max_length=8)
+    # 응답에만 있는 모양 (테이블 아님) — 2026-11-13. returns·필드 형식이 v1·v1[] 로 가리킨다
+    response_shapes: list[ResponseShape] = Field(
+        default_factory=list,
+        max_length=4,
+        description="응답에만 있는 모양 (테이블 아님 — 저장·시드 없음): 다른 엔티티에서 읽는 값·집계를 담는 응답. returns 가 v1·v1[] 로 가리킨다",
+    )
     seed: list[SeedRule] = Field(default_factory=list)  # DB 행을 바꾸는 과제만 (템플릿 seed_rows)
     fixtures: list[Fixture] = Field(default_factory=list, max_length=8)  # 그 밖의 입력 환경
     screens: list[Screen] = Field(default_factory=list, max_length=8)  # interface_kind ui 일 때만
@@ -471,6 +497,11 @@ class TaskContract(Schema):
         if self.interface_kind != "ui" and self.screens:
             raise ValueError(f"interface_kind {self.interface_kind} 는 screens 를 쓰지 않음")
         return self
+
+    def data_shapes(self) -> list[Entity | ResponseShape]:
+        """모양이 있는 것 전부 — 테이블 엔티티(m…) + 응답 모양(v…). 타입·예시·README 응답 모양·필드 이름처럼 '모양'을 읽는 곳이 쓴다.
+        테이블(시드·테이블 이름·외래 키·숨은 케이스 data)은 entities 만 읽는다."""
+        return [*self.entities, *self.response_shapes]
 
 
 HarnessValue = int | float | str | list[int]

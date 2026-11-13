@@ -81,11 +81,12 @@
 ```
 TaskContract                         ← 지원자에게 보임 (README "계약" 절)
   interface_kind: http | cli | file   (템플릿 manifest 가 허용하는 것 중)
-  endpoints[]:  id(e1…) · method(http 만) · path · summary · headers · query · request(필드) · responses(상태 코드·설명·본문 필드 또는 returns: m1 · m1[]) · refs(r*·p*)
+  endpoints[]:  id(e1…) · method(http 만) · path · summary · headers · query · request(필드) · responses(상태 코드·설명·본문 필드 또는 returns: m1 · m1[] · v1 · v1[]) · refs(r*·p*)
   entities[]:   id(m1…) · name · fields · relations · foreign_keys("필드 → 엔티티" — DB 외래 키로 둘 것만)      ← #58 [데이터 모델]
                 · existing(이 과제 전에 있던 테이블인가 — 숨은 케이스 data 는 existing 엔티티에만, 새 엔티티는 0행)
                 · state(상태를 바꾸는 엔티티만: field · values · transitions "A→B" · rejected_status) [확정: 2026-11-08, plan_contract v10]
     필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
+  response_shapes[]: id(v1…) · name · fields — 응답에만 있는 모양, 테이블 아님 (시드·외래 키·state·existing 없음) [2026-11-13]
   seed[]:       entity id · rows(정확한 행 수, id 1~rows) · groups(id 범위마다 처음 값, 1~rows 를 빈틈·겹침 없이) · 값 규칙 (가상 데이터만, §10-16)
   public_tests[]: id(pt1…) · ac_id(p*) · 무엇을 확인하나 (공개 수용 기준 1:1 이상)
                   — README 에는 공개 테스트를 지원자에게 줄 때만 싣는다 (§4.3)
@@ -101,6 +102,12 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - 구현: `src/task_spec/schemas/build.py`(`TaskContract`·`HiddenPlan`·`GeneratedFiles`·`FileRef`·`BuildState`), `src/task_spec/schemas/template.py`(manifest 중 이 파이프라인이 쓰는 부분 — `harness_params`·`failure_reasons`·`naming`·`interfaces`·`stack_conditions`). 필드마다 `refs` 를 두어 양방향 대응(§3.3)을 필드 단위로 본다.
 
 - 계약은 **무엇을**만 적고 어떻게(트랜잭션 경계·잠금·캐시)는 적지 않는다. 숨은 요구 핵심어(seed `leak_terms`·`trigger_terms`)는 계약에 나오면 안 된다 (§3.3).
+- **응답 모양(`response_shapes`, v1…)** [2026-11-13, plan_contract v24]: 다른 엔티티에서 읽는 값(조인)·집계가 있는 응답(예: 고객 이름·상품 수가 붙은 주문 목록)은
+  테이블 엔티티에 칸을 더하지 않고 응답 모양으로 적어 `returns` 로 가리킨다 (칸마다 constraints 에 출처). 엔티티는 테이블만이라 시드·테이블 이름·외래 키·숨은 케이스
+  data 를 읽는 곳은 그대로이고, 타입·예시·README·필드 이름처럼 모양을 읽는 곳은 `TaskContract.data_shapes()`(엔티티 + 응답 모양)를 읽는다. README 는
+  '응답 모양 — 테이블이 아니다' 절로 싣고, 시작 코드가 그 이름으로 테이블을 만들면 테이블 검사가 다시 요청한다. 근거: 행마다 조회 알파(2026-11-12) — 자리가 없어
+  고객 이름·상품 수를 주문 테이블 칸·시드 값으로 복사(칸만 읽으면 숨은 요구가 사라짐)하거나 응답 모양을 빈 테이블(`order_list_item`)로 만들었다.
+  행마다 조회 재료는 `contract_needs: related_entities` 로 복사를 막는다 (`contract._related_problems`). 날짜·시각 칸 형식은 datetime·date·time 으로 (같은 판).
 - `HiddenPlan.cases[].의도한 실패 사유`는 게이트 ③ 의 "실패 사유가 의도한 것" 판정에 그대로 쓴다 (예: `pool_acquire_timeout`). verifier 의 보고서 파서가 이 코드로 대조한다. 코드는 자유 글이 아니라 템플릿 `failure_reasons` 목록에서만 고른다 (§4.1).
 - 프로젝트 설명(#58)이 없으면 엔티티·수치는 명세(`scenario`·자료)와 seed 에서만 뽑는다.
 
