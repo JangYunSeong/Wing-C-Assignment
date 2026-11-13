@@ -45,6 +45,7 @@ from task_spec.starter.hidden_helpers import (
     key_fields,
     render_contract_case,
     render_persistence_check,
+    setting_const,
 )
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_sql import schema_problems
@@ -2293,6 +2294,55 @@ def unknown_harness_members(
 _HIDDEN_ONLY = re.compile(r"\b(?:Burst|GraderJdbcHarness|GraderParams)\.|\bpeak\(")
 
 
+def _starter_settings(o: Overlay, contract: TaskContract | None) -> list[StaticProblem]:
+    """계약 settings 의 키가 시작 코드 설정 파일에 기본값으로 있는가 — 구현이 '설정에서 읽는다'의 출발점 (2026-11-13 #161)."""
+    if contract is None or not contract.settings:
+        return []
+    config = _config_map((f.path, f.content) for f in o.files)
+    out: list[StaticProblem] = []
+    for st in contract.settings:
+        if st.key not in config:
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"계약 설정 {st.key} 가 시작 코드 설정 파일(application.yml 등)에 없음 — 기본값 {st.default} 로 둔다",
+                )
+            )
+        elif not _same_value(config[st.key], st.default):
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"시작 코드 설정 {st.key}={config[st.key]} 이 계약 기본값 {st.default} 와 다름",
+                )
+            )
+    return out
+
+
+def _public_settings(o: Overlay, contract: TaskContract | None) -> list[StaticProblem]:
+    """계약 settings 마다 그 키를 덮어 보는 공개 테스트가 있는가 — 도우미 SETTING_…_KEY 를 @DynamicPropertySource 에서 SETTING_…_PROBE 로
+    덮고 PROBE 를 단언해야 값을 코드에 박은 구현·제한 없는 구현을 가른다 (기본값만 보면 둘 다 통과, 2026-11-13 #161)."""
+    if contract is None or not contract.settings:
+        return []
+    out: list[StaticProblem] = []
+    for st in contract.settings:
+        c = setting_const(st.key)
+        if not any(
+            "@DynamicPropertySource" in f.content
+            and f"SETTING_{c}_KEY" in f.content
+            and f"SETTING_{c}_PROBE" in f.content
+            for f in o.files
+        ):
+            out.append(
+                StaticProblem(
+                    o.target,
+                    f"설정 {st.key} 를 따르는지 보는 공개 테스트가 없음 — 그 요구({', '.join(st.refs)})의 테스트 클래스에 "
+                    f"@DynamicPropertySource 로 SETTING_{c}_KEY 를 SETTING_{c}_PROBE 로 덮고 결과가 SETTING_{c}_PROBE 를 따르는지 단언한다 "
+                    f"(기본값 {st.default} 를 단언하지 않는다)",
+                )
+            )
+    return out
+
+
 def _public_cases(
     o: Overlay, t: Template, plan: HiddenPlan, contract: TaskContract | None
 ) -> list[StaticProblem]:
@@ -2454,9 +2504,13 @@ def static_check(
             res.problems += _starter_schema(o, template, contract)
             if not is_java(template.manifest):
                 res.problems += _starter_options(o, contract)
+            else:
+                res.problems += _starter_settings(o, contract)
             res.review_flags += flags
         if o.kind == "public_test":
             res.problems += _public_cases(o, template, plan, contract)
+            if is_java(template.manifest):
+                res.problems += _public_settings(o, contract)
         if o.kind == "hidden":
             res.problems += _hidden_cases(o, template, plan, contract, hidden_cases_only)
             res.review_flags += _duplicate_labels(o, template)

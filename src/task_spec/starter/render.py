@@ -113,6 +113,21 @@ def contract_markdown(
         out.append("")
     if contract.background:
         out += ["### 화면 조작 없이 나가는 요청", "", contract.background, ""]
+    if (
+        contract.settings
+    ):  # 2026-11-13 #161 — 구현이 읽어야 하는 설정 (채점은 다른 값으로 덮어 본다)
+        out += [
+            "### 설정",
+            "",
+            "구현은 이 값을 **설정에서 읽는다** — 코드에 박지 않는다. 채점 테스트는 다른 값으로 덮어 결과가 그 값을 따르는지 본다.",
+            "",
+            "| 키 | 형식 | 기본값 | 뜻 |",
+            "|---|---|---|---|",
+        ]
+        out += [
+            f"| `{st.key}` | {st.type} | {st.default} | {st.meaning} |" for st in contract.settings
+        ]
+        out.append("")
     out += ["### 데이터", ""]
     for m in contract.entities:
         head = f"#### `{m.name}`"

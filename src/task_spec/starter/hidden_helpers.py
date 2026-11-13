@@ -109,6 +109,38 @@ def _state_lines(contract: TaskContract) -> list[str]:
     return lines
 
 
+def setting_const(key: str) -> str:
+    """설정 키 → 상수 이름 조각 — 'marketplace.listing.page-size' → 'MARKETPLACE_LISTING_PAGE_SIZE'."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", key).strip("_").upper()
+
+
+def setting_probe(default: int) -> int:
+    """테스트가 설정을 덮을 값 — 기본값과 다르고 작은 값 (시드에 그 조건의 행이 이보다 많으면 '정확히 이만큼'을 가른다, #161).
+    값을 코드에 박은 구현·제한이 없는 구현이 둘 다 다른 개수를 돌려준다."""
+    return 3 if default != 3 else 2
+
+
+def _setting_lines(contract: TaskContract) -> list[str]:
+    """계약 settings — 키·기본값·덮을 값. 테스트는 자기 @DynamicPropertySource 에서 KEY 를 PROBE 로 덮고 결과가 PROBE 를 따르는지 본다."""
+    if not contract.settings:
+        return []
+    lines = [
+        "",
+        "    // ── 설정 (계약 settings): 구현이 이 키에서 읽어야 하는 값. 그 요구를 보는 테스트는 자기 클래스에",
+        "    //    @DynamicPropertySource static void …(DynamicPropertyRegistry r) { r.add(SETTING_…_KEY, () -> SETTING_…_PROBE); }",
+        "    //    로 덮고 결과가 PROBE 를 정확히 따르는지 단언한다 (기본값을 단언하면 값을 코드에 박은 구현도 통과한다) ──",
+    ]
+    for st in contract.settings:
+        c = setting_const(st.key)
+        lines += [
+            f"    /** {st.meaning} (기본 {st.default}) */",
+            f'    protected static final String SETTING_{c}_KEY = "{st.key}";',
+            f"    protected static final int SETTING_{c}_DEFAULT = {st.default};",
+            f"    protected static final int SETTING_{c}_PROBE = {setting_probe(st.default)};",
+        ]
+    return lines
+
+
 _PATH_PARAM = re.compile(r"\{(\w+)\}")
 
 
@@ -425,6 +457,7 @@ def render_contract_case(
                 f"    protected static final int {prefix}_ROWS = {r.rows};",
             ]
     lines += _state_lines(contract)
+    lines += _setting_lines(contract)
     lines += _header_lines(contract)
     lines += _key_lines(contract)
     tables = contract_tables(contract, manifest.naming.table) if audience == "hidden" else {}
