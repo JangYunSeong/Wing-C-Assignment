@@ -29,6 +29,7 @@ from typing import Literal
 from task_spec.schemas.build import (
     ContractField,
     Endpoint,
+    Entity,
     HarnessValue,
     HiddenPlan,
     TaskContract,
@@ -485,7 +486,7 @@ def _fields(contract: TaskContract) -> list[tuple[str, ContractField]]:
         out += [(f"{e.endpoint_id} 요청", f) for f in e.request]
         for r in e.responses:
             out += [(f"{e.endpoint_id} 응답 {r.status}", f) for f in r.body]
-    for m in contract.entities:
+    for m in contract.data_shapes():  # 테이블 엔티티 + 응답 모양 (응답 칸도 공개 이름)
         out += [(f"{m.entity_id} {m.name}", f) for f in m.fields]
     return out
 
@@ -506,6 +507,8 @@ def contract_places(contract: TaskContract) -> list[tuple[str, str]]:
     for m in contract.entities:
         out += [(f"엔티티 {m.name}", f"{m.name} {_words(m.name)}")]
         out += [(f"엔티티 {m.name} 관계", r) for r in m.relations]
+    for s in contract.response_shapes:
+        out += [(f"응답 모양 {s.name}", f"{s.name} {_words(s.name)}")]
     for where, f in _fields(contract):
         out += [
             (f"{where} 필드 {f.name}", f"{f.name} {_words(f.name)} {f.type} {f.constraints or ''}")
@@ -679,7 +682,12 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
 
     # 명세 → 계약. covers 값에는 입력 환경 id(f*)도 된다 (요구를 입력 환경에 잇는 것은 자연스럽다 — 덮였는지 따지지는 않음).
     # 공개 수용 기준 id(p*)를 키로 쓴 것은 무시한다 (2026-11-07 종이 단계: 재요청해도 되풀이, 해는 없음 — p* 는 공개 테스트로 대응)
-    targets = element_ids | {fx.fixture_id for fx in contract.fixtures}
+    # 응답 모양(v*)도 된다 — 응답의 일부라 덮였는지 따지지는 않는다 (2026-11-13)
+    targets = (
+        element_ids
+        | {fx.fixture_id for fx in contract.fixtures}
+        | {s.shape_id for s in contract.response_shapes}
+    )
     for key, ids in contract.covers.items():
         if key not in spec.req_ids and key not in spec.public_ac_ids:
             problems.append(f"covers 의 키 {key} 가 명세의 공개 요구 id 가 아님")
@@ -966,7 +974,7 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
             + "; ".join(f"{api} ({', '.join(dict.fromkeys(ws))})" for api, ws in stray.items())
             + fix
         )
-    entity_ids = {m.entity_id for m in contract.entities}
+    entity_ids = {m.entity_id for m in contract.data_shapes()}
     bad = sorted(
         {
             f"{e.endpoint_id} {r.status} → {r.returns}"
@@ -976,8 +984,29 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
         }
     )
     if bad:
-        problems.append(f"응답 returns 가 계약에 없는 엔티티를 가리킴: {', '.join(bad)}")
+        problems.append(f"응답 returns 가 계약에 없는 엔티티·응답 모양을 가리킴: {', '.join(bad)}")
+    problems += _shape_problems(contract)
     return problems
+
+
+def _shape_problems(contract: TaskContract) -> list[str]:
+    """응답 모양(response_shapes) — 테이블 엔티티와 이름이 겹치지 않고, 어느 응답이든 가리킨다 (쓰지 않는 모양은 지원자를 헷갈리게 한다)."""
+    out: list[str] = []
+    tables = {m.name.lower() for m in contract.entities}
+    clash = [s.name for s in contract.response_shapes if s.name.lower() in tables]
+    if clash:
+        out.append(
+            f"응답 모양 이름이 테이블 엔티티와 같음: {', '.join(clash)} — 응답 모양은 테이블이 아니다. 다른 이름(예: …Summary·…Item)으로"
+        )
+    used = {
+        r.returns.removesuffix("[]") for e in contract.endpoints for r in e.responses if r.returns
+    } | {token for _, f in _fields(contract) for token in re.findall(r"\b(v\d{1,2})\b", f.type)}
+    unused = [f"{s.shape_id} {s.name}" for s in contract.response_shapes if s.shape_id not in used]
+    if unused:
+        out.append(
+            f"어느 응답도 가리키지 않는 응답 모양: {', '.join(unused)} — 응답의 returns(예: v1[])로 가리키거나 지운다"
+        )
+    return out
 
 
 def _no_seed_rows(
@@ -1056,7 +1085,69 @@ def _entity_existing(contract: TaskContract, plan: HiddenPlan) -> tuple[list[str
 
 
 _MUTATING = ("POST", "PUT", "PATCH", "DELETE")
-ROW_NEEDS = ("stateful_target", "transition_rules", "empty_record_entity")
+ROW_NEEDS = ("stateful_target", "transition_rules", "empty_record_entity", "related_entities")
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+
+
+def _copied_fields(t: Entity, r: Entity) -> list[str]:
+    """t 의 칸 중 r 에서 읽어야 할 딸린 정보를 복사한 것 — `<r 이름><r 의 칸>` (customerName ← Customer.name) 이나
+    `<r 이름 또는 그 끝 낱말>Count` (itemCount ← OrderItem). 외래 키 칸·id 칸은 뺀다."""
+    fks = {f for f, _ in t.fk_pairs()}
+    base = r.name[:1].lower() + r.name[1:]
+    words = [w.lower() for w in _NAME_WORDS.findall(r.name)]
+    heads = {base.lower(), *(words[-1:] if words else [])}
+    copies = {
+        (base + g.name[:1].upper() + g.name[1:]).lower()
+        for g in r.fields
+        if not g.name.lower().endswith("id")
+    }
+    out: list[str] = []
+    for f in t.fields:
+        name = f.name.lower()
+        if f.name in fks or name.endswith("id"):
+            continue
+        if name in copies or (name.endswith("count") and name.removesuffix("count") in heads):
+            out.append(f.name)
+    return out
+
+
+def _related_problems(contract: TaskContract, note: str) -> list[str]:
+    """딸린 정보는 다른 엔티티에서 읽는다 (FeatureSeed.contract_needs related_entities) — 시드 있는 두 엔티티가 외래 키로 이어져 있고,
+    딸린 정보가 시드 있는 테이블 엔티티의 칸·시드 값으로 복사돼 있지 않다. 2026-11-12 행마다 조회 알파: 계약이 고객 이름·상품 수를 주문 테이블
+    칸·시드 값으로 둬, 그 칸만 읽으면 목록 한 번이 쿼리 하나로 끝나 숨은 요구가 사라졌다. 응답에 그 칸이 필요하면 응답 모양(response_shapes)에 둔다."""
+    by_name = {m.name: m for m in contract.entities}
+    rows = {s.entity_id: s.rows for s in contract.seed}
+    pairs: list[tuple[Entity, Entity]] = []
+    for m in contract.entities:
+        for _, target in m.fk_pairs():
+            r = by_name.get(target)
+            if (
+                r is not None
+                and r is not m
+                and rows.get(m.entity_id, 0)
+                and rows.get(r.entity_id, 0)
+            ):
+                pairs.append((m, r))
+    if not pairs:
+        return [
+            f"숨은 요구에 필요한 것이 계약에 없음 — 딸린 정보를 읽을 다른 엔티티: {note}. 대상 엔티티와 딸린 정보 엔티티를 "
+            'foreign_keys 로 잇고(예: "customerId → Customer") 둘 다 시드 행을 둔다'
+        ]
+    copied = sorted(
+        {
+            f"{t.name}.{f}"
+            for m, r in pairs
+            for t, s in ((m, r), (r, m))
+            for f in _copied_fields(t, s)
+        }
+    )
+    if not copied:
+        return []
+    return [
+        f"딸린 정보가 시드 있는 테이블 엔티티의 칸으로 복사돼 있음: {', '.join(copied)} — {note}. 테이블 칸·시드 값으로 두면 목록이 다른 "
+        "엔티티를 읽을 필요가 없어진다. 그 칸은 테이블 엔티티에서 빼고, 응답에 필요한 모양은 response_shapes(예: v1 OrderSummary — 칸 제약에 "
+        "출처)로 두어 목록·한 건 조회의 returns(v1[]·v1)로 가리킨다"
+    ]
 
 
 def _needs(
@@ -1121,6 +1212,8 @@ def _needs(
             f"숨은 요구에 필요한 것이 계약에 없음 — 결과를 보여 주는 화면 요소: {need['result_screen']}. "
             "screens 에 그 값을 보여 주는 요소(test id·역할·설명)를 적는다"
         )
+    if "related_entities" in need:
+        out += _related_problems(contract, need["related_entities"])
     if "empty_record_entity" in need and not [
         m for m in contract.entities if rows.get(m.entity_id, 0) == 0 and not m.existing
     ]:

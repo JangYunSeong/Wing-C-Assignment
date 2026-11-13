@@ -57,7 +57,7 @@ def contract_markdown(
 ) -> str:
     """공개 계약 → README "API 계약" 절 본문. public_tests 는 공개 테스트를 지원자에게 줄 때만 (§4.3 [미정]).
     tables 를 주면 엔티티마다 템플릿 규칙으로 정한 테이블 이름을 적는다 (starter/tables.py)."""
-    names = {m.entity_id: m.name for m in contract.entities}
+    names = {m.entity_id: m.name for m in contract.data_shapes()}
     table_of = contract_tables(contract, tables)
     out: list[str] = []
     for e in contract.endpoints:
@@ -132,6 +132,20 @@ def contract_markdown(
         tables is not None and tables.style != "none"
     ):  # DB 테이블이 없는 템플릿(프론트엔드)에는 외래 키가 없다
         out += ["외래 키는 위 엔티티에 적힌 것만 둔다 (적힌 것이 없으면 두지 않는다).", ""]
+    if contract.response_shapes:  # 2026-11-13 — 응답에만 있는 모양 (테이블 아님)
+        out += [
+            "### 응답 모양",
+            "",
+            "응답 본문의 모양이다 — 테이블이 아니다 (저장하지 않고 시드도 없다). 칸 값은 제약에 적힌 곳에서 읽거나 계산한다.",
+            "",
+        ]
+        for s in contract.response_shapes:
+            out += [f"#### `{s.name}`", "", "| 필드 | 형식 | 필수 | 제약 |", "|---|---|---|---|"]
+            out += [
+                f"| `{f.name}` | {f.type} | {'예' if f.required else '아니오'} | {f.constraints or ''} |"
+                for f in s.fields
+            ]
+            out.append("")
     if contract.fixtures:
         out += ["### 입력 환경", ""]
         for fx in contract.fixtures:
