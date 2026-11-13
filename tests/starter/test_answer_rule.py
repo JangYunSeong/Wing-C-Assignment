@@ -169,3 +169,36 @@ def test_hit_rate_leaves_repeats_out() -> None:
     ]
     assert hit_rate(replies) == 0.5
     assert hit_rate([]) is None
+
+
+# ── 2026-11-13 #151 검토 4차: 판 1·4 는 단어 단위, 두 글자 필터는 c# 에만 ──
+
+LIMIT = Answer(
+    id="f5",
+    topic="주문 목록 정렬 기준",
+    match_terms=["limit 기본값", "정렬 순서"],
+    answer="최신순, 기본 50건.",
+    answer_hint="보기 편한 순서로요.",
+)
+
+
+def test_new_mode_matches_when_all_words_appear_in_any_order() -> None:
+    assert answer("limit 의 기본값이 있나요?", [LIMIT], NONE).rule == 2  # 사이에 조사
+    assert answer("주문 목록은 어떤 순서로 정렬해야 하나요?", [LIMIT], NONE).rule == 2  # 순서 바뀜
+    assert answer("limit 은 어떤 형식인가요?", [LIMIT], NONE).rule != 2  # 단어 하나만으로는 안 걸림
+
+
+def test_legacy_mode_keeps_phrase_matching() -> None:
+    clar = LIMIT.model_copy(update={"id": "c9"})
+    assert answer_legacy("limit 의 기본값이 있나요?", [clar]).rule != 1  # 지금 규칙: 구절째
+    assert answer_legacy("limit 기본값이 있나요?", [clar]).rule == 1
+
+
+def test_general_word_filter_applies_to_clarifications_only() -> None:
+    assert topic_words("주문 목록 정렬 기준", general=False) == ["주문", "목록", "정렬", "기준"]
+    assert topic_words("주문 목록 정렬 기준") == []  # c# 기본
+    fact = LIMIT.model_copy(update={"match_terms": ["없는 낱말"]})
+    r = answer("정렬은 어떻게 하나요?", [fact], NONE)
+    assert (r.rule, r.item_id, r.layer) == (4, "f5", "hint")  # f# 은 두 글자 주제 낱말도 겹침
+    clar = fact.model_copy(update={"id": "c9"})
+    assert answer("정렬은 어떻게 하나요?", [clar], NONE).text == NO_INFO  # c# 은 그대로 막음

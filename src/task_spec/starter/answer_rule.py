@@ -8,8 +8,13 @@
 - `answer_legacy` (§9.1 판 3 "지금 규칙 모드"): 지금 `ANSWER_RULE`(starter/facilitator.py)을 정해진 규칙으로 바꿔 적은 것.
   추가 요구(`c#`)만 넘긴다. 상태·"한 가지씩" 거절이 없다. 질문·자료 한도는 부르는 쪽이 센다 — 모든 질문(정보 없음 포함)이 한도에 든다.
 
-낱말 맞추기는 지금 `match_terms` 정리 규칙과 같다 (`spec.feature.find_terms` — 한글은 띄어쓰기를 무시한 부분 문자열이라 조사가
-붙어도 걸리고, 영문은 대소문자를 무시하고 단어 경계로 본다). 주제(`topic`) 낱말은 일반어(`too_general`)를 뺀다.
+낱말 맞추기 — §4.6 규칙 자체다 (플랫폼이 붙일 규칙이고, 손 시범 판 1·4 가 이것을 쓴다) [확정: 2026-11-13 사용자 — #151 검토 4차]:
+- 매칭 낱말의 **단어가 질문에 모두 있으면** 걸린다 — 순서·조사·사이에 낀 말과 상관없이
+  ("limit 기본값" ← "limit 의 기본값이…", "정렬 순서" ← "어떤 순서로 정렬해야…"). 단어 하나는 한글이면 띄어쓰기를 무시한
+  부분 문자열(조사가 붙어도 걸림), 영문이면 대소문자 무시·단어 경계.
+- 주제(`topic`) 낱말은 끝 조사를 떼고, 두 글자 이하 일반어(`too_general`)는 **추가 요구(`c#`)에서만** 뺀다 — 이 필터는 함정 단서가
+  일반 질문에 새지 않게 정한 것(2026-11-06)이고, 요청자 지식(`f#`)은 잘못 열려도 함정이 아니다. `f#` 은 한 글자 낱말만 뺀다.
+- `answer_legacy`(판 3 비교용)만 지금 규칙 그대로 구절째 맞춘다 (`spec.feature.find_terms`).
 
 순수 함수다 — 입출력·시각·기록 없음. 기록은 부르는 쪽(진행자 CLI) 몫.
 """
@@ -32,6 +37,7 @@ ONE_AT_A_TIME = "한 가지씩 물어봐 주세요."
 NO_INFO = "추가로 드릴 정보가 없습니다."
 
 _WORD = re.compile(r"[0-9A-Za-z가-힣]+")
+_HANGUL = re.compile(r"[가-힣]")
 # 주제 낱말 끝에서 떼는 조사 — 긴 것부터 (하나만)
 _PARTICLES = (
     "에서",
@@ -94,21 +100,53 @@ def strip_particle(word: str) -> str:
     return word
 
 
-def topic_words(topic: str) -> list[str]:
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", "", s).lower()
+
+
+def word_in(word: str, text: str) -> bool:
+    """단어 하나가 글에 있나 — 한글이 섞이면 띄어쓰기를 무시한 부분 문자열(조사가 붙어도 걸림), 영문·숫자면 단어 경계."""
+    w = word.strip()
+    if not w:
+        return False
+    if _HANGUL.search(w):
+        return _norm(w) in _norm(text)
+    return (
+        re.search(rf"(?<![A-Za-z0-9_]){re.escape(w)}(?![A-Za-z0-9_])", text, re.IGNORECASE)
+        is not None
+    )
+
+
+def term_in(term: str, question: str) -> bool:
+    """매칭 낱말 하나가 걸리나 (§4.6) — 낱말의 단어가 질문에 모두 있으면 (순서·사이에 낀 말 무관)."""
+    words = term.split()
+    return bool(words) and all(word_in(w, question) for w in words)
+
+
+def is_clarification(item_id: str) -> bool:
+    return item_id.startswith("c")
+
+
+def topic_words(topic: str, general: bool = True) -> list[str]:
     """주제 낱말 — 끝 조사를 떼고(질문은 부분 문자열로 맞추므로 질문 쪽 조사는 그대로 걸린다),
-    일반어(띄어쓰기 없는 두 글자 이하, `too_general`)는 뺀다."""
+    general=True 면 일반어(띄어쓰기 없는 두 글자 이하, `too_general`)를 빼고, False 면 한 글자만 뺀다."""
     words = (strip_particle(w) for w in _WORD.findall(topic))
-    return [w for w in dict.fromkeys(words) if not too_general(w)]
+    if general:
+        return [w for w in dict.fromkeys(words) if not too_general(w)]
+    return [w for w in dict.fromkeys(words) if len(w) >= 2]
 
 
-def term_hits(item: Answer, question: str) -> int:
-    """질문에 걸린 `match_terms` 수."""
-    return len(find_terms(item.match_terms, question))
+def term_hits(item: Answer, question: str, phrase: bool = False) -> int:
+    """질문에 걸린 `match_terms` 수 — phrase=True 면 지금 규칙(구절째, 판 3), 아니면 §4.6 단어 단위."""
+    if phrase:
+        return len(find_terms(item.match_terms, question))
+    return sum(term_in(t, question) for t in dict.fromkeys(item.match_terms))
 
 
-def topic_hits(item: Answer, question: str) -> int:
-    """질문과 겹친 주제 낱말 수."""
-    return len(find_terms(topic_words(item.topic), question))
+def topic_hits(item: Answer, question: str, general: bool | None = None) -> int:
+    """질문과 겹친 주제 낱말 수. general 을 안 주면 추가 요구(c#)만 일반어를 뺀다."""
+    g = is_clarification(item.id) if general is None else general
+    return sum(word_in(w, question) for w in topic_words(item.topic, general=g))
 
 
 def _best(ids: Iterable[str], counts: Mapping[str, int]) -> str:
@@ -190,14 +228,14 @@ def answer(question: str, items: Sequence[Answer], states: Mapping[str, State]) 
 def answer_legacy(question: str, items: Sequence[Answer]) -> Reply:
     """§9.1 판 3 지금 규칙 모드. items = 추가 요구(c#)만. 같은 것을 다시 물으면 같은 답 (반복 표시 없음)."""
     by_id = {i.id: i for i in items}
-    hits = {k: term_hits(i, question) for k, i in by_id.items()}
+    hits = {k: term_hits(i, question, phrase=True) for k, i in by_id.items()}
     matched = [k for k, n in hits.items() if n]
     if matched:  # 1. 낱말이 걸림 — 가장 많이 맞은 하나의 구체 답
         k = _best(matched, hits)
         return Reply(
             text=by_id[k].answer, rule=1, layer="answer", item_id=k, candidates=_sorted(matched)
         )
-    overlap = {k: topic_hits(i, question) for k, i in by_id.items()}
+    overlap = {k: topic_hits(i, question, general=True) for k, i in by_id.items()}
     touched = [k for k, n in overlap.items() if n]
     if touched:  # 2. 주제만 겹침 — 가장 많이 겹친 하나의 모호한 답
         k = _best(touched, overlap)
