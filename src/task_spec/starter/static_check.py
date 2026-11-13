@@ -14,6 +14,8 @@
    조절값 파일을 손으로 씀(코드가 HiddenPlan 에서 쓴다 — `render.render_params`).
    공개 계약에 없는 API 를 부름 (manifest `hidden_rules.http_calls` 로 찾은 호출의 경로를 `{}` 자리로 정규화해 대조),
    한 파일에 같은 사유·문구의 단언이 둘 이상은 막지 않고 review_flags (`hidden_rules.reason_labels` — 사유가 잘못 붙었을 수 있음).
+   경로 문자열에 쿼리(`?…`)를 손으로 붙임 — 도우미의 쿼리 매개변수 오버로드로 (숨은·공개 테스트), 시간을 재는 요청(Burst.fire·rounds·peak)
+   안에서 요청을 둘 이상 보냄 (분기로 하나만 보내는 것은 둔다) — 2026-11-13.
 6. 테이블 이름 (manifest `naming.table`, starter/tables.py): 시작 코드가 선언한 테이블이 계약 테이블 밖이면 gen_starter, 숨은 테스트의 오류 주입 정규식이 계약 테이블 밖을 가리키거나 SQL 종류 없이 넓으면 gen_hidden.
 """
 
@@ -39,6 +41,7 @@ from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
+    api_functions,
     key_fields,
     render_contract_case,
     render_persistence_check,
@@ -903,6 +906,101 @@ def _unknown_calls(
     return out
 
 
+def _query_overloads(contract: TaskContract) -> str:
+    """재요청 문구용 — 쿼리 매개변수 오버로드의 모양 (예: getOrders(after, size))."""
+    shapes: list[str] = []
+    for e, name in api_functions(contract):
+        if e.query:
+            args = [*_PATH_VAR.findall(e.path), *(f.name for f in e.query)]
+            shapes.append(f"{name}({', '.join(args)})")
+    return ", ".join(shapes)
+
+
+_PATH_VAR = re.compile(r"\{(\w+)\}")
+
+
+def _hand_built_query(
+    files: Iterable[GeneratedFile], contract: TaskContract, patterns: Sequence[str], who: str
+) -> list[str]:
+    """테스트가 경로 문자열에 쿼리(`?…`)를 손으로 붙임 — 도우미의 쿼리 매개변수 오버로드를 쓰게 한다 (값 인코딩·빠진 칸을 도우미가 맡음).
+    2026-11-12 행마다 조회 알파: `send("GET", "/orders?size=100", …)` 를 기본 크기 호출 `getOrders()` 와 섞어 허용 구현까지 떨어짐."""
+    shapes = _query_overloads(contract)
+    out: list[str] = []
+    for f in files:
+        bad = sorted(
+            {
+                _call_arg(f.content, m.end()).strip()[:80]
+                for pat in patterns
+                for m in re.finditer(pat, f.content)
+                if any(
+                    (lit := _LITERAL.match(p)) is not None and "?" in lit.group(1)
+                    for p in _split_plus(_call_arg(f.content, m.end()))
+                )
+            }
+        )
+        if bad:
+            how = (
+                f"계약 API 함수의 쿼리 매개변수 오버로드({shapes})를 쓴다 — 계약 순서, 보내지 않을 칸은 null"
+                if shapes
+                else "계약에 쿼리 매개변수가 없는 API 다 — 계약에 없는 칸을 보내지 않는다"
+            )
+            out.append(f"{who} {f.path} 가 쿼리 문자열을 손으로 씀: {', '.join(bad[:3])} — {how}")
+    return out
+
+
+_TIMED_CALL = re.compile(r"\bBurst\.(?:fire|rounds)\s*\(|(?<![\w.])peak\s*\(")
+_BRANCH = re.compile(r"\bif\s*\(|\bswitch\s*\(|\s\?\s")
+
+
+def _paren_body(text: str, open_idx: int) -> str:
+    """text[open_idx] 의 `(` 와 짝인 `)` 사이 — 문자열 안 괄호는 건너뛴다."""
+    depth, i, quote = 0, open_idx, False
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == '"':
+                quote = False
+        elif ch == '"':
+            quote = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1 : i]
+        i += 1
+    return text[open_idx + 1 :]
+
+
+def _timed_requests(
+    files: Iterable[GeneratedFile], contract: TaskContract, patterns: Sequence[str]
+) -> list[str]:
+    """시간을 재는 요청(Burst.fire·Burst.rounds·peak) 안에서 요청을 둘 이상 보냄 — 무엇을 쟀는지 알 수 없다 (분기로 하나만 보내는 것은 둔다).
+    세는 것: 템플릿 http_calls(send·get) + 도우미의 계약 API 함수 (2026-11-12 행마다 조회 알파: 한 lambda 안에서 getOrders() 와
+    send("GET", "/orders?size=100") 를 함께 불러 시간 한도 안에 목록을 두 번 받아야 했다)."""
+    calls = [re.compile(p) for p in patterns] + [
+        re.compile(rf"(?<![\w.])(?:this\.)?{re.escape(name)}\s*\(")
+        for _, name in api_functions(contract)
+    ]
+    out: list[str] = []
+    for f in files:
+        for m in _TIMED_CALL.finditer(f.content):
+            inner = _paren_body(f.content, m.end() - 1)
+            if _BRANCH.search(inner):
+                continue
+            hits = [h.group(0).split("(")[0].strip() for rx in calls for h in rx.finditer(inner)]
+            if len(hits) > 1:
+                timed = m.group(0).rstrip("( ").strip()
+                out.append(
+                    f"숨은 테스트 {f.path}: 시간을 재는 {timed}(…) 안에서 요청을 {len(hits)}번 보냄 ({', '.join(hits)}) — "
+                    "재는 요청은 하나만. 데우기·결과 확인 요청은 Burst 밖에서 따로 보낸다"
+                )
+                break
+    return out
+
+
 def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
     """시작 코드가 선언한 테이블(CREATE TABLE·@Table 등)은 계약이 정한 이름이어야 한다 — 숨은 테스트가 그 이름으로 오류를 주입한다."""
     naming = t.manifest.naming.table
@@ -1403,6 +1501,8 @@ def _hidden_cases(
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
         out += _unknown_calls(cases, contract, rules.http_calls)
+        out += _hand_built_query(cases, contract, rules.http_calls, "숨은 테스트")
+        out += _timed_requests(cases, contract, rules.http_calls)
     if contract is not None:
         out += _hidden_tables(cases, t, contract)
         out += _literal_headers(cases, contract, "숨은 테스트")
@@ -2248,6 +2348,7 @@ def _public_cases(
             msg.replace("숨은 테스트", "공개 테스트")
             for msg in _unknown_calls(cases, contract, m.hidden_rules.http_calls)
         ]
+        out += _hand_built_query(cases, contract, m.hidden_rules.http_calls, "공개 테스트")
     helper = written.get(rule.path)
     if helper is not None:
         out += unknown_helper_names(cases, helper, "공개 테스트")

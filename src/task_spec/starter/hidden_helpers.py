@@ -6,6 +6,7 @@
 - 케이스별 데이터 범위 상수 (`allocate_rows` 가 나눈 그대로 — 시드에 반드시 있는 행)
 - 계약 테이블 이름 상수 (오류 주입 정규식용)
 - 계약 API 호출 함수 (경로·메서드 그대로) + 200 응답 본문을 계약 `returns` 모양(목록/객체)으로 읽는 함수
+  — 쿼리 매개변수(`Endpoint.query`)가 있으면 그 칸을 계약 순서로 받는 오버로드 (null 이면 빼고, 값은 인코딩. 2026-11-13)
 - `peak(expectedStatus, call)` — 조절값(동시 요청 수·버스트 수)과 시간 한도를 넣은 동시 요청
 - 요청 헤더 값 상수 (`HEADER_<헤더>_OK`·`_DENIED`)와 `okHeaders()` — 계약 공개 테스트 예시에서 (starter/header_values.py)
 - `num(v)` — JSON 숫자 → long
@@ -244,6 +245,97 @@ def _inject_lines() -> list[str]:
     ]
 
 
+def api_functions(contract: TaskContract) -> list[tuple[Endpoint, str]]:
+    """도우미의 계약 API 호출 함수 — (엔드포인트, 함수 이름). 이름이 겹치면 엔드포인트 id 를 붙인다 (정적 검사가 같은 이름을 센다)."""
+    seen: set[str] = set()
+    out: list[tuple[Endpoint, str]] = []
+    for e in contract.endpoints:
+        if not e.method:
+            continue
+        name = method_name(e)
+        if name in seen:
+            name += e.endpoint_id.upper()
+        seen.add(name)
+        out.append((e, name))
+    return out
+
+
+_JAVA_KEYWORDS = frozenset(
+    "abstract assert boolean break byte case catch char class const continue default do double else enum extends "
+    "final finally float for goto if implements import instanceof int interface long native new package private "
+    "protected public return short static strictfp super switch synchronized this throw throws transient try void "
+    "volatile while var record yield true false null".split()
+)
+
+
+def _java_param(name: str, taken: set[str]) -> str:
+    """계약 칸 이름 → Java 매개변수 이름 — 이름 그대로가 원칙, 식별자가 아니거나 예약어·경로 변수와 겹치면 q 를 붙인다."""
+    ident = name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) else _camel([name])
+    if not ident or ident in _JAVA_KEYWORDS or ident in taken:
+        ident = "q" + _camel([name])
+    taken.add(ident)
+    return ident
+
+
+def _api_fn(e: Endpoint, name: str, expr: str, vars_: list[str], query: bool = False) -> list[str]:
+    """계약 API 호출 함수 하나 — query=True 면 쿼리 매개변수를 계약 순서대로 받는 오버로드 (null 이면 그 칸을 보내지 않는다).
+
+    2026-11-12 행마다 조회 알파: 도우미가 경로 변수만 받아, 숨은 테스트가 `send("GET", "/orders?size=100", …)` 를 손으로 쓰다
+    기본 크기 호출(`getOrders()`)과 섞었다 — 시간을 재는 요청 안에서 목록을 두 번 부르고, 기본 50건 목록에 100건을 기대해 허용 구현까지 떨어짐.
+    값은 Object 로 받는다 (경로 변수와 같게 — `Long` 칸에 정수 글자 100 을 넘기면 컴파일되지 않는다)."""
+    method = (e.method or "GET").upper()
+    params = [f"Object {v}" for v in vars_]
+    target = expr
+    doc = f"    /** {e.endpoint_id} {method} {e.path} — {e.summary} */"
+    if query:
+        taken = set(vars_) | {"headers", "jsonBody"}
+        pairs: list[str] = []
+        for f in e.query:
+            p = _java_param(f.name, taken)
+            params.append(f"Object {p}")
+            pairs += [f'"{f.name}"', p]
+        target = f"{expr} + queryOf({', '.join(pairs)})"
+        shown = ", ".join(f"{f.name}({f.type})" for f in e.query)
+        doc = (
+            f"    /** {e.endpoint_id} {method} {e.path} — 쿼리 매개변수 {shown} 를 이 순서로 (null 이면 보내지 않음, 값은 인코딩). "
+            "경로·쿼리 문자열을 손으로 쓰지 않는다 */"
+        )
+    has_body = method not in ("GET", "DELETE")
+    if e.headers or has_body:
+        params.append("Map<String, String> headers")
+        if has_body:
+            params.append("String jsonBody")
+        call = f'send("{method}", {target}, headers, {"jsonBody" if has_body else "null"})'
+    else:
+        call = f"get({target})"
+    return [
+        doc,
+        f"    protected HttpResponse<String> {name}({', '.join(params)}) throws Exception {{",
+        f"        return {call};",
+        "    }",
+    ]
+
+
+def _query_lines() -> list[str]:
+    return [
+        "",
+        "    /** 쿼리 문자열 — (계약 칸 이름, 값) 쌍. 값이 null 이면 그 칸을 빼고, 이름·값은 UTF-8 로 인코딩한다 (+·: 등이 깨지지 않게) */",
+        "    private static String queryOf(Object... nameValues) {",
+        "        StringBuilder sb = new StringBuilder();",
+        "        for (int i = 0; i + 1 < nameValues.length; i += 2) {",
+        "            if (nameValues[i + 1] == null) {",
+        "                continue;",
+        "            }",
+        "            sb.append(sb.length() == 0 ? '?' : '&')",
+        "                    .append(URLEncoder.encode(String.valueOf(nameValues[i]), StandardCharsets.UTF_8))",
+        "                    .append('=')",
+        "                    .append(URLEncoder.encode(String.valueOf(nameValues[i + 1]), StandardCharsets.UTF_8));",
+        "        }",
+        "        return sb.toString();",
+        "    }",
+    ]
+
+
 def render_contract_case(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -264,6 +356,7 @@ def render_contract_case(
     if rule is None:
         return None
     names = {m.entity_id: m.name for m in contract.entities}
+    with_query = any(e.method and e.query for e in contract.endpoints)
     lines = [
         f"package {rule.package};",
         "",
@@ -271,7 +364,9 @@ def render_contract_case(
         "import com.example.service.grading.GraderParams;",
         "import com.example.service.grading.GraderSupport;",
         "import com.fasterxml.jackson.core.type.TypeReference;",
+        *(["import java.net.URLEncoder;"] if with_query else []),
         "import java.net.http.HttpResponse;",
+        *(["import java.nio.charset.StandardCharsets;"] if with_query else []),
         "import java.util.List;",
         "import java.util.Map;",
         "import java.util.function.IntUnaryOperator;",
@@ -340,33 +435,11 @@ def render_contract_case(
             for eid, t in tables.items()
         ]
     lines += ["", "    // ── 계약 API — 경로·메서드는 계약 그대로 ──"]
-    seen: set[str] = set()
-    for e in contract.endpoints:
-        if not e.method:
-            continue
-        name = method_name(e)
-        if name in seen:
-            name += e.endpoint_id.upper()
-        seen.add(name)
+    for e, name in api_functions(contract):
         expr, vars_ = _path_expr(e.path)
-        params = [f"Object {v}" for v in vars_]
-        has_body = e.method.upper() not in ("GET", "DELETE")
-        call: str
-        if e.headers or has_body:
-            params.append("Map<String, String> headers")
-            if has_body:
-                params.append("String jsonBody")
-            call = (
-                f'send("{e.method.upper()}", {expr}, headers, {"jsonBody" if has_body else "null"})'
-            )
-        else:
-            call = f"get({expr})"
-        lines += [
-            f"    /** {e.endpoint_id} {e.method.upper()} {e.path} — {e.summary} */",
-            f"    protected HttpResponse<String> {name}({', '.join(params)}) throws Exception {{",
-            f"        return {call};",
-            "    }",
-        ]
+        lines += _api_fn(e, name, expr, vars_)
+        if e.query:  # 쿼리 매개변수 오버로드 — 계약 칸 이름 그대로, 계약 순서 (2026-11-13)
+            lines += _api_fn(e, name, expr, vars_, query=True)
         kind = _body_kind(e)
         if kind == "list":
             lines += [
@@ -402,6 +475,8 @@ def render_contract_case(
         ]
     if audience == "hidden":
         lines += _inject_lines()
+    if with_query:
+        lines += _query_lines()
     lines += [
         "",
         "    /** JSON 숫자 → long (크기에 따라 Integer·Long 으로 읽혀 그대로 비교하면 틀린다) */",
