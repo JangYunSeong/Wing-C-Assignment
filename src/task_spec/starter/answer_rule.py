@@ -23,6 +23,8 @@
   ("감사·기록"이 요청 글에 있어 거의 모든 질문에 걸렸다).
 - (iii) **두 항목 이상의 주제에 함께 나오는 말**도 뺀다 — 항목을 가르지 못하고 동점이면 id 순으로 엉뚱한 항목이 열린다.
   (ii)(iii) 은 `answer` 의 규칙 4 에만 — 판 3 지금 규칙 모드는 그대로.
+- (iv) 규칙 4 에서 **모호한 답이 없는 요청자 지식(f#)은 후보가 아니다** — 주제 겹침으로는 사실을 통째로 열지 않는다
+  [확정: 2026-11-13 사용자 — 확인용 질문 목록 2차 미달(구체 답 71%) 뒤 §4.6 재검토 A].
 
 순수 함수다 — 입출력·시각·기록 없음. 기록은 부르는 쪽(진행자 CLI) 몫.
 """
@@ -180,6 +182,13 @@ def distinct_topic_words(items: Sequence[Answer], request: str = "") -> dict[str
     }
 
 
+def topic_hint_allowed(item: Answer) -> bool:
+    """규칙 4(주제 겹침) 후보인가 (§4.6 (iv)) — 모호한 답(`answer_hint`)이 없는 요청자 지식(f#)은 주제가 겹쳐도 열지 않는다.
+    주제 낱말 하나("처리·내용·결과")만 겹쳐도 구체 답이 나가 엉뚱한 사실을 통째로 열었다 (2026-11-13 확인용 목록 2차).
+    추가 요구(c#)는 2026-11-06 확정대로 모호한 답이 없으면 구체 답."""
+    return is_clarification(item.id) or item.answer_hint is not None
+
+
 def _best(ids: Iterable[str], counts: Mapping[str, int]) -> str:
     """가장 많이 맞은 항목, 같으면 id 순."""
     return min(ids, key=lambda k: (-counts[k], item_order(k)))
@@ -232,7 +241,11 @@ def answer(
             states=state,
         )
     topic = distinct_topic_words(items, request)
-    overlap = {k: sum(word_in(w, question) for w in topic[k]) for k in by_id if state[k] != "open"}
+    overlap = {
+        k: sum(word_in(w, question) for w in topic[k])
+        for k in by_id
+        if state[k] != "open" and topic_hint_allowed(by_id[k])
+    }
     touched = [k for k, n in overlap.items() if n]
     if touched:  # 4. 낱말은 안 걸리고 주제만 겹침 — 모호한 답
         k = _best(touched, overlap)

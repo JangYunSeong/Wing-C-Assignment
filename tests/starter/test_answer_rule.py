@@ -115,23 +115,28 @@ def test_topic_overlap_gives_the_hint_with_half_credit_when_unique() -> None:
 
 
 def test_topic_overlap_on_two_items_gives_no_credit() -> None:
-    r = answer(
-        "회원별 접속량 발급 제한은요?", ITEMS, NONE
-    )  # f1 은 셋(회원별·발급·제한), c1 은 하나(접속량)
-    assert (r.rule, r.item_id, r.hit) == (4, "f1", 0.0)
-    assert r.candidates == ["f1", "c1"]
-    tie = answer("회원별 접속량은요?", ITEMS, NONE)  # 같으면 id 순, f 먼저
-    assert (tie.item_id, tie.text, tie.hit) == ("f1", F1.answer, 0.0)
+    r = answer("쿠폰 접속량은요?", ITEMS, NONE)  # f2(쿠폰)·c1(접속량) 하나씩 — 같으면 id 순, f 먼저
+    assert (r.rule, r.item_id, r.text, r.hit) == (4, "f2", F2.answer_hint, 0.0)
+    assert r.candidates == ["f2", "c1"]
     # '이벤트'는 f2·c1 주제에 함께 있어 가르지 못함 — 규칙 4 에 쓰지 않는다 (§4.6 (iii))
     only = answer("이벤트 때 접속량은 어떤가요?", ITEMS, NONE)
     assert (only.item_id, only.hit, only.candidates) == ("c1", 0.5, ["c1"])
     assert answer("이벤트 운영 방식이 궁금해요", ITEMS, NONE).rule == 5
 
 
-def test_topic_overlap_without_hint_gives_the_answer_and_opens() -> None:
-    r = answer("회원별로 다른 게 있나요?", ITEMS, NONE)
-    assert (r.rule, r.item_id, r.text, r.layer, r.hit) == (4, "f1", F1.answer, "answer", 0.5)
-    assert r.states["f1"] == "open"
+def test_topic_overlap_without_hint_opens_only_clarifications() -> None:
+    """규칙 4 — 모호한 답이 없으면 추가 요구(c#)는 구체 답을 주고 열지만, 요청자 지식(f#)은 후보가 아니다 (§4.6 (iv))."""
+    assert answer("회원별로 다른 게 있나요?", ITEMS, NONE).text == NO_INFO  # f1 은 모호한 답이 없음
+    c3 = Answer(
+        id="c3",
+        topic="배포 스케줄 공지",
+        match_terms=["배포일"],
+        answer="매주 화요일",
+        answer_hint=None,
+    )
+    r = answer("스케줄이 궁금해요", [*ITEMS, c3], NONE)
+    assert (r.rule, r.item_id, r.text, r.layer, r.hit) == (4, "c3", "매주 화요일", "answer", 0.5)
+    assert r.states["c3"] == "open"
 
 
 def test_topic_overlap_skips_opened_items_and_repeats_hints() -> None:
@@ -229,10 +234,10 @@ def test_topic_words_in_request_or_shared_by_items_are_dropped() -> None:
     """§4.6 (ii)(iii) — 요청 글에 있는 말, 두 항목 이상의 주제에 함께 나오는 말은 규칙 4 에 쓰지 않는다
     (kb005: f1·f3 주제가 '감사·기록'을 같이 써 동점이면 f1 이 열렸다)."""
     f1 = Answer(
-        id="f1", topic="감사 기록 대상", match_terms=["누가"], answer="a1", answer_hint=None
+        id="f1", topic="감사 기록 대상", match_terms=["누가"], answer="a1", answer_hint="h1"
     )
     f3 = Answer(
-        id="f3", topic="감사 기록 보관 기간", match_terms=["얼마나"], answer="a3", answer_hint=None
+        id="f3", topic="감사 기록 보관 기간", match_terms=["얼마나"], answer="a3", answer_hint="h3"
     )
     items = [f1, f3]
     assert (
