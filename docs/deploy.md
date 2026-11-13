@@ -267,7 +267,7 @@ systemctl --user start podman-restart.service        # 시험 — 떠 있는 컨
 
 배포할 때마다 `sudo -iu task-builder` 로 들어가지 않게, **받는 폴더**(`/srv/task-spec/builder-inbox`)에 배포 사용자가 이미지·`run.sh`·체크섬을
 넣으면 task-builder 의 systemd path 유닛이 업그레이드한다 (`docker/builder/upgrade.sh`): 체크섬 → `podman load` → 지금 builder 정지
-(작업 끝날 때까지) → 새 `run.sh` 로 기동 → "builder 시작" 로그 확인 → **실패면 이전 이미지·run.sh 로 되돌림**. 결과는 받는 폴더의
+(지금 작업이 끝날 때까지, 최대 60분 — `TASK_BUILDER_DRAIN_SECONDS`) → 새 `run.sh` 로 기동 → "builder 시작" 로그 확인 → **실패면 이전 이미지·run.sh 로 되돌림**. 결과는 받는 폴더의
 `last-upgrade.json`. 설정 파일(`~/builder-settings`, 비밀값)은 task-builder 홈에만 있고 건드리지 않는다. 배포 사용자는 받는 폴더에 쓰기만 —
 builder 작업 폴더·설정은 여전히 못 본다.
 
@@ -290,11 +290,17 @@ bash /srv/task-spec/builder-inbox/setup/install-upgrader.sh   # active 가 나�
 그다음부터 배포 (배포 사용자, 레포 루트 — 커밋된 상태로):
 
 ```bash
-docker/builder/deliver.sh    # 이미지 빌드·금지 파일 검사 → 받는 폴더 → last-upgrade.json 이 ok 면 끝 (지금 작업이 있으면 끝난 뒤, 최대 20분 기다림)
+docker/builder/deliver.sh    # 이미지 빌드·금지 파일 검사 → 받는 폴더 → last-upgrade.json 이 ok 면 끝 (지금 작업이 있으면 끝난 뒤, 최대 75분 기다림)
 ```
+
+- 정지는 builder 가 **지금 작업을 끝낼 때까지** 기다린다 (SIGTERM → 새 작업을 잡지 않고 지금 것만 끝냄, 최대 60분). 넘으면 강제 정지하고,
+  끊긴 빌드는 임대가 지나면 다시 대기열로 간다 (시도가 남았을 때 — `build_max_attempts`). 기다리는 동안 새 빌드 요청은 대기로 쌓였다가 새 builder 가 처리한다.
+  컨테이너의 `--stop-timeout 60`(`run.sh`)은 재부팅 같은 평소 정지용이라 그대로 둔다 (2026-11-13: 60초만 기다려 시작 코드 단계 빌드가 끊겼다).
 
 - 실패하면 `last-upgrade.json` 의 `message` (체크섬·불러오기·기동 실패·되돌림). 자세한 건 task-builder 로 `journalctl --user -u task-builder-upgrade`·`podman logs task-builder`.
 - `upgrade.sh`·유닛을 바꾸면 `deliver.sh --setup` 뒤 task-builder 로 `install-upgrader.sh` 를 다시 (자기 자신은 자동으로 바꾸지 않는다).
+  빠뜨리면 서버에 옛 판이 남는다 — 2026-11-13: 설치된 유닛이 `KillMode=process` 이전 판이라, 업그레이드가 끝나며 새 builder 에도 SIGTERM 이 가
+  잡은 작업 하나만 하고 멈췄다 (컨테이너는 떠 보이는데 일을 안 받음). 설치된 판은 `systemctl --user cat task-builder-upgrade.service` 로 확인.
 - builder 설정 값(`~/builder-settings`)을 바꿀 때는 지금처럼 task-builder 로 고치고 다시 만든다 (`podman restart` 는 env 파일을 다시 읽지 않는다).
 
 ### 2-11. SFTP 전달 대상 — #116
