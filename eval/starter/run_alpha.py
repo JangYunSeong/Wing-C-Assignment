@@ -312,6 +312,12 @@ async def main() -> None:
         "rejected": write_rejected(built_out.rejected, out / "rejected"),
         "verify": [[_run_row(r) for r in rep.runs] for rep in built_out.reports],
         "dropped_cases": built_out.dropped_cases,  # 변별하지 못해 채점에서 뺀 숨은 케이스
+        # 공개 테스트 변별 관문 (#164) — 변형마다 잡힘·살아남음·무효, 버린 변형, 변형 실행 결과
+        "variants": [r.line() for r in built_out.variants],
+        "variant_dropped": built_out.variant_dropped,
+        "variant_verify": [
+            [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.variant_reports
+        ],
     }
     report["cost_usd"] = round(spent, 4)
     report["candidate_files"] = tree(out / "candidate") if starter is not None else []

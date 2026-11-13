@@ -703,3 +703,25 @@ def test_official_judgment_is_declared_once_with_enough_questions(
     )
     assert any("2번 선언" in x for x in freeze._official_problems(qdir, 2, once=True))
     assert not any("선언" in x for x in freeze._official_problems(qdir, 2, once=False))
+
+
+def test_generated_mutants_target_each_measured_requirement() -> None:
+    """손 시범 돌연변이는 재료를 쓴 사람이 아니라 gen_variant 가 요구(r*)마다 만든다 — 요구 문장과 그 공개 수용 기준을 함께 준다."""
+    from types import SimpleNamespace
+
+    from eval.pilot.mutants import requirement_targets
+
+    m = _with_methods(_material())
+    ns = SimpleNamespace
+    task = ns(
+        requirements=[ns(req_id="r1", text="회원당 한 번"), ns(req_id="r2", text="수량만큼")],
+        acceptance_public=[
+            ns(ac_id="p1", text="두 번째는 거절"),
+            ns(ac_id="p2", text="수량 넘으면 거절"),
+        ],
+    )
+    got = {t.rule_id: t.text for t in requirement_targets(m, task)}  # type: ignore[arg-type]
+    assert set(got) == {r for rs in m.method_req.values() for r in rs}
+    for r, text in got.items():
+        acs = [p for p, rs in m.req_ids.items() if r in rs]
+        assert all(p in text for p in acs) and ("회원당" in text or "수량만큼" in text or r in text)
