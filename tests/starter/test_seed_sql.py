@@ -11,6 +11,8 @@ from task_spec.starter.seed_sql import (
     render_seed_sql,
     schema_problems,
     table_columns,
+    time_kind,
+    time_value,
 )
 from task_spec.starter.templates import load_template
 from tests.starter.test_contract import _contract, _plan
@@ -76,7 +78,7 @@ def test_no_restart_when_id_is_not_identity_and_required_fields_get_defaults() -
     assert (
         "INSERT INTO orders (id, status, created_at) VALUES" in sql
     )  # 선택 필드 note 는 넣지 않음
-    assert "(2, 'READY', '2026-01-01T00:00:00')" in sql and "RESTART" not in sql
+    assert f"(2, 'READY', '{time_value('datetime', 2)}')" in sql and "RESTART" not in sql
 
 
 def test_type_defaults() -> None:
@@ -87,7 +89,39 @@ def test_type_defaults() -> None:
 
     assert default_value(f("enum(READY|SHIPPED)"), 7) == "READY"
     assert default_value(f("long"), 7) == 7 and default_value(f("boolean"), 7) is False
-    assert default_value(f("date"), 7) == "2026-01-01" and default_value(f("string"), 7) == "x-7"
+    assert default_value(f("date"), 7) == time_value("date", 7) == "2026-01-10"
+    assert default_value(f("datetime"), 1) == "2026-01-05T04:07:00"  # 6007분 뒤
+    assert default_value(f("time"), 1) == "04:07:00" and default_value(f("string"), 7) == "x-7"
+
+
+def test_time_defaults_differ_per_row_and_do_not_follow_id_order() -> None:
+    """2026-11-13: 날짜·시각 기본값이 모든 행에 같은 고정 시각이라 '최신순'이 뜻을 잃었다. id 순서대로 늘리면 id 로만 정렬한 구현이
+    '최신순'을 통과하므로 어긋나게 (리뷰). 같은 시각이 필요한 과제는 groups 가 적는다."""
+    for kind, rows in (("datetime", 2000), ("date", 300)):
+        values = [time_value(kind, r) for r in range(1, rows + 1)]  # type: ignore[arg-type]
+        assert len(set(values)) == rows  # 모두 다름
+        assert values[:3] != sorted(values[:3]) and values[:3] != sorted(values[:3], reverse=True)
+    # 소수 주기를 넘는 행도 앞 행과 겹치지 않는다
+    big = [time_value("datetime", r) for r in (1, 10007, 10008, 20014)]
+    assert len(set(big)) == 4
+
+
+def test_string_fields_holding_times_are_recognised() -> None:
+    """2026-11-12 행마다 조회 알파: createdAt(string, 'ISO 8601 날짜-시간 문자열')에 'createdAt-<id>' 가 들어갔다 — 제약 글·…At 이름(보조)."""
+    from task_spec.schemas.build import ContractField
+
+    def f(name: str, constraints: str | None = None, t: str = "string") -> ContractField:
+        return ContractField(name=name, type=t, constraints=constraints, refs=["r1"])
+
+    assert time_kind(f("createdAt", "ISO 8601 날짜-시간 문자열")) == "datetime"
+    assert time_kind(f("issuedOn", "날짜 (YYYY-MM-DD)")) == "date"
+    assert time_kind(f("paidOn", "YYYY-MM-DD'T'HH:mm:ss")) == "datetime"
+    assert time_kind(f("updatedAt")) == "datetime"  # 이름만으로도 (보조)
+    assert default_value(f("createdAt", "ISO 8601"), 1) == "2026-01-05T04:07:00"
+    # 날짜와 무관한 글자 칸·이름은 예전 그대로
+    assert time_kind(f("memo", "일시적 메모")) is None and default_value(f("memo"), 3) == "memo-3"
+    assert time_kind(f("status", t="enum(READY|DONE)")) is None
+    assert time_kind(f("format")) is None  # 'At' 로 끝나지만 소문자 단어
 
 
 def test_schema_cross_check() -> None:

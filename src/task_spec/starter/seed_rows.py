@@ -20,7 +20,7 @@ from task_spec.schemas.build import Endpoint, Entity
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import requester_rows
 from task_spec.starter.field_types import parse as parse_field
-from task_spec.starter.seed_sql import _insert_fields, default_value
+from task_spec.starter.seed_sql import _insert_fields, default_value, time_kind
 
 PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 행 수 — 숨은 범위·작은 id 밖
 RESERVED_ROWS = 10  # 작은 id 쪽 — 숨은 케이스에 나눠 주지 않는다 (지원자 테스트·공개 테스트·시작 코드 테스트 몫)
@@ -517,6 +517,9 @@ def _default_note(s: SeedRule, entity: Entity | None) -> str:
         if f.name in grouped:
             continue
         v = default_value(f, 1)
+        if time_kind(f) is not None:  # 행마다 다른 날짜·시각, id 순서와 무관 (seed_sql.time_value)
+            shown.append(f"`{f.name}`=행마다 다른 값, id 순서와 무관 (예: id 1 → '{v}')")
+            continue
         if (
             isinstance(v, bool)
             or not isinstance(v, (int, str))

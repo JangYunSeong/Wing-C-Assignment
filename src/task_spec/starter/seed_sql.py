@@ -7,12 +7,15 @@
 - id 문법 — id 는 코드가 넣고, identity 열이면 템플릿이 정한 재설정 문장으로 다음 값을 시드 끝 다음으로 (앱이 새 행을 넣어도 안 겹침).
 - 스키마 불일치 — `schema_problems` 가 시작 코드 schema.sql 에 시드 테이블·열이 있는지, id 가 직접 넣을 수 있는 열인지 Gradle 전에 본다.
 그룹에 없는 필수 열은 형식별 결정적 기본값, 그룹에 없는 선택 열은 넣지 않는다(DB 기본값·NULL).
+날짜·시각 칸(형식, 또는 글자 형식이면 제약 글·…At 이름)의 기본값은 행마다 다르고 id 순서와 어긋난다 (2026-11-13, `time_value`).
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from datetime import datetime, timedelta
+from typing import Literal
 
 from task_spec.schemas.build import ContractField, Entity, GeneratedFile, SeedRule, TaskContract
 from task_spec.schemas.template import TemplateManifest
@@ -49,6 +52,55 @@ def _enum_first(type_: str) -> str | None:
     return first or None
 
 
+_BASE_TIME = datetime.fromisoformat(FIXED_DATETIME)
+# 문자열 칸이지만 날짜·시각을 담는 칸 — 제약 글로 알아본다 (보조: 계약이 형식을 datetime 으로 적는 것이 원칙, plan_contract 몫)
+_TIME_WORDS = re.compile(r"\bhh\b|시간|\btime\b|'?t'?hh|\dT\d|yyyy-mm-dd'?t", re.I)
+_DATE_WORDS = re.compile(r"yyyy-mm-dd", re.I)
+_DATETIME_WORDS = re.compile(
+    r"iso[\s-]?8601|date[\s-]?time|datetime|timestamp|날짜[\s·-]?시간", re.I
+)
+_AT_NAME = re.compile(r"[a-z0-9]At$")
+TimeKind = Literal["datetime", "date", "time"]
+
+
+def time_kind(f: ContractField) -> TimeKind | None:
+    """날짜·시각 칸인가 — 형식(datetime·date·time…)이 먼저, 형식이 글자면 제약 글(ISO 8601·YYYY-MM-DD·날짜-시간)과 이름(…At)으로.
+    2026-11-12 행마다 조회 알파: `createdAt`(string, 제약 'ISO 8601 날짜-시간 문자열')에 시드 값이 없어 'createdAt-<id>' 가 들어가
+    '최신순'이 뜻을 잃었다 (풀이 6개 모두 진행자에게 물음)."""
+    t = f.type.strip().lower()
+    if _enum_first(f.type) is not None or _NUMBER.match(t) or t.startswith("bool"):
+        return None
+    if _DATETIME.match(t):
+        return "datetime"
+    if t.startswith("date"):
+        return "date"
+    if t.startswith("time"):
+        return "time"
+    text = f.constraints or ""
+    if _DATE_WORDS.search(text):  # YYYY-MM-DD — 시각 표기가 함께면 날짜-시각
+        return "datetime" if _TIME_WORDS.search(text) else "date"
+    if _DATETIME_WORDS.search(text) or _AT_NAME.search(f.name):
+        return "datetime"
+    return None
+
+
+def _spread(row: int, step: int, mod: int) -> int:
+    """행 번호 → 서로 다른 칸 수 — mod 가 소수라 행 1~mod-1 은 모두 다르고, 곱수 때문에 행 번호 순서와 어긋난다
+    (6007·10007: 행 1·2·3 → 6007·2007·8014). mod 를 넘는 행은 mod 씩 더해 앞 행과 겹치지 않는다."""
+    return (row * step) % mod + (row // mod) * mod
+
+
+def time_value(kind: TimeKind, row: int) -> str:
+    """행마다 다른 결정적 날짜·시각 — **id 순서와 어긋나게** (id 로만 정렬한 구현이 '최신순'을 통과하지 않게, 2026-11-13 리뷰).
+    같은 시각이 필요한 과제(같은 시각의 순서 정하기 등)는 계약 시드 groups 가 그 값을 적는다 — 기본값은 '모두 다름'만 보장한다."""
+    if kind == "date":
+        return (_BASE_TIME + timedelta(days=_spread(row, 211, 367))).date().isoformat()
+    minutes = _spread(row, 6007, 10007)  # 약 7일 안
+    if kind == "time":
+        return f"{minutes % 1440 // 60:02d}:{minutes % 60:02d}:00"
+    return (_BASE_TIME + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
 def default_value(f: ContractField, row: int) -> object:
     """그룹 값이 없는 필수 필드의 결정적 기본값 (행 id 로 서로 다르게)."""
     t = f.type.strip().lower()
@@ -58,12 +110,8 @@ def default_value(f: ContractField, row: int) -> object:
         return row
     if t.startswith("bool"):
         return False
-    if _DATETIME.match(t):
-        return FIXED_DATETIME
-    if t.startswith("date"):
-        return FIXED_DATETIME[:10]
-    if t.startswith("time"):
-        return "00:00:00"
+    if (kind := time_kind(f)) is not None:
+        return time_value(kind, row)
     return f"{f.name}-{row}"[:20]
 
 
