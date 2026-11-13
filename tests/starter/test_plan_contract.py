@@ -17,7 +17,7 @@ from task_spec.nodes.starter.plan_contract import (
     plan_input,
 )
 from task_spec.prompting import PromptRegistry, assemble
-from task_spec.schemas import TaskItem
+from task_spec.schemas import HarnessRule, TaskItem
 from task_spec.starter.templates import Template
 from tests.spec.test_feature import _client, _skeleton
 from tests.starter.test_contract import BACKEND_SEED, _contract, _manifest, _plan
@@ -337,6 +337,17 @@ def test_material_decides_required_harness_params_and_fk_targets_use_names() -> 
     )
     noted = for_material(t, noted_seed).manifest.param("query_delay_ms")
     assert noted is not None and noted.description.endswith("— 이 과제: DB 왕복 p50")
+    ruled = for_material(
+        t,
+        noted_seed.model_copy(
+            update={
+                "harness_rules": {"query_delay_ms": HarnessRule(labels=["p50"], round="nearest")}
+            }
+        ),
+    ).manifest.param("query_delay_ms")
+    assert ruled is not None and ruled.description.endswith(
+        "— 이 과제: DB 왕복 p50 (근거에서 값을 만드는 규칙: 이름표 p50 의 값, ms 단위로 바꿔 반올림)"
+    )  # 계약 검사가 대조하는 규칙을 계약 입력에도 같은 말로
     c = _contract()
     c["entities"][1]["foreign_keys"] = [f"orderId → {c['entities'][0]['entity_id']}"]
     fixed, notes = fit_fk_targets(TaskContract.model_validate(c))

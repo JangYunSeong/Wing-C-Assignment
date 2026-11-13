@@ -125,7 +125,7 @@ from task_spec.schemas.draft import (
     JudgeTrapsInput,
     JudgeTrapsOutput,
 )
-from task_spec.schemas.incident import FeatureSeed, PublicIncident
+from task_spec.schemas.incident import FeatureSeed, HarnessRule, PublicIncident
 from task_spec.schemas.ingest import (
     ExtractedDocument,
     ExtractedField,
@@ -275,6 +275,7 @@ __all__ = [
     "DraftFeatureInputV2",
     "DraftFeatureOutputV2",
     "FeatureSeed",
+    "HarnessRule",
     "DebugStageDraft",
     "DraftFeatureInput",
     "DraftFeatureOutput",

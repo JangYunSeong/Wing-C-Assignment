@@ -122,6 +122,14 @@
     "harness_notes": {
       "concurrency": "자료에서 같은 대상에 짧은 시간 동안 몰린 요청 건수 (예: 'N초 동안 N건'·'초당 최대 N건' 의 N) — 버스트 한 번의 동시 요청 수"
     },
+    "harness_rules": {
+      "concurrency": {
+        "units": [
+          "건"
+        ],
+        "pick": "max"
+      }
+    },
     "reasons": [
       "lost_update",
       "server_error"

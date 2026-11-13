@@ -38,6 +38,7 @@ from task_spec.starter.contract import (
     ROW_NEEDS,
     SpecView,
     check_contract,
+    describe_rule,
     evidence_fragment,
     field_style,
     fit_covers,
@@ -106,7 +107,13 @@ def for_material(template: Template, seed: FeatureSeed | None) -> Template:
     if seed is None or seed.harness is None:
         return template
     need = set(seed.harness)
-    notes = seed.harness_notes
+    notes = dict(seed.harness_notes)
+    for (
+        name,
+        rule,
+    ) in seed.harness_rules.items():  # 계약 검사가 대조하는 규칙을 계약 입력에도 같은 말로
+        how = f"근거에서 값을 만드는 규칙: {describe_rule(rule, param_unit(name))}"
+        notes[name] = f"{notes[name]} ({how})" if name in notes else how
     mechanics = template_mechanics(template.manifest)
     params = [
         p.model_copy(
@@ -268,7 +275,7 @@ def template_mechanics(m: TemplateManifest) -> set[str]:
 
 
 def fit_evidence_fragments(
-    plan: HiddenPlan, m: TemplateManifest, spec: SpecView
+    plan: HiddenPlan, m: TemplateManifest, spec: SpecView, seed: FeatureSeed | None = None
 ) -> tuple[HiddenPlan, list[str]]:
     """근거 인용이 자료에 그대로 없으면(LLM 이 글자를 바꿈) 자료에 그대로 있는 가장 긴 조각으로 바꾼다 — 그 조각을 지금 판정(ok·ambiguous·
     rounded)으로 다시 보고, 결과와 상관없이 승인자 표시를 붙인다 (값이 자료에서 왔다는 건 확인되지만 그 값이 이 조절값이라는 연결은 LLM 이
@@ -281,7 +288,11 @@ def fit_evidence_fragments(
         if not p.visible or p.name not in plan.harness or not quote or quote.strip() == NO_EVIDENCE:
             continue
         frag = evidence_fragment(
-            plan.harness[p.name], quote, spec.visible_texts, param_unit(p.name)
+            plan.harness[p.name],
+            quote,
+            spec.visible_texts,
+            param_unit(p.name),
+            seed.harness_rules.get(p.name) if seed is not None else None,
         )
         if frag is None:
             continue
@@ -449,7 +460,7 @@ def fit_output(
     trimmed, notes = fit_material_params(out.hidden_plan, seed, manifest)
     trimmed, free_notes = fit_unevidenced(trimmed, manifest, spec)
     notes += free_notes
-    trimmed, frag_notes = fit_evidence_fragments(trimmed, manifest, spec)
+    trimmed, frag_notes = fit_evidence_fragments(trimmed, manifest, spec, seed)
     notes += frag_notes
     filled, fill_notes = fill_hidden_defaults(trimmed, manifest)
     notes += fill_notes
