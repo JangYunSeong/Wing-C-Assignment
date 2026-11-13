@@ -41,17 +41,23 @@ from task_spec.schemas import (
     GenRefInputV3,
     GenStarterInput,
     GenStarterInputV3,
+    GenVariantInput,
+    GenVariantOutput,
     HiddenPlan,
     NodeError,
     Provenance,
     TaskContract,
     TaskItem,
 )
-from task_spec.schemas.build import Fault, FileKind
+from task_spec.schemas.build import Fault, FileKind, PublicTest
 from task_spec.schemas.template import FailureReason, HiddenHelper, SlotKind, TemplateManifest
 from task_spec.starter.config_merge import merge_config
 from task_spec.starter.contract import SpecView, existing_endpoints
-from task_spec.starter.hidden_helpers import render_contract_case, render_persistence_check
+from task_spec.starter.hidden_helpers import (
+    render_contract_case,
+    render_persistence_check,
+    row_use_consts,
+)
 from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.java_imports import ensure_java_imports
 from task_spec.starter.render import contract_markdown, public_scenario, render_params
@@ -65,6 +71,15 @@ from task_spec.starter.ts_helpers import (
     ensure_vitest_imports,
     fault_fn,
     render_app_types,
+)
+from task_spec.starter.variants import (
+    VariantSpec,
+    VariantTarget,
+    app_files,
+    build_variants,
+    needs_boundary,
+    operators_text,
+    targets,
 )
 
 NONE = "(없음)"
@@ -315,11 +330,22 @@ def public_input(
         harness_api=api,
         slots=slots_text(m, "public_test"),
         contract=contract_markdown(contract, tables=m.naming.table),
-        public_tests=_lines([f"{t.test_id} ({t.ac_id}) {t.checks}" for t in contract.public_tests]),
+        public_tests=_lines([public_test_line(contract, t, plan) for t in contract.public_tests]),
         requirements=_lines([f"{r.req_id} {r.text}" for r in task.requirements]),
         acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
         revision_note=note or NONE,
     )
+
+
+def public_test_line(contract: TaskContract, t: PublicTest, plan: HiddenPlan | None = None) -> str:
+    """pt 한 줄 + 계약이 정한 쓸 행의 상수 (rows → PUBLIC_… — #164: 경계 행·걸러질 행을 테스트가 짐작하지 않게)."""
+    line = f"{t.test_id} ({t.ac_id}) {t.checks}"
+    uses = []
+    for u in t.rows:
+        consts = row_use_consts(contract, u, plan)
+        vals = ", ".join(f"{k}={v}" for k, v in u.values.items())
+        uses.append(f"{consts[0]} ({vals})" if consts else f"({vals} — 상수 없음)")
+    return line + (f" — 쓸 행: {'; '.join(uses)}" if uses else "")
 
 
 def hidden_input(
@@ -982,3 +1008,108 @@ async def gen_accepted(
         fix=lambda fs: b.fix(fs, starter),
         prompt_name=b.template.manifest.prompt_tasks.get("gen_accepted"),
     )
+
+
+@dataclass
+class VariantGen:
+    """공개 테스트 변별 관문의 변형 생성 결과 (#164) — 기준마다 한 번 부른 것을 모음."""
+
+    variants: list[tuple[Overlay, VariantSpec]] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)  # 쓸 수 없어 버린 변형 (이유)
+    provenance: list[Provenance] = field(default_factory=list)
+    fail_reasons: list[str] = field(default_factory=list)
+    missing_boundary: list[str] = field(
+        default_factory=list
+    )  # 비교 규칙이 있는데 경계 변형을 못 만든 요구
+
+
+def variant_input(
+    task: TaskItem,
+    contract: TaskContract,
+    template: Template,
+    impl: Mapping[str, str],
+    target: VariantTarget,
+    note: str | None = None,
+) -> GenVariantInput:
+    """공개 테스트·계약의 확인 방법(public_tests)은 주지 않는다 — 테스트를 쓴 쪽의 맹점을 모르는 독립 검사 (2026-11-13 사용자)."""
+    m = template.manifest
+    return GenVariantInput(
+        stack=stack_text(m),
+        contract=contract_markdown(contract, tables=m.naming.table),
+        requirements=_lines([f"{r.req_id} {r.text}" for r in task.requirements]),
+        acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
+        target=f"{target.rule_id} {target.text}",
+        operators=operators_text(),
+        impl_files=files_text([GeneratedFile(path=p, content=c) for p, c in impl.items()]),
+        revision_note=note or NONE,
+    )
+
+
+async def gen_variants(
+    task: TaskItem,
+    contract: TaskContract,
+    template: Template,
+    starter: Overlay,
+    base: Overlay,
+    *,
+    llm: LLMClient,
+    prompts: PromptRegistry,
+    ontology_version: str,
+    only: Sequence[VariantTarget] | None = None,
+) -> VariantGen:
+    """공개 요구마다 정답 구현(시작 코드 + 허용 구현 base)에서 그 요구 하나만 어긴 변형 — 요구마다 한 번, 함께 부른다.
+    비교 규칙(이상·이하·보다 적으면·같으면·한도…)이 있는 요구에 경계 변형이 없으면 그 요구만 한 번 더 부른다 (2026-11-13 쿠폰 알파:
+    '적으면 거절'의 경계 변형을 만들지 않아 관문이 경계를 재지 못했다). 그래도 없으면 missing_boundary 로 남긴다.
+    only: 어길 대상을 직접 줄 때 (손 시범 유효성 검사 — 측정 요구, eval/pilot/mutants.py)."""
+    prompt_t = prompts.get("gen_variant")
+    impl = app_files(starter, base)
+    goals = list(only) if only is not None else targets(task, contract)
+    out = VariantGen()
+    taken: set[str] = set()
+
+    async def one(t: VariantTarget, note: str | None = None) -> tuple[VariantTarget, Any]:
+        prompt = assemble(
+            prompt_t,
+            variant_input(task, contract, template, impl, t, note),
+            ontology_version=ontology_version,
+        )
+        try:
+            return t, await llm.call(prompt, GenVariantOutput, reasoning_off_last=True)
+        except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
+            return t, exc
+
+    def take(t: VariantTarget, r: Any) -> list[VariantSpec]:
+        if isinstance(r, Exception):
+            out.fail_reasons.append(f"{t.rule_id}: {type(r).__name__}: {str(r)[:200]}")
+            if (spent := getattr(r, "provenance", None)) is not None:
+                out.provenance.append(spent)
+            return []
+        out.provenance.append(r.provenance)
+        kept, dropped = build_variants(t, r.parsed, base, impl, taken)
+        out.variants += kept
+        out.dropped += dropped
+        return [spec for _, spec in kept]
+
+    made = {t.rule_id: take(t, r) for t, r in await asyncio.gather(*(one(t) for t in goals))}
+    retry = [
+        t
+        for t in goals
+        if needs_boundary(t.text) and not any(x.op == "boundary" for x in made[t.rule_id])
+    ]
+    if retry:
+        note = (
+            "이 요구에는 같은 값의 포함 여부를 정하는 비교 규칙이 있다 — 경계를 한 칸 어긋나게 한 `boundary` 변형을 꼭 만든다 "
+            "(이미 만든 갈래는 다시 만들지 않아도 된다)."
+        )
+        for t, r in await asyncio.gather(*(one(t, note) for t in retry)):
+            if not any(x.op == "boundary" for x in take(t, r)):
+                out.missing_boundary.append(t.rule_id)
+    logger.info(
+        "gen_variant targets=%d variants=%d dropped=%d failed=%d boundary_retry=%d",
+        len(goals),
+        len(out.variants),
+        len(out.dropped),
+        len(out.fail_reasons),
+        len(retry),
+    )
+    return out

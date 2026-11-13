@@ -339,20 +339,24 @@ def public_free(
         for i in range(r.first, r.last + 1)
     }
     asked = requester_rows(contract)
-    out: dict[tuple[str, tuple[tuple[str, SeedScalar], ...]], list[int]] = {}
+    # 처음 값이 같으면 칸 순서가 달라도 같은 그룹 — 2026-11-13 #164 좌석 알파: LLM 그룹({remainingSeats, totalSeats, status})과
+    # 공통 값을 앞에 두는 덧붙임 그룹({status, …})을 따로 세어 같은 그룹을 거듭 덧붙이고 다른 처음 값의 몫은 비었다.
+    # 상수 이름(hidden_helpers.public_rows)은 처음 본 그룹의 칸 순서를 따른다.
+    out: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[dict[str, SeedScalar], list[int]]] = {}
     for s in contract.seed:
         if s.rows <= 0:
             continue
         for g in sorted(s.groups, key=lambda x: x.first):
             if set(range(g.first, g.last + 1)) <= asked.get(s.entity_id, set()):
                 continue  # 요청자 행만 있는 그룹
-            ids = out.setdefault((s.entity_id, tuple(g.values.items())), [])
+            key = (s.entity_id, tuple(sorted((k, str(v)) for k, v in g.values.items())))
+            _, ids = out.setdefault(key, (dict(g.values), []))
             for i in range(max(g.first, reserved + 1), g.last + 1):
                 if len(ids) >= PUBLIC_PER_GROUP:
                     break
                 if i not in used and i not in asked.get(s.entity_id, set()):
                     ids.append(i)
-    return [(eid, dict(vals), ids) for (eid, vals), ids in out.items()]
+    return [(eid, vals, ids) for (eid, _), (vals, ids) in out.items()]
 
 
 def _cond(initial: Mapping[str, SeedScalar]) -> str:
@@ -452,11 +456,80 @@ def fit_seed(
         seeds[d.entity_id] = grown
         contract = contract.model_copy(update={"seed": [seeds[s.entity_id] for s in contract.seed]})
     if manifest.public_helper is not None:
+        contract = _fit_row_uses(contract, seeds, names, reserved, notes)
         contract = _fit_public(contract, plan, seeds, names, reserved, notes)
     if notes:  # 고친 결과도 스키마(행 상한 등)를 지키는지
         contract = TaskContract.model_validate(contract.model_dump())
         plan = HiddenPlan.model_validate(plan.model_dump())
     return contract, plan, notes
+
+
+def matches(values: Mapping[str, SeedScalar], want: Mapping[str, SeedScalar]) -> bool:
+    """처음 값 values 가 want 를 모두 담는가 (칸 순서·값 형식 무관 — 시드 값은 글자로 비교)."""
+    return all(k in values and str(values[k]) == str(v) for k, v in want.items())
+
+
+def _fit_row_uses(
+    contract: TaskContract,
+    seeds: dict[str, SeedRule],
+    names: Mapping[str, str],
+    reserved: int,
+    notes: list[str],
+) -> TaskContract:
+    """공개 테스트가 쓰겠다고 한 행(PublicTest.rows)의 처음 값마다 시드 그룹이 있게 — 없으면 시드 끝에 덧붙인다.
+    그 뒤 _fit_public 이 그룹마다 공개 몫 상수를 채운다 (#164: 경계 행·걸러질 행이 시드에 없어 공개 테스트가 규칙을 가르지 못했다).
+    처음에 비어 있는 엔티티·시드 규칙이 없는 엔티티는 고치지 않는다 (row_use_problems 가 잡음)."""
+    for t in contract.public_tests:
+        for use in t.rows:
+            seed = seeds.get(use.entity_id)
+            if seed is None or seed.rows == 0:
+                continue
+            if any(matches(g.values, use.values) for g in seed.groups):
+                continue
+            values = {**common_values(seed), **use.values}
+            first = seed.rows + 1
+            last = max(seed.rows, reserved) + PUBLIC_PER_GROUP
+            seeds[use.entity_id] = seed.model_copy(
+                update={
+                    "rows": last,
+                    "groups": [*seed.groups, SeedGroup(first=first, last=last, values=values)],
+                }
+            )
+            notes.append(
+                f"{names.get(use.entity_id, use.entity_id)} 시드 {seed.rows} → {last}행: id {first}~{last} ({_cond(values)}) 덧붙임 "
+                f"— 공개 테스트 {t.test_id} 가 쓰는 행"
+            )
+            contract = contract.model_copy(
+                update={"seed": [seeds[x.entity_id] for x in contract.seed]}
+            )
+    return contract
+
+
+def row_use_problems(contract: TaskContract) -> list[str]:
+    """공개 테스트 rows 가 가리키는 행을 시드로 만들 수 있는가 — 엔티티·칸이 있고, 처음부터 행이 있는 엔티티 (요청으로 만드는 데이터는 rows 에 적지 않음)."""
+    out: list[str] = []
+    entities = {m.entity_id: m for m in contract.entities}
+    seeds = {x.entity_id: x for x in contract.seed}
+    for t in contract.public_tests:
+        for use in t.rows:
+            m = entities.get(use.entity_id)
+            if m is None:
+                out.append(f"공개 테스트 {t.test_id} rows: 계약에 없는 엔티티 {use.entity_id}")
+                continue
+            seed = seeds.get(use.entity_id)
+            if seed is None or seed.rows == 0:
+                out.append(
+                    f"공개 테스트 {t.test_id} rows: {m.name} 은 처음에 비어 있어 시드 행이 없음 — "
+                    "요청으로 만드는 데이터는 rows 에 적지 않고 checks 에 만드는 요청을 쓴다"
+                )
+                continue
+            fields = {f.name for f in m.fields}
+            bad = [k for k in use.values if k not in fields or k == "id"]
+            if bad:
+                out.append(
+                    f"공개 테스트 {t.test_id} rows: {m.name} 에 없는 칸(또는 id) {', '.join(bad)} — 시드 groups 의 values 와 같은 칸으로"
+                )
+    return out
 
 
 def _fit_public(

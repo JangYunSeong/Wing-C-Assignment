@@ -145,12 +145,16 @@ def boot_cause(results_dir: Path) -> str:
     return ""
 
 
-def junit_results(results_dir: Path, ids: dict[str, str]) -> list[TestResult]:
-    """Gradle JUnit XML → 클래스(기존 테스트)·케이스(숨은 테스트)마다 결과 하나. 첫 실패를 대표로."""
+def junit_results(
+    results_dir: Path, ids: dict[str, str], sources: Path | None = None
+) -> list[TestResult]:
+    """Gradle JUnit XML → 클래스(기존 테스트)·케이스(숨은 테스트)마다 결과 하나. 첫 실패를 대표로.
+    실패한 줄(테스트 파일:줄 — 그 클래스의 스택 프레임)을 `at` 에, sources(조립한 프로젝트)를 주면 그 줄의 코드까지 — 수리 요청이
+    어느 단언이 틀렸는지 보이게 (2026-11-13: AssertJ 메시지 'Expecting value to be true but was false' 만으로는 같은 틀린 단언을 되풀이했다)."""
     out: list[TestResult] = []
     for xml in sorted(results_dir.glob("TEST-*.xml")):
         root = ET.parse(xml).getroot()  # Gradle 이 쓴 보고서 (값은 이스케이프됨)
-        first: tuple[str, str] | None = None
+        first: tuple[str, str, str] | None = None
         classname = root.get("name", xml.stem)
         for tc in root.iter("testcase"):
             classname = tc.get("classname", classname)
@@ -158,7 +162,11 @@ def junit_results(results_dir: Path, ids: dict[str, str]) -> list[TestResult]:
             if bad is None:
                 bad = tc.find("error")
             if bad is not None and first is None:
-                first = (bad.get("type", ""), bad.get("message", "") or (bad.text or ""))
+                first = (
+                    bad.get("type", ""),
+                    bad.get("message", "") or (bad.text or ""),
+                    bad.text or "",
+                )
         simple = classname.rsplit(".", 1)[-1]
         if ".grading.cases." in classname:
             group, name = "hidden", ids.get(simple, simple)
@@ -171,7 +179,7 @@ def junit_results(results_dir: Path, ids: dict[str, str]) -> list[TestResult]:
         if first is None:
             out.append(TestResult(group=group, name=name, result="PASS"))  # type: ignore[arg-type]
             continue
-        kind, message = first
+        kind, message, trace = first
         assertion = kind.rsplit(".", 1)[-1] in _ASSERTION_TYPES
         reason = _REASON.search(message)
         out.append(
@@ -181,9 +189,26 @@ def junit_results(results_dir: Path, ids: dict[str, str]) -> list[TestResult]:
                 result="ASSERT" if assertion else "HARNESS_ERR",
                 reason=reason.group(1) if reason else None,
                 message=" ".join(message.split())[:400],
+                at=failed_line(trace, simple, sources),
             )
         )
     return out
+
+
+def failed_line(trace: str, simple: str, sources: Path | None = None) -> str:
+    """실패 스택에서 그 테스트 클래스 파일의 첫 프레임 → 'Pt3Test.java:27 `assertThat(found).isTrue();`' (코드는 sources 가 있을 때)."""
+    m = re.search(rf"\(({re.escape(simple)}\.java):(\d+)\)", trace)
+    if m is None:
+        return ""
+    where = f"{m.group(1)}:{m.group(2)}"
+    if sources is not None:
+        for f in sources.rglob(m.group(1)):
+            lines = f.read_text("utf-8", errors="ignore").splitlines()
+            n = int(m.group(2))
+            if 0 < n <= len(lines):
+                where += f" `{lines[n - 1].strip()}`"
+            break
+    return where[:300]
 
 
 class GradleVerifier:
@@ -217,7 +242,7 @@ class GradleVerifier:
         text = log.read_text("utf-8", errors="ignore")
         errors = compile_errors(text, dest)
         ids = case_ids(hidden, self.template.manifest.hidden_rules.case_id_pattern)
-        tests = junit_results(dest / "build" / "test-results" / "test", ids)
+        tests = junit_results(dest / "build" / "test-results" / "test", ids, dest / "src" / "test")
         cause = boot_cause(dest / "build" / "test-results" / "test")
         shutil.rmtree(dest, ignore_errors=True)
         if code is None:
@@ -318,4 +343,21 @@ class GradleVerifier:
                     self._target, r.label or r.kind, r.kind, (starter, r, *pub, hidden), hidden
                 )
             )
+        return VerifyReport(runs=runs)
+
+    async def verify_variants(
+        self, starter: Overlay, variants: Sequence[Overlay], public: Overlay
+    ) -> VerifyReport:
+        """공개 테스트 변별 관문 (#164) — 변형마다 시작 코드 + 변형 + 공개 테스트 (숨은 테스트 없음). 마지막 verify 와 같은 회차 폴더에
+        라벨(var-…)로 따로 남는다."""
+        if self.keep_code:
+            code = self.work / f"r{self.rounds}-code"
+            for v in variants:
+                write_overlay(v, code / (v.label or v.kind))
+        runs = [
+            await asyncio.to_thread(
+                self._target, v.label or v.kind, v.kind, (starter, v, public), None
+            )
+            for v in variants
+        ]
         return VerifyReport(runs=runs)

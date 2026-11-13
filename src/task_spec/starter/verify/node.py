@@ -376,3 +376,20 @@ class NodeVerifier:
                 )
             )
         return VerifyReport(runs=runs)
+
+    async def verify_variants(
+        self, starter: Overlay, variants: Sequence[Overlay], public: Overlay
+    ) -> VerifyReport:
+        """공개 테스트 변별 관문 (#164) — 변형마다 시작 코드 + 변형 + 공개 테스트 (숨은 테스트 없음). 마지막 verify 와 같은 회차 폴더에
+        라벨(var-…)로 따로 남는다."""
+        if self.keep_code:
+            code = self.work / f"r{self.rounds}-code"
+            for v in variants:
+                write_overlay(v, code / (v.label or v.kind))
+        runs = [
+            await asyncio.to_thread(
+                self._target, v.label or v.kind, v.kind, (starter, v, public), None
+            )
+            for v in variants
+        ]
+        return VerifyReport(runs=runs)

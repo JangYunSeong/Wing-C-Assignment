@@ -16,13 +16,21 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Literal
 
-from task_spec.schemas.build import Endpoint, GeneratedFile, HiddenPlan, TaskContract
+from task_spec.schemas.build import (
+    Endpoint,
+    GeneratedFile,
+    HiddenPlan,
+    RowUse,
+    SeedScalar,
+    TaskContract,
+)
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.header_values import PER_REQUEST, header_values
-from task_spec.starter.seed_rows import allocate_rows, public_free
-from task_spec.starter.seed_sql import default_value
+from task_spec.starter.seed_rows import allocate_rows, matches, public_free
+from task_spec.starter.seed_sql import default_value, time_kind
 from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
 from task_spec.starter.templates import is_java, is_python
@@ -77,10 +85,41 @@ def public_rows(contract: TaskContract, plan: HiddenPlan) -> dict[str, list[int]
     for eid, values, ids in public_free(contract, plan):
         if eid not in names or not ids:
             continue
-        vals = "_".join(
-            re.sub(r"[^A-Za-z0-9]+", "_", str(v)).strip("_").upper() for v in values.values()
-        )
-        out[f"PUBLIC_{_const(names[eid])}" + (f"_{vals}" if vals else "")] = ids
+        out[public_const(names[eid], values)] = ids
+    return out
+
+
+def public_const(entity_name: str, values: Mapping[str, SeedScalar]) -> str:
+    """공개 몫 상수 이름 — PUBLIC_<엔티티>_<처음 값…> (처음 값은 그룹에 적힌 칸 순서대로)."""
+    vals = "_".join(
+        re.sub(r"[^A-Za-z0-9]+", "_", str(v)).strip("_").upper() for v in values.values()
+    )
+    return f"PUBLIC_{_const(entity_name)}" + (f"_{vals}" if vals else "")
+
+
+def row_use_consts(
+    contract: TaskContract, use: RowUse, plan: HiddenPlan | None = None
+) -> list[str]:
+    """공개 테스트 rows 한 항목 → 그 처음 값을 담는 그룹의 공개 몫 상수 이름들 (public_free 와 같이 같은 처음 값은 처음 본 그룹 이름).
+    fit_seed 가 그룹을 보장하므로 보통 하나 이상 — 공개 테스트 입력의 '쓸 행'과 정적 검사가 같은 이름을 본다."""
+    names = {m.entity_id: m.name for m in contract.entities}
+    if use.entity_id not in names:
+        return []
+    out: list[str] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for s in contract.seed:
+        if s.entity_id != use.entity_id:
+            continue
+        for g in sorted(s.groups, key=lambda x: x.first):
+            key = tuple(sorted((k, str(v)) for k, v in g.values.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            if matches(g.values, use.values):
+                out.append(public_const(names[use.entity_id], g.values))
+    if plan is not None:  # 공개 몫 id 가 비면 도우미에 상수가 없다 (public_rows 와 같은 이름만)
+        have = set(public_rows(contract, plan))
+        out = [n for n in out if n in have]
     return out
 
 
@@ -166,6 +205,55 @@ def key_fields(contract: TaskContract) -> list[tuple[str, str, bool]]:
             elif a == f"{f.name}-7"[:20] and b == f"{f.name}-8"[:20]:
                 out.append((f.name, f"{f.name}-", False))
     return list(dict.fromkeys(out))
+
+
+def time_values(contract: TaskContract, plan: HiddenPlan) -> dict[str, dict[int, str]]:
+    """공개 몫 행의 날짜·시각 칸 실제 값 — 함수 이름(<엔티티><칸>Of) → 행 → 시드에 들어간 값 (그룹 값, 없으면 seed_sql 기본값).
+    2026-11-13 #164 N+1 알파: 공개 테스트가 시각을 그룹 값으로 짐작해 '최신순 100건 안에 05-09 행이 있다'(나올 수 없음)·
+    '같은 시각 행 중 이 행이 앞'(정해지지 않음)을 단언했다 — 기준 시각·순서를 실제 값으로 정하게 도우미가 값을 준다."""
+    names = {m.entity_id: m for m in contract.entities}
+    seeds = {x.entity_id: x for x in contract.seed if x.rows > 0}
+    rows_by_entity: dict[str, list[int]] = {}
+    for eid, _, ids in public_free(contract, plan):
+        rows_by_entity.setdefault(eid, []).extend(ids)
+    out: dict[str, dict[int, str]] = {}
+    for eid, ids in rows_by_entity.items():
+        m, seed = names.get(eid), seeds.get(eid)
+        if m is None or seed is None or not ids:
+            continue
+        for f in m.fields:
+            if time_kind(f) is None:
+                continue
+            fn = f"{m.name[:1].lower()}{m.name[1:]}{f.name[:1].upper()}{f.name[1:]}Of"
+            values: dict[int, str] = {}
+            for row in sorted(set(ids)):
+                g = next((g for g in seed.groups if g.first <= row <= g.last), None)
+                v = (
+                    g.values[f.name]
+                    if g is not None and f.name in g.values
+                    else default_value(f, row)
+                )
+                values[row] = str(v)
+            out[fn] = values
+    return out
+
+
+def _time_lines(contract: TaskContract, plan: HiddenPlan) -> list[str]:
+    vals = time_values(contract, plan)
+    if not vals:
+        return []
+    lines = [
+        "",
+        "    // ── 공개 몫 행의 날짜·시각 실제 값 (시드에 들어간 그대로): 기준 시각·순서·포함 여부는 이 값으로 정한다 — 지어 쓰거나 그룹 값으로 짐작하지 않는다 ──",
+    ]
+    for fn, values in vals.items():
+        entries = ", ".join(f'java.util.Map.entry({row}L, "{v}")' for row, v in values.items())
+        lines += [
+            f"    protected static String {fn}(long row) {{",
+            f"        return java.util.Map.ofEntries({entries}).get(row);",
+            "    }",
+        ]
+    return lines
 
 
 def _key_lines(contract: TaskContract) -> list[str]:
@@ -460,6 +548,8 @@ def render_contract_case(
     lines += _setting_lines(contract)
     lines += _header_lines(contract)
     lines += _key_lines(contract)
+    if audience == "public":
+        lines += _time_lines(contract, plan)
     tables = contract_tables(contract, manifest.naming.table) if audience == "hidden" else {}
     if tables:
         lines += ["", "    // ── 계약 테이블 이름 (오류 주입 정규식에는 이 이름을 그대로) ──"]

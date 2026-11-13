@@ -342,6 +342,8 @@ def _public_refs(
             continue
         msgs = {r.target: (t.message if t is not None else "결과 없음") for r, t in bad}
         defect = _test_defect(msgs, terms)
+        # 실패한 단언의 줄·코드를 수리 요청에 (2026-11-13 N+1 알파: 메시지만으로는 같은 틀린 단언을 되풀이했다) — 판정(_signature)에는 쓰지 않는다
+        lines = {r.target: t.at for r, t in bad if t is not None and t.at}
         if defect:
             out.append(
                 RepairAction(
@@ -447,7 +449,9 @@ def _public_refs(
                     "",
                     "⑤",
                     f"모든 구현이 공개 테스트 {name} 에서 실패 — 테스트 의심{shared}",
-                    f"독립으로 만든 참조 구현 {len(runs)}개가 모두 공개 테스트 {name} 에서 실패한다: {_short(first)} — "
+                    f"독립으로 만든 참조 구현 {len(runs)}개가 모두 공개 테스트 {name} 에서 실패한다: {_short(first)}"
+                    + (f" — 실패한 줄: {'; '.join(sorted(set(lines.values())))}" if lines else "")
+                    + " — 그 단언이 계약·시드의 실제 데이터에서 성립하는지(조회가 그 행을 돌려줄 수 있는지, 값이 그 값인지) 보고 "
                     "계약의 응답 모양·상태 코드·규칙 그대로만 확인한다." + shared,
                 )
             )

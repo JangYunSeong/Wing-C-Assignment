@@ -22,12 +22,19 @@ from task_spec.schemas.template import InterfaceKind
 
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 # 오버레이 파일 종류 — public_test 는 공개 테스트를 지원자에게 주지 않을 때 (spec-to-code §4.3 [제안])
-FileKind = Literal["starter", "hidden", "public_test", "ref_naive", "ref_accepted"]
+# ref_variant — 공개 테스트 변별 관문의 변형(정답 구현에서 공개 수용 기준 하나를 어김, #164). 검증에만 쓰고 저장하지 않는다
+FileKind = Literal["starter", "hidden", "public_test", "ref_naive", "ref_accepted", "ref_variant"]
 BuildStatus = Literal[
     "pending", "generating", "verifying", "review", "failed", "approved", "published"
 ]
 GeneratorName = Literal[
-    "plan_contract", "gen_public", "gen_starter", "gen_hidden", "gen_naive", "gen_accepted"
+    "plan_contract",
+    "gen_public",
+    "gen_starter",
+    "gen_hidden",
+    "gen_naive",
+    "gen_accepted",
+    "gen_variant",
 ]
 
 _REF = r"^[rp]\d{1,2}$"  # 공개 요구(r*)·공개 수용 기준(p*) — 계약 요소가 나온 곳
@@ -488,10 +495,27 @@ class ResponseShape(Schema):
         return self.shape_id
 
 
+class RowUse(Schema):
+    """공개 테스트가 쓰는 시드 행 — 그 처음 값. 코드가 그 값의 시드 그룹과 공개 몫 상수(PUBLIC_<엔티티>_<처음 값>)를 보장한다
+    (2026-11-13 #164: 공개 몫 행이 테스트가 무엇을 가르는지 보지 않고 그룹마다 기계적으로 나와 경계 행·걸러질 행이 없었다)."""
+
+    entity_id: str = Field(pattern=r"^m\d{1,2}$")
+    values: dict[str, SeedScalar] = Field(
+        min_length=1,
+        description='그 행의 처음 값 (예: {"remainingSeats": 1}) — 시드 groups 의 values 와 같은 칸·값',
+    )
+
+
 class PublicTest(Schema):
     test_id: str = Field(pattern=r"^pt\d{1,2}$")
     ac_id: str = Field(pattern=r"^p\d{1,2}$")
     checks: str = Field(min_length=1, max_length=300)  # 무엇을 확인하나
+    rows: list[RowUse] = Field(
+        default_factory=list,
+        max_length=4,
+        description="이 테스트가 쓰는 시드 행의 처음 값 — 규칙을 지킨 구현과 어긴 구현이 다른 결과를 내는 행 "
+        "(경계 값과 바로 바깥 값, 걸러질 행과 남을 행 등). 요청으로 만드는 데이터만 쓰면 비움",
+    )
 
 
 class TaskContract(Schema):
@@ -799,6 +823,36 @@ class GeneratedFiles(Schema):
         if len(set(paths)) != len(paths):
             raise ValueError("같은 경로가 두 번 나옴")
         return v
+
+
+VariantOp = Literal["omit", "invert", "boundary"]  # 빼먹기 · 뒤집기 · 경계 한 칸 어긋남
+
+
+class GenVariantInput(Schema):
+    """gen_variant 프롬프트 변수 — 공개 테스트 변별 관문 (#164). 공개 테스트·계약의 확인 방법(checks)은 주지 않는다:
+    테스트를 쓴 쪽의 맹점을 모르는 독립 검사여야 한다 (2026-11-13 사용자 — 새 에이전트가 검사)."""
+
+    stack: str = Field(min_length=1)
+    contract: str = Field(min_length=1)  # 확인 방법(public_tests)을 뺀 계약
+    requirements: str = Field(min_length=1)
+    acceptance_public: str = Field(min_length=1)
+    target: str = Field(min_length=1)  # 어길 공개 수용 기준 1건
+    operators: str = Field(min_length=1)  # 만들 갈래와 뜻
+    impl_files: str = Field(
+        min_length=1
+    )  # 정답 구현 (시작 코드 + 허용 구현을 합친 앱 파일 — 테스트 파일 없음)
+    revision_note: str
+
+
+class ViolationVariant(Schema):
+    op: VariantOp
+    note: str = Field(min_length=1, max_length=200)  # 무엇을 어떻게 어겼나 한 줄
+    files: list[GeneratedFile] = Field(min_length=1, max_length=3)  # 바꾼 파일 — 내용 전체
+
+
+class GenVariantOutput(Schema):
+    # 갈래마다 곳마다 하나 — 같은 규칙이 여러 곳(두 쿼리·여러 칸)에 있으면 곳마다 따로 (1차 변이, 2026-11-13)
+    variants: list[ViolationVariant] = Field(default_factory=list, max_length=6)
 
 
 class FileRef(Schema):

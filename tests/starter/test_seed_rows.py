@@ -9,12 +9,14 @@ from pydantic import ValidationError
 
 from task_spec.schemas import HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.hidden_helpers import row_use_consts
 from task_spec.starter.seed_rows import (
     RESERVED_ROWS,
     allocate_rows,
     case_rows_problems,
     fit_seed,
     public_free,
+    row_use_problems,
     seed_markdown,
     seed_problems,
 )
@@ -317,6 +319,81 @@ def test_fit_seed_leaves_public_rows_per_initial_value() -> None:
     assert not allocate_rows(fitted, fplan).problems and not seed_problems(fitted)
     # 공개 테스트가 없는 템플릿은 그대로
     assert fit_seed(full, plan, java.model_copy(update={"public_helper": None}))[2] == []
+
+
+def test_fit_seed_public_rows_ignore_key_order_of_group_values() -> None:
+    """2026-11-13 #164 평가(좌석 알파 v26): 경계 그룹(남은 1·0·50)의 values 칸 순서가 공통 값(status)을 앞에 두는 덧붙임 그룹과 달라
+    같은 처음 값을 다른 그룹으로 세었다 — 같은 그룹을 5번 덧붙이고, 남은 0·50 그룹에는 공개 몫 상수가 하나도 생기지 않았다."""
+    java = load_template(JAVA).manifest
+    contract = _with_seed(
+        _seed(
+            61,
+            (1, 5, {"remainingSeats": 1, "totalSeats": 50, "status": "OPEN"}),
+            (6, 10, {"remainingSeats": 0, "totalSeats": 30, "status": "OPEN"}),
+            (11, 61, {"remainingSeats": 50, "totalSeats": 50, "status": "OPEN"}),
+        )
+    )
+    plan = _cases(("hc1", [_rows(51, burst=True, remainingSeats=50, totalSeats=50, status="OPEN")]))
+    fitted, fplan, notes = fit_seed(contract, plan, java)
+    free = public_free(fitted, fplan)
+    # 처음 값마다 한 번 — 칸 순서가 달라도 같은 처음 값이면 같은 그룹
+    assert sorted((v["remainingSeats"], len(ids)) for _, v, ids in free) == [
+        (0, 3),
+        (1, 3),
+        (50, 3),
+    ]
+    assert len([n for n in notes if "공개 테스트 몫" in n]) == 3
+    assert not allocate_rows(fitted, fplan).problems
+
+
+def test_fit_seed_adds_groups_for_rows_public_tests_use() -> None:
+    """#164: 공개 테스트가 쓰겠다고 한 행(PublicTest.rows — 경계 값·걸러질 행)의 처음 값이 시드에 없으면 시드 끝에 그룹을 덧붙이고,
+    그 그룹에도 공개 몫 상수가 생긴다. 이미 있는 처음 값(칸 일부만 적어도)은 그대로."""
+    java = load_template(JAVA).manifest
+    c = _with_seed(_seed(20, (1, 20, {"status": "READY"}))).model_dump()
+    c["public_tests"][0]["rows"] = [
+        {"entity_id": "m1", "values": {"status": "SHIPPING"}},
+        {"entity_id": "m1", "values": {"status": "READY"}},
+    ]
+    contract = TaskContract.model_validate(c)
+    plan = _cases(("hc1", [_rows(3, status="READY")]))
+    fitted, fplan, notes = fit_seed(contract, plan, java)
+    assert _has(notes, "공개 테스트 pt1 가 쓰는 행", "status=SHIPPING")
+    assert not _has(notes, "공개 테스트 pt1 가 쓰는 행", "status=READY")
+    free = {v["status"]: len(ids) for _, v, ids in public_free(fitted, fplan)}
+    assert free == {"READY": 3, "SHIPPING": 3}
+    assert not seed_problems(fitted) and not allocate_rows(fitted, fplan).problems
+    names = row_use_consts(fitted, fitted.public_tests[0].rows[0])
+    assert names == ["PUBLIC_ORDER_SHIPPING"]
+
+
+def test_fit_seed_row_uses_on_a_seed_smaller_than_reserved_rows() -> None:
+    """리뷰 2026-11-13: 시드가 작은 id 몫(1~10)보다 작으면 덧붙인 그룹은 그 위까지 덮고, 공개 몫은 작은 id 밖에서 나온다."""
+    java = load_template(JAVA).manifest
+    c = _with_seed(_seed(4, (1, 4, {"status": "READY"}))).model_dump()
+    c["public_tests"][0]["rows"] = [{"entity_id": "m1", "values": {"status": "SHIPPING"}}]
+    fitted, fplan, _ = fit_seed(
+        TaskContract.model_validate(c), _cases(("hc1", [_rows(2, status="READY")])), java
+    )
+    groups = [(g.first, g.last, g.values["status"]) for g in fitted.seed[0].groups]
+    assert [g[2] for g in groups].count("SHIPPING") == 1
+    assert all(a[1] + 1 == b[0] for a, b in zip(groups, groups[1:]))  # 빈틈·겹침 없음
+    free = {v["status"]: ids for _, v, ids in public_free(fitted, fplan)}
+    assert len(free["SHIPPING"]) == 3 and min(free["SHIPPING"]) > RESERVED_ROWS
+    assert not seed_problems(fitted) and not allocate_rows(fitted, fplan).problems
+
+
+def test_row_use_problems_point_at_unseedable_rows() -> None:
+    c = _with_seed(_seed(20, (1, 20, {"status": "READY"}))).model_dump()
+    c["public_tests"][0]["rows"] = [
+        {"entity_id": "m9", "values": {"status": "READY"}},
+        {"entity_id": "m1", "values": {"color": "RED"}},
+    ]
+    c["public_tests"][1]["rows"] = [{"entity_id": "m2", "values": {"note": "x"}}]
+    problems = row_use_problems(TaskContract.model_validate(c))
+    assert _has(problems, "pt1", "없는 엔티티 m9")
+    assert _has(problems, "pt1", "없는 칸", "color")
+    assert _has(problems, "pt2", "처음에 비어", "요청으로 만드는 데이터")
 
 
 def test_fit_seed_leaves_good_answers_and_unseeded_entities_alone() -> None:

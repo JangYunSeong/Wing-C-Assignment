@@ -45,6 +45,7 @@ from task_spec.starter.hidden_helpers import (
     key_fields,
     render_contract_case,
     render_persistence_check,
+    row_use_consts,
     setting_const,
 )
 from task_spec.starter.render import README, render_params
@@ -83,6 +84,7 @@ KIND_TARGET = {
     "hidden": "gen_hidden",
     "ref_naive": "gen_naive",
     "ref_accepted": "gen_accepted",
+    "ref_variant": "gen_variant",
 }
 
 _SECRETS = [
@@ -2318,6 +2320,37 @@ def _starter_settings(o: Overlay, contract: TaskContract | None) -> list[StaticP
     return out
 
 
+def _public_row_uses(
+    o: Overlay, contract: TaskContract | None, plan: HiddenPlan | None = None
+) -> list[StaticProblem]:
+    """계약이 공개 테스트(pt)마다 정한 쓸 행(rows)을 그 pt 의 테스트가 쓰는가 — 도우미의 공개 몫 상수(PUBLIC_…)로.
+    #164: 경계 행·걸러질 행을 계약에 두어도 테스트가 다른 행(남은 20·요청 30 만)을 쓰면 규칙을 가르지 못한다.
+    pt 의 테스트는 @DisplayName 이 pt id 로 시작하는 파일 (gen_public 규칙 1). 그 파일이 없으면 다른 검사(_public_cases)가 잡는다."""
+    if contract is None:
+        return []
+    out: list[StaticProblem] = []
+    for t in contract.public_tests:
+        if not t.rows:
+            continue
+        mark = re.compile(rf'@DisplayName\(\s*"{re.escape(t.test_id)}\b')
+        files = [f for f in o.files if mark.search(f.content)]
+        if not files:
+            continue
+        text = "\n".join(f.content for f in files)
+        for u in t.rows:
+            consts = row_use_consts(contract, u, plan)
+            if consts and not any(re.search(rf"\b{re.escape(c)}\b(?!_)", text) for c in consts):
+                vals = ", ".join(f"{k}={v}" for k, v in u.values.items())
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"공개 테스트 {t.test_id} 가 계약이 정한 행({vals})을 쓰지 않음 — 도우미 상수 {consts[0]} 의 행으로 "
+                        "확인한다 (규칙을 지킨 구현과 어긴 구현이 다른 결과를 내는 행)",
+                    )
+                )
+    return out
+
+
 def _public_settings(o: Overlay, contract: TaskContract | None) -> list[StaticProblem]:
     """계약 settings 마다 그 키를 덮어 보는 공개 테스트가 있는가 — 도우미 SETTING_…_KEY 를 @DynamicPropertySource 에서 SETTING_…_PROBE 로
     덮고 PROBE 를 단언해야 값을 코드에 박은 구현·제한 없는 구현을 가른다 (기본값만 보면 둘 다 통과, 2026-11-13 #161)."""
@@ -2509,6 +2542,7 @@ def static_check(
             res.review_flags += flags
         if o.kind == "public_test":
             res.problems += _public_cases(o, template, plan, contract)
+            res.problems += _public_row_uses(o, contract, plan)
             if is_java(template.manifest):
                 res.problems += _public_settings(o, contract)
         if o.kind == "hidden":

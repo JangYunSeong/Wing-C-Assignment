@@ -18,7 +18,8 @@ TestGroup = Literal[
 ]  # 시작 코드 기존 테스트 / 공개 테스트(gen_public·저장 확인) / 숨은 케이스 / 하네스 자체 점검 / 계약 적합성 스모크(starter/conformance.py)
 SetupResult = Literal["ok", "compile_error", "boot_error", "timeout"]
 # starter_hidden = 시작 코드 그대로 + 숨은 테스트 — 지원자가 아무것도 안 하고 내면? (숨은 케이스를 모두 통과하면 과제가 이미 풀린 것)
-TargetKind = Literal["starter", "starter_hidden", "ref_naive", "ref_accepted"]
+# ref_variant — 공개 테스트 변별 관문: 시작 코드 + 변형 + 공개 테스트 (숨은 테스트 없음, #164)
+TargetKind = Literal["starter", "starter_hidden", "ref_naive", "ref_accepted", "ref_variant"]
 
 
 class TestResult(Schema):
