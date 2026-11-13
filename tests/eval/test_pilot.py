@@ -123,7 +123,7 @@ def test_junit_methods_are_grouped_by_package(tmp_path: Path) -> None:
     (tmp_path / "TEST-x.xml").write_text(
         """<testsuite name="s">
 <testcase classname="com.example.service.publictests.Pt1ListTest" name="a"/>
-<testcase classname="com.example.service.publictests.Pt1ListTest" name="b"><failure message="expected 409"/></testcase>
+<testcase classname="com.example.service.publictests.Pt1ListTest" name="최신순정렬()"><failure message="expected 409"/></testcase>
 <testcase classname="com.example.service.publictests.PersistenceCheckTest" name="saves"/>
 <testcase classname="com.example.service.grading.cases.Hc1Test" name="h"/>
 </testsuite>""",
@@ -136,6 +136,7 @@ def test_junit_methods_are_grouped_by_package(tmp_path: Path) -> None:
         ("persistence", "PersistenceCheckTest", True),
         ("hidden", "hc1", True),
     ]
+    assert ms[1].method == "최신순정렬"  # Gradle 이 붙인 괄호를 뗀다 — method_req 키와 맞게
 
 
 # ── 판정 ──

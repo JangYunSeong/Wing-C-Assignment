@@ -84,6 +84,11 @@ def solution(ws: Path, label: str) -> Overlay:
     )
 
 
+def method_name(name: str) -> str:
+    """JUnit 보고서의 메서드 이름 — Gradle 은 끝에 매개변수 목록을 붙인다(`최신순정렬()`). `method_req` 키는 괄호 없이 적는다."""
+    return re.sub(r"\([^()]*\)$", "", name)
+
+
 def methods(results: Path, public_ids: dict[str, str], hidden_ids: dict[str, str]) -> list[Method]:
     """JUnit 보고서 → 메서드마다 결과. 공개 테스트 클래스 → pt id (@DisplayName), 숨은 테스트 클래스 → 케이스 id."""
     out: list[Method] = []
@@ -114,7 +119,7 @@ def methods(results: Path, public_ids: dict[str, str], hidden_ids: dict[str, str
                     group=group,
                     case=case,
                     cls=simple,
-                    method=tc.get("name", ""),
+                    method=method_name(tc.get("name", "")),
                     ok=bad is None,
                     message=msg,
                 )
