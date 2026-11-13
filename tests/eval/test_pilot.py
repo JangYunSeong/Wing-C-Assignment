@@ -23,7 +23,7 @@ from eval.pilot.facilitator import (
 from eval.pilot.grade import Method, SuiteRun, methods
 from eval.pilot.llm_facilitator import Chooser, apply_choice, render_items
 from eval.pilot.model import Fact, Material, parse_label, run_label, term_overlaps
-from eval.pilot.simulate import classify, pooled, record_official
+from eval.pilot.simulate import classify, label_counts, official_refusal, pooled, record_official
 from eval.pilot.simulate import run as simulate_run
 from eval.pilot.validity import judge
 from task_spec.schemas import AskedItem, FacilitatorChooseOutput
@@ -653,3 +653,53 @@ def test_simulation_can_use_the_llm_chooser() -> None:
         choose=lambda q: _picked(("f1", True)) if "사람" in q else [],
     )
     assert [x["result"] for x in out["rows"]] == ["구체 답", "주제 밖·정보 없음"]
+
+
+def test_official_judgment_is_declared_once_with_enough_questions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    facts = [{"q": "회원당 몇 번이요?", "about": "f1"}] * 8
+    extra = [
+        {"q": "주의할 점은요?", "about": "vague"},
+        {"q": "회원당이랑 수량은요?", "about": ["f1", "f2"]},
+        {"q": "점심은요?", "about": None},
+        {"q": "추가 요구는요?", "about": "c1"},
+    ]
+    assert label_counts(facts + extra) == (
+        8,
+        1,
+    )  # 사실 f# 한 항목·모호만 센다 (c#·여러 주제·주제 밖은 빼고)
+    # 질문 수가 모자라면 선언 전에 막는다 — 판정이 아니라 목록을 더 받을 일
+    assert "사실 질문 7개" in (official_refusal(facts[:7], [], "general", once=True) or "")
+    assert "모호한 질문 1개" in (official_refusal(extra, [], "vague", once=True) or "")
+    assert official_refusal(facts, [], "general", once=True) is None
+    log = [{"kind": "general", "stage": "declared"}]
+    # 한 번 쓴 재료는 종류마다 한 번만 — 다시 재는 길이 곧 다듬기 (§9.1 과적합 막기)
+    assert "이미 한 번" in (official_refusal(facts, log, "general", once=True) or "")
+    assert (
+        official_refusal(facts, log, "general", once=False) is None
+    )  # 감사 기록 재료(tuned)는 이력대로
+    vague = [{"q": "주의할 점은요?", "about": "vague"}] * 20
+    assert official_refusal(vague, log, "vague", once=True) is None  # 종류가 다르면 따로
+
+    monkeypatch.setattr("eval.pilot.model.DATA", tmp_path)
+    m = _material()
+    qdir = m.dir / "questions"
+    qdir.mkdir(parents=True)
+    for _ in range(2):
+        record_official(
+            qdir, {"kind": "general", "sets": ["check"], "version": 2, "stage": "declared"}
+        )
+    record_official(
+        qdir,
+        {
+            "kind": "general",
+            "sets": ["check"],
+            "version": 2,
+            "stage": "result",
+            "result": "r",
+            "passed": True,
+        },
+    )
+    assert any("2번 선언" in x for x in freeze._official_problems(qdir, 2, once=True))
+    assert not any("선언" in x for x in freeze._official_problems(qdir, 2, once=False))

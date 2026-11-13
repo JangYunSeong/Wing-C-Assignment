@@ -64,6 +64,9 @@ class Material(Schema):
     # ② 테스트 메서드("<클래스>.<메서드>") → 그 메서드가 보는 공식 요구. 있으면 '만들었나'를 공개 수용 기준이 아니라 메서드로 매긴다
     # (#151 검토 4차 — 한 공개 수용 기준이 요구 둘을 같이 보면 가를 수 없었다)
     method_req: dict[str, list[str]] = Field(default_factory=dict)
+    # 사실·구체 조건 문장을 어떻게 썼나 — once: 질문 목록을 보기 전에 명세만 보고 한 번 (과적합 막기, §9.1),
+    # tuned: 질문 목록으로 여러 번 다듬음 (감사 기록 재료 — 이 규칙 전)
+    fact_tuning: Literal["once", "tuned"] = "once"
 
     @property
     def dir(self) -> Path:

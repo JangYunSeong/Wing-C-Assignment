@@ -8,7 +8,9 @@
 - 주제 밖 질문: 정보 없음 / 잘못 열림 — 기록만
 판정(`passed`)은 요청자 지식(f#) 한 항목만 묻는 질문으로만 — 구체 답 ≥ 80%, 한 가지씩 ≤ 10% (§9.1 질문 목록).
 추가 요구(c#)는 생성기가 만든 그대로 쓰고 손으로 다듬지 않으므로 기준에 넣지 않고 따로 기록한다.
-튜닝용 목록(tune)으로 사실 낱말을 다듬고, 다른 에이전트가 따로 쓴 확인용 목록(check)으로 고정 전에 한 번만 잰다 — 한 목록에 맞춰지지 않게.
+과적합 막기(§9.1): 새 재료(`fact_tuning: once`)는 사실을 질문 목록 전에 한 번 쓰고, 별도 에이전트가 쓴 눈가림 목록·별도 에이전트가 붙인
+about 으로 공식 판정을 종류마다 **한 번** 한다 — 질문 수가 모자라면 선언 전에 막고(목록을 더 받아 합친다), 미달이면 고치지 않고 다음 후보로.
+(튜닝용 목록 tune 으로 다듬은 것은 감사 기록 재료 `fact_tuning: tuned` 의 이력.)
 
   uv run python -m eval.pilot.simulate --mid <재료> --set tune [--synonyms]
 """
@@ -123,6 +125,30 @@ def run(
     }
 
 
+def label_counts(questions: list[dict[str, Any]]) -> tuple[int, int]:
+    """붙인 about 만으로 센 판정 질문 수 — (사실 f# 한 항목 질문, 모호한 질문). 진행자를 돌리기 전에 알 수 있다."""
+    facts = sum(
+        isinstance(q.get("about"), str) and q["about"] != VAGUE and not is_clarification(q["about"])
+        for q in questions
+    )
+    return facts, sum(q.get("about") == VAGUE for q in questions)
+
+
+def official_refusal(
+    questions: list[dict[str, Any]], log: list[dict[str, Any]], kind: str, once: bool
+) -> str | None:
+    """공식 판정을 선언하면 안 되는 까닭 (없으면 None). 질문 수 모자람은 판정이 아니라 목록을 더 받을 일이다.
+    한 번 쓴 재료(once)는 종류마다 공식 판정을 한 번만 — 다시 재는 길이 곧 다듬기다 (§9.1 과적합 막기)."""
+    facts, vague = label_counts(questions)
+    if kind == "general" and facts < MIN_FACT_QUESTIONS:
+        return f"사실 질문 {facts}개 < {MIN_FACT_QUESTIONS} — 눈가림 목록을 더 받아 합친 뒤 선언"
+    if kind == "vague" and vague < MIN_VAGUE_QUESTIONS:
+        return f"모호한 질문 {vague}개 < {MIN_VAGUE_QUESTIONS} — 눈가림 목록을 더 받아 합친 뒤 선언"
+    if once and any(r["kind"] == kind for r in log):
+        return f"{kind} 공식 판정은 이미 한 번 함 — 미달이면 고치지 않고 다음 후보로 (§9.1)"
+    return None
+
+
 def pooled(questions_dir: Path, names: list[str]) -> list[dict[str, Any]]:
     """여러 목록을 만든 순서대로 합친다 — 판정에 필요한 질문 수가 모자랄 때 (MIN_FACT_QUESTIONS·MIN_VAGUE_QUESTIONS)."""
     out: list[dict[str, Any]] = []
@@ -166,6 +192,11 @@ def main() -> None:
     if a.official:
         if not a.llm:
             raise SystemExit("공식 판정은 진행자 LLM 으로만 (--llm)")
+        log_path = qdir / OFFICIAL
+        log = json.loads(log_path.read_text("utf-8")) if log_path.exists() else []
+        why = official_refusal(qs, log, a.official, m.fact_tuning == "once")
+        if why:
+            raise SystemExit(f"공식 판정 선언 안 함: {why}")
         version = a.prompt_version or Chooser().template.meta.version
         record_official(
             qdir,

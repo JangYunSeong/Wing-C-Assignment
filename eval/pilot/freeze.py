@@ -71,12 +71,16 @@ def judged_version() -> int:
     return PromptRegistry(ROOT / "prompts").current_version(FACILITATOR_TASK)
 
 
-def _official_problems(qdir: Path, version: int) -> list[str]:
-    """공식 판정 기록(questions/official.json) — 지금 판으로 돌린 마지막 결과만 본다. 대상은 돌리기 전에 적었다 (simulate --official)."""
+def _official_problems(qdir: Path, version: int, once: bool = False) -> list[str]:
+    """공식 판정 기록(questions/official.json) — 지금 판으로 돌린 마지막 결과만 본다. 대상은 돌리기 전에 적었다 (simulate --official).
+    한 번 쓴 재료(once)는 종류마다 선언이 하나뿐이어야 한다 (§9.1 과적합 막기 — 다시 재지 않는다)."""
     path = qdir / OFFICIAL
     log = json.loads(path.read_text("utf-8")) if path.exists() else []
     out: list[str] = []
     for kind, what in (("general", "확인용 질문 목록"), ("vague", "모호한 질문 목록")):
+        declared = [r for r in log if r["kind"] == kind and r["stage"] == "declared"]
+        if once and len(declared) > 1:
+            out.append(f"{what} 공식 판정을 {len(declared)}번 선언함 — 한 번 쓴 재료는 한 번만")
         rows = [r for r in log if r["kind"] == kind and r["version"] == version]
         if not rows:
             out.append(
@@ -144,7 +148,7 @@ def preflight(mid: str) -> list[str]:
             problems.append(
                 f"유효성: 묻지 않고는 모르는 측정 요구 {v.get('measured_unmentioned')} — {MIN_MEASURED}개 미만이라 쓰지 않는 재료"
             )
-    problems += _official_problems(m.dir / "questions", judged_version())
+    problems += _official_problems(m.dir / "questions", judged_version(), m.fact_tuning == "once")
     return problems
 
 
