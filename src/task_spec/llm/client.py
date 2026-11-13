@@ -49,6 +49,8 @@ def is_reasoning_model(provider: str, model: str) -> bool:
 ALLOWED_PARAMS: dict[str, frozenset[str]] = {
     "openai": frozenset({"temperature", "max_tokens", "reasoning_effort", "top_p", "seed"}),
     "opencode": frozenset({"temperature", "max_tokens", "reasoning_effort", "top_p", "seed"}),
+    # 손 시범 진행자가 응시 플랫폼처럼 Gemini 를 쓴다 (OpenAI 호환 엔드포인트, eval/pilot — 2026-11-13 사용자)
+    "gemini": frozenset({"temperature", "max_tokens", "top_p"}),
 }
 
 MAX_TRANSIENT_RETRIES = 3

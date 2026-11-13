@@ -1,0 +1,250 @@
+"""진행자 답 규칙 (docs/design/analysis-stage.md §4.6, §9.1 판 3) — 가상 데이터 (이벤트 쿠폰 예시)."""
+
+from __future__ import annotations
+
+from task_spec.starter.answer_rule import (
+    NO_INFO,
+    ONE_AT_A_TIME,
+    Reply,
+    State,
+    answer,
+    answer_legacy,
+    hit_rate,
+    item_order,
+    topic_words,
+)
+from task_spec.starter.facilitator import Answer
+
+F1 = Answer(
+    id="f1",
+    topic="회원별 발급 제한",
+    match_terms=["회원당", "여러 번", "중복 발급"],
+    answer="회원당 한 번이에요.",
+    answer_hint=None,
+)
+F2 = Answer(
+    id="f2",
+    topic="이벤트 쿠폰 수량",
+    match_terms=["수량", "몇 장"],
+    answer="이벤트마다 정해 둔 수량만큼이에요.",
+    answer_hint="이벤트 설정에 따라 달라요.",
+)
+C1 = Answer(
+    id="c1",
+    topic="이벤트 오픈 직후 접속량",
+    match_terms=["요청량", "트래픽"],
+    answer="오픈 직후 초당 요청이 평소의 수십 배예요.",
+    answer_hint="'운영 지표' 자료에서 확인할 수 있습니다.",
+)
+C2 = Answer(
+    id="c2",
+    topic="앱 재시도 동작",
+    match_terms=["재시도", "retry"],
+    answer="응답이 늦으면 앱이 자동으로 다시 보내요.",
+    answer_hint=None,
+)
+ITEMS = [F1, F2, C1, C2]
+NONE: dict[str, State] = {}
+
+
+def test_item_order_puts_facts_first_then_numbers() -> None:
+    assert sorted(["c1", "f10", "f2", "f1"], key=item_order) == ["f1", "f2", "f10", "c1"]
+
+
+def test_topic_words_drop_general_words() -> None:
+    assert topic_words("이벤트 쿠폰 수량") == ["이벤트"]  # 두 글자 이하는 일반어
+    assert topic_words("이벤트 오픈 직후 접속량") == ["이벤트", "접속량"]
+
+
+def test_topic_words_strip_one_trailing_particle() -> None:
+    """§4.6 정규화의 '조사 떼기' — 주제 쪽 조사가 남으면 조사 없는 질문과 겹치지 않는다."""
+    assert topic_words("동시 요청 처리량과 연결 설정") == ["처리량"]
+    assert topic_words("운영 환경에서 WAS 간 네트워크 지연") == [
+        "WAS",
+        "네트워크",
+    ]  # '환경' 은 두 글자
+    assert topic_words("데이터가 사용자의 프로그램을") == ["데이터", "사용자", "프로그램"]
+    r = answer(
+        "처리량은 어느 정도인가요?",
+        [C1.model_copy(update={"topic": "동시 요청 처리량과 연결 설정"})],
+        NONE,
+    )
+    assert (r.rule, r.layer) == (4, "hint")
+
+
+def test_two_unopened_items_get_one_at_a_time() -> None:
+    r = answer("수량이랑 재시도는 어떻게 되나요?", ITEMS, NONE)
+    assert (r.rule, r.text, r.layer, r.hit) == (1, ONE_AT_A_TIME, "one_at_a_time", 0.0)
+    assert r.candidates == ["f2", "c2"]
+    assert set(r.states.values()) == {"none"}  # 아무것도 열리지 않는다
+
+
+def test_one_unopened_item_gets_the_concrete_answer_and_opens() -> None:
+    r = answer("몇 장까지 받을 수 있나요?", ITEMS, NONE)
+    assert (r.rule, r.item_id, r.text, r.hit) == (2, "f2", F2.answer, 1.0)
+    assert r.states["f2"] == "open"
+
+
+def test_terms_ignore_spacing_and_particles_like_match_terms_today() -> None:
+    r = answer("회원 당 여러번 받을 수 있나요?", ITEMS, NONE)  # 띄어쓰기·조사가 달라도 걸린다
+    assert (r.rule, r.item_id) == (2, "f1")
+    assert answer("RETRY 정책이 있나요?", ITEMS, NONE).item_id == "c2"  # 영문은 대소문자 무시
+    assert answer("retrying 하나요?", ITEMS, NONE).rule != 2  # 영문은 단어 경계
+
+
+def test_follow_up_counts_only_unopened_items() -> None:
+    """'수량 말고 재시도는요?' — 열린 f2 는 세지 않아 c2 하나만 걸린다 (규칙 2)."""
+    opened: dict[str, State] = {"f2": "open"}
+    r = answer("수량 말고 재시도는요?", ITEMS, opened)
+    assert (r.rule, r.item_id, r.text, r.hit) == (2, "c2", C2.answer, 1.0)
+    assert r.states == {"f1": "none", "f2": "open", "c1": "none", "c2": "open"}
+
+
+def test_only_opened_items_repeat_the_same_answer_without_credit() -> None:
+    r = answer("수량은요?", ITEMS, {"f2": "open"})
+    assert (r.rule, r.item_id, r.text, r.repeat, r.hit) == (3, "f2", F2.answer, True, None)
+    both: dict[str, State] = {"f1": "open", "f2": "open"}
+    r2 = answer("회원당 몇 장 수량", ITEMS, both)  # f2 가 두 낱말로 더 많이 맞음
+    assert (r2.rule, r2.item_id) == (3, "f2")
+
+
+def test_topic_overlap_gives_the_hint_with_half_credit_when_unique() -> None:
+    r = answer("접속량이 많나요?", ITEMS, NONE)
+    assert (r.rule, r.item_id, r.text, r.layer, r.hit) == (4, "c1", C1.answer_hint, "hint", 0.5)
+    assert r.states["c1"] == "hint"
+
+
+def test_topic_overlap_on_two_items_gives_no_credit() -> None:
+    r = answer("쿠폰 접속량은요?", ITEMS, NONE)  # f2(쿠폰)·c1(접속량) 하나씩 — 같으면 id 순, f 먼저
+    assert (r.rule, r.item_id, r.text, r.hit) == (4, "f2", F2.answer_hint, 0.0)
+    assert r.candidates == ["f2", "c1"]
+    # '이벤트'는 f2·c1 주제에 함께 있어 가르지 못함 — 규칙 4 에 쓰지 않는다 (§4.6 (iii))
+    only = answer("이벤트 때 접속량은 어떤가요?", ITEMS, NONE)
+    assert (only.item_id, only.hit, only.candidates) == ("c1", 0.5, ["c1"])
+    assert answer("이벤트 운영 방식이 궁금해요", ITEMS, NONE).rule == 5
+
+
+def test_topic_overlap_without_hint_opens_only_clarifications() -> None:
+    """규칙 4 — 모호한 답이 없으면 추가 요구(c#)는 구체 답을 주고 열지만, 요청자 지식(f#)은 후보가 아니다 (§4.6 (iv))."""
+    assert answer("회원별로 다른 게 있나요?", ITEMS, NONE).text == NO_INFO  # f1 은 모호한 답이 없음
+    c3 = Answer(
+        id="c3",
+        topic="배포 스케줄 공지",
+        match_terms=["배포일"],
+        answer="매주 화요일",
+        answer_hint=None,
+    )
+    r = answer("스케줄이 궁금해요", [*ITEMS, c3], NONE)
+    assert (r.rule, r.item_id, r.text, r.layer, r.hit) == (4, "c3", "매주 화요일", "answer", 0.5)
+    assert r.states["c3"] == "open"
+
+
+def test_topic_overlap_skips_opened_items_and_repeats_hints() -> None:
+    assert answer("회원별로 다른 게 있나요?", ITEMS, {"f1": "open"}).text == NO_INFO
+    r = answer("접속량이 많나요?", ITEMS, {"c1": "hint"})
+    assert (r.rule, r.text, r.repeat, r.hit) == (4, C1.answer_hint, True, None)
+    assert r.states["c1"] == "hint"
+    exact = answer(
+        "트래픽이 얼마나 되나요?", ITEMS, {"c1": "hint"}
+    )  # 모호 뒤 정확히 짚으면 구체 답
+    assert (exact.rule, exact.text, exact.states["c1"]) == (2, C1.answer, "open")
+
+
+def test_nothing_matches_gives_no_information() -> None:
+    r = answer("점심 메뉴는 뭔가요?", ITEMS, NONE)
+    assert (r.rule, r.text, r.layer, r.hit) == (5, NO_INFO, "none", 0.0)
+
+
+def test_same_question_same_reply() -> None:
+    q = "이벤트 때 접속량은 어떤가요?"
+    assert answer(q, ITEMS, NONE) == answer(q, ITEMS, NONE)
+
+
+def test_legacy_mode_answers_the_best_match_without_one_at_a_time() -> None:
+    clar = [C1, C2]
+    r = answer_legacy("재시도랑 요청량은요?", clar)  # 둘 다 한 낱말 — id 순
+    assert (r.rule, r.item_id, r.text, r.hit, r.states) == (1, "c1", C1.answer, None, {})
+    assert r.candidates == ["c1", "c2"]
+    hint = answer_legacy("접속량이 많나요?", clar)
+    assert (hint.rule, hint.text, hint.layer) == (2, C1.answer_hint, "hint")
+    assert answer_legacy("접속량이 많나요?", clar) == hint  # 다시 물어도 같은 답
+    assert answer_legacy("점심 메뉴는요?", clar).rule == 3
+
+
+def test_hit_rate_leaves_repeats_out() -> None:
+    replies = [
+        Reply(text="a", rule=2, layer="answer", hit=1.0),
+        Reply(text="h", rule=4, layer="hint", hit=0.5),
+        Reply(text="a", rule=3, layer="answer", repeat=True),
+        Reply(text=NO_INFO, rule=5, layer="none", hit=0.0),
+    ]
+    assert hit_rate(replies) == 0.5
+    assert hit_rate([]) is None
+
+
+# ── 2026-11-13 #151 검토 4차: 판 1·4 는 단어 단위, 두 글자 필터는 c# 에만 ──
+
+LIMIT = Answer(
+    id="f5",
+    topic="주문 목록 정렬 기준",
+    match_terms=["limit 기본값", "정렬 순서"],
+    answer="최신순, 기본 50건.",
+    answer_hint="보기 편한 순서로요.",
+)
+
+
+def test_new_mode_matches_when_all_words_appear_in_any_order() -> None:
+    assert answer("limit 의 기본값이 있나요?", [LIMIT], NONE).rule == 2  # 사이에 조사
+    assert answer("주문 목록은 어떤 순서로 정렬해야 하나요?", [LIMIT], NONE).rule == 2  # 순서 바뀜
+    assert answer("limit 은 어떤 형식인가요?", [LIMIT], NONE).rule != 2  # 단어 하나만으로는 안 걸림
+
+
+def test_legacy_mode_keeps_phrase_matching() -> None:
+    clar = LIMIT.model_copy(update={"id": "c9"})
+    assert answer_legacy("limit 의 기본값이 있나요?", [clar]).rule != 1  # 지금 규칙: 구절째
+    assert answer_legacy("limit 기본값이 있나요?", [clar]).rule == 1
+
+
+def test_general_word_filter_applies_to_clarifications_only() -> None:
+    assert topic_words("주문 목록 정렬 기준", general=False) == ["주문", "목록", "정렬", "기준"]
+    assert topic_words("주문 목록 정렬 기준") == []  # c# 기본
+    fact = LIMIT.model_copy(update={"match_terms": ["없는 낱말"]})
+    r = answer("정렬은 어떻게 하나요?", [fact], NONE)
+    assert (r.rule, r.item_id, r.layer) == (4, "f5", "hint")  # f# 은 두 글자 주제 낱말도 겹침
+    clar = fact.model_copy(update={"id": "c9"})
+    assert answer("정렬은 어떻게 하나요?", [clar], NONE).text == NO_INFO  # c# 은 그대로 막음
+
+
+def test_one_letter_word_inside_multi_word_term_is_ignored() -> None:
+    """§4.6 (i) — '동시 요청 수'의 '수'가 거의 모든 문장에 걸려 함정 단서가 열렸다 (#151 손 시범 질문 목록)."""
+    c = Answer(
+        id="c1",
+        topic="동시 처리",
+        match_terms=["동시 요청 수"],
+        answer="초당 수천 건",
+        answer_hint=None,
+    )
+    assert answer("락은 어떤 수준으로 잡나요?", [c], NONE).rule == 5  # '수' 하나로는 안 걸림
+    assert answer("동시에 들어오는 요청 수는요?", [c], NONE).item_id == "c1"
+    one = Answer(id="f1", topic="수수료", match_terms=["수"], answer="네", answer_hint=None)
+    assert answer("수가 몇인가요?", [one], NONE).item_id == "f1"  # 한 글자 단어뿐이면 그대로
+
+
+def test_topic_words_in_request_or_shared_by_items_are_dropped() -> None:
+    """§4.6 (ii)(iii) — 요청 글에 있는 말, 두 항목 이상의 주제에 함께 나오는 말은 규칙 4 에 쓰지 않는다
+    (kb005: f1·f3 주제가 '감사·기록'을 같이 써 동점이면 f1 이 열렸다)."""
+    f1 = Answer(
+        id="f1", topic="감사 기록 대상", match_terms=["누가"], answer="a1", answer_hint="h1"
+    )
+    f3 = Answer(
+        id="f3", topic="감사 기록 보관 기간", match_terms=["얼마나"], answer="a3", answer_hint="h3"
+    )
+    items = [f1, f3]
+    assert (
+        answer("감사 기록은 어떻게 하나요?", items, NONE).rule == 5
+    )  # 둘 다 쓰는 말뿐 — 정보 없음
+    assert answer("보관 기간이 궁금해요", items, NONE).item_id == "f3"  # 한 항목에만 있는 말
+    assert (
+        answer("대상이 누구인가요", items, NONE, request="이번 대상 고객").rule == 5
+    )  # 요청 글에 있는 말
+    assert answer("대상이 누구인가요", items, NONE).item_id == "f1"

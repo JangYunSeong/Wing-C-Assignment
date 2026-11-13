@@ -426,7 +426,7 @@ def public_text(out: DraftFeatureOutput) -> str:
     )
 
 
-def _too_general(term: str) -> bool:
+def too_general(term: str) -> bool:
     """띄어쓰기 없는 두 글자 이하 낱말 ("연결"·"설정"·"제한"·"DB") — 일반 질문에도 들어간다 [2026-11-06 사용자]."""
     t = term.strip()
     return not re.search(r"\s", t) and len(_norm(t)) <= 2
@@ -445,7 +445,7 @@ def prune_match_terms(out: DraftFeatureOutput) -> DraftFeatureOutput:
     changed = False
     for c in out.clarifications:
         if c.reveals and c.answer_hint is not None and c.match_terms:
-            kept = [t for t in c.match_terms if not _in_text(t, text) and not _too_general(t)]
+            kept = [t for t in c.match_terms if not _in_text(t, text) and not too_general(t)]
             if kept != c.match_terms:
                 c = c.model_copy(update={"match_terms": kept})
                 changed = True
