@@ -93,6 +93,23 @@ def _ensure_gradle_home() -> None:
     shutil.copytree(src, GRADLE_HOME, symlinks=True)
 
 
+def apply_starter_thin(m: Material, ws: Path) -> list[str]:
+    """B1 판(0·1·2·4) — 시작 코드의 계약 설명 주석을 모양만 남긴 손 사본(재료 `starter-thin/`)으로 바꾼다.
+    B1 에서는 plan_contract 가 모양만 적으므로 시작 코드 주석에도 규칙이 없다 [확정: 2026-11-13 사용자]. 있던 파일만 바꾼다."""
+    root = m.dir / "starter-thin"
+    done: list[str] = []
+    for p in sorted(root.rglob("*")) if root.exists() else []:
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        target = ws / rel
+        if not target.exists():
+            sys.exit(f"starter-thin 의 {rel} 이 응시용 프로젝트에 없음 — 바꾸기만 한다")
+        shutil.copy2(p, target)
+        done.append(rel.as_posix())
+    return done
+
+
 def prepare_one(
     m: Material, arm_n: int, model: str, run: int, budget: int | None, synonyms: bool
 ) -> Path:
@@ -103,6 +120,8 @@ def prepare_one(
         sys.exit(f"이미 있음: {ws} (다시 하려면 직접 지운 뒤)")
     shutil.copytree(m.alpha_dir / "candidate", ws, ignore=shutil.ignore_patterns(*SKIP))
     (ws / "README.md").write_text(readme(m, arm), "utf-8")
+    if arm.readme == "thin":
+        apply_starter_thin(m, ws)
     session = None
     if arm.ask is not None:
         task = m.task()

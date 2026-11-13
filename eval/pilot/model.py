@@ -215,6 +215,11 @@ def check_material(m: Material) -> list[str]:
         if leak:
             problems.append(f"{f.fact_id}: 사실 답에 숨은 요구 개념 {leak}")
     problems += term_overlaps(facilitator_items(m, "new"))
+    thin = m.dir / "starter-thin"
+    for path in sorted(thin.rglob("*")) if thin.exists() else []:
+        rel = path.relative_to(thin)
+        if path.is_file() and not (m.alpha_dir / "candidate" / rel).exists():
+            problems.append(f"starter-thin/{rel}: 응시용 프로젝트에 없는 파일 — 바꾸기만 한다")
     return problems
 
 
