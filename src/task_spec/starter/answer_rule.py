@@ -32,6 +32,27 @@ ONE_AT_A_TIME = "한 가지씩 물어봐 주세요."
 NO_INFO = "추가로 드릴 정보가 없습니다."
 
 _WORD = re.compile(r"[0-9A-Za-z가-힣]+")
+# 주제 낱말 끝에서 떼는 조사 — 긴 것부터 (하나만)
+_PARTICLES = (
+    "에서",
+    "에게",
+    "으로",
+    "까지",
+    "부터",
+    "과",
+    "와",
+    "의",
+    "은",
+    "는",
+    "이",
+    "가",
+    "을",
+    "를",
+    "에",
+    "로",
+    "도",
+    "만",
+)
 _ID = re.compile(r"([a-z]+)(\d+)")
 _KIND_ORDER = {"f": 0, "c": 1}
 
@@ -62,9 +83,22 @@ def item_order(item_id: str) -> tuple[int, int, str]:
     return (_KIND_ORDER.get(kind, len(_KIND_ORDER)), int(num), item_id)
 
 
+def strip_particle(word: str) -> str:
+    """한글 낱말 끝 조사 하나를 뗀다 (§4.6 정규화 '조사 떼기') — '환경에서' → '환경', 'DB와' → 'DB'.
+    세 글자 이상이고 떼고 나서 두 글자 이상 남을 때만 (짧은 낱말을 깎지 않게)."""
+    if len(word) < 3:
+        return word
+    for p in _PARTICLES:
+        if word.endswith(p) and len(word) - len(p) >= 2:
+            return word[: -len(p)]
+    return word
+
+
 def topic_words(topic: str) -> list[str]:
-    """주제 낱말 — 일반어(띄어쓰기 없는 두 글자 이하, `too_general`)는 뺀다."""
-    return [w for w in dict.fromkeys(_WORD.findall(topic)) if not too_general(w)]
+    """주제 낱말 — 끝 조사를 떼고(질문은 부분 문자열로 맞추므로 질문 쪽 조사는 그대로 걸린다),
+    일반어(띄어쓰기 없는 두 글자 이하, `too_general`)는 뺀다."""
+    words = (strip_particle(w) for w in _WORD.findall(topic))
+    return [w for w in dict.fromkeys(words) if not too_general(w)]
 
 
 def term_hits(item: Answer, question: str) -> int:

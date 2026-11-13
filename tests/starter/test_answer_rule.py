@@ -56,6 +56,22 @@ def test_topic_words_drop_general_words() -> None:
     assert topic_words("이벤트 오픈 직후 접속량") == ["이벤트", "접속량"]
 
 
+def test_topic_words_strip_one_trailing_particle() -> None:
+    """§4.6 정규화의 '조사 떼기' — 주제 쪽 조사가 남으면 조사 없는 질문과 겹치지 않는다."""
+    assert topic_words("동시 요청 처리량과 연결 설정") == ["처리량"]
+    assert topic_words("운영 환경에서 WAS 간 네트워크 지연") == [
+        "WAS",
+        "네트워크",
+    ]  # '환경' 은 두 글자
+    assert topic_words("데이터가 사용자의 프로그램을") == ["데이터", "사용자", "프로그램"]
+    r = answer(
+        "처리량은 어느 정도인가요?",
+        [C1.model_copy(update={"topic": "동시 요청 처리량과 연결 설정"})],
+        NONE,
+    )
+    assert (r.rule, r.layer) == (4, "hint")
+
+
 def test_two_unopened_items_get_one_at_a_time() -> None:
     r = answer("수량이랑 재시도는 어떻게 되나요?", ITEMS, NONE)
     assert (r.rule, r.text, r.layer, r.hit) == (1, ONE_AT_A_TIME, "one_at_a_time", 0.0)
