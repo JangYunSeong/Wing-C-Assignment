@@ -19,6 +19,7 @@ from pydantic import Field
 from task_spec.schemas import TaskItem
 from task_spec.schemas.base import Schema
 from task_spec.spec.feature import find_terms
+from task_spec.starter.answer_rule import term_in
 from task_spec.starter.facilitator import Answer, facilitator_view
 from task_spec.starter.facilitator import Material as FacilitatorMaterial
 
@@ -42,6 +43,8 @@ class Fact(Schema):
     answer: str = Field(min_length=1)
     answer_hint: str | None = None
     layer: FactLayer = "base"
+    # 시작 코드·계약이 이미 보여 주는 사실 — 정보 값 0. 기존 기능 코드는 지우지 않고 이렇게 표시만 한다 (§9.1 재료, #151 검토 4차)
+    info_zero: bool = False
 
 
 class Material(Schema):
@@ -56,10 +59,24 @@ class Material(Schema):
     predictions: dict[str, Literal["짐작 가능", "어려움"]] = Field(
         default_factory=dict
     )  # r# → 사람 예측 (판정에 쓰지 않음)
+    # ② 테스트 메서드("<클래스>.<메서드>") → 그 메서드가 보는 공식 요구. 있으면 '만들었나'를 공개 수용 기준이 아니라 메서드로 매긴다
+    # (#151 검토 4차 — 한 공개 수용 기준이 요구 둘을 같이 보면 가를 수 없었다)
+    method_req: dict[str, list[str]] = Field(default_factory=dict)
 
     @property
     def dir(self) -> Path:
         return DATA / "materials" / self.mid
+
+    def covering_facts(self, req: str) -> list[Fact]:
+        """요구 하나를 덮는 사실 — `covers` 에 그 요구가 있거나, 그 요구를 가리키는 공개 수용 기준(p#)이 있는 것."""
+        acs = {p for p, rs in self.req_ids.items() if req in rs}
+        return [f for f in self.facts if req in f.covers or acs & set(f.covers)]
+
+    def needs_asking(self, req: str) -> bool:
+        """묻지 않고는 모르는 요구 — 요청 글이 말하지 않았고, 덮는 사실 중 정보 값이 있는 것(`info_zero` 아님)이 있다 (§9.1 재료)."""
+        return req not in self.request_mentions and any(
+            not f.info_zero for f in self.covering_facts(req)
+        )
 
     @property
     def alpha_dir(self) -> Path:
@@ -75,6 +92,11 @@ class Material(Schema):
     def synonyms(self) -> dict[str, list[str]]:
         p = self.dir / "synonyms.json"
         return json.loads(p.read_text("utf-8")).get("items", {}) if p.exists() else {}
+
+    def measured(self) -> list[str] | None:
+        """유효성 검사(validity.py)를 통과한 요구 — 돌연변이가 ② 에서 떨어지는 요구만 측정한다. 검사 전이면 None."""
+        p = self.dir / "validity.json"
+        return list(json.loads(p.read_text("utf-8")).get("measured", [])) if p.exists() else None
 
 
 def load_material(mid: str) -> Material:
@@ -232,7 +254,8 @@ def term_overlaps(items: list[Answer]) -> list[str]:
                 (s, t)
                 for s in a.match_terms
                 for t in b.match_terms
-                if find_terms([s], t) or find_terms([t], s)
+                if term_in(s, t)
+                or term_in(t, s)  # 판 1·4 단어 단위 — 큰 쪽에 걸리는 질문은 둘 다 걸림
             ]
             if pairs:
                 out.append(f"{a.id}·{b.id}: 매칭 낱말 겹침 {pairs[:3]}")

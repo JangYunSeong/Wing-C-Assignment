@@ -95,7 +95,20 @@ def pt_to_ac(m: Material) -> dict[str, str]:
 
 
 def made_by_requirement(m: Material, run: SuiteRun) -> dict[str, bool]:
-    """요구마다 만들었나 — 그 요구에 걸린 공개 수용 기준(req_ids)의 ② 메서드가 하나 이상 있고 모두 통과."""
+    """요구마다 만들었나 — 그 요구를 보는 ② 메서드가 하나 이상 있고 모두 통과.
+    재료에 method_req(메서드 → 요구)가 있으면 메서드 단위로, 없으면 공개 수용 기준(req_ids) 단위로 잇는다.
+    유효성 검사를 거친 재료면 측정하는 요구(돌연변이가 떨어지는 요구)만 돌려준다."""
+    measured = m.measured()
+    if m.method_req:
+        by_req: dict[str, list[bool]] = {}
+        for x in run.methods:
+            for r in m.method_req.get(f"{x.cls}.{x.method}", []) if x.group == "public" else []:
+                by_req.setdefault(r, []).append(x.ok)
+        made = {
+            r: bool(by_req.get(r)) and all(by_req[r])
+            for r in sorted({r for rs in m.method_req.values() for r in rs})
+        }
+        return {r: v for r, v in made.items() if measured is None or r in measured}
     ac_of = pt_to_ac(m)
     by_ac: dict[str, list[bool]] = {}
     for x in run.methods:
@@ -107,7 +120,7 @@ def made_by_requirement(m: Material, run: SuiteRun) -> dict[str, bool]:
         acs = [p for p, rs in m.req_ids.items() if r in rs]
         results = [ok for p in acs for ok in by_ac.get(p, [])]
         out[r] = bool(results) and all(results)
-    return out
+    return {r: v for r, v in out.items() if measured is None or r in measured}
 
 
 def _ts(s: str) -> datetime | None:
@@ -325,8 +338,7 @@ def verdict_ma(all_runs: Sequence[RunData]) -> tuple[Verdict, float | None, floa
 
 
 def covering_facts(m: Material, req: str) -> list[str]:
-    acs = {p for p, rs in m.req_ids.items() if req in rs}
-    return [f.fact_id for f in m.facts if req in f.covers or acs & set(f.covers)]
+    return [f.fact_id for f in m.covering_facts(req)]
 
 
 def miss_cause(m: Material, r: RunData, req: str) -> tuple[Cause, str | None]:

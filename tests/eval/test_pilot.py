@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 
 from eval.pilot import analyze as an
+from eval.pilot import freeze
 from eval.pilot.analyze import RunData
 from eval.pilot.facilitator import (
     EMPTY_QUESTION,
@@ -18,8 +20,12 @@ from eval.pilot.facilitator import (
     handle,
     states,
 )
-from eval.pilot.grade import methods
+from eval.pilot.grade import Method, SuiteRun, methods
 from eval.pilot.model import Fact, Material, parse_label, run_label, term_overlaps
+from eval.pilot.simulate import classify
+from eval.pilot.simulate import run as simulate_run
+from eval.pilot.validity import judge
+from task_spec.starter.answer_rule import NO_INFO as NO
 from task_spec.starter.answer_rule import ONE_AT_A_TIME, Reply
 from task_spec.starter.facilitator import Answer
 from task_spec.starter.facilitator import Material as Doc
@@ -349,3 +355,150 @@ def test_edit_times_and_forbidden_access() -> None:
     assert an.edit_times(events) == ["t1", "t2"]
     hits = an.forbidden_access(label, events)
     assert len(hits) == 2 and "make_task" in hits[0] and "m1-p2" in hits[1]
+
+
+# ── #151 검토 4차: 유효성(돌연변이)·메서드 단위 요구·질문 시뮬레이션 ──
+
+
+def _suite(fails: tuple[str, ...] = ()) -> SuiteRun:
+    names = ("Pt1A.records", "Pt2B.keepsFailures", "Pt2B.newestFirst")
+    return SuiteRun(
+        setup="ok",
+        methods=[
+            Method(
+                group="public",
+                case="pt",
+                cls=n.split(".")[0],
+                method=n.split(".")[1],
+                ok=n not in fails,
+            )
+            for n in names
+        ],
+    )
+
+
+def _with_methods(m: Material) -> Material:
+    f3 = Fact(fact_id="f3", covers=["r3"], topic="정렬", match_terms=["정렬"], answer="최신순")
+    return m.model_copy(
+        update={
+            "facts": [*m.facts, f3],
+            "method_req": {
+                "Pt1A.records": ["r1"],
+                "Pt2B.keepsFailures": ["r2"],
+                "Pt2B.newestFirst": ["r3"],
+            },
+        }
+    )
+
+
+def test_validity_keeps_only_requirements_a_mutant_breaks() -> None:
+    m = _with_methods(_material())
+    meta = {
+        "asc": {"req": "r3", "note": "오름차순"},
+        "nofail": {"req": "r2", "note": "실패 미기록"},
+    }
+    runs = {
+        "asc": _suite(("Pt2B.newestFirst",)),
+        "nofail": _suite(),
+    }  # 실패 미기록을 아무 메서드도 못 잡음
+    out = judge(m, _suite(), runs, meta)
+    assert out["baseline_ok"] and out["measured"] == ["r3"] and out["excluded"] == ["r1", "r2"]
+    assert out["measured_unmentioned"] == ["r3"] and not out["usable"]  # 측정 요구 1개 < 2
+    assert (
+        judge(m, _suite(("Pt1A.records",)), runs, meta)["measured"] == []
+    )  # 정답이 떨어지면 판정하지 않음
+
+
+def test_validity_needs_every_mutant_of_a_requirement_caught() -> None:
+    m = _with_methods(_material()).model_copy(update={"request_mentions": ["r2"]})
+    meta = {
+        "skip": {"req": "r1", "note": "빼먹기"},
+        "asc": {"req": "r3", "note": "뒤집기"},
+        "partial": {"req": "r3", "note": "지나침"},
+        "nofail": {"req": "r2", "note": "빼먹기"},
+    }
+    runs = {
+        "skip": _suite(("Pt1A.records",)),
+        "asc": _suite(("Pt2B.newestFirst",)),
+        "partial": _suite(),  # r3 의 돌연변이 하나가 빠져나감 → r3 는 측정 밖
+        "nofail": _suite(("Pt2B.keepsFailures",)),
+    }
+    out = judge(m, _suite(), runs, meta)
+    assert out["measured"] == ["r1", "r2"] and out["excluded"] == ["r3"]
+    assert out["measured_unmentioned"] == ["r1"] and not out["usable"]  # r2 는 요청 글이 말함
+    runs["partial"] = _suite(("Pt2B.newestFirst",))
+    out = judge(m, _suite(), runs, meta)
+    assert out["measured_unmentioned"] == ["r1", "r3"] and out["usable"]
+    # 시작 코드가 이미 보여 주는 사실(정보 값 0)만 덮는 요구는 묻지 않고도 안다 → 세지 않는다
+    zero = [f.model_copy(update={"info_zero": True}) if f.fact_id == "f1" else f for f in m.facts]
+    out = judge(m.model_copy(update={"facts": zero}), _suite(), runs, meta)
+    assert out["measured"] == ["r1", "r2", "r3"] and out["measured_unmentioned"] == ["r3"]
+    assert not out["usable"]
+
+
+def test_made_by_requirement_per_method(monkeypatch: pytest.MonkeyPatch) -> None:
+    m = _with_methods(_material())
+    monkeypatch.setattr(Material, "measured", lambda self: ["r2", "r3"])
+    made = an.made_by_requirement(m, _suite(("Pt2B.newestFirst",)))
+    assert made == {"r2": True, "r3": False}  # r1 은 측정 밖, r2·r3 는 같은 클래스라도 따로
+
+
+def test_simulation_classifies_questions() -> None:
+    items = [F1, F2, C1]
+    out = simulate_run(
+        items,
+        [
+            {"q": "회원당 몇 번이요?", "about": "f1"},
+            {"q": "점심은요?", "about": "f2"},
+            {"q": "수량이랑 회원당은요?", "about": "f2"},
+            {"q": "수량이랑 회원당은요?", "about": ["f1", "f2"]},
+            {"q": "요청량은요?", "about": None},
+        ],
+    )
+    assert [x["result"] for x in out["rows"]] == [
+        "구체 답",
+        "정보 없음",
+        "한 가지씩",
+        "여러 주제·한 가지씩",
+        "주제 밖·잘못 열림",
+    ]
+    assert out["single_topic"] == 3  # 판정은 한 주제 질문으로만
+    assert out["rates"]["구체 답"] == 1 / 3 and out["rates"]["한 가지씩"] == 1 / 3
+    assert out["off_topic_wrong_open"] == 1.0 and not out["passed"]
+    assert classify(None, Reply(text=NO, rule=5, layer="none", hit=0.0)) == "주제 밖·정보 없음"
+
+
+def test_simulation_passes_at_the_thresholds() -> None:
+    qs = [{"q": "회원당 몇 번이요?", "about": "f1"}] * 8 + [
+        {"q": "점심은요?", "about": "f2"},  # 정보 없음 1
+        {"q": "수량이랑 회원당은요?", "about": "f2"},  # 한 가지씩 1
+    ]
+    out = simulate_run([F1, F2, C1], qs)
+    assert out["rates"]["구체 답"] == 0.8 and out["rates"]["한 가지씩"] == 0.1 and out["passed"]
+    out = simulate_run([F1, F2, C1], qs + [{"q": "수량이랑 회원당은요?", "about": "f1"}])
+    assert not out["passed"]  # 구체 답 8/11 < 80%
+
+
+def test_freeze_preflight_needs_validity_and_check_questions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("eval.pilot.model.DATA", tmp_path)
+    m = _material()
+    monkeypatch.setattr(freeze, "load_material", lambda mid: m)
+    monkeypatch.setattr(freeze, "check_material", lambda mat: [])
+    (m.dir / "questions").mkdir(parents=True)
+    assert len(freeze.preflight("m1")) == 2  # 유효성 결과·확인용 목록 결과 둘 다 없음
+
+    def put(name: str, data: dict[str, Any]) -> None:
+        (m.dir / name).write_text(json.dumps(data), "utf-8")
+
+    put("validity.json", {"baseline_ok": True, "usable": False, "measured_unmentioned": ["r1"]})
+    put("questions/check.result.json", {"passed": False})
+    assert [p.split(":")[0] for p in freeze.preflight("m1")] == [
+        "유효성",
+        "확인용 질문 목록이 기준에 못 미침",
+    ]
+    put("validity.json", {"baseline_ok": True, "usable": True})
+    put("questions/check2.result.json", {"passed": True})  # 마지막(두 번째) 확인용 목록으로 본다
+    put("questions/check2-syn.result.json", {"passed": False})  # 동의어를 더한 결과는 보지 않는다
+    assert freeze.preflight("m1") == []

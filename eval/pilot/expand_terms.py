@@ -1,8 +1,9 @@
 """동의어 목록 — 진행자 쪽 고치기에 쓰는 고정 절차 (docs/design/analysis-stage.md §9.1 원인 가르기 1).
 
 운영에서도 재현할 수 있게 생성기와 같은 모델(qwen)·고정 프롬프트(`prompts/expand_match_terms`)로 항목마다 다른 표현을 만들고,
-§5.1 정리를 똑같이 건다 — 일반어(`too_general`)·지금 낱말과 같은 말·공개 글(요청 글·얇은 README)에 있는 말·다른 항목과 겹치는 말을 뺀다.
-판 0 전에 만들어 고정하고, 막힘이 나왔을 때만 판 1·4 진행자에 더한다 (`prepare --synonyms`) — 생성기에 동의어 확장 단계를 더하는 시뮬레이션.
+§5.1 정리를 똑같이 건다 — 일반어(`too_general`, 추가 요구 c# 에만)·지금 낱말이 이미 덮는 말·공개 글(요청 글 — 계약 칸 이름은 손잡이라 남김)에 있는 말·
+다른 항목과 겹치는 말(단어 단위로 한쪽이 다른 쪽을 덮음)을 뺀다.
+첫 풀이(판 2 opus) 전에 만들어 고정하고, 막힘이 나왔을 때만 판 1·4 진행자에 더한다 (`prepare --synonyms`) — 생성기에 동의어 확장 단계를 더하는 시뮬레이션.
 
   uv run python -m eval.pilot.expand_terms --mid <재료>
 """
@@ -18,7 +19,8 @@ from task_spec.config import Settings
 from task_spec.llm.factory import build_llm_client
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import ExpandTermsInput, ExpandTermsOutput
-from task_spec.spec.feature import find_terms, too_general
+from task_spec.spec.feature import too_general
+from task_spec.starter.answer_rule import is_clarification, term_in
 from task_spec.starter.facilitator import Answer
 
 MAX_TERMS = 6
@@ -31,7 +33,8 @@ def items_text(items: list[Answer]) -> str:
 
 
 def _overlap(a: str, b: str) -> bool:
-    return bool(find_terms([a], b) or find_terms([b], a))
+    """한쪽 낱말의 단어가 다른 쪽에 모두 들어 있으면, 큰 쪽에 걸리는 질문은 두 항목에 다 걸린다 (판 1·4 단어 단위 맞추기)."""
+    return term_in(a, b) or term_in(b, a)
 
 
 def clean(
@@ -50,11 +53,13 @@ def clean(
         if k not in by_id:
             continue
         for t in dict.fromkeys(x.strip() for x in terms if x.strip()):
-            if too_general(t):
+            if is_clarification(k) and too_general(t):  # 두 글자 필터는 추가 요구(c#)에만
                 drop(k, t, "일반어")
-            elif any(_overlap(t, u) for u in by_id[k].match_terms):
-                drop(k, t, "지금 낱말과 같음")
-            elif find_terms([t], public):
+            elif any(
+                term_in(u, t) for u in by_id[k].match_terms
+            ):  # 지금 낱말이 이미 다 덮음 — 더 좁은 말
+                drop(k, t, "지금 낱말이 덮음")
+            elif term_in(t, public):
                 drop(k, t, "공개 글에 있음")
             else:
                 first.setdefault(k, []).append(t)
@@ -82,7 +87,9 @@ async def expand(m: Material) -> dict[str, object]:
     llm = build_llm_client(Settings())  # type: ignore[call-arg]
     res = await llm.call(prompt, ExpandTermsOutput)
     proposed = {x.item_id: list(x.terms) for x in res.parsed.items}
-    public = "\n".join([m.request, (m.dir / "README.thin.md").read_text("utf-8")])
+    # 공개 글 = 요청 글만 — 계약 칸 이름(limit·after·userId 등)은 묻는 손잡이라 빼지 않는다 (§5.1, #151 검토 4차).
+    # 사실(f#)은 잘못 열려도 함정이 아니고 놓치면 손해다.
+    public = m.request
     kept, dropped = clean(items, proposed, public)
     return {
         "items": kept,
