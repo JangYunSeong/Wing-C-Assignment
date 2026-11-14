@@ -177,8 +177,10 @@ async def main() -> None:
         for name in ("spec.md",):  # 같은 명세의 사람 검토용 본문도 옆에 둔다
             if (reuse.parent / name).exists():
                 shutil.copy2(reuse.parent / name, out / name)
-        report["spec"] = {"reused": str(reuse.relative_to(ROOT)), "cost_usd": 0.0}
-        print(f"① 명세 재사용 — {task.title} ({reuse.relative_to(ROOT)})")
+        # worktree 의 data/ 는 본 체크아웃으로 가는 링크라 resolve 하면 레포 밖일 수 있다 — 그때는 절대 경로로 적는다
+        shown = str(reuse.relative_to(ROOT)) if reuse.is_relative_to(ROOT) else str(reuse)
+        report["spec"] = {"reused": shown, "cost_usd": 0.0}
+        print(f"① 명세 재사용 — {task.title} ({shown})")
     else:
         row = await run_one(llm, prompts, a.posting, built, asyncio.Semaphore(1))
         spent = row["cost_usd"]
