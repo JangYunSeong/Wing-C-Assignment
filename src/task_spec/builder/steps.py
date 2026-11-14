@@ -233,6 +233,7 @@ class RealSteps:
             raise
         return ImagesResult(
             template_ref=t.manifest.ref,
+            manifest_sha256=t.manifest_sha256,
             tree_sha256=x.tree,
             grader_sha256=x.grader_sha256,
             verification=summaries(verification),

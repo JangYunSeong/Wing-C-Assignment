@@ -14,9 +14,21 @@ templates/<직군>/<스택>/vN/
 ```
 
 규칙
-- `vN` 은 고치지 않는다 — 오버레이는 특정 버전 위에서만 맞는다. 바꿀 일이 있으면 `vN+1` 을 더한다 (프롬프트 vN 과 같은 규칙).
-- **템플릿 이미지·응시용 이미지에는 `project/` 와 의존성 캐시만** [확정: 2026-11-07 사용자]. `hidden/`·`manifest.yaml`·`README.tpl.md` 는
-  채점용 레이어에서만 더한다 — 채점이 무엇을 노리는지(조절값·실패 사유)가 보이기 때문. 금지 경로는 `candidate_layer_rules` 가 계산한다.
+- **`vN` 에서 무엇이 고정인가** [제안: 2026-11-14 #176 댓글 — 오버레이가 기대는 것만 고정]. 고정된 것을 바꿀 일이 있으면 `vN+1` 을 더한다
+  (프롬프트 vN 과 같은 규칙). 검사·수리 전용 칸은 같은 `vN` 에서 고친다 — 오버레이가 기대지 않고, 지금도 코드(커밋)로 바뀌던 지식이다.
+
+  | 같은 vN 에서 고치지 않음 | 같은 vN 에서 고칠 수 있음 (검사·수리 전용) |
+  |---|---|
+  | `project/`·`hidden/`·`README.tpl.md` | `code_pitfalls` |
+  | 이미지·채점 설정에 들어가는 칸 — commands·locked·reserved·hidden_layout·limits·image·harness_params·`hidden_rules.case_id_pattern` | `repair_terms` (`server_side` 포함) |
+  | 생성기 입력 — fill_slots·stack_conditions·`failure_reasons` 의 code·description·how | `hidden_rules` 의 검사 칸 — `reason_not_on`·`reason_labels`·`http_calls` |
+  | 평가 키트가 다시 읽는 칸 — `failure_reasons` 의 description (묶음 확정이 template_ref 로 다시 읽는다) | `failure_reasons` 의 `requires`·`feasible`·`assert_on`·`assert_not_on` |
+
+  빌드 기록(`common_task_build.manifest_sha256`)과 알파 `report.json`(`template.manifest_sha256`)에 매니페스트 해시를 남겨, 어느 판의 검사·수리로
+  만든 빌드인지 가린다 (template_ref 는 id@vN 뿐).
+- **템플릿 이미지·응시용 이미지에는 `project/` 와 의존성 캐시만** [확정: 2026-11-07 사용자]. `hidden/` 은 채점용 레이어에서만 더하고,
+  `manifest.yaml` 은 이미지에 넣지 않는다 — 채점 이미지에는 빌드 때 매니페스트에서 만든 `config.json`(locked·reserved·명령·layout·`case_id_pattern`)이
+  들어간다 (`starter/images.py`). 채점이 무엇을 노리는지(조절값·실패 사유)가 보이지 않게. 금지 경로는 `candidate_layer_rules` 가 계산한다.
 - 과제별 정답(숨은 테스트 케이스·참조 구현)은 여기 두지 않는다 — DB 오버레이(#52).
 - 운영 값(풀 크기·스레드 등)을 `project/` 설정에 박지 않는다 — 채점 때 하네스가 넣는다.
 

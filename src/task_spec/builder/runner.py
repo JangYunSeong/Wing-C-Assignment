@@ -87,6 +87,7 @@ class ImagesResult:
     tree_sha256: str
     grader_sha256: str
     verification: dict[str, VerifySummary]  # 제출물(starter-only·참조 구현)마다 채점 결과
+    manifest_sha256: str | None = None  # 검사·수리 칸 판 (#176)
     cleanup: list[str] = field(default_factory=list)  # 작업이 끝나면 지울 로컬 이미지 이름
     package: object | None = None  # Steps.register 가 쓰는 것 (실제: loader.PackageInputs 재료)
 
@@ -190,6 +191,7 @@ async def run_job(
             build.build_id,
             BuildOutcome(
                 template_ref=i.template_ref,
+                manifest_sha256=i.manifest_sha256,
                 tree_sha256=i.tree_sha256,
                 grader_sha256=i.grader_sha256,
                 contract=c.contract,

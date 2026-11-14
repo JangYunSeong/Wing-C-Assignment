@@ -212,6 +212,8 @@ async def main() -> None:
     ):  # 템플릿 판 고정 (CURRENT 는 그대로) — 예: 코드 뼈대 v10 을 v9 와 비교
         template = load_template(template.manifest.template_id, a.template_version)
         report["template_pinned"] = template.manifest.ref
+    # 어느 판의 검사·수리 칸으로 돌렸는지 (같은 vN 에서 고칠 수 있는 칸 — #176)
+    report["template"] = {"ref": template.manifest.ref, "manifest_sha256": template.manifest_sha256}
     res = await plan_contract(
         task,
         template,

@@ -418,6 +418,7 @@ def test_build_columns_are_exactly_what_a_row_mapping_reads() -> None:
         "ontology_version": "onto-test",
         "template_ref": o.template_ref,
         "template_sha256": o.template_sha256,
+        "manifest_sha256": o.manifest_sha256,
         "tree_sha256": o.tree_sha256,
         "grader_sha256": o.grader_sha256,
         "contract": o.contract.model_dump(),
@@ -449,3 +450,17 @@ def test_build_columns_are_exactly_what_a_row_mapping_reads() -> None:
     for col in BUILD_COLUMNS:
         with pytest.raises(KeyError):
             PgBuildStore._build({k: v for k, v in row.items() if k != col})
+
+
+def test_template_manifest_hash_is_the_file_hash() -> None:
+    """#176: 같은 vN 에서 검사·수리 칸을 고칠 수 있으므로 빌드가 어느 판의 매니페스트로 만들어졌는지 해시를 남긴다."""
+    import hashlib
+
+    from task_spec.starter.templates import load_template
+
+    t = load_template("backend/java-spring-boot3-jpa")
+    assert t.manifest_sha256 == hashlib.sha256((t.root / "manifest.yaml").read_bytes()).hexdigest()
+    assert (
+        _outcome(H_NEW).model_copy(update={"manifest_sha256": t.manifest_sha256}).manifest_sha256
+        == t.manifest_sha256
+    )

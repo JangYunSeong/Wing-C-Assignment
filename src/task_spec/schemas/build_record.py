@@ -48,6 +48,8 @@ class BuildOutcome(Schema):
 
     template_ref: str = Field(pattern=TEMPLATE_REF)
     template_sha256: str | None = Field(default=None, pattern=SHA256)
+    # 그 빌드의 검사·수리 칸 판 (manifest.yaml 해시 — 같은 vN 에서 고칠 수 있는 칸, #176)
+    manifest_sha256: str | None = Field(default=None, pattern=SHA256)
     tree_sha256: str = Field(pattern=SHA256)
     grader_sha256: str = Field(pattern=SHA256)
     contract: TaskContract

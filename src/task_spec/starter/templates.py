@@ -11,6 +11,7 @@ LLM·네트워크 없음. 하는 일
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections.abc import Collection
@@ -76,6 +77,12 @@ class Template:
     @property
     def hidden(self) -> Path:
         return self.root / "hidden"
+
+    @property
+    def manifest_sha256(self) -> str:
+        """manifest.yaml 의 해시 — 같은 vN 에서 검사·수리 칸을 고칠 수 있으므로(templates/README) 빌드가 어느 판의 검사·수리로
+        만들어졌는지 남긴다 (#176 댓글). 템플릿 해시(project/)와 따로."""
+        return hashlib.sha256((self.root / "manifest.yaml").read_bytes()).hexdigest()
 
     def files(self, sub: str) -> list[str]:
         """sub(project · hidden/harness · hidden/selftest …) 아래 파일 — sub 기준 상대 경로, 정렬."""
