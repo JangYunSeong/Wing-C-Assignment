@@ -268,7 +268,12 @@ def test_repair_notes_use_template_terms() -> None:
     from task_spec.schemas.template import RepairTerms
 
     java = load_template("backend/java-spring-boot3-jpa").manifest.repair_terms
-    assert java == RepairTerms() and java.reason_call == "Reasons.as"  # Java 문구 그대로
+    # Java 문구 그대로 + 서버 쪽 예외 꼴은 매니페스트 (#176)
+    assert (
+        java.model_copy(update={"server_side": ""}) == RepairTerms()
+        and java.reason_call == "Reasons.as"
+    )
+    assert "ServletException" in java.server_side
     fe = FE.manifest.repair_terms
     assert fe.reason_call.startswith("reason(") and fe.public_helper == "contract.ts"
     assert "ContractCase" not in fe.feature_first

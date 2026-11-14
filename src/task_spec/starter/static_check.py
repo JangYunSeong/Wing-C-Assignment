@@ -392,20 +392,6 @@ def _harness_overrides(
 
 
 # 코드로 연결 풀·데이터소스·요청 스레드를 만들거나 바꾸는 것 — 하네스가 넣는 운영 값(@DynamicPropertySource)을 우회한다.
-# 2026-11-09 v19-loop1·fixmt-be: 허용 설계 '풀 크기 산정'(d3)을 설정으로 못 하자 구현이 DataSource 빈을 새로 만들거나
-# BeanPostProcessor 로 만들어진 풀을 80 으로 바꿔 통과했다 (채점 조건 우회 — 지원자도 같은 길로 함정을 피할 수 있다).
-_CODE_OVERRIDES = (
-    ("DataSourceBuilder", re.compile(r"\bDataSourceBuilder\b")),
-    ("new HikariDataSource/HikariConfig", re.compile(r"\bnew\s+Hikari(?:DataSource|Config)\s*\(")),
-    (
-        "풀 크기·대기 시간 변경",
-        re.compile(r"\.set(?:MaximumPoolSize|MinimumIdle|ConnectionTimeout)\s*\("),
-    ),
-    ("DataSource 빈", re.compile(r"@Bean\b[^{;]*?\bDataSource\s+\w+\s*\(", re.S)),
-    ("요청 스레드 수 변경", re.compile(r"\.set(?:MaxThreads|MinSpareThreads)\s*\(")),
-)
-
-
 # 어느 DB 에 붙는지 정하는 키 — 풀 크기(hikari.*)는 운영 값 검사(_operating_values·_harness_overrides)가 본다
 _DATASOURCE_KEYS = frozenset(
     f"spring.datasource.{k}"
@@ -451,16 +437,14 @@ def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
     return out
 
 
-_PATCH_CALL = re.compile(r"HttpMethod\.PATCH|\.patchForObject\s*\(")
 _SQL_STRING = re.compile(r"'(?:''|[^'])*'")
 _QUOTED_NAME = re.compile(r'"([A-Za-z_]\w*)"')
 
 
 def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[StaticProblem]:
-    """이 템플릿에서 실행 때만 깨지는 두 가지 — 2026-11-10 stab3·v19-be 시작 코드의 기존 기능 테스트가 그대로 실패해 재생성 예산을 다 썼다
-    (재현: 작은 프로젝트에서 둘 다 확인).
-    - TestRestTemplate 로 PATCH: 템플릿에 Apache HttpClient 가 없어 JDK HttpURLConnection — 'Invalid HTTP method: PATCH'
-    - schema.sql 의 큰따옴표 이름("rank"): H2 에서 대소문자를 구분하는 이름이 되어 따옴표 없는 엔티티 매핑으로는 'Column … not found'"""
+    """schema.sql 의 큰따옴표 이름("rank"): H2 에서 대소문자를 구분하는 이름이 되어 따옴표 없는 엔티티 매핑으로는 'Column … not found'
+    — 2026-11-10 stab3·v19-be 시작 코드의 기존 기능 테스트가 그대로 실패해 재생성 예산을 다 썼다. 파일 간 조건(엔티티 표기·
+    globally_quoted_identifiers·시드 파일)이라 매니페스트 code_pitfalls(파일 하나)로 옮기지 않았다. PATCH 함정은 매니페스트로 옮김 (#176)."""
     if not is_java(t.manifest):
         return []
     out: list[StaticProblem] = []
@@ -478,17 +462,7 @@ def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[
     if "globally_quoted_identifiers" in config:
         escaped |= {"*"}
     for f in o.files:
-        if f.path.endswith(".java") and "/test/" in f.path:
-            body = _strip_comments(f.content)
-            if "TestRestTemplate" in body and _PATCH_CALL.search(body):
-                out.append(
-                    StaticProblem(
-                        o.target,
-                        f"{o.name} {f.path} 가 TestRestTemplate 로 PATCH 를 보냄 — 이 템플릿의 TestRestTemplate 은 JDK HttpURLConnection 이라 "
-                        "'Invalid HTTP method: PATCH' 로 실패한다. 테스트는 MockMvc 로 쓴다 (@AutoConfigureMockMvc 는 클래스에 한 번)",
-                    )
-                )
-        elif f.path.endswith(".sql") and f.path != seed_path:
+        if f.path.endswith(".sql") and f.path != seed_path:
             names = sorted(
                 n
                 for n in set(_QUOTED_NAME.findall(_SQL_STRING.sub("''", f.content)))
@@ -502,27 +476,6 @@ def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[
                         '구분해 \'Column … not found\' 가 난다. 엔티티도 같은 표기로 매핑하거나(@Column(name = "\\"rank\\"")) 스키마에서 따옴표를 뺀다',
                     )
                 )
-    return out
-
-
-def _code_overrides(o: Overlay, t: Template) -> list[StaticProblem]:
-    """구현이 코드로 운영 값(연결 풀·데이터소스·요청 스레드)을 만들거나 바꿈 — 설정 키를 바꾸는 것(_harness_overrides)과 같은 우회."""
-    if not is_java(t.manifest):
-        return []
-    out: list[StaticProblem] = []
-    for f in o.files:
-        if not f.path.endswith(".java"):
-            continue
-        body = _strip_comments(f.content)
-        hits = [name for name, rx in _CODE_OVERRIDES if rx.search(body)]
-        if hits:
-            out.append(
-                StaticProblem(
-                    o.target,
-                    f"{o.name} {f.path} 가 코드로 운영 값을 만들거나 바꿈 ({', '.join(hits)}) — {HARNESS_OVERRIDE}(연결 풀·대기 시간·"
-                    "요청 스레드)를 코드로 우회하는 것이다. 운영 값은 채점 환경이 정한다 — 숨은 요구는 연결을 쓰는 방식으로 푼다",
-                )
-            )
     return out
 
 
@@ -1241,39 +1194,43 @@ def _reason_rules(
     케이스가 쓰지 않음. 2026-11-08 숨은 테스트 검토: 사유를 Burst.wrong 에 붙임 14/14, 저장 실패 사유인데 주입 없음 4/5."""
     intended = {c.case_id: c.intended_reason for c in plan.cases}
     requires = {r.code: r.requires for r in m.failure_reasons if r.requires}
+    reasons = {r.code: r for r in m.failure_reasons}
     # 버스트 행이 없는 케이스 — 운영 피크(peak)를 쓰면 요청 하나의 조건이 아니라 동시 부하를 잰다
     single = {c.case_id for c in plan.cases if not any(d.burst for d in c.data)}
-    bad_on = [re.compile(p) for p in m.hidden_rules.reason_not_on]
+    # 사유를 붙여도 되는 단언 — 사유마다 선언(assert_on·assert_not_on) + 모든 사유 공통(hidden_rules.reason_not_on). 한 검사로 (#176 B)
+    common_not = [re.compile(p) for p in m.hidden_rules.reason_not_on]
     out: list[str] = []
     for f in cases:
-        if bad_on:
-            hits = [
-                " ".join(stmt.split())[:120]
-                for stmt in f.content.split(";")
-                if any(rx.search(stmt) for rx in reason_rx)
-                and any(rx.search(stmt) for rx in bad_on)
-            ]
-            if hits and m.hidden_rules.reason_not_on_note:
-                out.append(
-                    f"숨은 테스트 {f.path} 가 사유를 붙이면 안 되는 단언에 사유를 붙임: {hits[0]} — "
-                    + m.hidden_rules.reason_not_on_note
-                )
-            elif hits:
-                out.append(
-                    f"숨은 테스트 {f.path} 가 모든 실패를 세는 단언에 사유를 붙임: {hits[0]} — 어떤 실패든 그 사유로 보인다. "
-                    "운영 조건 사유는 Burst.failures(...) 에, 그 밖의 불일치는 Burst.mismatches(...) 로 따로 (사유 없이 또는 기록 사유)"
-                )
+        for stmt in f.content.split(";"):
+            codes = {mt.group(1) for rx in reason_rx for mt in rx.finditer(stmt) if mt.groups()}
+            for code in sorted(codes):
+                r = reasons.get(code)
+                not_on = common_not + [re.compile(p) for p in (r.assert_not_on if r else [])]
+                on = [re.compile(p) for p in (r.assert_on if r else [])]
+                shown = " ".join(stmt.split())[:120]
+                if any(rx.search(stmt) for rx in not_on):
+                    out.append(
+                        f"숨은 테스트 {f.path} 가 사유 {code} 를 붙이면 안 되는 단언에 붙임: {shown} — "
+                        + (
+                            m.hidden_rules.reason_not_on_note
+                            or "그 단언은 이 사유가 아닌 실패도 센다"
+                        )
+                        + (f". {code}: {r.how}" if r and r.how else "")
+                    )
+                elif on and not any(rx.search(stmt) for rx in on):
+                    out.append(
+                        f"숨은 테스트 {f.path} 가 사유 {code} 를 그 사유를 보는 단언이 아닌 곳에 붙임: {shown}"
+                        + (f" — {r.how}" if r and r.how else "")
+                    )
         for cid in sorted(set(case_rx.findall(f.content))):
             code = intended.get(cid)
             need = requires.get(code or "")
             if need and not any(re.search(p, f.content) for p in need):
+                # 일으키는 법은 사유의 how 한 곳 (#176: 하네스 클래스 이름으로 안내 둘 중 하나를 고르다 lost_update 에 엉뚱한 안내)
+                how = reasons[code].how if code in reasons else None
                 out.append(
-                    f"숨은 케이스 {cid} (의도한 사유 {code}) 가 그 사유를 일으키는 것을 쓰지 않음 — 필요한 것: {' 또는 '.join(need)}. "
-                    + (
-                        "저장 단계 실패는 규칙을 통과하는 요청에 GraderJdbcHarness 주입으로 일으킨다 (거절되는 전이는 롤백될 변경이 없다)"
-                        if "GraderJdbcHarness" in "".join(need)
-                        else "운영 피크는 peak(...) 로 재현한다"
-                    )
+                    f"숨은 케이스 {cid} (의도한 사유 {code}) 가 그 사유를 일으키는 것을 쓰지 않음 — 필요한 것: {' 또는 '.join(need)}"
+                    + (f". {how}" if how else "")
                 )
             if cid in single and _PEAK_CALL.search(f.content):
                 # 2026-11-10 nplus1-g: '목록 한 번 조회가 운영 지연에서 1초 안' 케이스를 peak(…) 로 동시 버스트해,
@@ -2609,11 +2566,10 @@ def static_check(
                         "— 코드·주석·이름에 쓰지 않는다 (미끼 코드 포함)",
                     )
                 )
+        res.problems += _code_pitfalls(o, template)  # 항목마다 overlays 로 거른다 (#176·#177)
         if o.kind in ("starter", "ref_naive", "ref_accepted"):
             res.problems += _unavailable_imports(o, template)
             res.problems += _test_folder_imports(o, template)
-            res.problems += _code_overrides(o, template)
-            res.problems += _code_pitfalls(o, template)
             res.problems += _script_imports(o, template, contract)
             res.problems += _datasource_config(o, template)
             res.problems += _contract_types_usage(o, template, contract)
@@ -2727,25 +2683,41 @@ def _skipped_tests(o: Overlay, t: Template) -> list[StaticProblem]:
     ]
 
 
+def _keep_lines(src: str) -> str:
+    """C 계열 주석을 빼되 줄 수는 그대로 (찾은 곳의 줄 번호가 맞게)."""
+    return _JAVA_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n") or " ", src)
+
+
 def _code_pitfalls(o: Overlay, t: Template) -> list[StaticProblem]:
-    """manifest code_pitfalls — 이 스택에서 생성 모델이 되풀이하는 API 실수를 실행 전에 (파일·줄과 바른 쓰는 법)."""
+    """manifest code_pitfalls — 이 스택에서 생성 모델이 되풀이하는 API 실수·채점 우회를 실행 전에 (파일·줄과 바른 쓰는 법).
+    항목이 어느 산출물(overlays)·경로(paths)·조건(when — 이 꼴이 있는 파일만, unless — 이 꼴이 있으면 뺌)에서 거는지 정한다.
+    #176: Java 전용 규칙(TestRestTemplate PATCH·코드로 풀·스레드 바꾸기)이 공용 검사기에 박혀 있던 것을 매니페스트 항목으로."""
+    slot = KIND_SLOT[o.kind]
     out: list[StaticProblem] = []
     for pit in t.manifest.code_pitfalls:
+        if slot not in pit.overlays:
+            continue
         rx = re.compile(pit.pattern)
         ok = re.compile(pit.unless) if pit.unless else None
-        hits = [
-            f"{f.path}:{f.content.count(chr(10), 0, m.start()) + 1} `{' '.join(m.group(0).split())[:80]}`"
-            for f in o.files
-            if ok is None or not ok.search(f.content)
-            for m in rx.finditer(f.content)
-        ]
+        when = re.compile(pit.when) if pit.when else None
+        hits: list[str] = []
+        for f in o.files:
+            if pit.paths and not glob_match(f.path, pit.paths):
+                continue
+            body = _keep_lines(f.content) if pit.strip_comments else f.content
+            if (ok is not None and ok.search(body)) or (when is not None and not when.search(body)):
+                continue
+            hits += [
+                f"{f.path}:{body.count(chr(10), 0, m.start()) + 1} `{' '.join(m.group(0).split())[:80]}`"
+                for m in rx.finditer(body)
+            ]
         if hits:
-            out.append(
-                StaticProblem(
-                    o.target,
-                    f"{o.name} 에 이 스택에서 되풀이되는 실수: {'; '.join(hits[:4])} — {pit.fix}",
-                )
+            lead = (
+                f"{o.name} 가 {HARNESS_OVERRIDE}(연결 풀·대기 시간·요청 스레드)를 코드로 우회함"
+                if pit.harness_bypass
+                else f"{o.name} 에 이 스택에서 되풀이되는 실수"
             )
+            out.append(StaticProblem(o.target, f"{lead}: {'; '.join(hits[:4])} — {pit.fix}"))
     return out
 
 

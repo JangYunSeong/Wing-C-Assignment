@@ -335,9 +335,6 @@ def _starter(
 PERSISTENCE = (
     "PersistenceCheckTest"  # 코드가 쓰는 저장 확인 (hidden_helpers.render_persistence_check)
 )
-_SERVER_SIDE = re.compile(
-    r"ServletException|JpaSystemException|PersistenceException|Hibernate|DataIntegrity|com\.example\.service\.(?!grading|publictests)|status 500|<500>"
-)
 
 
 def _starter_public(
@@ -402,6 +399,7 @@ def _public_refs(
     돌려주는 집합 = 공개 테스트를 모두 통과한 구현 라벨 (숨은 게이트는 이 구현만 믿는다)."""
     names = sorted({t.name for r in runs for t in r.results("public")})
     trusted = {r.target for r in runs if all(t.result == "PASS" for t in r.results("public"))}
+    server = re.compile(terms.server_side) if terms is not None and terms.server_side else None
     out: list[RepairAction] = []
     for name in names:
         res = [(r, next((t for t in r.results("public") if t.name == name), None)) for r in runs]
@@ -499,7 +497,8 @@ def _public_refs(
             continue
         sigs = {_signature(m) for m in msgs.values()}
         first = next(iter(msgs.values()))
-        if len(sigs) == 1 and _SERVER_SIDE.search(first):
+        # 서버 쪽(공유 코드) 예외의 꼴은 매니페스트 repair_terms.server_side (#176 — Spring 예외 이름이 공용 수리 코드에 있었다)
+        if len(sigs) == 1 and server is not None and server.search(first):
             out.append(
                 RepairAction(
                     "gen_starter",

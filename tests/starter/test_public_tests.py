@@ -167,6 +167,13 @@ def test_starter_public_gate() -> None:
     ]
 
 
+JAVA_TERMS = (
+    __import__("task_spec.starter.templates", fromlist=["load_template"])
+    .load_template("backend/java-spring-boot3-jpa")
+    .manifest.repair_terms
+)
+
+
 def test_public_failures_are_assigned_by_comparison_and_untrusted_refs_skip_hidden_gates() -> None:
     starter = _run("starter", "starter", _p("PersistenceCheckTest"), _p("T", "ASSERT"))
     fail = _p("T", "ASSERT", "expected 200 but was 400")
@@ -197,8 +204,23 @@ def test_public_failures_are_assigned_by_comparison_and_untrusted_refs_skip_hidd
         PLAN2,
         OVERLAYS,
         MISSED,
+        terms=JAVA_TERMS,  # 서버 쪽 예외의 꼴은 매니페스트 repair_terms.server_side (#176)
     )
     assert [a.generator for a in plan.actions] == ["gen_starter"]
+    # 그 꼴을 선언하지 않은 템플릿(데이터·프론트)은 서버 쪽으로 보지 않는다 — 같은 메시지면 테스트 의심
+    plan = assign(
+        VerifyReport(
+            runs=[
+                starter,
+                _run("naive-all", "ref_naive", srv, *GOOD_NAIVE),
+                _run("d1", "ref_accepted", srv, *GOOD_ACC),
+            ]
+        ),
+        PLAN2,
+        OVERLAYS,
+        MISSED,
+    )
+    assert [a.generator for a in plan.actions] == ["gen_public"]
     # 모든 구현이 같은 단언 실패 → 테스트 의심
     plan = assign(
         VerifyReport(

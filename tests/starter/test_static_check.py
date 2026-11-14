@@ -473,6 +473,42 @@ def test_injection_regex_built_from_helper_table_constants() -> None:
     assert any("넓음" in m for m in hidden(bare))
 
 
+def test_reason_labels_go_on_the_assertions_each_reason_declares() -> None:
+    """#176 B: 2026-11-14 재시도 중복 재빌드 hc1 이 Burst.failures(시간 초과·5xx 수)에 duplicate_record 를 붙였다 — 사유마다 붙일 수 있는
+    단언을 매니페스트 failure_reasons 에 선언(assert_on·assert_not_on)하고 검사는 그 선언만 돈다."""
+
+    def hidden(text: str) -> list[str]:
+        return _run(
+            _overlays(
+                hidden=[
+                    _f(f"{CASES}/OrderStatusBurstTest.java", text),
+                    render_params(PLAN, JAVA.manifest),
+                ]
+            )
+        ).for_target("gen_hidden")
+
+    record_on_failures = HC1.replace(
+        'Reasons.as("pool_acquire_timeout"', 'Reasons.as("duplicate_record"'
+    )
+    assert record_on_failures != HC1
+    assert _has(
+        hidden(record_on_failures), "사유 duplicate_record 를 붙이면 안 되는 단언", "Burst.failures"
+    )
+    # 운영 사유를 운영 실패를 세지 않는 단언에 붙여도 묻는다 (사유의 how 로 안내)
+    op_elsewhere = HC1.replace(
+        "assertThat(Burst.failures(outcomes))", "assertThat(outcomes.size())", 1
+    )
+    assert op_elsewhere != HC1
+    assert _has(
+        hidden(op_elsewhere),
+        "pool_acquire_timeout 를 그 사유를 보는 단언이 아닌 곳",
+        "Burst.failures",
+    )
+    assert not _has(hidden(HC1), "붙이면 안 되는 단언") and not _has(
+        hidden(HC1), "보는 단언이 아닌 곳"
+    )
+
+
 def test_reason_on_counting_all_failures_is_regenerated() -> None:
     """2026-11-08 숨은 테스트 검토: 14개 케이스 모두 사유를 Burst.wrong(...) 에 붙였다 — 어떤 실패든 그 사유로 보인다."""
     on_wrong = HC1.replace("Burst.failures(outcomes)", "Burst.wrong(outcomes)")
@@ -484,7 +520,7 @@ def test_reason_on_counting_all_failures_is_regenerated() -> None:
             ]
         )
     )
-    assert _has(res.for_target("gen_hidden"), "모든 실패를 세는 단언에 사유", "Burst.failures")
+    assert _has(res.for_target("gen_hidden"), "붙이면 안 되는 단언에 붙임", "Burst.failures")
     # 사유 없는 Burst.wrong 단언은 괜찮다
     bare = HC1.replace(
         'assertThat(Burst.failures(outcomes))\n                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();',
@@ -543,7 +579,9 @@ def test_reason_requires_what_causes_it() -> None:
         return _run(_overlays(hidden=files), plan=plan).for_target("gen_hidden")
 
     no_inject = gen_hidden(ROLLBACK.replace("INJECT", "// 거절되는 전이"))
-    assert _has(no_inject, "hc1", "rollback_left_success", "GraderJdbcHarness 주입")
+    assert _has(
+        no_inject, "hc1", "rollback_left_success", "저장 단계 실패를 주입"
+    )  # 안내는 사유의 how (#176)
     injected = gen_hidden(
         ROLLBACK.replace(
             "INJECT",
@@ -565,7 +603,7 @@ def test_reason_requires_what_causes_it() -> None:
             ]
         )
     )
-    assert _has(res.for_target("gen_hidden"), "hc1", "pool_acquire_timeout", "peak(...)")
+    assert _has(res.for_target("gen_hidden"), "hc1", "pool_acquire_timeout", "peak(…)")
     assert not _has(_run().for_target("gen_hidden"), "그 사유를 일으키는 것을 쓰지 않음")
 
 
@@ -675,7 +713,8 @@ def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
 def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:
     # 2026-11-09: 허용 구현 d1·d2·d3 가 DataSource 빈·BeanPostProcessor 로 풀을 80 으로 바꿔 하네스가 넣는 운영 값을 우회했다
     # ("so the grading harness's property override does not reduce it" 라는 주석까지) — 지원자도 같은 길로 함정을 피할 수 있다
-    from task_spec.starter.static_check import HARNESS_OVERRIDE, _code_overrides
+    # #176: 규칙은 Java 매니페스트 code_pitfalls (harness_bypass) — 공용 검사기는 항목만 돈다
+    from task_spec.starter.static_check import HARNESS_OVERRIDE, _code_pitfalls
 
     t = JAVA
     bean = (
@@ -694,7 +733,7 @@ def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:
             files=(GeneratedFile(path="src/main/java/x/C.java", content=content),),
             label="d3",
         )
-        got = _code_overrides(o, t)
+        got = _code_pitfalls(o, t)
         assert bool(got) is bad, (content, got)
         # 허용 구현이 이것만으로 재요청에도 못 고치면 그 설계를 빼는 기존 장치(build._voided)가 알아보게 같은 말
         assert all(HARNESS_OVERRIDE in p.message for p in got)
@@ -718,19 +757,29 @@ def test_datasource_settings_not_in_the_template_are_rejected() -> None:
 
 def test_java_runtime_only_pitfalls_in_starter_tests_and_schema() -> None:
     # 2026-11-10 stab3·v19-be: 시작 코드의 기존 기능 테스트가 실행 때만 깨져 재생성 예산을 다 씀 (작은 프로젝트로 재현)
-    from task_spec.starter.static_check import _java_test_pitfalls
+    from task_spec.starter.static_check import _code_pitfalls, _java_test_pitfalls
 
     seed = JAVA.manifest.seed_sql.path if JAVA.manifest.seed_sql else None
 
-    def probs(*files: tuple[str, str]) -> list[str]:
-        o = Overlay(kind="starter", files=tuple(GeneratedFile(path=p, content=c) for p, c in files))
-        return [p.message for p in _java_test_pitfalls(o, JAVA, seed)]
+    def probs(*files: tuple[str, str], kind: str = "starter") -> list[str]:
+        o = Overlay(kind=kind, files=tuple(GeneratedFile(path=p, content=c) for p, c in files))  # type: ignore[arg-type]
+        return [p.message for p in [*_java_test_pitfalls(o, JAVA, seed), *_code_pitfalls(o, JAVA)]]
 
     test = "src/test/java/x/RankTest.java"
     patch = 'class T { @Autowired TestRestTemplate rest; void t() { rest.exchange("/a", HttpMethod.PATCH, e, Map.class); } }'
     mvc = 'class T { @Autowired MockMvc mvc; void t() throws Exception { mvc.perform(patch("/a")); } }'
     assert any("Invalid HTTP method: PATCH" in p for p in probs((test, patch)))
     assert not probs((test, mvc))
+    # #176: 매니페스트 항목으로 옮기며 같은 이유로 깨지는 꼴까지 — RestTemplate 직접·RequestEntity.patch, 숨은·공개 테스트에서도
+    plain_rest = 'class T { RestTemplate rest = new RestTemplate(); void t() { rest.patchForObject("/a", b, Map.class); } }'
+    entity = "class T { @Autowired TestRestTemplate rest; void t() { rest.exchange(RequestEntity.patch(u).body(b), Map.class); } }"
+    assert probs((test, plain_rest)) and probs((test, entity), kind="hidden")
+    # MockMvc 의 request(HttpMethod.PATCH, …) 는 된다 (RestTemplate 을 쓰는 파일만), 주석 속 꼴도 아니다
+    mvc_method = 'class T { @Autowired MockMvc mvc; void t() throws Exception { mvc.perform(request(HttpMethod.PATCH, "/a")); } }'
+    commented = (
+        "class T { // TestRestTemplate 으로 HttpMethod.PATCH 를 보내지 않는다\n MockMvc mvc; }"
+    )
+    assert not probs((test, mvc_method)) and not probs((test, commented))
     schema = (
         "src/main/resources/schema.sql",
         'CREATE TABLE m (id BIGINT, "rank" VARCHAR(20), note VARCHAR(9) DEFAULT \'"x"\');',

@@ -67,6 +67,8 @@ templates/<직군>/<스택>/CURRENT
 | `fill_slots` | LLM 이 쓸 수 있는 경로 패턴과 종류 (entity / service / controller / config / seed / existing_test / docs) |
 | `locked` | 건드리면 안 되는 파일 (빌드 설정, 래퍼, 하네스) |
 | `limits` | 파일 수·크기 상한, 금지 의존성 추가 |
+| `code_pitfalls` | 스택에서 되풀이되는 API 실수·채점 우회 — 항목마다 `pattern`·`fix`·`unless`·`when`(이 꼴이 있는 파일만)·`paths`·`overlays`(starter·public_test·hidden·ref)·`strip_comments`·`harness_bypass`. Java 의 TestRestTemplate PATCH·코드로 풀·스레드 바꾸기도 여기 (#176) |
+| `repair_terms` | 수리 문구의 스택 이름 + 수리 판정 꼴(`impl_crash`·`grading_env`·`test_defect`·`test_context`·`server_side` — 모든 구현이 같은 서버 쪽 예외면 시작 코드, #176) |
 | `network` | 항상 `none` (검증 컨테이너에 네트워크 없음) |
 
 ## 4. 생성 흐름
