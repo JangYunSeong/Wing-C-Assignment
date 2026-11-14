@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -377,7 +378,7 @@ def test_fit_seed_row_uses_on_a_seed_smaller_than_reserved_rows() -> None:
     )
     groups = [(g.first, g.last, g.values["status"]) for g in fitted.seed[0].groups]
     assert [g[2] for g in groups].count("SHIPPING") == 1
-    assert all(a[1] + 1 == b[0] for a, b in zip(groups, groups[1:]))  # 빈틈·겹침 없음
+    assert all(a[1] + 1 == b[0] for a, b in pairwise(groups))  # 빈틈·겹침 없음
     free = {v["status"]: ids for _, v, ids in public_free(fitted, fplan)}
     assert len(free["SHIPPING"]) == 3 and min(free["SHIPPING"]) > RESERVED_ROWS
     assert not seed_problems(fitted) and not allocate_rows(fitted, fplan).problems
