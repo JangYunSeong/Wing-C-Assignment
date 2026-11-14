@@ -55,6 +55,10 @@ def test_readme_has_no_hidden_or_material_content() -> None:
     task = _approved()
     readme = render_readme(task, _contract_with_list(), load_template(JAVA)).content
     assert "아래 자료 중 최대" not in readme  # 상황 끝 안내는 진행 방식 절로
+    # 붙이는 문장을 만드는 곳은 request_note 하나 — 저장된 상황의 문장 그대로(위 픽스처)를 뗀다
+    from task_spec.spec.request_note import request_note
+
+    assert task.scenario.endswith(request_note(2, 1))
     for secret in (
         task.traps[0].description,
         task.acceptance_hidden[0].text,
@@ -93,3 +97,21 @@ def test_render_params_from_hidden_plan() -> None:
     bad = HiddenPlan.model_validate(_plan(harness={"pool": 8}))
     with pytest.raises(RenderError, match="pool"):
         render_params(bad, m)
+
+
+def test_guide_sentence_is_stripped_by_what_was_appended(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#184: README 가 상황 끝 안내를 정규식으로 떼어, 문장을 한 글자만 바꿔도 README 에 안내가 두 번 나왔다 — 붙이는 쪽과 떼는 쪽이
+    같은 함수를 쓰므로 문장을 바꾸면 함께 바뀐다."""
+    import task_spec.starter.render as render
+    from task_spec.spec.request_note import request_note
+
+    def reworded(n: int, q: int | None = None) -> str:
+        return request_note(n, q).replace("있고,", "있으며,").replace("습니다.", "습니다!")
+
+    monkeypatch.setattr(render, "request_note", reworded)
+    t = _task()
+    task = t.model_copy(
+        update={"scenario": t.scenario + reworded(2, 1), "max_requests": 2, "max_clarifications": 1}
+    )
+    readme = render_readme(task, _contract_with_list(), load_template(JAVA)).content
+    assert "아래 자료 중 최대" not in readme and "(최대 2개)" in readme

@@ -50,10 +50,9 @@ def test_map_lists_existing_names_from_the_code() -> None:
     md = code_map_markdown(code_map(FILES))
     assert md.startswith(SECTION)
     assert "- `src/App.tsx` — 화면 경로: `/notes/new` → `NoteFormPage`" in md
-    assert (
-        "  - `postNote(body: PostApiNotesBody): Promise<PostApiNotesOk>` — 가상 메모를 서버에 저장한다"
-        in md
-    )
+    # 시그니처만 — 생성 코드의 주석(JSDoc)은 싣지 않는다 (#184)
+    assert "  - `postNote(body: PostApiNotesBody): Promise<PostApiNotesOk>`\n" in md
+    assert "가상 메모를 서버에 저장한다" not in md
     assert "`PostApiNotesOk`, `PostApiNotesBody`" in md  # 계약 타입
     assert (
         "  - `NoteDto save(NoteRequest request)`" in md and "hidden" not in md
@@ -66,11 +65,23 @@ def test_map_lists_existing_names_from_the_code() -> None:
     assert "  - `List<NoteDto> getNotes(Long projectId)`" in md
 
 
-def test_todo_in_a_starter_comment_is_not_copied() -> None:
-    """시작 코드 주석의 할 일 목록이 숨은 요구의 해법을 적기도 한다 — README 에는 TODO 앞의 설명만."""
+def test_starter_comments_are_not_copied() -> None:
+    """시작 코드 주석의 할 일 목록이 숨은 요구의 해법을 적기도 한다 — README 코드 지도에는 이름·시그니처만 (#184: TODO·'할 일:' 뒤만
+    자르던 것은 FIXME·'다음:'·첫 문장 안의 해법을 그대로 보냈다)."""
     md = code_map_markdown(code_map(FILES))
-    assert "  - `NoteFormPage()` — 가상 메모 작성 화면" in md
-    assert "대기열" not in md and "online" not in md
+    assert "  - `NoteFormPage()`\n" in md + "\n"
+    assert "대기열" not in md and "online" not in md and "가상 메모 작성 화면" not in md
+    for doc in (
+        "FIXME 대기열에 쌓는다",
+        "다음: online 이벤트에 다시 보낸다",
+        "대기열에 쌓아 online 때 보내는 화면.",
+    ):
+        page = GeneratedFile(
+            path="src/pages/NoteFormPage.tsx",
+            content=f"/** {doc} */\nexport function NoteFormPage() {{ return null; }}\n",
+        )
+        got = code_map_markdown(code_map([page]))
+        assert "대기열" not in got and "online" not in got, (doc, got)
 
 
 def test_readme_and_code_must_match() -> None:

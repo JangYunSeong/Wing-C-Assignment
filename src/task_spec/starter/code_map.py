@@ -24,7 +24,7 @@ SECTION = "## 시작 코드"
 class Item:
     name: str
     text: str  # README 에 쓰는 꼴 (시그니처 등)
-    doc: str = ""
+    doc: str = ""  # 코드가 쓰는 덧말만 (예: 'getter·setter 생략') — 생성 코드 주석은 넣지 않는다 (ts_items)
 
 
 @dataclass
@@ -37,13 +37,11 @@ class FileMap:
 # ── TypeScript ─────────────────────────────────────────────────────
 
 _TS_FUNC = re.compile(
-    r"(?:/\*\*(?P<doc>(?:(?!\*/).)*?)\*/\s*)?export\s+(?P<default>default\s+)?(?P<async>async\s+)?function\s+"
+    r"export\s+(?P<default>default\s+)?(?P<async>async\s+)?function\s+"
     r"(?P<name>[A-Za-z_$][\w$]*)\s*(?P<gen><[^>(]*>)?\s*\((?P<params>[^)]*)\)\s*(?::\s*(?P<ret>[^{]+?))?\s*\{",
     re.S,
 )
-_TS_CONST = re.compile(
-    r"(?:/\*\*(?P<doc>(?:(?!\*/).)*?)\*/\s*)?export\s+const\s+(?P<name>[A-Za-z_$][\w$]*)", re.S
-)
+_TS_CONST = re.compile(r"export\s+const\s+(?P<name>[A-Za-z_$][\w$]*)")
 _TS_TYPE = re.compile(r"export\s+(?:type|interface)\s+(?P<name>[A-Za-z_$][\w$]*)")
 _ROUTE = re.compile(
     r"<Route\s+[^>]*?path=[\"'](?P<path>[^\"']+)[\"'][^>]*?element=\{\s*<(?P<el>[A-Za-z_$][\w$]*)"
@@ -53,21 +51,16 @@ _SKIP_TS = re.compile(
 )
 
 
-def _one_line(s: str) -> str:
-    """주석 한 줄 — TODO 뒤는 뺀다 (시작 코드 주석의 할 일 목록이 숨은 요구의 해법을 적기도 한다: '… 대기열, online 이벤트 동기화')."""
-    text = " ".join(s.replace("*", " ").split())
-    return re.split(r"\bTODO\b|할 일:", text, maxsplit=1)[0].strip(" -—:")
-
-
 def ts_items(content: str) -> list[Item]:
+    """내보내는 함수(시그니처)·상수(이름) — 주석은 넣지 않는다. #184: 시작 코드 주석의 할 일 목록이 숨은 요구의 해법을 적기도 해
+    ('… 대기열, online 이벤트 동기화') TODO·'할 일:' 뒤만 잘랐는데, FIXME·'다음:'·첫 문장 안의 해법은 그대로 README 로 갔다.
+    README 코드 지도는 코드와 맞는 이름만 — 생성 코드의 자유 서술은 싣지 않는다."""
     out: list[Item] = []
     for m in _TS_FUNC.finditer(content):
         params = " ".join(m.group("params").split()).rstrip(",")
         ret = f": {' '.join(m.group('ret').split())}" if m.group("ret") else ""
-        text = f"{m.group('name')}({params}){ret}"
-        out.append(Item(m.group("name"), text, _one_line(m.group("doc") or "")))
-    for m in _TS_CONST.finditer(content):
-        out.append(Item(m.group("name"), m.group("name"), _one_line(m.group("doc") or "")))
+        out.append(Item(m.group("name"), f"{m.group('name')}({params}){ret}"))
+    out += [Item(m.group("name"), m.group("name")) for m in _TS_CONST.finditer(content)]
     return out
 
 

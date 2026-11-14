@@ -640,17 +640,15 @@ def render_persistence_check(
     2026-11-08 알파 4케이스: 시작 코드의 새 감사 기록 엔티티에 id 생성 전략이 없어(`@Id` 만) 참조 구현 둘 다 기록을 저장하는 순간
     'must be manually assigned before persist()' 로 실패했다. 시작 코드는 기록을 쓰지 않으니 자기 테스트로는 드러나지 않는다.
     JPA 메타모델에서 계약 엔티티 이름으로 클래스를 찾아(클래스 이름을 미리 몰라도 됨) 필수 필드를 채워 저장해 본다.
-    대상: 새로 만드는 엔티티(existing 아님) 중 처음 0행 — 표시가 하나도 없으면(옛 계약) 처음 0행인 엔티티.
+    대상: 새로 만드는 엔티티(existing 아님) 중 처음 0행 — 옛 계약은 existing 이 모두 기본값 false 라 처음 0행 전부 (#184: 따로 두던
+    옛 계약 갈래는 같은 결과라 지웠다).
     """
     rule = manifest.public_helper
     if rule is None or not is_java(manifest):  # JPA 메타모델로 저장해 보는 Java 전용 확인
         return None
     rows = {s.entity_id: s.rows for s in contract.seed}
-    flagged = any(m.existing for m in contract.entities)
     targets = [
-        m.name
-        for m in contract.entities
-        if rows.get(m.entity_id, 0) == 0 and (not m.existing if flagged else True)
+        m.name for m in contract.entities if rows.get(m.entity_id, 0) == 0 and not m.existing
     ]
     if not targets:
         return None
