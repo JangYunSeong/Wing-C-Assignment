@@ -123,6 +123,34 @@ def test_helpers_carry_next_states_and_names_are_checked() -> None:
     assert "String NEXT_OK_" not in render_contract_case(_with_state(None), plan, manifest).content  # type: ignore[union-attr]
 
 
+def test_helper_constant_families_come_from_the_helper() -> None:
+    """#178: 상수 가족(HC·PUBLIC·TABLE·NEXT)을 손으로 적어 둬 도우미가 새로 낸 HEADER_…·SETTING_… 짐작은 javac 까지 갔다 —
+    가족은 도우미가 실제로 낸 상수 머리에서 뽑는다."""
+    from task_spec.schemas import GeneratedFile
+
+    helper = GeneratedFile(
+        path="src/test/java/com/example/service/grading/cases/ContractCase.java",
+        content=(
+            "public abstract class ContractCase {\n"
+            "    protected static final int SETTING_LIMIT_DEFAULT = 5;\n"
+            '    protected static final String HEADER_IDEMPOTENCY = "Idempotency-Key";\n'
+            "}\n"
+        ),
+    )
+    case = GeneratedFile(
+        path="src/test/java/com/example/service/grading/cases/X.java",
+        content=(
+            "class X extends ContractCase {\n"
+            "    static final int SETTING_LOCAL = 3;\n"
+            "    void a() { send(HEADER_IDEMPOTENCY_KEY, SETTING_LIMIT_PROBE, SETTING_LOCAL, Integer.MAX_VALUE); }\n"
+            "}\n"
+        ),
+    )
+    msgs = unknown_helper_names([case], helper, "숨은 테스트")
+    assert _has(msgs, "HEADER_IDEMPOTENCY_KEY", "SETTING_LIMIT_PROBE")
+    assert not _has(msgs, "SETTING_LOCAL") and not _has(msgs, "MAX_VALUE")
+
+
 def test_failure_reason_how_reaches_both_generators() -> None:
     """2026-11-08: 롤백 사유 케이스 9개 중 8개가 계획부터 '허용되지 않은 전이' — 사유를 일으키는 법을 케이스 줄·사유 목록에 싣는다."""
     from task_spec.nodes.starter.generate import plan_text, reason_line

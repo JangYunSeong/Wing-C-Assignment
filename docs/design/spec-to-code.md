@@ -169,7 +169,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | `gen_trap` | `gen_trap/v1` (2026-11-13 #171) | 계약, 그 설계가 푸는 숨은 요구, 허용 설계 요약·조건, 함정 문장, 그 허용 설계 구현 앱 파일 | **숨은 테스트**(독립 검사), 공개 테스트 | `ref_variant` (검증에만, 저장 안 함) |
 | `gen_variant` | `gen_variant/v1` (2026-11-13 #164) | 확인 방법을 뺀 계약, 공개 요구·기준, 어길 기준 1건, 갈래(빼먹기·뒤집기·경계), 정답 구현 앱 파일(시작 코드 + 공개 테스트를 통과한 허용 구현) | **공개 테스트·확인 방법**(테스트를 쓴 쪽의 맹점을 모르는 독립 검사), 숨은 요구·숨은 테스트 | `ref_variant` (검증에만, 저장 안 함) |
 
-- **코드가 쓰는 파일** (생성기가 같은 경로를 쓰면 버리고 렌더본): 시드 SQL(`starter/seed_sql.py`) · 숨은 테스트 도우미 `ContractCase`(케이스별 id 범위 `HC1_FIRST`…, 테이블 이름 `TABLE_…`, 처음 값별 다음 상태 `NEXT_OK_…`·`NEXT_BAD_…`, 계약 API 함수·200 본문 파싱, `peak(…)`) · 공개 테스트 도우미 `PublicCase`(공개 몫 행 `PUBLIC_…`, 다음 상태, 계약 API 함수 — 숨은 범위·주입 없음) · 저장 확인 `PersistenceCheckTest`(새 엔티티를 JPA 메타모델로 만들어 저장, id 생성 확인) · 조절값 파일 · README (`starter/hidden_helpers.py`·`starter/render.py`).
+- **코드가 쓰는 파일** (생성기가 같은 경로를 쓰면 버리고 렌더본): 시드 SQL(`starter/seed_sql.py`) · 숨은 테스트 도우미 `ContractCase`(케이스별 id 범위 `HC1_FIRST`…, 테이블 이름 `TABLE_…`, 처음 값별 다음 상태 `NEXT_OK_…`·`NEXT_BAD_…`, 계약 API 함수·200 본문 파싱, `peak(…)`) · 공개 테스트 도우미 `PublicCase`(공개 몫 행 `PUBLIC_…`, 다음 상태, 계약 API 함수 — 숨은 범위·주입 없음) · 저장 확인 `PersistenceCheckTest`(새 엔티티를 JPA 메타모델로 만들어 저장, id 생성 확인) · 조절값 파일 · README (`starter/hidden_helpers.py`·`starter/render.py`). README 를 뺀 이 파일들의 경로는 `hidden_helpers.code_written_paths` 한 곳이 정하고, 정적 검사의 크기 상한과 생성기 컴파일 오류 배정에서 뺀다 (생성기가 고칠 수 없다 — #178).
   - 시드 그룹이 값을 정하지 않은 필수 칸은 형식별 결정적 기본값이다. **날짜·시각 칸은 행마다 다르고 id 순서와 어긋나게**(2026-11-13, `seed_sql.time_value` —
     소수 주기 순열, 약 7일 안의 분 단위·날짜는 약 1년 안): 모든 행이 같은 고정 시각이면 '최신순'이 뜻을 잃고, id 순서대로 늘리면 id 로만 정렬한 구현이
     '최신순' 확인을 통과한다. 같은 시각이 필요한 과제(같은 시각의 순서 정하기)는 계약 시드 groups 가 그 값을 적는다. 형식이 글자인 칸도 제약 글(ISO 8601·

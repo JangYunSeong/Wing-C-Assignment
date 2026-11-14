@@ -36,7 +36,7 @@ import yaml
 
 from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import Endpoint, FileKind
-from task_spec.schemas.template import TemplateManifest
+from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.field_types import non_null
@@ -44,14 +44,16 @@ from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
     api_functions,
+    code_written_paths,
     key_fields,
     render_contract_case,
     render_persistence_check,
     row_use_consts,
     setting_const,
 )
+from task_spec.starter.py_helpers import command_name, py_ident
 from task_spec.starter.render import README, render_params
-from task_spec.starter.seed_sql import schema_problems
+from task_spec.starter.seed_sql import schema_problems, time_kind
 from task_spec.starter.skeleton import (
     APP,
     ENDPOINTS,
@@ -72,10 +74,16 @@ from task_spec.starter.tables import (
     same_table,
     spring_snake,
 )
-from task_spec.starter.templates import Template, glob_match, is_java, is_python, slot_allows
+from task_spec.starter.templates import (
+    Template,
+    blocked_reason,
+    glob_match,
+    is_java,
+    is_python,
+)
 from task_spec.starter.ts_helpers import app_type_names, fault_fn, render_app_types
 
-KIND_SLOT = {
+KIND_SLOT: dict[str, SlotKind] = {
     "starter": "starter",
     "public_test": "public_test",
     "hidden": "hidden",
@@ -208,31 +216,40 @@ def _paths(o: Overlay, t: Template) -> list[StaticProblem]:
         if m.hidden_layout
         else []
     )
+    slot = KIND_SLOT[o.kind]
+    slots = m.fill_slots.get(slot, [])
     for f in o.files:
-        if slot_allows(m, KIND_SLOT[o.kind], f.path):  # type: ignore[arg-type]
+        why = blocked_reason(m, slot, f.path)
+        if why is None:
             continue
         if locked_harness and glob_match(f.path, locked_harness):
             msg = f"{o.name} 파일 {f.path} 는 잠긴 채점 하네스 자리 — 하네스는 고치지 않고 케이스 자리({m.hidden_layout.cases if m.hidden_layout else ''})에만 쓴다"
-        else:
-            # 쓸 수 있는 경로를 함께 — 2026-11-10 retrydupx #030: 시작 코드가 테스트 데이터를 src/test/resources/seed-test.sql 에
-            # 두 번 다 써 (문구에 갈 곳이 없었다) 시작 코드 생성이 실패하고 루프가 회차 0 에서 끝났다
-            slots = m.fill_slots.get(KIND_SLOT[o.kind], [])  # type: ignore[index]
+        elif why == "locked":
             msg = (
-                f"{o.name} 파일 {f.path} 는 쓸 수 없는 경로 (fill_slots 밖·잠긴 파일·채점 자리) — 쓸 수 있는 경로: "
+                f"{o.name} 파일 {f.path} 는 잠긴 파일(템플릿 그대로 두는 파일) — 고치거나 다시 쓰지 않는다. 바꿀 것은 쓸 수 있는 "
+                "자리의 파일에서: " + ", ".join(slots)
+            )
+        elif why == "reserved":
+            msg = (
+                f"{o.name} 파일 {f.path} 는 채점이 쓰는 자리 — 이 산출물은 두지 않는다. 쓸 수 있는 경로: "
                 + ", ".join(slots)
             )
-            if re.search(r"(^|/)(test|tests|__tests__)/resources?/", f.path):
-                msg += (
-                    ". 테스트용 데이터 파일을 따로 두지 않는다 — 시드의 테스트 몫 행(작은 id)을 쓰거나 테스트 코드 안에서 "
-                    "저장소·API 로 만든다 (테스트 리소스 폴더는 채점 설정 자리라 막혀 있다)"
-                )
+        else:
+            msg = (
+                f"{o.name} 파일 {f.path} 는 이 산출물이 쓸 수 있는 자리(fill_slots) 밖 — 쓸 수 있는 경로: "
+                + ", ".join(slots)
+            )
+        if why != "locked":
+            # 막힌 자리에 데이터를 두는 실수 — 2026-11-10 retrydupx #030: 시작 코드가 테스트 데이터를 src/test/resources/seed-test.sql 에
+            # 두 번 다 써 시작 코드 생성이 실패했다 (그 경로는 fill_slots 밖). 자리마다가 아니라 막힌 경로 모두에 같은 안내 (#178)
+            msg += ". 테스트용 데이터·설정 파일을 따로 두지 않는다 — 시드의 테스트 몫 행(작은 id)을 쓰거나 테스트 코드 안에서 저장소·API 로 만든다"
         out.append(StaticProblem(o.target, msg))
     lim = m.limits
     if lim is not None:
-        # 코드가 계약에서 결정적으로 쓰는 시드 파일(seed_sql)은 크기 상한에서 뺀다 — 상한은 LLM 이 쓴 파일을 막는 장치이고, 시드 행 수는
+        # 코드가 계약에서 결정적으로 쓰는 파일은 크기 상한에서 뺀다 — 상한은 LLM 이 쓴 파일을 막는 장치이고, 시드 행 수는
         # 계약이 막는다 (SeedRule.rows ≤ 5000). 2026-11-11 N+1 백엔드 알파: 숨은 케이스 댓글 1050행(코드가 2100행으로 나눔) 시드로
         # data.sql 이 100000B 를 넘어 시작 코드 생성 실패 — 생성기가 고칠 수 없는 파일이다.
-        coded = {m.seed_sql.path} if m.seed_sql is not None else set()
+        coded = code_written_paths(m)  # 코드가 쓰는 파일 전부 (시드·조절값·도우미·저장 확인 — #178)
         sized = [f for f in o.files if f.path not in coded]
         if len(o.files) > lim.max_files:
             out.append(
@@ -1127,8 +1144,9 @@ def _hidden_tables(
     return out
 
 
-# 그대로 두는 단언: null·형식 확인, 기대값을 Integer 로 맞춘 비교 (2026-11-07 배송 감사 숨은 테스트 `isEqualTo(((Number) id).intValue())` — 작은 id 라 동작)
-_NULL_CHECK = re.compile(r"\.is(?:Not)?Null\(\)|\.isInstanceOf\(|\.intValue\(\)")
+# 그대로 두는 단언: null·형식 확인. 기대값만 Integer 로 맞춘 비교(`.intValue()`)는 면제하지 않는다 — 큰 값(Long)에서 같은 오류이고 같은 문장의
+# 다른 필드 단언까지 면제됐다 (#178, 2026-11-07 배송 감사 '작은 id 라 동작'). 실제값을 캐스트한 꼴은 매니페스트 패턴에 맞지 않아 여기 오지 않는다
+_NULL_CHECK = re.compile(r"\.is(?:Not)?Null\(\)|\.isInstanceOf\(")
 
 
 def _raw_number_asserts(
@@ -1147,17 +1165,16 @@ def _raw_number_asserts(
         return []
     out: list[str] = []
     for f in files:
-        hits: list[str] = []
+        hits: list[tuple[str, str]] = []  # (단언 앞부분, 필드 — 매니페스트 패턴의 그룹 1)
         for pat in patterns:
             for m in re.finditer(pat, f.content):
                 end = f.content.find(";", m.end())
                 tail = f.content[m.end() : end if end >= 0 else None]
                 if m.group(1) in numeric and not _NULL_CHECK.search(tail):
-                    hits.append(m.group(0))
+                    hits.append((m.group(0), m.group(1)))
         if hits:
-            shown = "; ".join(dict.fromkeys(hits))
-            field = re.search(r'"(\w+)"', hits[0])
-            name = field.group(1) if field else "id"
+            shown = "; ".join(dict.fromkeys(h for h, _ in hits))
+            name = hits[0][1]
             out.append(
                 f"숨은 테스트 {f.path} 가 숫자 필드를 JSON Map 값 그대로 단언함: {shown} — JSON 숫자는 크기에 따라 "
                 f'Integer·Long 으로 읽혀 long 과 비교하면 모든 구현이 실패한다. ((Number) x.get("{name}")).longValue() 로 바꿔 비교한다'
@@ -1249,13 +1266,11 @@ def _reason_rules(
 _MUTATING_VAR = re.compile(r"\b(\w+)\s*=\s*(?:patch|post|put|delete)[A-Z]\w*\s*\(")
 _MUTATING_INLINE = re.compile(r"assertThat\(\s*(?:patch|post|put|delete)[A-Z]\w*\s*\(")
 _RESET = re.compile(r"GraderJdbcHarness\.reset\(\)")
-# 응답이 그 값(들)이어야 한다는 단언 — '성공 아님'(isNotEqualTo·isGreaterThanOrEqualTo…)은 그대로 둔다
-_STATUS_UPPER = re.compile(r"\.(?:isLessThan|isLessThanOrEqualTo|isBetween|isStrictlyBetween)\(")
+# 응답 코드 단언의 매처 — 계약이 선언한 5xx 와 같다(isEqualTo·isIn·isOneOf)만 둔다. 그 밖의 매처는 모두 단정 (#178: 위로 막힘·'성공이
+# 아님' 매처를 목록 둘로 따로 세던 것을 '허용 매처 밖이면 단정' 하나로)
 _STATUS_IS = re.compile(r"\.(?:isEqualTo|isIn|isOneOf)\(([^()]*)\)")
-# 값과 같다(_STATUS_IS)·위로 막힘(_STATUS_UPPER) 밖의 응답 코드 단언 — '성공이 아님'(isNotEqualTo·아래로 막힘·isNotIn)
-_STATUS_OTHER = re.compile(
-    r"\.(?:isNotEqualTo|isNotIn|isGreaterThan|isGreaterThanOrEqualTo|isNotBetween)\("
-)
+_MATCHER = re.compile(r"\.(is[A-Z]\w*|has[A-Z]\w*|matches|satisfies|isTrue|isFalse)\(")
+_DECLARED_MATCHERS = frozenset({"isEqualTo", "isIn", "isOneOf"})
 
 
 def _injected_status_asserts(
@@ -1289,7 +1304,8 @@ def _injected_status_asserts(
             if "statusCode()" not in stmt or not (
                 _MUTATING_INLINE.search(stmt)
                 or any(
-                    re.search(rf"assertThat\(\s*{re.escape(v)}\.statusCode\(\)\s*\)", stmt)
+                    # 응답 코드로 시작하는 단언 전부 — `assertThat(r.statusCode() < 500).isTrue()` 도 (#178: 예전 사례 꼴이 빠져 있었다)
+                    re.search(rf"assertThat\(\s*{re.escape(v)}\.statusCode\(\)", stmt)
                     for v in injected
                 )
             ):
@@ -1299,10 +1315,10 @@ def _injected_status_asserts(
                 {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))}
                 for mt in _STATUS_IS.finditer(stmt)
             ]
+            matchers = set(_MATCHER.findall(stmt))
             declared_only = (
                 bool(codes)
-                and not _STATUS_UPPER.search(stmt)
-                and not _STATUS_OTHER.search(stmt)
+                and matchers <= _DECLARED_MATCHERS
                 and all(c and c <= declared for c in codes)
             )
             if not declared_only:
@@ -1316,22 +1332,66 @@ def _injected_status_asserts(
     return out
 
 
+def _call_args(text: str, start: int) -> list[str]:
+    """`f(` 다음 위치에서 닫는 괄호까지 맨 바깥 쉼표로 나눈 인자들 (글자·괄호 안 쉼표는 나누지 않는다)."""
+    args, depth, cur, quote = [], 0, "", ""
+    for ch in text[start:]:
+        if quote:
+            cur += ch
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    return [*args, cur.strip()] if cur.strip() or args else []
+
+
 def _hand_built_keys(
     cases: Sequence[GeneratedFile], contract: TaskContract, label: str
 ) -> list[str]:
-    """도우미가 경로 키 값 함수(<필드>Of)를 주는데 테스트가 `"member-" + 행번호` 처럼 키 값을 직접 만듦 — 시드 값 형식을 짐작한다.
-    2026-11-09 v16-be2: 시드 'memberId-191', 테스트 "member-" + HC2_FIRST → 모든 구현에서 대상 없음."""
-    keys = [name for name, _, numeric in key_fields(contract) if not numeric]
+    """도우미가 경로 키 값 함수(<필드>Of)를 주는데 계약 API 호출의 그 경로 변수 인자를 글자로 직접 만듦 — 시드 값 형식을 짐작한다.
+    2026-11-09 v16-be2: 시드 'memberId-191', 테스트 "member-" + HC2_FIRST → 모든 구현에서 대상 없음.
+    #178: 예전에는 `"member-" +` 꼴만 잡아 `"member" + n`·`String.format("member-%d", n)` 은 지나갔다 — 모양 대신 자리로 본다
+    (키 필드 경로 변수 자리의 인자가 `<필드>Of(…)` 가 아니고 글자를 쓰면, 변수면 그 변수에 넣은 식을 한 번 따라가 본다)."""
+    keys = {name for name, _, numeric in key_fields(contract) if not numeric}
     if not keys:
         return []
-    rx = re.compile(r'"([A-Za-z][\w]*-)"\s*\+')
+    calls: list[tuple[str, list[tuple[int, str]]]] = []
+    for e, fn in api_functions(contract):
+        vars_ = re.findall(r"\{([A-Za-z_]\w*)\}", e.path)
+        slots = [(i, v) for i, v in enumerate(vars_) if v in keys]
+        if slots:
+            calls.append((fn, slots))
     out: list[str] = []
     for f in cases:
-        built = sorted({m.group(1) for m in rx.finditer(f.content)})
-        if built:
+        bad: list[str] = []
+        for fn, slots in calls:
+            for m in re.finditer(rf"(?<![\w.]){re.escape(fn)}\s*\(", f.content):
+                args = _call_args(f.content, m.end())
+                for i, v in slots:
+                    if i >= len(args):
+                        continue
+                    arg = args[i]
+                    if re.fullmatch(r"[A-Za-z_]\w*", arg):
+                        given = re.findall(rf"\b{re.escape(arg)}\s*=(?!=)\s*([^;]+);", f.content)
+                        arg = given[-1] if given else arg
+                    if f"{v}Of(" not in arg and ('"' in arg or "String.format" in arg):
+                        bad.append(f"{fn} 의 {v} 자리 `{' '.join(args[i].split())[:40]}`")
+        if bad:
             out.append(
-                f"{label} {f.path} 가 경로 키 값을 직접 만듦 ({', '.join(chr(34) + b + chr(34) + ' + …' for b in built)}) — "
-                f"도우미의 {', '.join(k + 'Of(행 번호)' for k in keys)} 를 쓴다 (시드 값 형식을 짐작하지 않는다)"
+                f"{label} {f.path} 가 경로 키 값을 직접 만듦 ({'; '.join(dict.fromkeys(bad))}) — "
+                f"도우미의 {', '.join(sorted(k + 'Of(행 번호)' for k in keys))} 를 쓴다 (시드 값 형식을 짐작하지 않는다)"
             )
     return out
 
@@ -1501,8 +1561,8 @@ def _hidden_cases(
     out += unknown_harness_members(cases, t.hidden / "harness", "숨은 테스트")
     out += unknown_py_harness_members(cases, t.hidden / "harness", "숨은 테스트")
     out += unknown_py_keywords(cases, t.hidden / "harness", helper, "숨은 테스트")
-    out += unrun_input_days(cases, "숨은 테스트")
-    out += future_input_days(cases, "숨은 테스트")
+    out += unrun_input_days(cases, contract, "숨은 테스트")
+    out += future_input_days(cases, contract, "숨은 테스트")
     out += unreadable_as_pass(cases, "숨은 테스트")
     out += guessed_names(cases, contract, "숨은 테스트")
     out += type_escapes(cases, "숨은 테스트")
@@ -1545,9 +1605,18 @@ def _hidden_cases(
     return [StaticProblem("gen_hidden", msg) for msg in out]
 
 
-_HELPER_CONST = re.compile(
-    r"\b(HC\d+(?:_[A-Z0-9]+)*_(?:FIRST|LAST|ROWS)|PUBLIC_[A-Z0-9_]+|TABLE_[A-Z0-9_]+|NEXT_(?:OK|BAD)_[A-Z0-9_]+)\b"
-)
+# 도우미 상수 이름의 가족 — 도우미가 실제로 낸 상수의 머리(HC·PUBLIC·TABLE·NEXT·HEADER·SETTING …)에서 뽑는다 (#178: 머리 넷을 손으로
+# 적어 둬 도우미가 새로 낸 HEADER_…·SETTING_… 짐작은 javac 까지 갔다)
+_HELPER_CONST_NAME = re.compile(r"^([A-Z]+)\d*_[A-Z0-9_]+$")
+
+
+def _const_families(known: set[str]) -> re.Pattern[str] | None:
+    heads = sorted({m.group(1) for k in known if (m := _HELPER_CONST_NAME.match(k))})
+    if not heads:
+        return None
+    return re.compile(rf"\b((?:{'|'.join(heads)})\d*_[A-Z0-9_]+)\b")
+
+
 _VERB_CALL = re.compile(r"(?<![\w.])((?:get|post|put|patch|delete)[A-Z]\w*)\s*\(")
 _OWN_METHOD = re.compile(r"[\w>\]]\s+(\w+)\s*\([^;{}]*\)\s*(?:throws\s+[\w., ]+)?\s*\{")
 _OWN_FIELD = re.compile(r"\b([A-Z][A-Z0-9_]+)\s*=")
@@ -1992,143 +2061,138 @@ _DAY = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
 _WRITERS = frozenset({"write_jsonl", "write_csv", "write_parquet", "write_text", "write_json"})
 
 
-def unrun_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+def date_options(contract: TaskContract | None) -> dict[str, set[str]]:
+    """명령 도우미 함수(run_…) → 날짜·날짜-시각 옵션 키워드 이름. 계약 형식·제약으로 정한다 (#178: 옵션 이름에 'date' 가 든 것만 봐
+    `day=`·`as_of=`·`run_at=` 은 실행 날짜로 보지 못했다). 계약이 없으면 비어 있다 — 실행 날짜를 알 수 없어 판정하지 않는다."""
+    out: dict[str, set[str]] = {}
+    for e in contract.endpoints if contract is not None else []:
+        if e.method:
+            continue
+        opts = {
+            py_ident(f.name) for f in [*e.request, *e.query] if time_kind(f) in ("date", "datetime")
+        }
+        if opts:
+            out[command_name(e.path)] = opts
+    return out
+
+
+@dataclass(frozen=True)
+class DayFlow:
+    """Python 테스트 함수 하나가 날짜 폴더에 입력을 쓰고(write) 그 날짜로 명령을 실행(run)한 순서 — 줄 번호 순."""
+
+    test: str
+    events: tuple[tuple[int, str, str], ...]  # (줄, write|run, 날짜)
+    unknown: bool  # 날짜·경로를 변수로 넘김 — 글자 그대로가 아니라 판정하지 않는다
+    looped: bool  # 반복문 안 — 줄 순서가 실행 순서가 아니다
+
+    def days(self, kind: str) -> set[str]:
+        return {day for _, k, day in self.events if k == kind}
+
+
+def _imported_commands(tree: ast.Module) -> dict[str, str]:
+    """`from …contract import run_x as y` → {y: run_x}."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").rsplit(".", 1)[-1] == "contract"
+        ):
+            out |= {
+                al.asname or al.name: al.name for al in node.names if al.name.startswith("run_")
+            }
+    return out
+
+
+def day_flows(f: GeneratedFile, options: dict[str, set[str]]) -> list[DayFlow]:
+    """파일의 테스트 함수마다 날짜 폴더 쓰기·실행 흐름. 쓰기는 하네스 쓰기 함수의 경로 글자에 든 `YYYY-MM-DD/`, 실행은 계약의 날짜 옵션에
+    넘긴 글자 날짜 (날짜-시각이면 앞 10자리)."""
+    if not f.path.endswith(".py"):
+        return []
+    try:
+        tree = ast.parse(f.content)
+    except SyntaxError:
+        return []
+    commands = {alias: name for alias, name in _imported_commands(tree).items() if name in options}
+    if not commands:
+        return []
+    flows: list[DayFlow] = []
+    for fn in tree.body:
+        if not (
+            isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name.startswith("test")
+        ):
+            continue
+        events: list[tuple[int, str, str]] = []
+        unknown = False
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _WRITERS and node.args:
+                a0 = node.args[0]
+                if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                    events += [
+                        (node.lineno, "write", m.group(1))
+                        for m in _DAY.finditer(a0.value)
+                        if f"{m.group(1)}/" in a0.value
+                    ]
+                else:
+                    unknown = True
+            elif isinstance(node.func, ast.Name) and node.func.id in commands:
+                dated = options[commands[node.func.id]]
+                for kw in node.keywords:
+                    if kw.arg is None:  # **옵션 — 무엇을 넘겼는지 모른다
+                        unknown = True
+                    elif kw.arg in dated:
+                        v = kw.value
+                        day = (
+                            _DAY.match(v.value)
+                            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                            else None
+                        )
+                        if day is None:
+                            unknown = True
+                        else:
+                            events.append((node.lineno, "run", day.group(1)))
+        looped = any(isinstance(n, (ast.For, ast.AsyncFor, ast.While)) for n in ast.walk(fn))
+        flows.append(DayFlow(fn.name, tuple(sorted(events)), unknown, looped))
+    return flows
+
+
+def unrun_input_days(
+    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
+) -> list[str]:
     """Python 테스트 함수가 날짜 폴더(`raw/2026-09-01/…`)에 입력을 쓰고 그 날짜로는 명령을 실행하지 않음 — 마지막 날짜로 한 번만 실행해 앞 날짜
     출력까지 기대하는 꼴. 받은 날짜마다 실행하는 정상 운영에서만 맞는 허용 설계('이번 폴더에 나온 날짜만 다시 계산')가 떨어진다.
     2026-11-09 데이터 알파 2~8회차 재검증: 손으로 쓴 허용 구현 두 가지로 돌려 보니 이 꼴의 케이스(hc3·hc4)가 7회 중 6회 나왔다.
-    날짜·경로가 변수로 만들어지는 함수는 보지 않는다 (글자 그대로인 것만)."""
+    날짜·경로가 변수로 만들어지는 함수는 보지 않는다 (글자 그대로인 것만). 반복문 안이어도 날짜 집합은 같으므로 본다."""
+    options = date_options(contract)
     out: list[str] = []
     for f in cases:
-        if not f.path.endswith(".py"):
-            continue
-        try:
-            tree = ast.parse(f.content)
-        except SyntaxError:
-            continue
-        commands: set[str] = set()
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.ImportFrom)
-                and (node.module or "").rsplit(".", 1)[-1] == "contract"
-            ):
-                commands |= {
-                    al.asname or al.name for al in node.names if al.name.startswith("run_")
-                }
-        if not commands:
-            continue
-        for fn in tree.body:
-            if not (
-                isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and fn.name.startswith("test")
-            ):
-                continue
-            written: set[str] = set()
-            ran: set[str] = set()
-            unknown = False
-            for node in ast.walk(fn):
-                if not isinstance(node, ast.Call):
-                    continue
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _WRITERS
-                    and node.args
-                ):
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        written |= {
-                            m.group(1)
-                            for m in _DAY.finditer(a0.value)
-                            if f"{m.group(1)}/" in a0.value
-                        }
-                    else:
-                        unknown = True
-                elif isinstance(node.func, ast.Name) and node.func.id in commands:
-                    for kw in node.keywords:
-                        v = kw.value
-                        if (
-                            isinstance(v, ast.Constant)
-                            and isinstance(v.value, str)
-                            and _DAY.fullmatch(v.value)
-                        ):
-                            ran.add(v.value)
-                        elif kw.arg and "date" in kw.arg and not isinstance(v, ast.Constant):
-                            unknown = True
-            missing = sorted(written - ran)
-            if ran and missing and not unknown:
+        for flow in day_flows(f, options):
+            ran, missing = flow.days("run"), sorted(flow.days("write") - flow.days("run"))
+            if ran and missing and not flow.unknown:
                 out.append(
-                    f"{label} {f.path} 의 {fn.name} 가 날짜 폴더 {', '.join(missing)} 에 입력을 쓰고 그 날짜로 실행하지 않음 (실행한 날짜: "
+                    f"{label} {f.path} 의 {flow.test} 가 날짜 폴더 {', '.join(missing)} 에 입력을 쓰고 그 날짜로 실행하지 않음 (실행한 날짜: "
                     f"{', '.join(sorted(ran))}) — 받은 날짜 순서대로 하루씩 실행한다. 마지막 날짜로 한 번만 실행해 앞 날짜 출력까지 기대하면 "
                     "'이번 폴더에 나온 날짜만 다시 계산'하는 허용 설계가 떨어진다"
                 )
     return out
 
 
-def future_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+def future_input_days(
+    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
+) -> list[str]:
     """Python 테스트 함수가 실행 날짜보다 **뒤** 날짜 폴더를 그 실행 전에 미리 씀 — 실제로는 아직 받지 않은 입력이라, 공개 계약에 없는 요구
     ('실행 날짜보다 뒤 폴더는 읽지 않는다')를 시험하게 된다. 2026-11-10 데이터 알파 10회차: hc1·hc2 가 9/2 폴더를 9/1 실행 전에 써 두어,
-    받은 폴더를 모두 읽는 허용 구현(손 구현으로 재현)이 떨어졌다. 줄 순서로 본다 — 날짜·경로가 변수인 함수는 보지 않는다."""
+    받은 폴더를 모두 읽는 허용 구현(손 구현으로 재현)이 떨어졌다. 줄 순서로 본다 — 날짜·경로가 변수이거나 반복문이 있는 함수는 보지 않는다."""
+    options = date_options(contract)
     out: list[str] = []
     for f in cases:
-        if not f.path.endswith(".py"):
-            continue
-        try:
-            tree = ast.parse(f.content)
-        except SyntaxError:
-            continue
-        commands: set[str] = set()
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.ImportFrom)
-                and (node.module or "").rsplit(".", 1)[-1] == "contract"
-            ):
-                commands |= {
-                    al.asname or al.name for al in node.names if al.name.startswith("run_")
-                }
-        if not commands:
-            continue
-        for fn in tree.body:
-            if not (
-                isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and fn.name.startswith("test")
-            ):
+        for flow in day_flows(f, options):
+            if flow.unknown or flow.looped:
                 continue
-            events: list[tuple[int, str, str]] = []  # (줄, write|run, 날짜)
-            unknown = False
-            for node in ast.walk(fn):
-                if not isinstance(node, ast.Call):
-                    continue
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _WRITERS
-                    and node.args
-                ):
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        events += [
-                            (node.lineno, "write", m.group(1))
-                            for m in _DAY.finditer(a0.value)
-                            if f"{m.group(1)}/" in a0.value
-                        ]
-                    else:
-                        unknown = True
-                elif isinstance(node.func, ast.Name) and node.func.id in commands:
-                    for kw in node.keywords:
-                        v = kw.value
-                        if (
-                            isinstance(v, ast.Constant)
-                            and isinstance(v.value, str)
-                            and _DAY.fullmatch(v.value)
-                        ):
-                            events.append((node.lineno, "run", v.value))
-                        elif kw.arg and "date" in kw.arg and not isinstance(v, ast.Constant):
-                            unknown = True
-            if unknown:
-                continue
-            if any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(fn)):
-                continue  # 반복문 안은 줄 순서가 실행 순서가 아니다
             written: set[str] = set()
             early: set[tuple[str, str]] = set()
-            for _, kind, day in sorted(events):
+            for _, kind, day in flow.events:
                 if kind == "write":
                     written.add(day)
                 else:
@@ -2136,7 +2200,7 @@ def future_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
             if early:
                 pairs = ", ".join(f"{w}(실행 {r} 전)" for w, r in sorted(early)[:4])
                 out.append(
-                    f"{label} {f.path} 의 {fn.name} 가 실행 날짜보다 뒤 날짜 폴더를 그 실행 전에 씀: {pairs} — 입력은 받은 순서대로, "
+                    f"{label} {f.path} 의 {flow.test} 가 실행 날짜보다 뒤 날짜 폴더를 그 실행 전에 씀: {pairs} — 입력은 받은 순서대로, "
                     "날짜 폴더는 그 날짜를 실행하기 직전에 쓴다. 미리 두면 공개 계약에 없는 '뒤 폴더는 읽지 않는다'를 시험하게 되어 "
                     "받은 폴더를 모두 읽는 허용 구현이 떨어진다"
                 )
@@ -2226,10 +2290,12 @@ def unknown_helper_names(
     ):  # 이름 꼴이 Java 기준 — TypeScript 도우미(contract.ts)의 없는 이름은 tsc 가 잡는다
         return []
     known = helper_names(helper)
+    families = _const_families(known)
     out: list[str] = []
     for f in cases:
         own = set(_OWN_METHOD.findall(f.content)) | set(_OWN_FIELD.findall(f.content))
-        used = set(_HELPER_CONST.findall(f.content)) | set(_VERB_CALL.findall(f.content))
+        consts = set(families.findall(f.content)) if families is not None else set()
+        used = consts | set(_VERB_CALL.findall(f.content))
         bad = sorted(u for u in used if u not in known and u not in own and u not in _JDK_VERB)
         if not bad:
             continue
@@ -2452,8 +2518,8 @@ def _public_cases(
     out += unknown_harness_members(cases, t.hidden / "harness", "공개 테스트")
     out += unknown_py_harness_members(cases, t.hidden / "harness", "공개 테스트")
     out += unknown_py_keywords(cases, t.hidden / "harness", helper, "공개 테스트")
-    out += unrun_input_days(cases, "공개 테스트")
-    out += future_input_days(cases, "공개 테스트")
+    out += unrun_input_days(cases, contract, "공개 테스트")
+    out += future_input_days(cases, contract, "공개 테스트")
     out += unreadable_as_pass(cases, "공개 테스트")
     out += guessed_names(cases, contract, "공개 테스트")
     out += type_escapes(cases, "공개 테스트")

@@ -445,7 +445,7 @@ def test_tests_that_skip_a_written_day_are_sent_back() -> None:
         "    assert run_pipeline_run(date='2026-09-02', raw_dir=ws.path('raw'), out=ws.path('out')).ok\n"
     )
     got = unrun_input_days(
-        [GeneratedFile(path="grading/cases/test_hc4.py", content=skip)], "숨은 테스트"
+        [GeneratedFile(path="grading/cases/test_hc4.py", content=skip)], _contract(), "숨은 테스트"
     )
     assert len(got) == 1 and "2026-09-01" in got[0] and "test_hc4_rerun" in got[0]
     daily = skip.replace(
@@ -454,13 +454,45 @@ def test_tests_that_skip_a_written_day_are_sent_back() -> None:
         "    assert run_pipeline_run(date='2026-09-02'",
     )
     assert (
-        unrun_input_days([GeneratedFile(path="grading/cases/test_hc4.py", content=daily)], "x")
+        unrun_input_days(
+            [GeneratedFile(path="grading/cases/test_hc4.py", content=daily)], _contract(), "x"
+        )
         == []
     )
     looped = skip.replace("'raw/2026-09-01/batch-0001.csv'", "f'raw/{day}/batch-0001.csv'")
     assert (
-        unrun_input_days([GeneratedFile(path="t.py", content=looped)], "x") == []
+        unrun_input_days([GeneratedFile(path="t.py", content=looped)], _contract(), "x") == []
     )  # 변수 경로는 보지 않음
+
+
+def test_run_day_comes_from_contract_date_options() -> None:
+    """#178: 실행 날짜는 옵션 이름에 'date' 가 들었는가가 아니라 계약 형식(날짜·날짜-시각)으로 정한다 — `as_of=` 도 실행 날짜다."""
+    c = _contract()
+    e = c.endpoints[0]
+    as_of = e.model_copy(
+        update={
+            "request": [
+                f.model_copy(update={"name": "as_of"}) if f.name == "date" else f for f in e.request
+            ]
+        }
+    )
+    renamed = c.model_copy(update={"endpoints": [as_of]})
+    skip = (
+        "from cases.contract import run_pipeline_run\n\n\n"
+        "def test_hc4(ws) -> None:\n"
+        "    ws.write_csv('raw/2026-09-01/batch-0001.csv', [{'a': 1}])\n"
+        "    ws.write_csv('raw/2026-09-02/batch-0001.csv', [{'a': 2}])\n"
+        "    assert run_pipeline_run(as_of='2026-09-02', raw_dir=ws.path('raw'), out=ws.path('out')).ok\n"
+    )
+    case = [GeneratedFile(path="t.py", content=skip)]
+    got = unrun_input_days(case, renamed, "x")
+    assert len(got) == 1 and "2026-09-01" in got[0]
+    # 날짜 옵션이 아닌 칸의 글자 날짜(예: 출력 폴더 이름)는 실행 날짜가 아니다
+    other = skip.replace("out=ws.path('out')", "out='2026-09-01'")
+    assert len(unrun_input_days([GeneratedFile(path="t.py", content=other)], renamed, "x")) == 1
+    # 날짜 옵션에 변수를 넘기면 판정하지 않는다
+    var = skip.replace("as_of='2026-09-02'", "as_of=day")
+    assert unrun_input_days([GeneratedFile(path="t.py", content=var)], renamed, "x") == []
 
 
 def test_code_pitfall_unless_and_copy_parameter_order() -> None:
@@ -538,7 +570,7 @@ def test_tests_must_not_write_later_day_folders_before_running() -> None:
         "    assert run_pipeline_run(date='2026-09-02', raw_dir=ws.path('raw'), out=ws.path('out')).ok\n"
     )
     got = future_input_days(
-        [GeneratedFile(path="grading/cases/test_hc2.py", content=early)], "숨은 테스트"
+        [GeneratedFile(path="grading/cases/test_hc2.py", content=early)], _contract(), "숨은 테스트"
     )
     assert len(got) == 1 and "2026-09-02(실행 2026-09-01 전)" in got[0]
     in_order = early.replace(
@@ -548,7 +580,7 @@ def test_tests_must_not_write_later_day_folders_before_running() -> None:
         "    assert run_pipeline_run(date='2026-09-02'",
         "    ws.write_csv('raw/2026-09-02/batch-01.csv', [{'a': 1}])\n    assert run_pipeline_run(date='2026-09-02'",
     )
-    assert future_input_days([GeneratedFile(path="t.py", content=in_order)], "x") == []
+    assert future_input_days([GeneratedFile(path="t.py", content=in_order)], _contract(), "x") == []
 
 
 def test_read_csv_arguments_in_copy_options_are_caught() -> None:

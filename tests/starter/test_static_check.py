@@ -123,7 +123,9 @@ def test_paths_and_locked_harness_are_assigned_to_their_generator() -> None:
             ref_naive=[_f("src/test/java/com/example/service/order/OrderTest.java", "x")],
         )
     )
-    assert _has(res.for_target("gen_starter"), "build.gradle", "쓸 수 없는 경로")
+    assert _has(
+        res.for_target("gen_starter"), "build.gradle", "잠긴 파일"
+    )  # 막힌 까닭마다 안내 (#178)
     assert _has(res.for_target("gen_starter"), "Sneaky.java")
     assert _has(res.for_target("gen_hidden"), "GraderSupport.java", "잠긴 채점 하네스")
     assert _has(res.for_target("gen_naive"), "ref_naive(naive-all)", "OrderTest.java")
@@ -137,6 +139,32 @@ def test_limits() -> None:
     # 코드가 계약에서 쓰는 시드 파일(data.sql)은 크기 상한에서 뺀다 — 2026-11-11 N+1 백엔드: 시드 2천여 행으로 100000B 초과
     seed = [_f("src/main/resources/data.sql", "INSERT INTO t VALUES (1);\n" * 5000)]
     assert not _has(_run(_overlays(starter=seed)).for_target("gen_starter"), "크기 상한")
+    # 코드가 쓰는 다른 파일(조절값·계약 도우미)도 같다 — 생성기가 고칠 수 없다 (#178)
+    m = JAVA.manifest
+    assert m.hidden_layout is not None and m.hidden_helper is not None
+    coded = [
+        _f(m.hidden_layout.params, "x=1\n" * 30_000),
+        _f(m.hidden_helper.path, "// x\n" * 30_000),
+        _f(f"{CASES}/OrderStatusBurstTest.java", HC1),
+    ]
+    assert not _has(_run(_overlays(hidden=coded)).for_target("gen_hidden"), "크기 상한")
+
+
+def test_data_files_in_blocked_paths_get_the_same_hint() -> None:
+    """#178: 데이터 파일 안내가 `test/resources` 꼴에만 붙었다 — 막힌 경로면 까닭(잠김·채점 자리·쓸 수 있는 자리 밖)과 함께 모두 안내한다."""
+    hint = "테스트용 데이터·설정 파일을 따로 두지 않는다"
+    starter = _run(_overlays(starter=[_f("src/test/resources/seed-test.sql", "INSERT …;")]))
+    assert _has(starter.for_target("gen_starter"), "seed-test.sql", "fill_slots", hint)
+    hidden = _run(
+        _overlays(
+            hidden=[
+                _f(f"{CASES}/OrderStatusBurstTest.java", HC1),
+                render_params(PLAN, JAVA.manifest),
+                _f("src/main/resources/test-data.sql", "INSERT …;"),
+            ]
+        )
+    )
+    assert _has(hidden.for_target("gen_hidden"), "test-data.sql", hint)
 
 
 def test_hidden_terms_in_public_code_names_and_comments() -> None:
@@ -332,9 +360,15 @@ def test_numeric_fields_are_not_asserted_as_raw_json_values() -> None:
     msgs = [m for m in hidden(raw) if "JSON Map 값 그대로" in m]
     assert len(msgs) == 1 and 'assertThat(row.get("orderId"))' in msgs[0]
     assert '((Number) x.get("orderId")).longValue()' in msgs[0]
-    # 캐스트한 꼴·null 확인·Integer 로 맞춘 비교·문자열 필드만 있으면 통과
-    ok = raw.replace(
+    # 기대값만 Integer 로 맞춘 비교(.intValue())도 면제하지 않는다 — 큰 값(Long)에서 같은 오류 (#178)
+    only_int = raw.replace(
         '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isEqualTo(1L);\n',
+        "",
+    )
+    assert [m for m in hidden(only_int) if "JSON Map 값 그대로" in m]
+    # 캐스트한 꼴·null 확인·문자열 필드만 있으면 통과
+    ok = only_int.replace(
+        '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isEqualTo(((Number) id).intValue());\n',
         "",
     )
     assert not [m for m in hidden(ok) if "JSON Map 값 그대로" in m]
@@ -624,6 +658,9 @@ def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
         ".isGreaterThanOrEqualTo(400)",
     ):
         assert _has(msgs(inject, on_status(pinned)), "주입한 요청의 응답 코드를 단정"), pinned
+    # #178: 원래 사례 꼴(비교식을 단언)도 응답 코드 단정 — 예전엔 `assertThat(r.statusCode())` 로 닫힌 꼴만 봐 지나갔다
+    compared = "        org.assertj.core.api.Assertions.assertThat(r.statusCode() < 500).isTrue();"
+    assert _has(msgs(inject, compared), "주입한 요청의 응답 코드를 단정")
     assert not _has(msgs(inject, by_record), "응답 코드를 단정")
     # 주입이 없는 케이스의 상태 단언은 그대로
     assert not _has(msgs("", on_status(".isEqualTo(200)")), "응답 코드를 단정")

@@ -43,8 +43,7 @@ from task_spec.schemas import (
 from task_spec.schemas.build import HiddenPlan, RepairRecord
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
-from task_spec.starter.hidden_helpers import render_persistence_check
-from task_spec.starter.render import render_params
+from task_spec.starter.hidden_helpers import code_written_paths
 from task_spec.starter.repair import (
     COMPILE_RETRIES,
     STARTER,
@@ -139,12 +138,8 @@ class CompileFix:
 
 
 def _code_written(b: BuildInputs) -> set[str]:
-    """코드가 쓴 테스트 파일 — 생성기를 다시 불러도 바뀌지 않는다 (조절값 파일·도우미·저장 확인)."""
-    m = b.template.manifest
-    paths = {render_params(b.plan, m).path}
-    paths |= {h.path for h in (m.hidden_helper, m.public_helper) if h is not None}
-    check = render_persistence_check(b.contract, m)
-    return paths | ({check.path} if check is not None else set())
+    """코드가 쓴 파일 — 생성기를 다시 불러도 바뀌지 않는다 (조절값 파일·도우미·저장 확인·시드). 크기 상한과 같은 집합 (#178)."""
+    return code_written_paths(b.template.manifest)
 
 
 TESTS_NOTE = (

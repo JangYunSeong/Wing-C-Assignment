@@ -17,6 +17,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -206,13 +207,22 @@ def _example(pattern: str) -> str:
     return pattern.replace("**/", "").replace("**", "x").replace("*", "x").replace("?", "x")
 
 
+Blocked = Literal["locked", "reserved", "outside"]
+
+
+def blocked_reason(m: TemplateManifest, kind: SlotKind, path: str) -> Blocked | None:
+    """오버레이 kind 가 이 경로를 쓸 수 없는 까닭 — 잠긴 파일(locked) · 채점 자리(hidden 밖에서 reserved) · 쓸 수 있는 자리 밖
+    (fill_slots 밖). 쓸 수 있으면 None (#178: 정적 검사가 까닭마다 '왜 막혔고 어디에 둘지'를 알린다)."""
+    if path in m.locked or glob_match(path, m.locked):
+        return "locked"
+    if kind != "hidden" and glob_match(path, m.reserved):
+        return "reserved"
+    return None if glob_match(path, m.fill_slots.get(kind, [])) else "outside"
+
+
 def slot_allows(m: TemplateManifest, kind: SlotKind, path: str) -> bool:
     """오버레이 kind 가 이 경로를 쓸 수 있나 — fill_slots 안, locked 밖, hidden 이 아니면 reserved 밖."""
-    if path in m.locked or glob_match(path, m.locked):
-        return False
-    if kind != "hidden" and glob_match(path, m.reserved):
-        return False
-    return glob_match(path, m.fill_slots.get(kind, []))
+    return blocked_reason(m, kind, path) is None
 
 
 @dataclass(frozen=True)

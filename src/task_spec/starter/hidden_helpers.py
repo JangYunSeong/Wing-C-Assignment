@@ -612,6 +612,26 @@ def render_contract_case(
     return GeneratedFile(path=rule.path, content="\n".join(lines))
 
 
+def persistence_check_path(public_helper_path: str) -> str:
+    """저장 확인 테스트 경로 — 공개 도우미 옆 (Java)."""
+    return public_helper_path.rsplit("/", 1)[0] + "/PersistenceCheckTest.java"
+
+
+def code_written_paths(m: TemplateManifest) -> set[str]:
+    """코드가 계약·계획에서 결정적으로 쓰는 파일 — 시드 SQL·조절값 파일·계약 도우미·저장 확인. 생성기가 고칠 수 없으므로 LLM 출력
+    크기 상한(static_check)·생성기 컴파일 오류 배정(build)에서 뺀다 (#178: 크기 상한이 시드 파일 하나만 빼, 코드가 렌더한 조절값·도우미·
+    저장 확인 파일이 커지면 생성기가 고칠 수 없는 문제로 걸렸다). 매니페스트로 정해진다 — 계약에 따라 없는 파일도 있다."""
+    paths: set[str] = set()
+    if m.seed_sql is not None:
+        paths.add(m.seed_sql.path)
+    if m.hidden_layout is not None:
+        paths.add(m.hidden_layout.params)
+    paths |= {h.path for h in (m.hidden_helper, m.public_helper) if h is not None}
+    if m.public_helper is not None and is_java(m):
+        paths.add(persistence_check_path(m.public_helper.path))
+    return paths
+
+
 def render_persistence_check(
     contract: TaskContract, manifest: TemplateManifest
 ) -> GeneratedFile | None:
@@ -634,7 +654,7 @@ def render_persistence_check(
     ]
     if not targets:
         return None
-    path = rule.path.rsplit("/", 1)[0] + "/PersistenceCheckTest.java"
+    path = persistence_check_path(rule.path)
     names = ", ".join(f'"{t}"' for t in targets)
     src = f"""package {rule.package};
 

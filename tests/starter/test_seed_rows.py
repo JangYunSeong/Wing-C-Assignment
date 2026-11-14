@@ -460,11 +460,26 @@ def test_helpers_give_path_key_values_and_hand_built_keys_are_flagged() -> None:
     helper = render_contract_case(contract, plan, java)
     assert helper is not None and "protected static String orderNoOf(long row)" in helper.content
     assert '"orderNo-" + row' in helper.content  # seed_sql.default_value 와 같은 형식
-    built = GeneratedFile(path="src/test/java/X.java", content='String no = "order-" + HC1_FIRST;')
-    used = GeneratedFile(path="src/test/java/Y.java", content="String no = orderNoOf(HC1_FIRST);")
-    assert _hand_built_keys([built], contract, "숨은 테스트") and not _hand_built_keys(
-        [used], contract, "숨은 테스트"
-    )
+    from task_spec.starter.hidden_helpers import api_functions
+
+    fn = api_functions(contract)[0][1]
+
+    def flagged(body: str) -> bool:
+        return bool(
+            _hand_built_keys(
+                [GeneratedFile(path="src/test/java/X.java", content=body)], contract, "숨은 테스트"
+            )
+        )
+
+    # #178: 모양("order-" +)이 아니라 자리(경로 변수 orderNo 인자)로 본다 — 붙임표 없는 이름·String.format·변수 거쳐 넘김도 잡는다
+    assert flagged(f'String no = "order-" + HC1_FIRST;\n{fn}(7, no);')
+    assert flagged(f'{fn}(7, "order" + HC1_FIRST);')
+    assert flagged(f'{fn}(7, String.format("order-%d", HC1_FIRST));')
+    assert not flagged(f"{fn}(7, orderNoOf(HC1_FIRST));")
+    assert not flagged(f"String no = orderNoOf(HC1_FIRST);\n{fn}(7, no);")
+    # 숫자 경로 변수(shopId) 자리의 글자는 키 값 짐작이 아니다 · 호출에 넘기지 않은 글자는 보지 않는다
+    assert not flagged(f'{fn}("7", orderNoOf(HC1_FIRST));')
+    assert not flagged('String label = "order-" + HC1_FIRST;')
 
 
 def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
