@@ -134,6 +134,13 @@ def is_java(m: TemplateManifest) -> bool:
     return m.stack is not None and m.stack.language.lower() == "java"
 
 
+def supports_settings(m: TemplateManifest) -> bool:
+    """계약 settings(구현이 읽는 설정 키 — 채점 테스트가 덮어 결과가 따르는지 본다)를 쓸 수 있는 템플릿. 지금은 스프링(Java)만 —
+    테스트가 @DynamicPropertySource 로 키를 덮는다 (#161). 계약 검사와 계약 생성 입력(plan_contract 의 템플릿 정보)이 이 판정 하나를 쓴다
+    (#185: 프롬프트에 박혀 있던 'Java 템플릿일 때만'을 코드 입력으로). 매니페스트가 선언하게 되면(#176) 여기만 바꾼다."""
+    return is_java(m)
+
+
 def is_python(m: TemplateManifest) -> bool:
     """Python 템플릿(데이터 엔지니어 — contract.py·Python 검증기·Python 이미지)인가."""
     return m.stack is not None and m.stack.language.lower() == "python"

@@ -153,10 +153,16 @@ def setting_const(key: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", key).strip("_").upper()
 
 
+SETTING_PROBE = 3  # 테스트가 설정을 덮을 값 — 기본값과 다르고 작은 값
+SETTING_PROBE_ALT = 2  # 기본값이 SETTING_PROBE 와 같을 때
+# 설정을 따르는 조건의 시드 행 수 하한 — 덮은 값보다 많아야 '정확히 그만큼'을 가른다 (계약 생성 입력이 이 값을 그대로 싣는다, #185)
+SETTING_MIN_ROWS = max(SETTING_PROBE, SETTING_PROBE_ALT) + 1
+
+
 def setting_probe(default: int) -> int:
     """테스트가 설정을 덮을 값 — 기본값과 다르고 작은 값 (시드에 그 조건의 행이 이보다 많으면 '정확히 이만큼'을 가른다, #161).
     값을 코드에 박은 구현·제한이 없는 구현이 둘 다 다른 개수를 돌려준다."""
-    return 3 if default != 3 else 2
+    return SETTING_PROBE if default != SETTING_PROBE else SETTING_PROBE_ALT
 
 
 def _setting_lines(contract: TaskContract) -> list[str]:

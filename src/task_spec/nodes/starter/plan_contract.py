@@ -50,9 +50,10 @@ from task_spec.starter.contract import (
     timed_hints,
     unevidenced,
 )
+from task_spec.starter.hidden_helpers import SETTING_MIN_ROWS, SETTING_PROBE, SETTING_PROBE_ALT
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
-from task_spec.starter.templates import Template, restrict_reasons
+from task_spec.starter.templates import Template, restrict_reasons, supports_settings
 
 TASK = "plan_contract"
 NONE = "(없음)"
@@ -363,6 +364,21 @@ def fit_material_params(
     ]
 
 
+def settings_text(m: TemplateManifest) -> str:
+    """템플릿 정보의 설정 칸 줄 — 쓸 수 있는지(templates.supports_settings)·키 형식·그 조건의 시드 행 수(hidden_helpers 상수)를 코드가.
+    #185: 프롬프트가 'Java 템플릿일 때만'·'4행 이상'을 글로 박아, 덮는 값이 바뀌면 조용히 어긋났다."""
+    if not supports_settings(m):
+        return (
+            "\n- 설정 칸(settings): 이 템플릿은 쓰지 않는다 — `settings: []` 로 두고, '설정에 따라' 정해지는 값도 계약"
+            "(응답 설명·명령 옵션)에 적는다"
+        )
+    return (
+        "\n- 설정 칸(settings): 쓸 수 있다 — `key` 는 스프링 속성 키(소문자·점·하이픈, 예 `marketplace.listing.page-size`). "
+        f"그 설정을 따르는 조건의 시드 행은 {SETTING_MIN_ROWS}행 이상 (채점 테스트가 설정을 {SETTING_PROBE}"
+        f"(기본값이 {SETTING_PROBE}이면 {SETTING_PROBE_ALT})로 덮어 결과가 정확히 그만큼인지 본다)"
+    )
+
+
 def plan_input(
     task: TaskItem, template: Template, note: str | None = None, seed: FeatureSeed | None = None
 ) -> PlanContractInputV3:
@@ -382,6 +398,7 @@ def plan_input(
             f"\n- 필드 이름(엔티티 필드·요청 필드·옵션 모두)은 {field_style(rx.field)}"
             + (f" · 화면 test id {rx.test_id}" if "ui" in m.interfaces else "")
             + "".join(f"\n- {g}" for g in m.contract_guide)
+            + settings_text(m)
         ),
         harness_params=params or NONE,
         failure_reasons=reasons or NONE,

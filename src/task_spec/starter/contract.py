@@ -47,7 +47,7 @@ from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import header_problems
 from task_spec.starter.seed_rows import case_rows_problems, row_use_problems, seed_problems
 from task_spec.starter.state_rule import legacy_rule, state_problems
-from task_spec.starter.templates import glob_match, is_java
+from task_spec.starter.templates import glob_match, supports_settings
 
 
 @dataclass(frozen=True)
@@ -1023,7 +1023,7 @@ def _naming(
             f"인터페이스 {contract.interface_kind} 를 템플릿 {manifest.ref} 이 지원하지 않음 "
             f"(지원: {', '.join(manifest.interfaces)})"
         )
-    if contract.settings and not is_java(manifest):  # 설정 덮어쓰기는 스프링 속성 — 2026-11-13 #161
+    if contract.settings and not supports_settings(manifest):  # 설정 덮어쓰기 — 2026-11-13 #161
         problems.append(
             f"settings 는 스프링 템플릿에서만 쓴다 (템플릿 {manifest.ref}) — 설정 대신 명령 옵션·상수로 적는다"
         )
