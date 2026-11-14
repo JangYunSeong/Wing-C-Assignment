@@ -51,7 +51,7 @@ from task_spec.starter.contract import (
 )
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
 from task_spec.starter.state_rule import fit_state
-from task_spec.starter.templates import Template
+from task_spec.starter.templates import Template, restrict_reasons
 
 TASK = "plan_contract"
 NONE = "(없음)"
@@ -104,7 +104,12 @@ def for_material(template: Template, seed: FeatureSeed | None) -> Template:
     인용으로 값을 확인한다. 재료가 harness 를 적지 않으면(None) 템플릿 그대로 (예전과 같음).
     2026-11-10 nplus1-d: query_delay_ms·request_timeout_s 가 템플릿에서 안 보이는 값이라 명세의 '쿼리당 11ms·응답 한도 1초' 대신
     하네스 기본값(20ms·30초)이 들어가, 지연 로딩 흔한 구현(200건 ≈ 8초)도 hc1 을 통과했다."""
-    if seed is None or seed.harness is None:
+    if seed is None:
+        return template
+    template = restrict_reasons(
+        template, seed.reasons
+    )  # 사유도 재료가 적은 것만 — 빌드(BuildInputs)와 같은 목록
+    if seed.harness is None:
         return template
     need = set(seed.harness)
     notes = dict(seed.harness_notes)

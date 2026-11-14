@@ -1515,7 +1515,12 @@ def _hidden_cases(
         out += _raw_number_asserts(cases, rules.raw_number_asserts, contract)
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
-        out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
+        # 빌드의 템플릿은 재료가 적은 사유로 좁혀져 있다 (BuildInputs — templates.restrict_reasons)
+        out.append(
+            f"숨은 테스트의 실패 사유 코드가 쓸 수 있는 목록 밖: {', '.join(bad_codes)} "
+            f"(쓸 수 있는 것: {', '.join(sorted(m.reason_codes)) or '없음'} — 이 숨은 요구의 사유. "
+            "목록 밖의 실패(예: 이 요구와 무관한 5xx·시간 초과)를 확인하는 단언에는 사유를 붙이지 않는다)"
+        )
     planned = {i for i in plan_ids if only is None or i in only}
     missing = sorted(planned - set(seen_ids))
     extra = sorted(set(seen_ids) - plan_ids)

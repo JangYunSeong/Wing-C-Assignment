@@ -67,7 +67,7 @@ from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.skeleton import render_skeleton
 from task_spec.starter.static_check import KIND_TARGET, Overlay, static_check
-from task_spec.starter.templates import Template, is_java
+from task_spec.starter.templates import Template, is_java, restrict_reasons
 from task_spec.starter.traps import TrapSpec, TrapTarget, build_traps
 from task_spec.starter.ts_helpers import (
     ensure_test_imports,
@@ -603,6 +603,11 @@ class BuildInputs:
     template: Template
     seed: FeatureSeed | None = None
     avoid_terms: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # 재료가 사유를 적었으면 빌드의 모든 생성기 입력·정적 검사가 그 사유 목록만 본다 (계약 단계 plan_contract.for_material 과 같은 목록)
+        if self.seed is not None:
+            object.__setattr__(self, "template", restrict_reasons(self.template, self.seed.reasons))
 
     def check(
         self,

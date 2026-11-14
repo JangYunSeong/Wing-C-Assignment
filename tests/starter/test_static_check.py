@@ -757,3 +757,37 @@ def test_path_problem_names_the_allowed_slots_and_test_data_alternative() -> Non
     assert "시드의 테스트 몫 행" in p.message
     other = Overlay(kind="starter", files=(GeneratedFile(path="build.gradle", content="x"),))
     assert all("시드의 테스트 몫 행" not in x.message for x in _paths(other, JAVA))
+
+
+def test_hidden_reason_outside_material_list_is_reasked() -> None:
+    """재료가 사유를 적으면 빌드의 템플릿도 그 목록만 (BuildInputs — restrict_reasons) — 숨은 테스트가 목록 밖 사유를 붙이면 재요청.
+    2026-11-13 갱신 손실 알파: '시간 초과·5xx 수' 확인에 재료에 없는 pool_acquire_timeout 을 붙여 500 이 '풀 대기 초과'로 채점됐다."""
+    from task_spec.nodes.starter.generate import BuildInputs, hidden_input
+    from task_spec.starter.templates import restrict_reasons
+
+    seed = BACKEND_SEED.model_copy(update={"reasons": ["lost_update", "server_error"]})
+    b = BuildInputs(
+        task=_task(), contract=_contract_with_list(), plan=PLAN, template=JAVA, seed=seed
+    )
+    assert b.template.manifest.reason_codes == {"lost_update", "server_error"}
+    assert restrict_reasons(b.template, seed.reasons) is b.template  # 몇 번 불러도 같다
+    shown = hidden_input(b.task, b.contract, b.plan, b.template).failure_reasons
+    assert (
+        "server_error" in shown and "pool_acquire_timeout" not in shown
+    )  # 생성기 입력도 같은 목록
+    res = static_check(
+        _overlays(),
+        template=b.template,
+        plan=PLAN,
+        spec=SpecView.from_task(_task()),
+        seed=seed,
+        avoid_terms=("우아한형제들", "hibernate_sequence"),
+    )
+    assert _has(
+        res.for_target("gen_hidden"),
+        "쓸 수 있는 목록 밖: pool_acquire_timeout",
+        "lost_update, server_error",
+    )
+    assert not _has(
+        _run().for_target("gen_hidden"), "목록 밖"
+    )  # 재료가 사유를 적지 않으면 템플릿 목록 전체

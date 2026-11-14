@@ -324,9 +324,17 @@ def test_material_decides_required_harness_params_and_fk_targets_use_names() -> 
     seed = FeatureSeed.model_validate(raw["feature"])
     assert seed.harness == []
     assert not [p for p in for_material(t, seed).manifest.harness_params if p.required]
+    unlisted = for_material(t, seed.model_copy(update={"harness": None}))
     assert (
-        for_material(t, seed.model_copy(update={"harness": None})) is t
-    )  # 적지 않으면 템플릿 그대로
+        unlisted.manifest.harness_params == t.manifest.harness_params
+    )  # 조절값을 적지 않으면 템플릿 그대로
+    # 사유는 재료가 적은 것만 — 빌드(BuildInputs)와 같은 목록 (2026-11-13 숨은 테스트가 재료에 없는 pool_acquire_timeout 을 붙임)
+    assert (
+        unlisted.manifest.reason_codes
+        == set(seed.reasons)
+        == {"duplicate_record", "record_mismatch"}
+    )
+    assert for_material(t, seed.model_copy(update={"harness": None, "reasons": []})) is t
     timed = for_material(t, seed.model_copy(update={"harness": ["query_delay_ms"]}))
     param = timed.manifest.param("query_delay_ms")
     assert (

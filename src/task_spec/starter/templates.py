@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -81,6 +82,23 @@ class Template:
         if not base.is_dir():
             return []
         return sorted(p.relative_to(base).as_posix() for p in base.rglob("*") if p.is_file())
+
+
+def restrict_reasons(template: Template, codes: Collection[str]) -> Template:
+    """실패 사유 목록을 codes 로 좁힌 템플릿 (codes 가 비면 그대로). 몇 번 불러도 같다.
+
+    재료가 숨은 요구의 사유(FeatureSeed.reasons)를 적으면 계약 입력·검사만 그 목록을 보고, 숨은 테스트 생성기 입력과 정적 검사는
+    템플릿 목록 전체를 봤다 — 2026-11-13 갱신 손실 알파(kakaobank_2026#003): 숨은 테스트가 '시간 초과·5xx 수' 확인에 재료에 없는
+    pool_acquire_timeout 을 붙여, 충돌을 500 으로 돌려준 구현이 '풀 대기 초과'로 채점됐다 (재시도 중복 알파도 같은 표시)."""
+    if not codes:
+        return template
+    allowed = set(codes)
+    kept = [r for r in template.manifest.failure_reasons if r.code in allowed]
+    if len(kept) == len(template.manifest.failure_reasons):
+        return template
+    return replace(
+        template, manifest=template.manifest.model_copy(update={"failure_reasons": kept})
+    )
 
 
 def current_version(template_id: str, root: Path = TEMPLATES_ROOT) -> int:
