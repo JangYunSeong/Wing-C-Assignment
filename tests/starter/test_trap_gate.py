@@ -305,10 +305,42 @@ def test_only_assertions_on_the_designs_cases_count_as_caught() -> None:
 
 
 async def test_a_design_whose_traps_are_all_invalid_is_flagged() -> None:
-    llm, _ = _llm()
-    out = await _build(TrapVerifier("HARNESS_ERR"), llm)
+    llm, backend = _llm()
+    verifier = TrapVerifier("HARNESS_ERR")
+    out = await _build(verifier, llm)
     assert out.status == "review" and [r.verdict for r in out.traps] == ["invalid"]
     assert any("모두 무효라 시험하지 못함" in f for f in out.review_flags)
+    # 무효 이유를 붙여 한 번만 다시 만든다 (그 구현이 바뀔 때까지)
+    assert backend.calls.count("gen_trap") == 2 and len(verifier.trap_calls) == 2
+
+
+async def test_an_invalid_trap_is_remade_with_the_reason() -> None:
+    """2026-11-13 풀 고갈 알파: 함정 변형이 공개 테스트까지 깨 시험하지 못함 — 무효 이유를 붙여 다시 만든 변형으로 시험한다."""
+    llm, backend = _llm()
+    verifier = TrapVerifier("HARNESS_ERR", "ASSERT")
+    out = await _build(verifier, llm)
+    assert [r.verdict for r in out.traps] == ["caught"], out.traps
+    assert not any("모두 무효" in f for f in out.review_flags)
+    notes = [u for name, u in backend.users if name == "gen_trap"]
+    assert len(notes) == 2 and "앞 답의 변형을 시험하지 못했다" in notes[1]
+    assert "하네스 오류" in notes[1]  # 무효 이유를 그대로
+
+
+async def test_a_dropped_trap_is_asked_again_with_the_reason() -> None:
+    """2026-11-13 알파 4건 중 2건: 함정 변형이 33·40줄로 상한에 걸려 버려짐 — 상한은 두고 버린 이유를 붙여 한 번 더 묻는다."""
+    stray = _trapped(("다른 파일에 함정", [(f"{PKG}/order/Nope.java", TRAPPED)]))
+    llm, backend = _llm(
+        gen_trap=[stray, _trapped(("조회한 뒤 없으면 저장", [(SVC_PATH, TRAPPED)]))]
+    )
+    out = await _build(TrapVerifier("ASSERT"), llm)
+    assert [r.verdict for r in out.traps] == ["caught"], out.traps
+    notes = [u for name, u in backend.users if name == "gen_trap"]
+    assert (
+        len(notes) == 2
+        and "앞 답의 변형을 쓰지 못했다" in notes[1]
+        and "구현에 없는 파일" in notes[1]
+    )
+    assert any("구현에 없는 파일" in x for x in out.trap_dropped)  # 첫 답을 버린 이유도 남긴다
 
 
 async def test_a_trap_without_its_cases_is_flagged_not_repaired() -> None:

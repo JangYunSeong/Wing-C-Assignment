@@ -22,6 +22,7 @@ from task_spec.llm import LLMClient
 from task_spec.nodes.starter.generate import (
     BuildInputs,
     GenResult,
+    TrapGen,
     case_owner,
     gen_accepted,
     gen_hidden,
@@ -55,6 +56,9 @@ from task_spec.starter.traps import (
 from task_spec.starter.traps import (
     TrapGate,
     TrapResult,
+    TrapSpec,
+    dropped_note,
+    invalid_note,
     judge_traps,
     trap_note,
     trap_targets,
@@ -540,10 +544,8 @@ async def _trap_gate(
         return plan
     starter = out.overlays[STARTER]
     taken = {s.label for vs in gate.variants.values() for _, s in vs}
-    for label, design in built.items():
-        digest = _overlay_digest(starter, design)
-        if gate.digests.get(label) == digest:
-            continue
+
+    async def make(label: str, note: str | None) -> TrapGen:
         for _, s in gate.variants.get(label, []):
             taken.discard(s.label)
         made = await gen_traps(
@@ -551,45 +553,77 @@ async def _trap_gate(
             b.contract,
             b.template,
             starter,
-            design,
+            built[label],
             targets[label],
             taken=taken,
+            note=note,
             **kw,  # type: ignore[arg-type]
         )
         out.provenance += made.provenance
+        return made
+
+    for label, design in built.items():
+        digest = _overlay_digest(starter, design)
+        if gate.digests.get(label) == digest:
+            continue
+        gate.retried.discard(label)
+        made = await make(label, None)
+        dropped = [*made.dropped, *made.fail_reasons]
+        if not made.variants and made.dropped and not made.fail_reasons:
+            # 쓸 변형이 하나도 없으면 버린 이유(줄 상한·시드 파일 등)를 붙여 한 번 더 — 상한은 그대로 (traps.dropped_note)
+            made = await make(label, dropped_note(made.dropped))
+            dropped += [*made.dropped, *made.fail_reasons]
         gate.variants[label] = made.variants
         if not made.fail_reasons:  # 호출이 실패했으면 다음 회차에 다시 (리뷰 2026-11-13: 일시 오류 한 번에 끝까지 시험 못 함)
             gate.digests[label] = digest
-        gate.dropped = [x for x in gate.dropped if not x.startswith(f"{label} ")] + [
-            *made.dropped,
-            *made.fail_reasons,
-        ]
-    out.trap_dropped = list(gate.dropped)
-    pairs = [x for vs in gate.variants.values() for x in vs]
+        gate.dropped = [x for x in gate.dropped if not x.startswith(f"{label} ")] + dropped
     plan.flags += [
         f"숨은 테스트 함정 관문({TRAP_GATE}): 허용 설계 {d} 의 함정 '{targets[d].trap}' 에 빠진 변형을 만들지 못함 — 숨은 테스트가 그 함정을 가르는지 사람 확인"
         for d in built
         if not gate.variants.get(d)
     ]
+    pairs = [x for vs in gate.variants.values() for x in vs]
     if not pairs:
+        out.trap_dropped = list(gate.dropped)
         return plan
-    report = await run(starter, [o for o, _ in pairs], public, hidden)
-    out.trap_reports.append(report)
-    results = judge_traps(report, [s for _, s in pairs], weak)
-    # 경합형 함정(조회 뒤 저장·읽은 뒤 갱신)은 한 번에 안 드러날 수 있다 — 살아남은 변형은 한 번 더 돌려 두 번 다 살아남아야 살아남음
-    # (리뷰 2026-11-13: 한 번 돌리면 멀쩡한 숨은 테스트를 더 엄격하게 고쳐 다른 허용 설계를 떨어뜨리기 쉽다)
-    first_alive = {r.label for r in trap_survivors(results)}
-    if first_alive:
-        again = await run(starter, [o for o, s in pairs if s.label in first_alive], public, hidden)
+
+    async def judged(ps: list[tuple[Overlay, TrapSpec]]) -> list[TrapResult]:
+        report = await run(starter, [o for o, _ in ps], public, hidden)
+        out.trap_reports.append(report)
+        results = judge_traps(report, [s for _, s in ps], weak)
+        # 경합형 함정(조회 뒤 저장·읽은 뒤 갱신)은 한 번에 안 드러날 수 있다 — 살아남은 변형은 한 번 더 돌려 두 번 다 살아남아야 살아남음
+        # (리뷰 2026-11-13: 한 번 돌리면 멀쩡한 숨은 테스트를 더 엄격하게 고쳐 다른 허용 설계를 떨어뜨리기 쉽다)
+        first_alive = {r.label for r in trap_survivors(results)}
+        if not first_alive:
+            return results
+        again = await run(starter, [o for o, s in ps if s.label in first_alive], public, hidden)
         out.trap_reports.append(again)
         rerun = {
             r.label: r
-            for r in judge_traps(again, [s for _, s in pairs if s.label in first_alive], weak)
+            for r in judge_traps(again, [s for _, s in ps if s.label in first_alive], weak)
         }
-        results = [
+        return [
             rerun[r.label] if r.label in rerun and rerun[r.label].verdict == "caught" else r
             for r in results
         ]
+
+    results = await judged(pairs)
+    # 변형이 모두 무효인 설계(공개 테스트까지 깸 등)는 무효 이유를 붙여 한 번 다시 만들어 돌린다 — 그 구현이 바뀔 때까지 한 번 (traps.invalid_note)
+    fresh: list[tuple[Overlay, TrapSpec]] = []
+    for d in untested_designs(results, [d for d in built if gate.variants.get(d)]):
+        if d in gate.retried:
+            continue
+        gate.retried.add(d)
+        made = await make(d, invalid_note([r for r in results if r.design_id == d]))
+        gate.dropped += [*made.dropped, *made.fail_reasons]
+        if made.variants:
+            gate.variants[d] = made.variants
+            fresh += made.variants
+    if fresh:
+        redone = {s.design_id for _, s in fresh}
+        results = [r for r in results if r.design_id not in redone] + await judged(fresh)
+        pairs = [x for vs in gate.variants.values() for x in vs]
+    out.trap_dropped = list(gate.dropped)
     gate.results = results
     gate.rounds += 1
     out.traps = list(gate.results)
@@ -712,35 +746,39 @@ async def _add_public_cases(
     starter, old = out.overlays[STARTER], out.overlays[PUBLIC]
     have = {f.path: f.content for f in old.files}
     alive = survivors(gate.results)
-    r = await gen_public(
-        b,
-        note=f"검증 실패 (게이트 {VARIANT_GATE}) — {action.note}",
-        previous=old,
-        **kw,  # type: ignore[arg-type]
-    )
-    out.provenance += r.provenance
-    added = (
-        [f for f in r.overlay.files if f.path not in have and f.content.strip()]
-        if r.overlay is not None
-        else []
-    )
-    touched = (
-        [f.path for f in r.overlay.files if f.path in have and f.content != have[f.path]]
-        if r.overlay is not None
-        else []
-    )
-    if touched:
-        out.adjustments.append(
-            f"gen_public({VARIANT_GATE}): 기존 공개 테스트 {len(touched)}개를 고친 답은 버림 — 새 클래스만 더함"
+    test_compile = getattr(compiler, "compile_tests", None) if compiler is not None else None
+    note = f"검증 실패 (게이트 {VARIANT_GATE}) — {action.note}"
+    previous = old
+    for attempt in range(COMPILE_TEST_ATTEMPTS + 1):
+        r = await gen_public(
+            b,
+            note=note,
+            previous=previous,
+            **kw,  # type: ignore[arg-type]
         )
-    if not added:
-        out.repairs.append(_record(action, "failed"))
-        return _survivor_flags(alive, "추가할 테스트를 만들지 못함")
-    candidate = replace(old, files=(*old.files, *added))
-    test_compile = getattr(compiler, "compile_tests", None)
-    if compiler is not None and test_compile is not None:
-        errors = await test_compile(out.overlays[HIDDEN], candidate)
-        if errors:
+        out.provenance += r.provenance
+        added = (
+            [f for f in r.overlay.files if f.path not in have and f.content.strip()]
+            if r.overlay is not None
+            else []
+        )
+        touched = (
+            [f.path for f in r.overlay.files if f.path in have and f.content != have[f.path]]
+            if r.overlay is not None
+            else []
+        )
+        if touched:
+            out.adjustments.append(
+                f"gen_public({VARIANT_GATE}): 기존 공개 테스트 {len(touched)}개를 고친 답은 버림 — 새 클래스만 더함"
+            )
+        if not added:
+            out.repairs.append(_record(action, "failed"))
+            return _survivor_flags(alive, "추가할 테스트를 만들지 못함")
+        candidate = replace(old, files=(*old.files, *added))
+        errors = await test_compile(out.overlays[HIDDEN], candidate) if test_compile else []
+        if not errors:
+            break
+        if attempt == COMPILE_TEST_ATTEMPTS:
             out.repairs.append(_record(action, "failed"))
             e = errors[0]
             return [
@@ -749,6 +787,13 @@ async def _add_public_cases(
                 ],
                 *_survivor_flags(alive, "더한 테스트가 컴파일되지 않음"),
             ]
+        # 더한 테스트의 컴파일 오류를 붙여 다시 — 채점 코드 컴파일 수리(compile_and_fix)와 같은 횟수.
+        # 2026-11-13 재시도 중복 알파(naver_2026#002): 경계 변형(0 이하 → 0 미만)을 가를 테스트가 `cannot find symbol` 하나로 버려졌다
+        note = (
+            compile_note(errors, candidate)
+            + f"\n\n더하려던 이유 (게이트 {VARIANT_GATE}) — {action.note}"
+        )
+        previous = candidate
     refs = [o for o in out.overlays.values() if o.kind in ("ref_naive", "ref_accepted")]
     check = await run(starter, refs, candidate)
     out.variant_reports.append(check)

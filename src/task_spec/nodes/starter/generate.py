@@ -1169,14 +1169,15 @@ async def gen_traps(
     prompts: PromptRegistry,
     ontology_version: str,
     taken: set[str] | None = None,
+    note: str | None = None,
 ) -> TrapGen:
-    """허용 설계 구현(시작 코드 + design)에서 그 설계의 함정에 빠진 변형."""
+    """허용 설계 구현(시작 코드 + design)에서 그 설계의 함정에 빠진 변형. note: 앞 답을 쓰지 못한 이유 (다시 물을 때)."""
     prompt_t = prompts.get("gen_trap")
     impl = app_files(starter, design)
     out = TrapGen()
     prompt = assemble(
         prompt_t,
-        trap_input(task, contract, template, impl, target),
+        trap_input(task, contract, template, impl, target, note),
         ontology_version=ontology_version,
     )
     try:

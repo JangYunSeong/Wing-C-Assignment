@@ -238,6 +238,29 @@ def trap_note(results: Sequence[TrapResult], specs: Sequence[TrapSpec]) -> str:
     )
 
 
+def dropped_note(dropped: Sequence[str]) -> str:
+    """앞 답의 변형을 하나도 쓰지 못했을 때 다시 묻는 말 — 버린 이유를 그대로 (예: 바꾼 줄 33 > 30).
+    2026-11-13 알파 4건 중 2건이 33·40줄로 상한에 걸려 그 함정을 시험하지 못했다 — 상한을 올리지 않고 함정에 필요한 곳만 바꾸게 다시 묻는다
+    (상한은 구현을 갈아엎어 함정과 무관한 이유로 잡히는 것을 막는다)."""
+    return (
+        "앞 답의 변형을 쓰지 못했다 — "
+        + "; ".join(x.split(" 함정: ", 1)[-1] for x in dropped[:4])
+        + f". 함정에 빠지는 데 필요한 곳만 바꾼다: 바꾼 줄은 모두 합해 {MAX_TRAP_LINES}줄 이하, 구현에 있는 앱 파일만"
+        " (시드·설정·스키마·테스트 파일은 그대로). 파일은 내용 전체를 쓰되, 바꾸지 않는 줄은 들여쓰기·순서·빈 줄까지 올바른 구현과 글자 그대로 둔다."
+    )
+
+
+def invalid_note(results: Sequence[TrapResult]) -> str:
+    """앞 답의 변형이 모두 무효였을 때 다시 묻는 말 — 무효 이유(공개 테스트에서 떨어짐 등)를 그대로.
+    2026-11-13 풀 고갈 알파: '커밋 후 콜백 안에서 새 트랜잭션' 변형이 공개 테스트까지 깨 함정을 시험하지 못했다."""
+    return (
+        "앞 답의 변형을 시험하지 못했다 — "
+        + "; ".join(f"{r.note[:80]}: {r.detail[:160]}" for r in results[:2])
+        + ". 함정 말고 다른 것은 어기지 않는다: 컴파일·기동되고, 요청을 하나씩 보내면 올바른 구현과 같은 응답(공개 테스트 통과)이어야 한다."
+        " 함정에 빠지는 곳만 바꾼다."
+    )
+
+
 @dataclass
 class TrapGate:
     """빌드 하나의 함정 관문 상태 — 변형은 그 허용 설계 구현이 바뀔 때만 다시 만든다 (숨은 테스트만 바뀌면 같은 변형을 다시 돌림)."""
@@ -249,3 +272,6 @@ class TrapGate:
     dropped: list[str] = field(default_factory=list)
     results: list[TrapResult] = field(default_factory=list)
     rounds: int = 0
+    retried: set[str] = field(
+        default_factory=set
+    )  # 무효라 다시 만든 설계 — 그 구현이 바뀔 때까지 한 번만

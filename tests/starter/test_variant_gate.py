@@ -7,9 +7,9 @@ from collections.abc import Sequence
 from typing import Any
 
 from task_spec.llm import Completion, LLMClient
-from task_spec.nodes.starter.build import VARIANT_GATE, build_and_repair
+from task_spec.nodes.starter.build import COMPILE_TEST_ATTEMPTS, VARIANT_GATE, build_and_repair
 from task_spec.nodes.starter.generate import variant_input
-from task_spec.schemas import GeneratedFile, GenVariantOutput, VerifyReport
+from task_spec.schemas import CompileError, GeneratedFile, GenVariantOutput, VerifyReport
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.variants import (
     MAX_CHANGED_LINES,
@@ -319,6 +319,70 @@ async def test_gate_adds_a_test_class_for_a_survivor() -> None:
     assert verifier.variant_calls == [labels, labels] and verifier.ref_calls == 1
     assert {r.verdict for r in out.variants} == {"caught"}
     assert not any("가르지 못함" in f for f in out.review_flags)
+
+
+class AddedCompiler:
+    """더한 클래스에 BROKEN 표시가 있으면 컴파일 오류 — 처음 채점 코드 컴파일은 통과 (변형 관문 수리만 본다)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def compile_tests(self, hidden: Overlay, public: Overlay | None) -> list[CompileError]:
+        self.calls += 1
+        bad = [f for f in (public.files if public else ()) if "BROKEN" in f.content]
+        return [
+            CompileError(path=f.path, line=9, message="cannot find symbol", detail="symbol: BROKEN")
+            for f in bad
+        ]
+
+    async def compile_overlays(self, overlays: Sequence[Overlay]) -> list[CompileError]:
+        return []
+
+
+async def test_an_added_class_that_does_not_compile_is_remade_with_the_errors() -> None:
+    """2026-11-13 재시도 중복 알파: 경계 변형을 가를 테스트가 `cannot find symbol` 하나로 버려져 살아남음 — 컴파일 오류를 붙여
+    다시 만든다 (채점 코드 컴파일 수리와 같은 횟수). 다시 만든 클래스가 컴파일되면 그것으로 변형을 다시 돌린다."""
+    broken = _files(
+        (ADDED_PATH, ADDED.replace("void edge()", "void edge() { BROKEN(); }\n    void unused()"))
+    )
+    llm, backend = _llm(gen_public=[PUBLIC_ANSWER, broken, _addition(touch_old=False)])
+    verifier = VariantVerifier(REPORT, "PASS", "ASSERT")
+    out = await build_and_repair(
+        _inputs(),
+        (D1,),
+        llm=llm,
+        prompts=PROMPTS,
+        ontology_version="onto-test",
+        verifier=verifier,
+        compiler=AddedCompiler(),
+    )
+    assert backend.calls.count("gen_public") == 3
+    retry = [u for n, u in backend.users if n == "gen_public"][-1]
+    assert "cannot find symbol" in retry and "더하려던 이유" in retry and "BROKEN" in retry
+    assert {f.path: f.content for f in out.overlays["public"].files}[ADDED_PATH] == ADDED
+    assert {r.verdict for r in out.variants} == {"caught"}
+    assert not any("컴파일되지 않아 버림" in f for f in out.review_flags)
+
+
+async def test_an_added_class_that_never_compiles_is_dropped() -> None:
+    broken = _files(
+        (ADDED_PATH, ADDED.replace("void edge()", "void edge() { BROKEN(); }\n    void unused()"))
+    )
+    llm, backend = _llm(gen_public=[PUBLIC_ANSWER, broken])
+    out = await build_and_repair(
+        _inputs(),
+        (D1,),
+        llm=llm,
+        prompts=PROMPTS,
+        ontology_version="onto-test",
+        verifier=VariantVerifier(REPORT, "PASS", "ASSERT"),
+        compiler=AddedCompiler(),
+    )
+    assert (
+        backend.calls.count("gen_public") == 1 + 1 + COMPILE_TEST_ATTEMPTS
+    )  # 처음 + 수리 + 재요청
+    assert any("컴파일되지 않아 버림" in f for f in out.review_flags)
+    assert ADDED_PATH not in {f.path for f in out.overlays["public"].files}  # 통과한 빌드는 그대로
 
 
 async def test_gate_flags_a_survivor_after_adding_tests() -> None:
