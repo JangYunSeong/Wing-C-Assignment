@@ -221,3 +221,45 @@ def test_copied_fields_are_matched_by_words_not_one_spelling() -> None:
     )
     assert _copied_fields(order, customer) == ["customerName", "customer_name"]
     assert _copied_fields(order, item) == ["item_count", "numItems", "totalItems", "itemCount"]
+
+
+def test_public_rows_are_rows_the_api_returns() -> None:
+    """2026-11-14 #185 알파(g185-nplus1-hana006): pt rows 에 목록 행과 함께 조인돼 보이는 고객·서류 행을 적어, 정적 검사가 테스트가 가리킬 수
+    없는 상수를 요구했고 빌드가 실패했다 — 응답 모양 row_of 로 돌려주는 엔티티를 정하고, 그 엔티티와 외래 키로만 이어진 행은 rows 에서 뺀다."""
+    from task_spec.starter.seed_rows import fit_row_targets, returned_entities, row_target_problems
+
+    c = _list_contract()
+    c["public_tests"][0]["rows"] = [
+        {"entity_id": "m1", "values": {"customerId": 1}},
+        {"entity_id": "m2", "values": {"name": "가상고객"}},
+    ]
+    # row_of 가 없으면 어느 것이 목록 행인지 몰라 계약 검사가 묻는다 (코드는 고치지 않음)
+    unknown = TaskContract.model_validate(c)
+    assert returned_entities(unknown) == set()
+    assert fit_row_targets(unknown) == (unknown, [])
+    assert _has(row_target_problems(unknown), "pt1", "row_of")
+    # row_of 가 있으면 목록 행(주문)만 남기고 딸린 정보 원천(고객) 행은 뺀다
+    c["response_shapes"][0]["row_of"] = "m1"
+    known = TaskContract.model_validate(c)
+    assert returned_entities(known) == {"m1"}
+    fitted, notes = fit_row_targets(known)
+    assert [u.entity_id for u in fitted.public_tests[0].rows] == ["m1"]
+    assert _has(notes, "pt1", "Customer(name=가상고객)", "뺌")
+    assert row_target_problems(fitted) == []
+    # 엔티티 목록을 돌려주는 API(returns m1[])도 같은 판단 — 모양이 없어도
+    plain = _list_contract(shape=False)
+    plain["public_tests"][0]["rows"] = c["public_tests"][0]["rows"]
+    fitted, _ = fit_row_targets(TaskContract.model_validate(plain))
+    assert [u.entity_id for u in fitted.public_tests[0].rows] == ["m1"]
+    # 한 엔티티만 쓰는 rows 는 그대로 (돌려주지 않는 엔티티라도 — 경로로 다루는 행일 수 있다)
+    single = _list_contract()
+    single["public_tests"][0]["rows"] = [{"entity_id": "m2", "values": {"name": "가상고객"}}]
+    assert row_target_problems(TaskContract.model_validate(single)) == []
+
+
+def test_row_of_must_be_a_table_entity() -> None:
+    c = _list_contract()
+    c["response_shapes"][0]["row_of"] = "m9"
+    assert _has(_check(c).problems, "v1 OrderSummary 의 row_of m9")
+    c["response_shapes"][0]["row_of"] = "m1"
+    assert not _has(_check(c).problems, "row_of")

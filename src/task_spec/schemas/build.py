@@ -507,6 +507,13 @@ class ResponseShape(Schema):
         min_length=1,
         description="응답 칸 — 다른 엔티티에서 읽거나 계산하는 칸은 constraints 에 출처를 적는다 (예: 'Customer.name — 주문의 customerId 로')",
     )
+    # 2026-11-14 #185 알파: 모양에 '어느 엔티티 행인가' 칸이 없어 공개 테스트 rows 에 조인 원천(고객·서류) 행이 섞여도 코드가 가릴 수 없었다
+    row_of: str | None = Field(
+        default=None,
+        pattern=r"^m\d{1,2}$",
+        description="이 모양 한 건(목록이면 항목 하나)이 어느 테이블 엔티티의 한 행인가 — 그 엔티티 id (예: 주문 목록 항목이면 주문 m1). "
+        "엔티티 행에 대응하지 않는 집계(날짜별 합계 등)면 null",
+    )
 
     @property
     def entity_id(self) -> str:

@@ -96,9 +96,11 @@ TaskContract                         ← 지원자에게 보임 (README "계약"
     필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
     헤더 필드:   위 필드 + per_request(요청마다 새 값인가 — 요청 번호·멱등 키는 true, 요청자는 false. 권한 칸 auth 의 헤더 밖에서 비면 재요청) [2026-11-14, plan_contract v27 — #181]
   response_shapes[]: id(v1…) · name · fields — 응답에만 있는 모양, 테이블 아님 (시드·외래 키·state·existing 없음) [2026-11-13]
+                · row_of(한 건이 어느 테이블 엔티티의 한 행인가 — 집계면 null) [2026-11-14, plan_contract v29 — #185]
   settings[]:    key(스프링 속성, 점 표기) · type(int) · default · meaning · refs — 구현이 읽어야 하는 설정 (스프링 템플릿만) [2026-11-13, #161]
   seed[]:       entity id · rows(정확한 행 수, id 1~rows) · groups(id 범위마다 처음 값, 1~rows 를 빈틈·겹침 없이) · 값 규칙 (가상 데이터만, §10-16)
   public_tests[]: id(pt1…) · ac_id(p*) · 무엇을 확인하나 (공개 수용 기준 1:1 이상)
+                · rows(테스트가 id 로 다루는 시드 행의 처음 값 — API 가 돌려주는 엔티티·요청으로 바꾸는 행만, 조인돼 보이는 원천 행은 fit_row_targets 가 뺌)
                 · rows[] — 그 테스트가 쓸 시드 행의 처음 값 (entity_id · values) [2026-11-13 #164]. 코드가 그 처음 값의 시드 그룹·공개 몫 상수를
                   보장하고(`seed_rows._fit_row_uses`), 공개 테스트 입력에 '쓸 행: PUBLIC_…' 로 싣고, 정적 검사가 그 pt 의 테스트가 상수를 쓰는지 본다
                   — README 에는 공개 테스트를 지원자에게 줄 때만 싣는다 (§4.3)

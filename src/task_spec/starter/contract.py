@@ -45,7 +45,12 @@ from task_spec.starter.feasibility import feasibility_problems
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import header_problems
-from task_spec.starter.seed_rows import case_rows_problems, row_use_problems, seed_problems
+from task_spec.starter.seed_rows import (
+    case_rows_problems,
+    row_target_problems,
+    row_use_problems,
+    seed_problems,
+)
 from task_spec.starter.state_rule import legacy_rule, state_problems
 from task_spec.starter.templates import glob_match, supports_settings
 
@@ -1244,6 +1249,12 @@ def _shape_problems(contract: TaskContract) -> list[str]:
     used = {
         r.returns.removesuffix("[]") for e in contract.endpoints for r in e.responses if r.returns
     } | {token for _, f in _fields(contract) for token in re.findall(r"\b(v\d{1,2})\b", f.type)}
+    ids = {m.entity_id for m in contract.entities}
+    out += [
+        f"응답 모양 {s.shape_id} {s.name} 의 row_of {s.row_of} 가 계약의 테이블 엔티티가 아님 — 한 건이 대응하는 엔티티 id(m…)나 null"
+        for s in contract.response_shapes
+        if s.row_of is not None and s.row_of not in ids
+    ]
     unused = [f"{s.shape_id} {s.name}" for s in contract.response_shapes if s.shape_id not in used]
     if unused:
         out.append(
@@ -2040,6 +2051,7 @@ def check_contract(
     if manifest.seed_rows:
         problems += seed_problems(contract)
         problems += row_use_problems(contract)
+        problems += row_target_problems(contract)
         problems += case_rows_problems(contract, plan, manifest)
         problems += _target_rows(contract, plan)
     else:

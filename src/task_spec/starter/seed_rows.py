@@ -177,6 +177,119 @@ def response_list_target(e: Endpoint, contract: TaskContract) -> ListTarget | No
     return ("other", names[0]) if names else None
 
 
+def returned_entities(contract: TaskContract) -> set[str]:
+    """계약 API 의 성공 응답이 행을 돌려주는 엔티티 — returns 의 엔티티(한 건·목록), 응답 모양의 row_of, 본문 칸의 엔티티(목록)."""
+    by_key = {k: m.entity_id for m in contract.entities for k in (m.entity_id, m.name)}
+    row_of = {
+        k: s.row_of
+        for s in contract.response_shapes
+        if s.row_of in {m.entity_id for m in contract.entities}
+        for k in (s.shape_id, s.name)
+    }
+    out: set[str] = set()
+    for e in contract.endpoints:
+        ok = e.success()
+        if ok is None:
+            continue
+        names = [ok.returns.removesuffix("[]")] if ok.returns else []
+        for f in ok.body:
+            ft = parse_field(f.type)
+            ref = ft.items[0] if ft.kind == "list" and ft.items else ft
+            if ref.kind == "ref":
+                names.append(ref.name)
+        out |= {by_key[n] for n in names if n in by_key}
+        out |= {row_of[n] for n in names if n in row_of and row_of[n] is not None}  # type: ignore[misc]
+    return out
+
+
+def _fk_links(contract: TaskContract) -> dict[str, set[str]]:
+    """엔티티 id → 외래 키로 이어진 엔티티 id (양쪽 방향)."""
+    by_name = {m.name: m.entity_id for m in contract.entities}
+    out: dict[str, set[str]] = {}
+    for m in contract.entities:
+        for _, target in m.fk_pairs():
+            t = by_name.get(target, target)
+            if t != m.entity_id:
+                out.setdefault(m.entity_id, set()).add(t)
+                out.setdefault(t, set()).add(m.entity_id)
+    return out
+
+
+def _joined_only(contract: TaskContract, entity_id: str, returned: set[str]) -> bool:
+    """API 가 행을 돌려주지 않고, 돌려주는 엔티티와 외래 키로 이어진 엔티티 — 그 행은 목록 항목의 칸(조인)으로만 보인다."""
+    return entity_id not in returned and bool(_fk_links(contract).get(entity_id, set()) & returned)
+
+
+def fit_row_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
+    """공개 테스트 rows 는 API 가 돌려주는 엔티티의 행으로 — 그 행에 조인돼 보이는 딸린 정보의 원천 행은 뺀다.
+    테스트는 그 행을 공개 몫 상수로 가리킬 수 없고, 공개 몫 행은 목록 행과 외래 키로 이어지지도 않는다 (외래 키 값은 대상 행 안에서 돈다).
+    2026-11-14 #185 알파(g185-nplus1-hana006): pt1 rows 에 송금 대기 행과 함께 고객(BR001)·서류(IDENTITY) 행을 적어, 정적 검사가 그 상수를
+    요구했고(재요청에도 고칠 수 없음) 빌드가 실패했다 — 그 고객 공개 몫 행(211~213)을 가리키는 송금은 BR002 라 목록에 나오지도 않았다.
+    돌려주는 엔티티를 알 수 없으면(응답 모양 row_of 없음) 그대로 둔다 — row_target_problems 가 묻는다."""
+    returned = returned_entities(contract)
+    if not returned:
+        return contract, []
+    names = {m.entity_id: m.name for m in contract.entities}
+    tests, notes = [], []
+    for t in contract.public_tests:
+        drop = [u for u in t.rows if _joined_only(contract, u.entity_id, returned)]
+        if not drop:
+            tests.append(t)
+            continue
+        tests.append(t.model_copy(update={"rows": [u for u in t.rows if u not in drop]}))
+        shown = "; ".join(
+            f"{names.get(u.entity_id, u.entity_id)}({', '.join(f'{k}={v}' for k, v in u.values.items())})"
+            for u in drop
+        )
+        notes.append(
+            f"공개 테스트 {t.test_id} rows 에서 {shown} 뺌 — API 가 그 행을 돌려주지 않고 목록 행에 조인돼 보이는 딸린 정보라 "
+            "테스트가 공개 몫 상수로 가리킬 수 없다"
+        )
+    return contract.model_copy(update={"public_tests": tests}), notes
+
+
+def row_target_problems(contract: TaskContract) -> list[str]:
+    """공개 테스트 rows 가 외래 키로 이어진 여러 엔티티의 행인데 그중 API 가 돌려주는 것을 계약에서 알 수 없음 — 응답 모양에 row_of 가 없다."""
+    returned = returned_entities(contract)
+    links = _fk_links(contract)
+    unknown = [
+        s.shape_id
+        for s in contract.response_shapes
+        if s.row_of is None and _shape_returned(contract, s.shape_id)
+    ]
+    if not unknown:
+        return []
+    out: list[str] = []
+    names = {m.entity_id: m.name for m in contract.entities}
+    for t in contract.public_tests:
+        ents = {u.entity_id for u in t.rows}
+        if len(ents) < 2 or ents & returned or not any(links.get(e, set()) & ents for e in ents):
+            continue
+        out.append(
+            f"공개 테스트 {t.test_id} rows 의 {', '.join(sorted(names.get(e, e) for e in ents))} 중 어느 것이 API 가 돌려주는 행인지 계약에 없음 — "
+            f"응답 모양 {', '.join(unknown)} 의 row_of 에 한 건(목록 항목 하나)이 어느 엔티티 행인지 적는다. rows 에는 그 행만 적고, 조인돼 보이는 "
+            "딸린 정보(고객 이름·서류 수의 원천)의 행은 적지 않는다"
+        )
+    return out
+
+
+def _shape_returned(contract: TaskContract, shape_id: str) -> bool:
+    shape = next((s for s in contract.response_shapes if s.shape_id == shape_id), None)
+    keys = {shape_id, shape.name} if shape is not None else {shape_id}
+    for e in contract.endpoints:
+        ok = e.success()
+        if ok is None:
+            continue
+        if ok.returns and ok.returns.removesuffix("[]") in keys:
+            return True
+        for f in ok.body:
+            ft = parse_field(f.type)
+            ref = ft.items[0] if ft.kind == "list" and ft.items else ft
+            if ref.kind == "ref" and ref.name in keys:
+                return True
+    return False
+
+
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
     """경로 변수로 그 엔티티의 한 행을 가리키는 API 에서, 그 변수가 여러 행 그룹 전체에 같은 값이면 문제 — 조회가 여러 건이 된다.
 

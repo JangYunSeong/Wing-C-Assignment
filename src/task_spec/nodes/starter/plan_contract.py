@@ -51,7 +51,7 @@ from task_spec.starter.contract import (
     unevidenced,
 )
 from task_spec.starter.hidden_helpers import SETTING_MIN_ROWS, SETTING_PROBE, SETTING_PROBE_ALT
-from task_spec.starter.seed_rows import RESERVED_ROWS, fit_seed
+from task_spec.starter.seed_rows import RESERVED_ROWS, fit_row_targets, fit_seed
 from task_spec.starter.state_rule import fit_state
 from task_spec.starter.templates import Template, restrict_reasons, supports_settings
 
@@ -479,6 +479,11 @@ def fit_output(
     named, fk_notes = fit_fk_targets(out.contract)
     out = out.model_copy(update={"hidden_plan": filled, "contract": named})
     notes += fk_notes
+    targeted, target_notes = fit_row_targets(
+        out.contract
+    )  # rows 는 API 가 돌려주는 행만 — 시드 그룹을 만들기 전에
+    out = out.model_copy(update={"contract": targeted})
+    notes += target_notes
     if manifest.seed_rows:  # 행 수 맞추기는 DB 행 과제에서만
         fitted, fitted_plan, seed_notes = fit_seed(out.contract, out.hidden_plan, manifest)
         out = out.model_copy(update={"contract": fitted, "hidden_plan": fitted_plan})
