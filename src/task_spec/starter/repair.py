@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 from task_spec.schemas import HiddenPlan, TargetRun, TestResult, VerifyReport
 from task_spec.schemas.build import GeneratorName
@@ -37,18 +38,66 @@ from task_spec.starter.static_check import Overlay
 
 MAX_MESSAGE = 220
 STARTER = "starter"
-COMPILE_SUFFIX = "#compile"  # regen_counts 에서 컴파일 수리 횟수 키 (일반 수리와 따로)
-# 흔한 구현이 숨은 케이스를 통과해 다시 만든 횟수 키 (③) — 다른 게이트의 재생성과 따로 센다.
-# 2026-11-09 알파 (2df170e2): 2회차에 흔한 구현을 기존 테스트 깨짐(⑤)으로 다시 만들어 예산을 쓰자, 3회차에 다시 만든 흔한 구현이
-# 설명의 구조(상태 변경 트랜잭션 안에서 별도 트랜잭션 기록)를 버리고 hc1·hc2 를 통과했는데 ③ 이 흔한 구현 대신 숨은 테스트를 배정했다.
-TRAP_SUFFIX = "#trap"
-# 구현 실행 오류(repair_terms.impl_crash)로 다시 만든 횟수 키 — 컴파일 오류처럼 함정과 무관한 결함이라 일반 예산과 따로 센다.
-# 2026-11-09 데이터 알파 6회차: 실행 오류 수리가 흔한 구현의 예산을 써, 다음 회차에 흔한 구현이 hc4 를 통과했는데(③) 다시 만들 수 없어 빌드가 끝났다.
-CRASH_SUFFIX = "#crash"
-# 다른 허용 구현은 통과하는 숨은 케이스에서 한 허용 구현만 다시 만든 뒤에도 떨어질 때 숨은 테스트를 다시 만든 횟수 키 — 일반 예산과 따로.
-# 2026-11-10 프론트 알파 49507571·008d6314: 숨은 테스트가 한 설계의 진행(이어 붙인 뒤 정확히 40건, 첫 재연결에 4건 이상)을 단언해
-# 다른 허용 설계(쪽 번호+거르기, 실패하면 멈춤)를 막았는데, 흔한 구현은 의도한 사유로 잡혀 '허용 구현 탓'으로 끝났다.
-DESIGN_SUFFIX = "#design"
+# ── 재생성 예산 (#183) ───────────────────────────────────────
+# 산출물(생성기·라벨)마다, 풀마다 따로 센다. 풀은 이 표 하나 — 사례마다 접미사를 하나씩 더하고 조회하는 곳마다 키를 손으로 조립하던 것을
+# 정리했다 (키·'다 썼나' 판정은 budget_key·exhausted). 빌드 전체 회차 상한(MAX_ROUNDS)은 풀과 무관하다.
+# 부류: general — 산출물마다 한 번 · defect — 함정과 무관한 결함(컴파일·실행 오류·다시 만든 구현의 퇴행) · suspect_test — 테스트를 한 번
+# 의심 · naive_first — ③ 에서 흔한 구현을 먼저 한 번 다시 · gate — 관문(⑩·⑪) 수리.
+COMPILE_RETRIES = 2  # 컴파일 오류 재요청 상한 — 수리 루프의 컴파일 풀, 검증 전 채점 코드·구현 컴파일 재요청이 같이 쓴다
+PoolKind = Literal["general", "defect", "suspect_test", "naive_first", "gate"]
+
+
+@dataclass(frozen=True)
+class Pool:
+    suffix: str  # regen_counts 키 접미사 ('' = 일반 풀)
+    limit: int  # 이 풀로 다시 만들 수 있는 횟수 (산출물마다)
+    kind: PoolKind
+
+
+GENERAL = Pool("", 1, "general")
+# 컴파일 오류 — 고치기 싸서 2회. 2026-11-07 배송 감사 재실행: 숨은 테스트 컴파일 수리가 일반 예산까지 써서, 컴파일이 고쳐진 뒤 드러난
+# 실패를 고칠 기회가 없었다. 2026-11-07 루프: 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다.
+COMPILE = Pool("#compile", COMPILE_RETRIES, "defect")
+# 구현 실행 오류(repair_terms.impl_crash). 2026-11-09 데이터 알파 6회차: 실행 오류 수리가 흔한 구현의 예산을 써, 다음 회차에 흔한 구현이
+# hc4 를 통과했는데(③) 다시 만들 수 없어 빌드가 끝났다.
+CRASH = Pool("#crash", 1, "defect")
+# 다른 게이트 때문에 다시 만든 구현이 이전에 통과하던 숨은 케이스에서 떨어짐 — 구현 퇴행이라 구현을 한 번 더 (#183, _gate4).
+# 2026-11-14 naver_2026#002: 공개 테스트(⑤)로 다시 만든 d2 가 같은 번호 동시 요청에 500 을 냈는데 '설계와 모순 의심'으로 멀쩡한 숨은
+# 테스트를 두 번 다시 만들다 빌드가 끝났다.
+REGRESS = Pool("#regress", 1, "defect")
+# 다른 허용 구현은 통과하는 케이스에서 한 허용 구현만 다시 만든 뒤에도 떨어질 때 테스트를 한 번 의심. 2026-11-10 프론트 알파
+# 49507571·008d6314: 숨은 테스트가 한 설계의 진행(이어 붙인 뒤 정확히 40건)을 단언해 다른 허용 설계를 막았는데 '허용 구현 탓'으로 끝났다.
+DESIGN = Pool("#design", 1, "suspect_test")
+# ③ 흔한 구현이 숨은 케이스를 통과 — 숨은 테스트보다 흔한 구현을 먼저 한 번. 2026-11-09 알파 (2df170e2): 다른 게이트(⑤) 재생성이
+# 일반 예산을 써, 다시 만든 흔한 구현이 설명의 구조를 버리고 hc1·hc2 를 통과했는데 ③ 이 흔한 구현 대신 숨은 테스트를 배정했다.
+NAIVE_FIRST = Pool("#naive-first", 1, "naive_first")
+VARIANT = Pool("#variant", 1, "gate")  # 공개 테스트 변별 관문 ⑩ (#164) — 테스트 클래스 더하기
+TRAP_GATE = Pool("#trap-gate", 1, "gate")  # 숨은 테스트 함정 관문 ⑪ (#171) — 숨은 케이스 다시
+POOLS = (GENERAL, COMPILE, CRASH, REGRESS, DESIGN, NAIVE_FIRST, VARIANT, TRAP_GATE)
+
+
+@dataclass(frozen=True)
+class RegenNote:
+    """산출물을 마지막으로 다시 만든 이유 — 게이트·겨냥한 숨은 케이스·사유 (#183: 예산 기록이 '다시 만들었다'만 남겨, '이 케이스
+    때문에 다시 만들었는데도 또 떨어짐'과 '다른 이유로 다시 만든 뒤 퇴행'을 가르지 못했다)."""
+
+    gate: str
+    cases: tuple[str, ...]
+    reason: str
+
+
+def budget_key(generator: str, label: str = "", pool: Pool = GENERAL) -> str:
+    """regen_counts 키 — `생성기[:라벨]` + 풀 접미사."""
+    return (f"{generator}:{label}" if label else generator) + pool.suffix
+
+
+def exhausted(
+    counts: Mapping[str, int], generator: str, label: str = "", pool: Pool = GENERAL
+) -> bool:
+    """그 산출물의 그 풀을 다 썼나."""
+    return counts.get(budget_key(generator, label, pool), 0) >= pool.limit
+
+
 # 흔한 구현이 정답 장치를 쓴다는 재료 판정 — 막는 표시(unresolved)로 옮긴다 (assign)
 MATERIAL_VERDICT = "재료 판정: "
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
@@ -71,10 +120,9 @@ class RepairAction:
     gate: str  # ① ② ③ ③' ④ ⑤ ⑨ setup
     reason: str  # 짧은 사유 (RepairRecord.reason, 승인 화면)
     note: str  # 생성기에 붙일 수정 요청
-    compile: bool = (
-        False  # 컴파일 오류 — 고치기 싸서 예산을 더 준다 (nodes/starter/build.py COMPILE_BUDGET)
-    )
-    budget: str = ""  # 예산을 따로 세는 키 접미사 (TRAP_SUFFIX)
+    pool: Pool = GENERAL  # 재생성 예산 풀 (POOLS)
+    # 이 수리가 겨냥한 숨은 케이스 — 다시 만든 뒤 다른 케이스에서 떨어지면 퇴행으로 본다 (#183, _gate4)
+    cases: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -82,9 +130,12 @@ class RepairAction:
 
     @property
     def budget_key(self) -> str:
-        """재생성 예산을 세는 키 — 컴파일 수리는 따로 센다. 2026-11-07 배송 감사 재실행: 숨은 테스트 컴파일 수리가
-        일반 재생성 예산까지 써서, 컴파일이 고쳐진 뒤 드러난 실패를 고칠 기회가 없었다."""
-        return f"{self.key}{COMPILE_SUFFIX}" if self.compile else f"{self.key}{self.budget}"
+        return budget_key(self.generator, self.label, self.pool)
+
+    @property
+    def compile(self) -> bool:
+        """컴파일 오류 수리인가 (컴파일 풀)."""
+        return self.pool is COMPILE
 
 
 @dataclass
@@ -139,6 +190,21 @@ def _gen_for(run: TargetRun) -> GeneratorName:
     return "gen_naive" if run.kind == "ref_naive" else "gen_accepted"
 
 
+_GATE = re.compile(r"[①-⑳]'?|[a-z]+")
+
+
+def gates_of(gate: str) -> list[str]:
+    """수리의 게이트 — `_merge` 가 사유를 합치며 이어 붙인 게이트(예: "③③'")를 나눈다."""
+    return _GATE.findall(gate)
+
+
+def _merged_pool(p: Pool, q: Pool) -> Pool:
+    """사유를 합친 수리의 풀 — 둘 다 컴파일이면 컴파일, 아니면 따로 세는 풀(일반·컴파일 밖)이 하나라도 있으면 그것, 아니면 일반."""
+    if p is COMPILE and q is COMPILE:
+        return COMPILE
+    return next((x for x in (p, q) if x not in (GENERAL, COMPILE)), GENERAL)
+
+
 def _merge(actions: list[RepairAction]) -> list[RepairAction]:
     """같은 생성기·라벨에 여러 사유가 붙으면 하나로 (사유·수정 요청을 잇는다)."""
     out: dict[str, RepairAction] = {}
@@ -153,8 +219,8 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
                 prev.gate if prev.gate == a.gate else f"{prev.gate}{a.gate}",
                 _short(f"{prev.reason}; {a.reason}"),
                 f"{prev.note}\n{a.note}",
-                compile=prev.compile and a.compile,
-                budget=prev.budget or a.budget,
+                pool=_merged_pool(prev.pool, a.pool),
+                cases=tuple(dict.fromkeys((*prev.cases, *a.cases))),
             )
     return list(out.values())
 
@@ -244,7 +310,7 @@ def _starter(
                 + (f": {_short(run.setup_detail)}" if run.setup_detail else ""),
                 "시작 코드만으로 빌드·기동이 되지 않는다. 이 오류를 고친다:\n"
                 + (errs or _boot_text(run)),
-                compile=run.setup == "compile_error",
+                pool=COMPILE if run.setup == "compile_error" else GENERAL,
             )
         ]
     bad = [t for t in run.results("existing") if t.result != "PASS"]
@@ -297,7 +363,7 @@ def _starter_public(
     features = [t for t in tests if t.name != PERSISTENCE]
     passed = [t.name for t in features if t.result == "PASS"]
     if features and len(passed) == len(features):
-        if regen_counts.get("gen_starter", 0) == 0:
+        if not exhausted(regen_counts, "gen_starter"):
             acts.append(
                 RepairAction(
                     "gen_starter",
@@ -365,7 +431,7 @@ def _public_refs(
             and t is not None
             and t.result == "ASSERT"
             and crash_rx.search(t.message)
-            and regen_counts.get(f"{_gen_for(r)}:{r.target}{CRASH_SUFFIX}", 0) < 1
+            and not exhausted(regen_counts, _gen_for(r), r.target, CRASH)
         ]
         same_everywhere = len(bad) == len(runs) and len({_signature(m) for m in msgs.values()}) == 1
         if crashed and not same_everywhere:
@@ -378,13 +444,13 @@ def _public_refs(
                         f"{r.target} 가 공개 테스트 {name} 에서 실행 오류",
                         f"공개 테스트 {name} 에서 이 구현({r.target})의 명령이 오류로 끝났다: {_short(msgs[r.target])} — "
                         "오류가 난 코드(질의 문법·형 변환·입력 읽기)를 고친다. 입력 파일의 필드 형식은 계약 엔티티 그대로 다룬다.",
-                        budget=CRASH_SUFFIX,
+                        pool=CRASH,
                     )
                 )
             continue
         if len(bad) < len(runs):
             for r, _ in bad:
-                if r.kind == "ref_naive" and regen_counts.get(f"gen_naive:{r.target}", 0) >= 1:
+                if r.kind == "ref_naive" and exhausted(regen_counts, "gen_naive", r.target):
                     out.append(
                         RepairAction(
                             "gen_public",
@@ -398,8 +464,8 @@ def _public_refs(
                     continue
                 if (
                     r.kind == "ref_accepted"
-                    and regen_counts.get(f"gen_accepted:{r.target}", 0) >= 1
-                    and regen_counts.get(f"gen_public{DESIGN_SUFFIX}", 0) == 0
+                    and exhausted(regen_counts, "gen_accepted", r.target)
+                    and not exhausted(regen_counts, "gen_public", pool=DESIGN)
                 ):
                     # 다시 만든 허용 구현만 또 떨어지고 다른 구현은 통과 — 공개 테스트가 한 구현 방식에 기댔을 수 있다 (게이트 ④ 와 같은 규칙).
                     # 2026-11-10 응답 순서 cf4: 공개 pt1 이 '서버'를 치고 조건 없이 먼저 온 요청('서')에 응답해, 지난 응답을 무시하는 허용 구현 d2 만
@@ -414,7 +480,7 @@ def _public_refs(
                             f"공개 테스트 {name} 가 다시 만든 구현({r.target})에서만 또 실패하고 다른 구현({', '.join(passing)})은 통과한다: "
                             f"{_short(msgs[r.target])} — 올바른 구현마다 다를 수 있는 것(먼저 보낸 요청, 요청 수, 중간 화면)에 기대지 않는지 본다. "
                             "요청이 여러 개 나갈 수 있으면 `waitFor…(match)` 로 확인할 요청(지금 입력의 요청 등)을 골라 응답하고, 공개 수용 기준이 말하는 결과만 단언한다.",
-                            budget=DESIGN_SUFFIX,
+                            pool=DESIGN,
                         )
                     )
                     continue
@@ -490,7 +556,7 @@ def _starter_solves(
         # 시작 코드가 공개 테스트에서 실패 = 새 기능이 없다는 증거 → 기능 없이도 통과하는 숨은 케이스가 비어 있는 것.
         # 2026-11-08 알파 (2df170e2): 숨은 테스트가 계약에 없는 요청자로 요청해 모두 403 — hc2 는 "성공 기록 0건"만 단언해
         # 시작 코드 그대로 통과, 배정은 시작 코드를 두 번 다시 만들었다.
-        if regen_counts.get("gen_hidden", 0) >= 1:
+        if exhausted(regen_counts, "gen_hidden"):
             return [], [
                 f"숨은 테스트를 다시 만든 뒤에도 기능 없는 시작 코드(공개 테스트 {', '.join(missing)} 실패)가 숨은 케이스 {ids} 를 통과 "
                 "— 그 케이스가 기능 단계에 닿지 않는다 (숨은 테스트·계약 사람 확인)"
@@ -505,7 +571,7 @@ def _starter_solves(
                 "아무것도 구현하지 않아도 통과한다. " + (terms or RepairTerms()).feature_first,
             )
         ], []
-    if regen_counts.get("gen_starter", 0) >= 1:
+    if exhausted(regen_counts, "gen_starter"):
         return [], [
             f"시작 코드를 다시 만든 뒤에도 시작 코드 그대로 숨은 케이스 {ids} 를 통과 — 그 케이스가 지원자의 작업을 재지 않을 수 있다 "
             "(시작 코드 범위·숨은 테스트 사람 확인)"
@@ -573,7 +639,7 @@ def _ref_setup(
                     f"공개 테스트가 컴파일되지 않는다. 문서와 {(terms or RepairTerms()).public_helper} 에 있는 이름·형식만 쓴다:\n"
                     + text
                     + SAME_KIND_ALL_FILES,
-                    compile=True,
+                    pool=COMPILE,
                 )
             )
         elif owner == "hidden":
@@ -586,7 +652,7 @@ def _ref_setup(
                     "숨은 테스트가 컴파일되지 않는다. 하네스 문서에 있는 이름·형식만 쓴다:\n"
                     + text
                     + SAME_KIND_ALL_FILES,
-                    compile=True,
+                    pool=COMPILE,
                 )
             )
         else:
@@ -597,7 +663,7 @@ def _ref_setup(
                     "setup",
                     f"{run.target} 컴파일 오류",
                     "구현이 컴파일되지 않는다:\n" + text + SAME_KIND_ALL_FILES,
-                    compile=True,
+                    pool=COMPILE,
                 )
             )
     if not run.compile_errors:  # 위치를 못 뽑은 컴파일 실패 — 참조 구현 쪽으로
@@ -608,7 +674,7 @@ def _ref_setup(
                 "setup",
                 f"{run.target} 컴파일 실패",
                 "구현이 컴파일되지 않는다.",
-                compile=True,
+                pool=COMPILE,
             )
         )
     return out
@@ -776,8 +842,8 @@ def _hidden_broken(
                 (r, x)
                 for r, x in bad
                 if r.kind == "ref_accepted"
-                and counts.get(f"gen_accepted:{r.target}", 0) >= 1
-                and counts.get(f"gen_hidden{DESIGN_SUFFIX}", 0) == 0
+                and exhausted(counts, "gen_accepted", r.target)
+                and not exhausted(counts, "gen_hidden", pool=DESIGN)
             ),
             None,
         )
@@ -799,7 +865,7 @@ def _hidden_broken(
                     "판정까지 갔다. 숨은 테스트가 한 구현 방식(요청을 보내는 순서·시점, 앞 응답을 받은 뒤 다음 요청을 보내는지 등)에 기대어 "
                     "기다리지 않는지 본다: 응답하지 않은 요청을 붙잡은 채 다음 요청을 기다리지 말고 먼저 응답할 요청에 응답하며, 요청의 순서·횟수가 "
                     "설계마다 다르면 서버 상태로 판정한다. 흔한 구현은 계속 의도한 사유로 실패해야 한다.",
-                    budget=DESIGN_SUFFIX,
+                    pool=DESIGN,
                 )
             )
             continue
@@ -873,7 +939,7 @@ def _gate3(
         # 2026-11-10 응답 순서 cf: 흔한 구현이 매 회차 React 정리 패턴(let cancelled …)을 썼는데 ③ 이 숨은 테스트를 다시 만들었다.
         ids = ", ".join(c.case_id for c in passed)
         found = ", ".join(hits)
-        if regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0:
+        if not exhausted(regen_counts, "gen_naive", run.target, NAIVE_FIRST):
             return (
                 [
                     RepairAction(
@@ -883,7 +949,7 @@ def _gate3(
                         f"흔한 구현이 {ids} 통과 — 정답 장치({found})를 씀 ({run.target})",
                         f"이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치({found})를 썼다 — 그 장치를 빼고 입력의 흔한 구현 "
                         "설명대로만 쓴다 (설명에 없는 방어 코드·정리 함수의 무시 표시·취소·묶음 조회 등을 더하지 않는다).",
-                        budget=TRAP_SUFFIX,
+                        pool=NAIVE_FIRST,
                     )
                 ],
                 [],
@@ -900,7 +966,7 @@ def _gate3(
     if (
         passed
         and not shows_trap
-        and regen_counts.get(f"gen_naive:{run.target}{TRAP_SUFFIX}", 0) == 0
+        and not exhausted(regen_counts, "gen_naive", run.target, NAIVE_FIRST)
     ):
         # 흔한 구현이 숨은 케이스를 통과 — 테스트가 약한지보다 흔한 구현이 설명을 안 따랐는지를 먼저 본다.
         # 2026-11-07 배송 감사 재실행: 흔한 구현이 REQUIRES_NEW 를 상태 변경 트랜잭션이 끝난 뒤 불러 커넥션을 하나씩만 썼다.
@@ -918,7 +984,7 @@ def _gate3(
                     f"이 흔한 구현은 숨은 요구 {traps} 를 어기는 구현이어야 하는데 숨은 케이스 {ids} 를 통과했다 — 입력의 흔한 구현 설명을 "
                     "구조 그대로 따르지 않았다. 설명이 말하는 그 구조(무엇을 어디서 열고, 어느 범위 안에서 부르는지)를 그대로 쓰고, "
                     "더 안전한 방식으로 바꾸지 않는다.",
-                    budget=TRAP_SUFFIX,
+                    pool=NAIVE_FIRST,
                 )
             ],
             [],
@@ -940,7 +1006,7 @@ def _gate3(
     flags: list[str] = []
     weak: list[str] = []  # 채점에서 뺄 케이스 (변별하지 못함)
     substituted: list[tuple[str, str, str]] = []  # (케이스, 의도한 사유, 대신 관찰한 사유)
-    settled = caught and regen_counts.get("gen_hidden", 0) >= 1
+    settled = caught and exhausted(regen_counts, "gen_hidden")
     out: list[RepairAction] = []
     for c in plan.cases:
         r = run.case(c.case_id)
@@ -1028,9 +1094,17 @@ def _gate4(
     plan: HiddenPlan,
     regen_counts: Mapping[str, int],
     naive: Sequence[TargetRun] = (),
+    regen_log: Mapping[str, RegenNote] | None = None,
+    passed_before: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[list[RepairAction], list[str]]:
+    """regen_log: 산출물 키 → 마지막으로 다시 만든 이유. passed_before: 참조 구현 라벨 → 그 설계의 어느 판이든 지금 숨은 테스트로
+    통과한 케이스 (숨은 테스트·시작 코드를 다시 만들면 비운다 — build). 이전 판이 통과한 케이스에서 떨어지면 테스트가 아니라
+    구현의 퇴행이다 — 테스트를 의심하지 않고 구현을 다시 만든다 (REGRESS 풀, #183)."""
     actions: list[RepairAction] = []
     unresolved: list[str] = []
+    log = regen_log or {}
+    before = passed_before or {}
+
     for c in plan.cases:
         failed = [
             (r, res)
@@ -1058,8 +1132,7 @@ def _gate4(
             if (got := r.case(c.case_id)) is not None and got.result == "PASS"
         ]
         for r, res in failed:
-            key = f"gen_accepted:{r.target}"
-            if regen_counts.get(key, 0) == 0:
+            if not exhausted(regen_counts, "gen_accepted", r.target):
                 actions.append(
                     RepairAction(
                         "gen_accepted",
@@ -1068,9 +1141,34 @@ def _gate4(
                         f"{r.target} 가 {c.case_id} 실패 [{res.reason or '-'}]",
                         f"이 허용 설계 구현이 숨은 요구 {c.trap_id} 의 확인({c.case_id}, 통과 조건: {c.expect})에서 실패했다: "
                         f"{_short(res.message)} — 설계 조건과 스택 조건을 지켜 다시 쓴다.",
+                        cases=(c.case_id,),
                     )
                 )
-            elif passing and regen_counts.get(f"gen_hidden{DESIGN_SUFFIX}", 0) == 0:
+            elif c.case_id in before.get(r.target, ()):
+                # 이 설계의 이전 판이 같은 숨은 테스트로 통과했다 — 테스트는 이 설계로 통과할 수 있다. 다른 이유로 다시 만든 구현이
+                # 퇴행한 것이므로 테스트를 의심하지 않는다 (2026-11-14 naver_2026#002: ⑤ 로 다시 만든 d2 가 같은 번호 동시 요청에 500)
+                prev = log.get(f"gen_accepted:{r.target}")
+                why = f" (게이트 {prev.gate}: {prev.reason})" if prev is not None else ""
+                if not exhausted(regen_counts, "gen_accepted", r.target, REGRESS):
+                    actions.append(
+                        RepairAction(
+                            "gen_accepted",
+                            r.target,
+                            "④",
+                            f"다시 만든 {r.target} 가 이전 판이 통과하던 {c.case_id} 에서 실패 [{res.reason or '-'}]",
+                            f"이 허용 설계 구현은 다른 이유{why}로 다시 만든 뒤, 이전 판이 통과하던 숨은 요구 {c.trap_id} 의 "
+                            f"확인({c.case_id}, 통과 조건: {c.expect})에서 실패했다: {_short(res.message)} — 원래 고치려던 것과 "
+                            "이 확인을 함께 지켜 다시 쓴다.",
+                            pool=REGRESS,
+                            cases=(c.case_id,),
+                        )
+                    )
+                else:
+                    unresolved.append(
+                        f"허용 설계 {r.target} 를 다시 만든 뒤 이전 판이 통과하던 {c.case_id} 에서 계속 실패: {_short(res.message)} "
+                        "— 숨은 테스트는 이전 판이 통과했으므로 구현 생성의 한계 (사람 확인)"
+                    )
+            elif passing and not exhausted(regen_counts, "gen_hidden", pool=DESIGN):
                 # 다시 만든 허용 구현이 또 떨어지는데 다른 허용 구현은 통과 — 케이스가 한 설계의 진행만 단언했을 수 있다.
                 # 흔한 구현을 의도한 사유로 잡는지(아래 갈래)는 이 케이스가 공정한지를 말해 주지 않는다. 한 번만 테스트를 의심한다.
                 actions.append(
@@ -1083,7 +1181,7 @@ def _gate4(
                         f"구현({', '.join(passing)})은 통과한다: {_short(res.message)} — 허용 설계 {r.target} 의 정당한 동작"
                         "(목록 길이·한 번에 보내는 건수·실패 뒤 멈춤 등 설계마다 다른 값)을 단언하지 않았는지 본다. "
                         f"모든 허용 설계에서 같은 결과(통과 조건: {c.expect})만 확인하고, 흔한 구현은 계속 의도한 사유로 실패해야 한다.",
-                        budget=DESIGN_SUFFIX,
+                        pool=DESIGN,
                     )
                 )
             elif any(
@@ -1114,7 +1212,7 @@ def _gate4(
                     f"허용 설계 {r.target} 가 다시 만든 뒤에도 {c.case_id} 실패 [{res.reason or '-'}] — 숨은 테스트는 흔한 구현을 "
                     f"의도한 사유({c.intended_reason})로 잡으므로 허용 구현이 설계를 못 따름: 설계·스택 조건 보강 (사람 확인)"
                 )
-            elif len(runs) == 1 and regen_counts.get("gen_hidden", 0) == 0:
+            elif len(runs) == 1 and not exhausted(regen_counts, "gen_hidden"):
                 # 허용 구현이 하나뿐이라 "모두 실패"로 가를 수 없다 — 구현을 한 번 고쳐도 실패하면 테스트를 의심
                 actions.append(
                     RepairAction(
@@ -1172,6 +1270,8 @@ def assign(
     terms: RepairTerms | None = None,
     fix_markers: Sequence[str] = (),
     feature_reasons: Collection[str] = (),
+    regen_log: Mapping[str, RegenNote] | None = None,
+    passed_before: Mapping[str, Collection[str]] | None = None,
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
@@ -1262,12 +1362,19 @@ def assign(
     accepted = [r for r in judged if r.kind == "ref_accepted"]
     if accepted:
         acts, unresolved = _gate4(
-            accepted, plan, counts, [r for r in judged if r.kind == "ref_naive"]
+            accepted,
+            plan,
+            counts,
+            [r for r in judged if r.kind == "ref_naive"],
+            regen_log,
+            passed_before,
         )
         actions += acts
         res.unresolved += unresolved
     res.actions = [
-        replace(a, note=a.note + KEEP_NAIVE) if a.generator == "gen_naive" and not a.budget else a
+        replace(a, note=a.note + KEEP_NAIVE)
+        if a.generator == "gen_naive" and a.pool in (GENERAL, COMPILE)
+        else a
         for a in _merge(actions)
     ]
     return res

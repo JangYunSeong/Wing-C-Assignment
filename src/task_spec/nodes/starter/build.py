@@ -45,11 +45,18 @@ from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
 from task_spec.starter.hidden_helpers import render_persistence_check
 from task_spec.starter.render import render_params
-from task_spec.starter.repair import STARTER, RepairAction, RepairPlan, assign
-from task_spec.starter.static_check import HARNESS_OVERRIDE, Overlay, static_check
-from task_spec.starter.traps import (
-    BUDGET as TRAP_BUDGET,
+from task_spec.starter.repair import (
+    COMPILE_RETRIES,
+    STARTER,
+    RegenNote,
+    RepairAction,
+    RepairPlan,
+    assign,
+    gates_of,
 )
+from task_spec.starter.repair import TRAP_GATE as TRAP_POOL
+from task_spec.starter.repair import VARIANT as VARIANT_POOL
+from task_spec.starter.static_check import HARNESS_OVERRIDE, Overlay, static_check
 from task_spec.starter.traps import (
     GATE as TRAP_GATE,
 )
@@ -80,11 +87,12 @@ from task_spec.starter.variants import (
 )
 
 MAX_ROUNDS = 3  # 빌드 전체 재생성 상한
-PER_ARTIFACT = 1  # 산출물마다 재생성 상한
-COMPILE_BUDGET = 2  # 컴파일 오류만 고칠 때는 2회까지 — 고치기 싸고, 2026-11-07 루프에서 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다
-COMPILE_TEST_ATTEMPTS = 2  # 채점 코드 컴파일 오류 재요청 상한 (구현 만들기 전, compile_and_fix)
+# 재생성 예산은 산출물·풀마다 (starter/repair.py POOLS — 상한은 Pool.limit). 컴파일 재요청 상한은 그 표의 COMPILE_RETRIES 하나에서.
+COMPILE_TEST_ATTEMPTS = (
+    COMPILE_RETRIES  # 채점 코드 컴파일 오류 재요청 상한 (구현 만들기 전, compile_and_fix)
+)
 COMPILE_IMPL_ATTEMPTS = (
-    2  # 구현(시작 코드·참조 구현) 컴파일 오류 재요청 상한 (무거운 검증 전, compile_impl_and_fix)
+    COMPILE_RETRIES  # 구현 컴파일 오류 재요청 상한 (무거운 검증 전, compile_impl_and_fix)
 )
 HIDDEN = "hidden"
 PUBLIC = "public"  # 공개 테스트 오버레이 키 (gen_public — 테스트 먼저, 2026-11-08)
@@ -367,6 +375,15 @@ async def _compile_refs(
             out.review_flags.append(flag)
 
 
+def _note_passed(out: BuildOutcome, report: VerifyReport) -> None:
+    """참조 구현마다 지금 숨은 테스트로 통과한 케이스를 모은다 — 다시 만든 판이 그 케이스에서 떨어지면 테스트가 아니라 퇴행 (#183)."""
+    for run in report.runs:
+        if run.kind in ("ref_naive", "ref_accepted") and run.setup == "ok":
+            out.passed_before.setdefault(run.target, set()).update(
+                t.name for t in run.results("hidden") if t.result == "PASS"
+            )
+
+
 def _withdraw_compile_flags(out: BuildOutcome, report: VerifyReport) -> None:
     """참조 구현의 컴파일 실패 표시는 그 구현의 그때 상태다 — 뒤 검증에서 그 구현이 컴파일·기동되면(setup ok) 거둔다.
     2026-11-14 kakaobank003: d3 컴파일 수리가 끝까지 안 되어 표시가 붙었고, 같은 회차의 기동 수리로 다시 만든 d3 가 검증을 모두
@@ -388,6 +405,10 @@ class BuildOutcome:
     review_flags: list[str] = field(default_factory=list)
     # 참조 구현 라벨 → 그 구현의 컴파일 실패 표시 (review_flags 에도 있음) — 뒤 검증에서 기동되면 거둔다 (_withdraw_compile_flags)
     compile_flags: dict[str, str] = field(default_factory=dict)
+    # 산출물 키 → 마지막으로 다시 만든 이유 (#183 — 수리 배정이 퇴행과 '이 케이스 때문에 다시 만들었는데 또 떨어짐'을 가른다)
+    regen_log: dict[str, RegenNote] = field(default_factory=dict)
+    # 참조 구현 라벨 → 그 설계의 어느 판이든 지금 숨은 테스트로 통과한 케이스 — 숨은 테스트·시작 코드를 다시 만들면 비운다
+    passed_before: dict[str, set[str]] = field(default_factory=dict)
     adjustments: list[str] = field(
         default_factory=list
     )  # 생성기 출력에서 코드가 고친 것 — 승인 화면에
@@ -422,7 +443,6 @@ class BuildOutcome:
 
 
 VARIANT_GATE = "⑩"  # 공개 테스트 변별 (#164)
-VARIANT_BUDGET = "#variant"  # 공개 테스트 수리 예산을 다른 게이트와 따로 센다
 
 
 def _pt_ac(b: BuildInputs) -> dict[str, str]:
@@ -527,7 +547,7 @@ async def _variant_gate(
                 reason="규칙을 어긴 변형이 공개 테스트 통과: "
                 + ", ".join(f"{r.rule_id} {OP_NAME[r.op]}" for r in alive),
                 note=repair_note(alive, test_ids, rule_acs),
-                budget=VARIANT_BUDGET,
+                pool=VARIANT_POOL,
             )
         )
     return plan
@@ -678,7 +698,7 @@ async def _trap_gate(
                 reason="허용 설계의 함정에 빠진 변형이 숨은 테스트 통과: "
                 + ", ".join(f"{r.design_id}" for r in alive),
                 note=trap_note(alive, [s for _, s in pairs]),
-                budget=TRAP_BUDGET,
+                pool=TRAP_POOL,
             )
         )
     return plan
@@ -1045,6 +1065,7 @@ async def build_and_repair(
             )
             out.reports.append(report)
             _withdraw_compile_flags(out, report)
+            _note_passed(out, report)
             out.snapshots.append(dict(out.overlays))
             shared = set(b.template.files("project")) | {
                 f.path for f in out.overlays[STARTER].files
@@ -1059,6 +1080,8 @@ async def build_and_repair(
                 terms=b.template.manifest.repair_terms,
                 fix_markers=b.seed.fix_markers if b.seed is not None else (),
                 feature_reasons=b.seed.reasons if b.seed is not None else (),
+                regen_log=out.regen_log,
+                passed_before=out.passed_before,
             )
             for (
                 flag
@@ -1076,7 +1099,7 @@ async def build_and_repair(
             out.review_flags += [f for f in tplan.flags if f not in out.review_flags]
             if tplan.actions:
                 a = tplan.actions[0]
-                tried = out.regen_counts.get(a.budget_key, 0) >= PER_ARTIFACT
+                tried = out.regen_counts.get(a.budget_key, 0) >= a.pool.limit
                 if not tried and round_no < max_rounds:
                     passed = _Passed(dict(out.overlays), tuple(plan.weak), list(out.traps))
                     if not await _regenerate(
@@ -1105,12 +1128,7 @@ async def build_and_repair(
                 _drop_cases(out, b, plan.weak)
             out.status = "review"
             return out
-        blocked = [
-            a
-            for a in plan.actions
-            if out.regen_counts.get(a.budget_key, 0)
-            >= (COMPILE_BUDGET if a.compile else PER_ARTIFACT)
-        ]
+        blocked = [a for a in plan.actions if out.regen_counts.get(a.budget_key, 0) >= a.pool.limit]
         if plan.unresolved or blocked or round_no == max_rounds:
             if (
                 passed is not None
@@ -1167,9 +1185,9 @@ def _drop_cases(out: BuildOutcome, b: BuildInputs, ids: Sequence[str]) -> None:
     logger.info("build dropped weak cases=%s", ",".join(sorted(drop)))
 
 
-KEEP_GATES = frozenset(
-    "③'"
-)  # 숨은 테스트 수리 중 이전 파일이 올바른 구현에 맞는 사유 게이트 (흔한 구현을 못 가름)
+# 숨은 테스트 수리 중 이전 파일이 올바른 구현에 맞는 사유 게이트 (흔한 구현을 못 가름) — 게이트 문자열 집합. 예전에는 글자 집합
+# frozenset("③'") 이라 글자 단위 비교로 우연히 맞았다 (#183). 합친 수리의 이어 붙은 게이트는 gates_of 로 나눠 비교한다.
+KEEP_GATES = frozenset({"③", "③'"})
 
 
 def _keepable_cases(actions: Sequence[RepairAction], out: BuildOutcome) -> frozenset[str]:
@@ -1179,7 +1197,7 @@ def _keepable_cases(actions: Sequence[RepairAction], out: BuildOutcome) -> froze
     허용 구현을 떨어뜨린 케이스(④)·setup·static·컴파일 수리·테스트 예외는 남기지 않는다 — 2026-11-11 재검증 오프라인: 허용 구현이 모두
     실패하는 hc1 을 남겨 4회차에 같은 실패가 되풀이됐다."""
     gates = [a.gate for a in actions if a.generator == "gen_hidden"]
-    if not gates or not all(set(g) <= KEEP_GATES for g in gates) or not out.reports:
+    if not gates or not all(set(gates_of(g)) <= KEEP_GATES for g in gates) or not out.reports:
         return frozenset()
     accepted = [r for r in out.reports[-1].runs if r.kind == "ref_accepted"]
     ids = {t.name for r in accepted for t in r.tests if t.group == "hidden"}
@@ -1204,8 +1222,11 @@ async def _regenerate(
     """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
     시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
     notes = {a.key: f"검증 실패 (게이트 {a.gate}) — {a.note}" for a in actions}
-    for a in actions:  # 컴파일 수리는 따로 센다 (RepairAction.budget_key)
+    for a in actions:  # 산출물·풀마다 센다 (RepairAction.budget_key — repair.POOLS)
         out.regen_counts[a.budget_key] = out.regen_counts.get(a.budget_key, 0) + 1
+        out.regen_log[a.key] = RegenNote(a.gate, a.cases, a.reason)
+    if any(a.generator in ("gen_hidden", "gen_starter") for a in actions):
+        out.passed_before.clear()  # 테스트·시작 코드가 바뀌면 이전 판의 통과는 근거가 아니다
 
     async def tests_compile() -> bool:
         """다시 만든 채점 코드(숨은·공개 테스트)도 구현에 쓰기 전에 컴파일 — 처음 만들 때(compile_and_fix)와 같은 루프.

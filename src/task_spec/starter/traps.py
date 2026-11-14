@@ -25,7 +25,6 @@ from task_spec.starter.variants import changed_lines, is_fixed_path
 MAX_TRAP_LINES = 30  # 함정 변형이 바꾼 줄 상한 — 설계 구조를 바꾸는 함정(조회 뒤 저장 등)이라 1차 변이보다 넉넉히
 LABEL = "trap"
 GATE = "⑪"
-BUDGET = "#trap"  # 숨은 테스트 수리 예산을 다른 게이트와 따로 센다
 
 # '함정: …' — 재료 형식('[복구] 조치 — 조건: … — 함정: …'). 대시·괄호 표기도 받는다 (리뷰 2026-11-13)
 _TRAP = re.compile(

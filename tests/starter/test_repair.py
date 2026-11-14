@@ -14,7 +14,7 @@ from task_spec.llm import Completion, LLMClient
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import GeneratedFile, HiddenPlan, TargetRun, VerifyReport
-from task_spec.starter.repair import DESIGN_SUFFIX, assign
+from task_spec.starter.repair import DESIGN, assign
 from task_spec.starter.static_check import Overlay
 from tests.starter.test_generate import D1, D2, SERVICE, STARTER, _files, _inputs
 from tests.starter.test_static_check import CASES, HC1, PKG
@@ -275,8 +275,8 @@ def test_naive_passing_a_case_is_regenerated_before_the_hidden_test() -> None:
     first = _assign(report)
     assert _keys(first) == ["gen_naive:naive-all"] and first.actions[0].gate == "③"
     assert "hc1" in first.actions[0].note and "구조 그대로" in first.actions[0].note
-    assert first.actions[0].budget_key == "gen_naive:naive-all#trap"
-    again = _assign(report, **{"gen_naive__naive-all#trap": 1})
+    assert first.actions[0].budget_key == "gen_naive:naive-all#naive-first"
+    again = _assign(report, **{"gen_naive__naive-all#naive-first": 1})
     assert _keys(again) == ["gen_hidden"]
     note = again.actions[0].note
     assert (
@@ -311,7 +311,7 @@ def test_naive_regenerated_for_another_failure_keeps_its_structure() -> None:
     d1 = _run("d1", "ref_accepted", *GOOD_ACC, _t("public", "Pt1Test"))
     plan = _assign(_report(naive, d1))
     [a] = [a for a in plan.actions if a.generator == "gen_naive"]
-    assert a.gate == "⑤" and "지적된 실패만 고친다" in a.note and a.budget == ""
+    assert a.gate == "⑤" and "지적된 실패만 고친다" in a.note and a.pool.suffix == ""
 
 
 def test_starter_that_already_passes_a_hidden_case_is_regenerated() -> None:
@@ -395,11 +395,11 @@ def test_regenerated_design_alone_stuck_in_a_hidden_case_suspects_the_test_once(
     assert _keys(plan) == ["gen_accepted:d1"] and plan.actions[0].gate == "setup"
     # 다시 만든 뒤에도 그 구현만 → 숨은 테스트를 한 번 의심 (설계 모순 예산)
     plan = _assign(_report(naive, d1), gen_accepted__d1=1)
-    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].budget == DESIGN_SUFFIX
+    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].pool is DESIGN
     assert "다른 구현(naive-all)은 판정까지 갔다" in plan.actions[0].note
     assert "응답하지 않은 요청을 붙잡은 채 다음 요청을 기다리지 말고" in plan.actions[0].note
     # 그 한 번을 썼으면 예전처럼 그 구현 (예산은 재생성 쪽이 센다)
-    counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN_SUFFIX}": 1}
+    counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN.suffix}": 1}
     plan = assign(_report(naive, d1), PLAN2, OVERLAYS, MISSED, counts)
     assert [a.key for a in plan.actions] == ["gen_accepted:d1"]
     # 테스트를 의심하는 회차에는 같은 케이스에서 함께 깨진 흔한 구현을 다시 만들지 않는다 (고친 테스트로 다음 회차에 비교)
@@ -439,10 +439,10 @@ def test_gate4_accepted_designs() -> None:
     # (2026-11-10 프론트 알파: 흔한 구현은 의도한 사유로 잡혀도 다른 허용 설계를 막는 케이스가 있었다)
     d2_ok = _run("d2", "ref_accepted", *GOOD_ACC)
     plan = _assign(_report(naive, d1, d2_ok), gen_accepted__d1=1)
-    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].budget == DESIGN_SUFFIX
+    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].pool is DESIGN
     assert "다른 허용 설계 구현(d2)은 통과" in plan.actions[0].note
     # 그 한 번을 썼으면 → 사람 확인 (설계를 못 따름 — 흔한 구현을 의도한 사유로 잡으므로)
-    counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN_SUFFIX}": 1}
+    counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN.suffix}": 1}
     plan = assign(_report(naive, d1, d2_ok), PLAN2, OVERLAYS, MISSED, counts)
     assert not plan.actions and any("설계를 못 따름" in u for u in plan.unresolved)
     # 일반 숨은 테스트 예산(③ 등)을 이미 써도 이 의심은 따로 센다
@@ -1024,7 +1024,7 @@ def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> No
     assert [(a.key, a.gate) for a in plan.actions] == [("gen_naive:naive-all", "③")]
     assert "let cancelled =" in plan.actions[0].note and not plan.unresolved
     again = assign(
-        report, PLAN2, overlays, MISSED, {"gen_naive:naive-all#trap": 1}, fix_markers=markers
+        report, PLAN2, overlays, MISSED, {"gen_naive:naive-all#naive-first": 1}, fix_markers=markers
     )
     assert not again.actions and any(u.startswith("재료 판정: ") for u in again.unresolved)
     # 표지가 없으면 지금 규칙 그대로 (흔한 구현을 먼저 다시)
@@ -1036,7 +1036,6 @@ def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> No
 
 def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() -> None:
     """2026-11-10 응답 순서 cf4: 공개 테스트가 지난 요청에 응답해, 지난 응답을 무시하는 허용 구현 d2 만 계속 떨어졌다."""
-    from task_spec.starter.repair import DESIGN_SUFFIX
 
     pub = _t("public", "pt1", "HARNESS_ERR", None, "Unable to find recommendation-list")
     report = _report(
@@ -1047,10 +1046,10 @@ def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() ->
     first = assign(report, PLAN2, OVERLAYS, MISSED, {})
     assert [a.key for a in first.actions] == ["gen_accepted:d2"]  # 처음엔 그 구현
     again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1})
-    assert [(a.key, a.budget) for a in again.actions] == [("gen_public", DESIGN_SUFFIX)]
+    assert [(a.key, a.pool) for a in again.actions] == [("gen_public", DESIGN)]
     assert "naive-all, d1" in again.actions[0].note and "match" in again.actions[0].note
     spent = assign(
-        report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1, f"gen_public{DESIGN_SUFFIX}": 1}
+        report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1, f"gen_public{DESIGN.suffix}": 1}
     )
     assert [a.key for a in spent.actions] == [
         "gen_accepted:d2"
@@ -1115,3 +1114,91 @@ def test_gate3_unreasoned_assert_names_the_line_and_the_two_ways() -> None:
     assert "(src/__grading__/cases/hc2.test.tsx:66)" in note
     assert "이 요구의 사유: record_missing, rollback_left_success" in note
     assert "준비 확인이면 흔한 구현도 지나가게" in note
+
+
+def test_budget_pools_are_one_table_with_the_old_limits() -> None:
+    """#183: 사례마다 접미사를 하나씩 더하던 예산을 표 하나로 — 상한은 정리 전과 같다 (일반 1·컴파일 2·나머지 1)."""
+    from task_spec.starter.repair import (
+        COMPILE,
+        GENERAL,
+        NAIVE_FIRST,
+        POOLS,
+        budget_key,
+        exhausted,
+    )
+
+    assert len({p.suffix for p in POOLS}) == len(
+        POOLS
+    )  # 키가 겹치지 않는다 (예전 ③·⑪ 이 둘 다 '#trap')
+    assert {p.suffix: p.limit for p in POOLS if p.limit != 1} == {COMPILE.suffix: 2}
+    assert budget_key("gen_naive", "naive-all", NAIVE_FIRST) == "gen_naive:naive-all#naive-first"
+    assert budget_key("gen_hidden") == "gen_hidden" and GENERAL.suffix == ""
+    counts = {"gen_hidden#compile": 1}
+    assert not exhausted(counts, "gen_hidden", pool=COMPILE) and not exhausted(counts, "gen_hidden")
+    assert exhausted({"gen_hidden#compile": 2}, "gen_hidden", pool=COMPILE)
+
+
+def test_merged_gates_are_split_before_comparing() -> None:
+    """#183: KEEP_GATES 가 글자 집합이라 우연히 맞던 비교 — 합친 수리의 이어 붙은 게이트("③③'")는 나눠 비교한다."""
+    from task_spec.nodes.starter.build import KEEP_GATES
+    from task_spec.starter.repair import gates_of
+
+    assert gates_of("③③'") == ["③", "③'"] and set(gates_of("③③'")) <= KEEP_GATES
+    assert not set(gates_of("③④")) <= KEEP_GATES and not set(gates_of("setup")) <= KEEP_GATES
+
+
+def test_regenerated_design_that_regressed_is_rebuilt_not_the_test() -> None:
+    """#183 (2026-11-14 naver_2026#002): 공개 테스트(⑤)로 다시 만든 허용 구현이 이전 판이 통과하던 숨은 케이스에서 떨어졌는데
+    '다시 만든 d1 만 실패 — 설계와 모순 의심'으로 멀쩡한 숨은 테스트를 다시 만들었다. 이전 판이 같은 테스트로 통과했으면 퇴행이다."""
+    from task_spec.starter.repair import REGRESS, RegenNote
+
+    naive = _run("naive-all", "ref_naive", *GOOD_NAIVE)
+    broke = _t("hidden", "hc1", "ASSERT", "pool_acquire_timeout", "동시 요청 중 5xx 3")
+    d1 = _run("d1", "ref_accepted", broke, GOOD_ACC[1])
+    d2 = _run("d2", "ref_accepted", *GOOD_ACC)
+    counts = {"gen_accepted:d1": 1}
+    # 이전 판 근거가 없으면 예전처럼 테스트를 한 번 의심
+    plan = assign(_report(naive, d1, d2), PLAN2, OVERLAYS, MISSED, counts)
+    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].pool is DESIGN
+    # 이전 판이 같은 숨은 테스트로 hc1 을 통과했다 → 구현을 다시 (원래 고치려던 사유와 함께)
+    log = {"gen_accepted:d1": RegenNote("⑤", (), "d1 가 공개 테스트 Pt3 실패")}
+    plan = assign(
+        _report(naive, d1, d2),
+        PLAN2,
+        OVERLAYS,
+        MISSED,
+        counts,
+        regen_log=log,
+        passed_before={"d1": {"hc1", "hc2"}},
+    )
+    assert _keys(plan) == ["gen_accepted:d1"]
+    a = plan.actions[0]
+    assert a.pool is REGRESS and a.cases == ("hc1",)
+    assert "이전 판이 통과하던" in a.note and "공개 테스트 Pt3" in a.note
+    # 퇴행 풀도 썼으면 테스트를 의심하지 않고 사람 확인 (숨은 테스트는 이전 판이 통과했다)
+    plan = assign(
+        _report(naive, d1, d2),
+        PLAN2,
+        OVERLAYS,
+        MISSED,
+        {**counts, f"gen_accepted:d1{REGRESS.suffix}": 1},
+        regen_log=log,
+        passed_before={"d1": {"hc1"}},
+    )
+    assert not plan.actions and any("구현 생성의 한계" in u for u in plan.unresolved)
+
+
+def test_build_collects_the_cases_any_version_of_a_design_passed() -> None:
+    """퇴행 판정의 근거 — 참조 구현마다 어느 판이든 지금 숨은 테스트로 통과한 케이스 (숨은 테스트·시작 코드를 다시 만들면
+    build._regenerate 가 비운다)."""
+    from task_spec.nodes.starter.build import BuildOutcome, _note_passed
+
+    out = BuildOutcome(status="failed")
+    naive = _run("naive-all", "ref_naive", *GOOD_NAIVE)
+    _note_passed(out, _report(naive, _run("d1", "ref_accepted", *GOOD_ACC)))
+    assert out.passed_before == {"naive-all": set(), "d1": {"hc1", "hc2"}}
+    _note_passed(out, _report(_run("d1", "ref_accepted", GOOD_NAIVE[0], GOOD_ACC[1])))
+    assert out.passed_before["d1"] == {
+        "hc1",
+        "hc2",
+    }  # 어느 판이든 통과한 케이스 — 지금 판이 떨어져도 남는다

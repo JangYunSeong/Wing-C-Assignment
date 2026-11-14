@@ -307,7 +307,7 @@ templates/<직군>/<스택>/CURRENT
    다시 구현 탓으로 보지 않음(기존 규칙 — 테스트 의심 — 으로).
    6회차($0.28): 공개 테스트 정상, 흔한 구현은 공개 테스트 통과 + hc1~hc3 를 의도한 사유로 실패(hc4 통과). 허용 구현이 다시 만든 뒤에도
    DuckDB COPY 옵션을 `AUTO_DETECT=TRUE` 로 써 실패(2회차와 같은 실수), 실행 오류 수리가 흔한 구현의 일반 예산을 써 ③(hc4 통과)을 못 함 →
-   manifest `code_pitfalls`(스택에서 되풀이되는 API 실수를 실행 전에 — COPY 옵션의 `=`), 실행 오류 수리는 따로 센다(`#crash`).
+   manifest `code_pitfalls`(스택에서 되풀이되는 API 실수를 실행 전에 — COPY 옵션의 `=`), 실행 오류 수리는 따로 센다(예산 풀 `CRASH`).
    7회차($0.46, 수리 3회): 흔한 구현은 공개 테스트 통과 + hc1~hc3 의도한 사유(hc4 는 숨은 테스트에 사유 표시 없음). 허용 구현은 다시 만들 때마다
    다른 DuckDB·pyarrow API 실수(CSV 시각 열이 TIMESTAMP 로 추정되는데 substr · numpy 가 필요한 메서드 · 1.5 의 .arrow() 가 RecordBatchReader) →
    manifest `stack_notes`(모든 생성기의 기술 환경에 붙는 API 사실 — 1.5.6 에서 확인, 함정 힌트 없음)와 code_pitfalls 2개(numpy·pandas 메서드,
