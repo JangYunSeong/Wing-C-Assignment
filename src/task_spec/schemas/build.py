@@ -217,6 +217,14 @@ class Fixture(Schema):
     content: str = Field(
         default="", max_length=2000
     )  # 모양·값 (예: 데이터베이스·테이블 목록, 파일 형식)
+    # 2026-11-15 #187 데이터 알파(woori001): 입력 위치가 자유 글뿐이라 검사가 날짜 폴더를 표기(`YYYY-MM-DD/` 꼴)로 짐작했고,
+    # `{YYYY-MM-DD}/` 로 바르게 적은 계약을 재요청했다 — 위치를 칸으로, 마디는 명령 옵션으로 잇는다
+    path: str | None = Field(
+        default=None,
+        max_length=200,
+        description="kind file 만: 위치 패턴 — 명령 옵션을 {옵션 이름} 으로 (예: {raw_dir}/{run_date}/*.jsonl). "
+        "받은 날짜별 폴더면 그 마디가 실행 날짜 옵션(type date)",
+    )
     refs: list[str] = Field(min_length=1)
 
     @field_validator("refs")

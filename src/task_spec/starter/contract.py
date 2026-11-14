@@ -1456,26 +1456,7 @@ def _needs(
             "endpoints 에 POST·PUT·PATCH·DELETE 중 하나로 (요청 본문·성공 응답 본문 포함) 적는다"
         )
     if "dated_input_folders" in need:
-        dated = [
-            fx
-            for fx in contract.fixtures
-            # 날짜가 폴더 이름 자체 (출력 파티션 date=YYYY-MM-DD 는 입력 구조가 아니다)
-            if fx.kind == "file"
-            and re.search(
-                r"(?<![=\w])(?:YYYY-MM-DD|\{date\}|<date>)/", f"{fx.summary} {fx.content}"
-            )
-        ]
-        date_opt = any(
-            "date" in fl.name.lower() or "date" in fl.type.lower()
-            for e in contract.endpoints
-            if not e.method
-            for fl in [*e.request, *e.query]
-        )
-        if not dated or not date_opt:
-            out.append(
-                f"숨은 요구에 필요한 것이 계약에 없음 — 날짜별 입력 폴더: {need['dated_input_folders']}. fixtures(kind file)에 "
-                "입력 폴더 규칙(예: <raw>/YYYY-MM-DD/*.jsonl — 받은 날짜별 폴더)을, 명령 옵션에 그 상위 폴더와 실행 날짜를 둔다"
-            )
+        out += _dated_folder_problems(contract, need["dated_input_folders"])
     if "result_screen" in need and not any(sc.elements for sc in contract.screens):
         out.append(
             f"숨은 요구에 필요한 것이 계약에 없음 — 결과를 보여 주는 화면 요소: {need['result_screen']}. "
@@ -1555,14 +1536,70 @@ INTERACTIVE_ROLES = frozenset(
 _FORMATS = ("jsonl", "csv", "parquet")
 
 
+def command_options(contract: TaskContract) -> dict[str, ContractField]:
+    """명령(메서드 없는 엔드포인트)의 옵션 — 이름 → 칸 (요청·쿼리)."""
+    return {f.name: f for e in contract.endpoints if not e.method for f in [*e.request, *e.query]}
+
+
+_PATH_SLOT = re.compile(r"\{([^{}/]*)\}")
+
+
+def path_slots(path: str) -> list[str]:
+    """위치 패턴의 자리표시자 이름 (`{raw_dir}/{run_date}/*.csv` → raw_dir, run_date)."""
+    return _PATH_SLOT.findall(path)
+
+
+def _dated_folder_problems(contract: TaskContract, note: str) -> list[str]:
+    """받은 날짜별 입력 폴더 — 파일 입력 환경의 위치 패턴(Fixture.path)에 마디 하나가 통째로 날짜 형식 명령 옵션(`{run_date}`)인 것.
+    #187 woori001: 위치가 자유 글뿐이라 `YYYY-MM-DD/` 표기만 받던 검사가 `{YYYY-MM-DD}/` 로 바르게 적은 계약을 재요청했고, 실행 날짜 옵션도
+    이름의 'date' 글자로 짐작했다 — 둘 다 칸으로 (마디 = 옵션, 옵션 형식 = date)."""
+    options = command_options(contract)
+    dates = {
+        n for n, f in options.items() if non_null(parse_field(f.type)).kind in ("date", "datetime")
+    }
+    segments = [
+        seg
+        for fx in contract.fixtures
+        if fx.kind == "file" and fx.path
+        for seg in fx.path.split("/")
+    ]
+    if any(seg in {f"{{{d}}}" for d in dates} for seg in segments):
+        return []
+    untyped = sorted(
+        {s[1:-1] for s in segments if s.startswith("{") and s.endswith("}") and s[1:-1] in options}
+        - dates
+    )
+    hint = (
+        f" (경로 마디로 쓴 옵션 {', '.join(untyped)} 의 type 이 날짜가 아님 — 실행 날짜면 type 을 date 로)"
+        if untyped
+        else ""
+    )
+    return [
+        f"숨은 요구에 필요한 것이 계약에 없음 — 날짜별 입력 폴더: {note}. 입력 파일 환경(fixtures kind file)의 path 에 받은 날짜 폴더 마디를 "
+        f"실행 날짜 옵션으로 적고(예: {{raw_dir}}/{{run_date}}/*.jsonl), 그 옵션은 명령의 type date 칸으로 둔다{hint}"
+    ]
+
+
 def _file_fixtures(contract: TaskContract) -> list[str]:
     """파일을 다루는 템플릿(interfaces 에 file): 파일 fixture 마다 형식 하나·행 모양 엔티티 이름. 2026-11-09 데이터 알파:
     입력 형식이 'csv 또는 parquet', 입력 레코드 필드가 엔티티 없이 글로만('결제번호·매장ID 등') — 테스트와 구현이 필드 이름을 서로 짐작해 모든 구현이 실패."""
     out: list[str] = []
     names = [m.name for m in contract.entities]
+    options = command_options(contract)
     for fx in contract.fixtures:
         if fx.kind != "file":
             continue
+        if not fx.path:
+            out.append(
+                f"파일 {fx.fixture_id} 에 위치(path)가 없음 — 명령 옵션을 {{옵션 이름}} 으로 쓴 위치 패턴을 적는다 (예: {{raw_dir}}/{{run_date}}/*.jsonl)"
+            )
+        else:
+            unknown = [s for s in path_slots(fx.path) if s not in options]
+            if unknown:
+                out.append(
+                    f"파일 {fx.fixture_id} 의 path {fx.path} 자리표시자 {', '.join(unknown)} 가 명령 옵션이 아님 — {{…}} 에는 명령 옵션 이름만 "
+                    f"(옵션: {', '.join(options) or '없음'})"
+                )
         text = f"{fx.summary} {fx.content}"
         formats = {f for f in _FORMATS if re.search(rf"\b{f}\b", text.lower())}
         if len(formats) > 1:

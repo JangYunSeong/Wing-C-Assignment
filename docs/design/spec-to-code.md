@@ -99,6 +99,7 @@ TaskContract                         ← 지원자에게 보임 (README "계약"
                 · row_of(한 건이 어느 테이블 엔티티의 한 행인가 — 집계면 null) [2026-11-14, plan_contract v29 — #185]
   settings[]:    key(스프링 속성, 점 표기) · type(int) · default · meaning · refs — 구현이 읽어야 하는 설정 (스프링 템플릿만) [2026-11-13, #161]
   seed[]:       entity id · rows(정확한 행 수, id 1~rows) · groups(id 범위마다 처음 값, 1~rows 를 빈틈·겹침 없이) · 값 규칙 (가상 데이터만, §10-16)
+  fixtures[]:    id(f1…) · kind(db·file·service·browser·env) · summary · content · path(file 만 — 위치 패턴, 마디는 {명령 옵션}; 받은 날짜 폴더는 type date 옵션 마디) [2026-11-15, plan_contract v30 — #187]
   public_tests[]: id(pt1…) · ac_id(p*) · 무엇을 확인하나 (공개 수용 기준 1:1 이상)
                 · rows(테스트가 id 로 다루는 시드 행의 처음 값 — API 가 돌려주는 엔티티·요청으로 바꾸는 행만, 조인돼 보이는 원천 행은 fit_row_targets 가 뺌)
                 · rows[] — 그 테스트가 쓸 시드 행의 처음 값 (entity_id · values) [2026-11-13 #164]. 코드가 그 처음 값의 시드 그룹·공개 몫 상수를

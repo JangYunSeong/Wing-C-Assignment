@@ -168,6 +168,8 @@ def contract_markdown(
         out += ["### 입력 환경", ""]
         for fx in contract.fixtures:
             out.append(f"- `{fx.fixture_id}` ({fx.kind}) {fx.summary}")
+            if fx.path:
+                out.append(f"  - 위치: `{fx.path}`")
             out += [f"  {line}" for line in fx.content.splitlines() if line.strip()]
         out.append("")
     if contract.seed:

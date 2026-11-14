@@ -71,6 +71,7 @@ def _contract() -> TaskContract:
                     "fixture_id": "f1",
                     "kind": "file",
                     "summary": "<raw>/YYYY-MM-DD/*.jsonl",
+                    "path": "{raw_dir}/{date}/*.jsonl",
                     "refs": ["r1"],
                 }
             ],
@@ -202,9 +203,14 @@ def test_python_overlays_pass_and_rules_bite() -> None:
     assert any("not_a_reason" in m for m in _run(HC1.replace("late_data_missed", "not_a_reason")))
 
 
-def _with_fixture(summary: str, request: list[dict[str, Any]] | None = None) -> TaskContract:
+def _with_fixture(
+    summary: str,
+    request: list[dict[str, Any]] | None = None,
+    path: str | None = "{raw_dir}/{date}/*.jsonl",
+) -> TaskContract:
     d = _contract().model_dump()
     d["fixtures"][0]["summary"] = summary
+    d["fixtures"][0]["path"] = path
     if request is not None:
         d["endpoints"][0]["request"] = request
     return TaskContract.model_validate(d)
@@ -224,20 +230,39 @@ def test_file_fixture_needs_one_format_and_a_row_entity() -> None:
     assert len(two) == 1 and "csv·parquet" in two[0]
     nameless = _file_fixtures(_with_fixture("<raw>/YYYY-MM-DD/*.jsonl — 결제번호·금액 등"))
     assert len(nameless) == 1 and "행 모양 엔티티" in nameless[0]
+    # 위치는 칸(path)으로 — 없거나 명령 옵션이 아닌 자리표시자면 재요청 (#187 woori001)
+    no_path = _file_fixtures(_with_fixture("한 줄에 Payment 하나 (jsonl)", path=None))
+    assert len(no_path) == 1 and "위치(path)가 없음" in no_path[0]
+    stray = _file_fixtures(
+        _with_fixture("한 줄에 Payment 하나 (jsonl)", path="{raw}/{YYYY-MM-DD}/*.jsonl")
+    )
+    assert len(stray) == 1 and "raw, YYYY-MM-DD 가 명령 옵션이 아님" in stray[0]
 
 
 def test_dated_input_folders_need_date_named_input_folder_and_date_option() -> None:
+    """날짜별 입력 폴더 = 파일 입력 환경의 위치(path) 마디 하나가 통째로 날짜 형식 명령 옵션. 글 표기를 짐작하지 않는다 (#187 woori001:
+    `{YYYY-MM-DD}/` 로 바르게 적은 계약을 `YYYY-MM-DD/` 꼴만 받던 검사가 재요청)."""
     seed = _batch_seed()
-    ok = _with_fixture("<raw>/YYYY-MM-DD/*.jsonl — 한 줄에 Payment 하나")
-    assert not [p for p in _needs(ok, _plan(), seed) if "날짜별 입력 폴더" in p]
-    # 출력 파티션 date=YYYY-MM-DD 만 있고 입력은 파일 하나 — 2026-11-09 데이터 알파
-    out_only = _with_fixture("<raw>/payments.jsonl → <out>/date=YYYY-MM-DD/part.parquet, Payment")
-    assert [p for p in _needs(out_only, _plan(), seed) if "날짜별 입력 폴더" in p]
-    no_date_opt = _with_fixture(
-        "<raw>/YYYY-MM-DD/*.jsonl — Payment",
-        request=[_f("raw_dir", "string"), _f("out", "string")],
-    )
-    assert [p for p in _needs(no_date_opt, _plan(), seed) if "날짜별 입력 폴더" in p]
+
+    def dated(c: TaskContract) -> list[str]:
+        return [p for p in _needs(c, _plan(), seed) if "날짜별 입력 폴더" in p]
+
+    assert not dated(
+        _with_fixture("한 줄에 Payment 하나")
+    )  # {raw_dir}/{date}/*.jsonl, date 는 type date
+    as_of = [_f("as_of", "date"), _f("raw_dir", "string"), _f("out", "string")]
+    assert not dated(
+        _with_fixture("Payment", request=as_of, path="{raw_dir}/{as_of}/*.jsonl")
+    )  # 이름에 date 가 없어도
+    # 출력 파티션 date=… 만 있고 입력은 파일 하나 — 2026-11-09 데이터 알파
+    assert dated(_with_fixture("Payment", path="{raw_dir}/payments.jsonl"))
+    assert dated(
+        _with_fixture("Payment", path="{out}/date={date}/part.parquet")
+    )  # 마디가 통째로 옵션이 아니다
+    # 마디로 쓴 옵션이 글자 형식이면 날짜로 치지 않고, 무엇을 고칠지 짚는다 (woori001: run_date string + 'YYYY-MM-DD 형식')
+    texty = [_f("run_date", "string"), _f("raw_dir", "string"), _f("out", "string")]
+    [msg] = dated(_with_fixture("Payment", request=texty, path="{raw_dir}/{run_date}/*.jsonl"))
+    assert "run_date 의 type 이 날짜가 아님" in msg
 
 
 PT_BAD = (
