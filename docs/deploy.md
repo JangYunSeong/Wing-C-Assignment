@@ -335,6 +335,39 @@ podman rm -f task-api && TASK_API_IMAGE=task-api:<버전> docker/api/run.sh
 
 - 운영망에서 API 컨테이너가 받는 곳의 SFTP 포트로 나갈 수 있어야 한다 [미정: 방화벽 확인].
 
+### 2-12. 받는 쪽이 가져가는 전달 (/pull)
+
+SFTP(2-11) 대신 받는 서버가 **HTTPS 와 토큰**으로 묶음을 내려받는다 — 받는 곳에 SSH 계정·공개키 등록·방화벽이 필요 없다.
+받는 곳마다 둘 중 하나를 고른다. 토큰 하나가 그 대상의 역할(채점·평가) 하나만 연다.
+
+처음 한 번 (운영 서버):
+
+```bash
+# 1) 토큰 — 받는 곳 담당자에게 따로 전달 (메일 본문·채팅에 남기지 않는 편이 낫다)
+openssl rand -hex 32
+# 2) API env 파일 (docker/api/.env) — <이름> 은 소문자로 읽힌다
+#   PULL_TOKENS__GRADER_TEST=<위 값>
+# 3) DB 에 대상 등록 (이름·역할) — POST /delivery-targets {"name": "grader_test", "role": "grader"}
+# 4) 받는 서버 IP 를 nginx 허용 목록(.allow_list)에 — /pull 도 허용 목록은 거친다 (Basic 인증만 빠짐)
+# 5) API·nginx 다시 만들기 (env 는 restart 로 다시 읽지 않는다)
+```
+
+받는 쪽 (예):
+
+```bash
+H="Authorization: Bearer $TOKEN"; S=https://<서버 주소>
+curl -sfH "$H" $S/pull/builds                                  # 가져갈 빌드 — delivered=false 인 것
+mkdir -p <build_id> && cd <build_id>
+for f in SHA256SUMS <files[].name …>; do curl -sfH "$H" -o "$f" $S/pull/builds/<build_id>/files/$f; done
+sha256sum -c SHA256SUMS                                          # SHA256SUMS 는 DB 기록으로 만든다
+curl -sfH "$H" -H 'content-type: application/json' \
+  -d "{\"sha256sums_sha256\": \"$(sha256sum SHA256SUMS | cut -d' ' -f1)\"}" $S/pull/builds/<build_id>/done
+```
+
+- `done` 이 전달 기록(sent)을 남기고 첫 전달이면 빌드가 published 가 된다. 다시 내려받기는 막지 않는다 (기록은 한 번).
+- 새 빌드 알림은 없다 — 받는 쪽이 `/pull/builds` 를 주기적으로 본다 [제안: 알림은 받는 쪽이 원하면].
+- 토큰을 바꾸려면 env 값을 바꾸고 API 를 다시 만든다. 토큰 유출 시 그 줄을 지우면 그 대상은 바로 막힌다.
+
 ## 3. 확인
 
 ```bash

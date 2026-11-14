@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from task_spec.delivery.target import SftpTarget
@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     sftp_targets: dict[str, SftpTarget] = Field(default_factory=dict)
     # 역할 폴더 하나 보내는 시간 상한(초) — 묶음이 수백 MB
     sftp_timeout_seconds: float = Field(default=1800.0, gt=0)
+    # 받는 쪽이 가져가는 전달 (/pull, docs/deploy.md 2-12). `PULL_TOKENS__<이름>=<토큰>` — 이름은 DB delivery_target.name 과
+    # 같게(소문자로 읽힘), 토큰이 그 대상의 역할 하나만 연다. 32자 이상 (예: `openssl rand -hex 32`)
+    pull_tokens: dict[str, SecretStr] = Field(default_factory=dict)
+
+    @field_validator("pull_tokens")
+    @classmethod
+    def _pull_tokens_long(cls, v: dict[str, SecretStr]) -> dict[str, SecretStr]:
+        short = sorted(k for k, t in v.items() if len(t.get_secret_value()) < 32)
+        if short:
+            raise ValueError(f"PULL_TOKENS 가 32자보다 짧음: {', '.join(short)}")
+        return v
 
     # 자기소개서 사용 여부 [확정: 2026-11-03 사용자 — 검증할 주장은 이력서에서만].
     # false 면 API 가 자기소개서를 저장하지 않고, 그래프도 처리하지 않는다 (개인정보 최소 처리).

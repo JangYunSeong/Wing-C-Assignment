@@ -206,3 +206,24 @@ def install_error_handlers(app: FastAPI) -> None:
     async def _internal(request: Request, exc: Exception) -> JSONResponse:
         logger.error("unhandled error type=%s path=%s", type(exc).__name__, request.url.path)
         return _response(500, "internal_error", "내부 오류", request.path_params.get("run_id"))
+
+
+class PullUnauthorized(DomainError):
+    """받는 쪽 토큰이 없거나 맞지 않음 (/pull) — 어느 토큰이 틀렸는지 말하지 않는다."""
+
+    code = "pull_unauthorized"
+    status_code = 401
+
+    def __init__(self) -> None:
+        super().__init__("받는 쪽 토큰이 필요합니다 (Authorization: Bearer <토큰>)")
+
+
+class PullNotAvailable(DomainError):
+    """이 토큰의 역할로 가져갈 수 있는 묶음이 아님 — 빌드가 없거나, 승인·확정 전이거나, 그 역할의 묶음·파일이 없다.
+    어느 쪽인지 구분하지 않는다 (받는 쪽에 다른 빌드의 상태를 알리지 않게)."""
+
+    code = "pull_not_available"
+    status_code = 404
+
+    def __init__(self, build_id: str) -> None:
+        super().__init__(f"{build_id}: 가져갈 수 있는 묶음이 없습니다")
