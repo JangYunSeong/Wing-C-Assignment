@@ -63,6 +63,8 @@ from task_spec.starter.skeleton import (
     page_names,
 )
 from task_spec.starter.skeleton import routes as skeleton_routes
+from task_spec.starter.skip_apis import NOTE as SKIP_NOTE
+from task_spec.starter.skip_apis import skip_hits
 from task_spec.starter.tables import (
     contract_tables,
     declared_tables,
@@ -2552,6 +2554,8 @@ def static_check(
             else:
                 res.problems += _starter_settings(o, contract)
             res.review_flags += flags
+        if o.kind in ("hidden", "public_test"):
+            res.problems += _skipped_tests(o, template)
         if o.kind == "public_test":
             res.problems += _public_cases(o, template, plan, contract)
             res.problems += _public_row_uses(o, contract, plan)
@@ -2632,6 +2636,16 @@ def _script_imports(o: Overlay, t: Template, contract: TaskContract | None) -> l
                 )
                 break
     return out
+
+
+def _skipped_tests(o: Overlay, t: Template) -> list[StaticProblem]:
+    """숨은·공개 테스트의 건너뛰기 API (#173) — 조건부 건너뛰기는 구현에 따라 판정이 갈린다."""
+    hits = [h for f in o.files for h in skip_hits(t.manifest, f.path, f.content)]
+    if not hits:
+        return []
+    return [
+        StaticProblem(o.target, f"{o.name} 이 테스트를 건너뜀: {'; '.join(hits[:4])} — {SKIP_NOTE}")
+    ]
 
 
 def _code_pitfalls(o: Overlay, t: Template) -> list[StaticProblem]:

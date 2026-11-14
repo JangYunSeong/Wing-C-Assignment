@@ -110,3 +110,22 @@ def test_pytest_collection_syntax_error_is_located_relative_to_the_assembly() ->
             "detail": "",
         }
     ]
+
+
+SKIPS = """<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">
+<testcase classname="test_hc1_x" name="test_hc1_ok" file="../cases/test_hc1_x.py" line="3"/>
+<testcase classname="test_hc1_x" name="test_hc1_when_output" file="../cases/test_hc1_x.py" line="9">
+  <skipped type="pytest.skip" message="출력이 없으면 건너뜀">skip</skipped></testcase>
+<testcase classname="test_hc2_y" name="test_hc2" file="../cases/test_hc2_y.py" line="3">
+  <skipped type="pytest.xfail" message="xfail">xfail</skipped></testcase>
+</testsuite></testsuites>"""
+
+
+def test_skipped_and_xfail_are_not_a_pass(tmp_path: Path) -> None:
+    """#173: 건너뜀을 빼려던 분기가 늘 거짓이라 skip·xfail 이 통과였다 (verify·grade 공용 판정)."""
+    xml = tmp_path / "g.xml"
+    xml.write_text(SKIPS, "utf-8")
+    got = {r["name"]: r for r in g.junit_results(xml, "grading/harness", LAYOUT, r"\bhc\d{1,2}\b")}
+    assert got["hc1"]["result"] == "HARNESS_ERR" and g.SKIPPED in got["hc1"]["message"]
+    assert "출력이 없으면" in got["hc1"]["message"]
+    assert got["hc2"]["result"] == "HARNESS_ERR"

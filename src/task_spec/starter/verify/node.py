@@ -280,13 +280,19 @@ class NodeVerifier:
         out: list[TestResult] = []
         for f in json.loads(report.read_text("utf-8")).get("testResults", []):
             for a in f.get("assertionResults") or []:
-                failed = a.get("status") == "failed"
-                msg = clean_message(str((a.get("failureMessages") or [""])[0])) if failed else ""
+                status = a.get("status")
+                msg = (
+                    clean_message(str((a.get("failureMessages") or [""])[0]))
+                    if status == "failed"
+                    else ""
+                    if status == "passed"
+                    else judge.SKIPPED  # 건너뜀은 통과가 아니다 (#173)
+                )
                 out.append(
                     TestResult(
                         group="conform",
                         name=str(a.get("title", "conform"))[:120] or "conform",
-                        result="HARNESS_ERR" if failed else "PASS",
+                        result="PASS" if status == "passed" else "HARNESS_ERR",
                         message=msg[:400],
                     )
                 )

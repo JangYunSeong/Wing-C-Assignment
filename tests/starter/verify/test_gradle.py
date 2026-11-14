@@ -186,3 +186,22 @@ def test_compile_errors_carry_symbol_and_location(tmp_path: Path) -> None:
         ),
         ("src/test/java/a/Hc2Test.java", 7, ""),
     ]
+
+
+def test_skipped_tests_are_not_a_pass(tmp_path: Path) -> None:
+    """#173: JUnit XML 의 <skipped/>(@Disabled·assume)는 실패·오류만 보던 판정에서 통과였다 — 검증·채점 모두 HARNESS_ERR."""
+    from task_spec.starter.grade.image_grade import junit as grade_junit
+    from task_spec.starter.verify.gradle import SKIPPED
+
+    (tmp_path / f"TEST-{CASES}.SkipTest.xml").write_text(
+        SUITE.format(cls=f"{CASES}.SkipTest", n=0, body='<skipped message="출력이 없음"/>'), "utf-8"
+    )
+    _xml(tmp_path, "com.example.service.publictests.Pt1Test")
+    [hidden] = [t for t in junit_results(tmp_path, {}) if t.group == "hidden"]
+    assert (
+        hidden.result == "HARNESS_ERR"
+        and SKIPPED in hidden.message
+        and "출력이 없음" in hidden.message
+    )
+    graded = {r["name"]: r for r in grade_junit(tmp_path, {})}
+    assert graded["SkipTest"]["result"] == "HARNESS_ERR" and graded["Pt1Test"]["result"] == "PASS"

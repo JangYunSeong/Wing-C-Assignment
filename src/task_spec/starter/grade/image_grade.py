@@ -27,6 +27,8 @@ OUT = Path(os.environ.get("GRADE_OUT", "/out"))
 WORK = Path(os.environ.get("GRADE_WORK", "/tmp/grade-work"))
 REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
 ASSERTION = {"AssertionError", "AssertionFailedError", "MultipleFailuresError"}
+# 건너뛴 테스트 — 판정하지 않은 것이라 통과로 세지 않는다 (#173: 조건부 건너뛰기가 검증을 지나 채점에서 통과로 기록될 수 있었다)
+SKIPPED = "테스트를 건너뜀 — 판정하지 않았으므로 통과가 아니다"
 BOOT = ("Failed to load ApplicationContext", "ApplicationContext failure threshold")
 
 
@@ -75,6 +77,7 @@ def junit(results: Path, classes: dict[str, str]) -> list[dict]:
         root = ET.parse(xml).getroot()
         classname = root.get("name", xml.stem)
         first = None
+        skipped = None
         for tc in root.iter("testcase"):
             classname = tc.get("classname", classname)
             bad = tc.find("failure")
@@ -82,6 +85,10 @@ def junit(results: Path, classes: dict[str, str]) -> list[dict]:
                 bad = tc.find("error")
             if bad is not None and first is None:
                 first = (bad.get("type", ""), bad.get("message", "") or (bad.text or ""))
+            if skipped is None and (sk := tc.find("skipped")) is not None:  # @Disabled·assume…
+                skipped = f"{SKIPPED}: {tc.get('name', '')} {sk.get('message', '')}".strip()
+        if first is None and skipped is not None:
+            first = ("skipped", skipped)
         simple = classname.rsplit(".", 1)[-1]
         if ".grading.cases." in classname:
             group, name = "hidden", classes.get(simple, simple)

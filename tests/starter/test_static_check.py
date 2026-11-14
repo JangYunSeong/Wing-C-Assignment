@@ -791,3 +791,50 @@ def test_hidden_reason_outside_material_list_is_reasked() -> None:
     assert not _has(
         _run().for_target("gen_hidden"), "목록 밖"
     )  # 재료가 사유를 적지 않으면 템플릿 목록 전체
+
+
+def test_generated_tests_may_not_skip() -> None:
+    """#173: 건너뛰기 API 를 쓴 숨은·공개 테스트는 재요청 — 스택 언어별 표 (skip_apis.SKIP_APIS)."""
+    from task_spec.starter.skip_apis import skip_hits
+
+    skip_case = HC1.replace("    @Test\n", "    @Test\n    @Disabled\n").replace(
+        "        int n =",
+        '        Assumptions.assumeTrue(ready(), "출력이 없음");\n        int n =',
+    )
+    overlays = _overlays(
+        hidden=[
+            _f(f"{CASES}/OrderStatusBurstTest.java", skip_case),
+            render_params(PLAN, JAVA.manifest),
+        ]
+    )
+    msgs = _run(overlays).for_target("gen_hidden")
+    assert _has(msgs, "테스트를 건너뜀", "@Disabled", "Assumptions"), msgs
+    assert not _has(_run().for_target("gen_hidden"), "테스트를 건너뜀")
+    fe = load_template("frontend/react-vite-ts").manifest
+    py = load_template("data/python-duckdb").manifest
+    assert (
+        skip_hits(
+            fe,
+            "a.test.tsx",
+            "it.skip('x', () => {})\ntest.skipIf(!ok)('y', fn)\nit('z', (ctx) => { ctx.skip() })",
+        )
+        and len(
+            skip_hits(
+                fe,
+                "a.test.tsx",
+                "it.skip('x', () => {})\ntest.skipIf(!ok)('y', fn)\nit('z', (ctx) => { ctx.skip() })",
+            )
+        )
+        == 3
+    )
+    assert not skip_hits(fe, "a.test.tsx", "it('x', () => { rows.slice(1) })")
+    assert (
+        len(
+            skip_hits(
+                py,
+                "t.py",
+                "@pytest.mark.skipif(True, reason='x')\ndef t():\n    pytest.skip('no')\n    pytest.xfail('x')",
+            )
+        )
+        == 3
+    )
