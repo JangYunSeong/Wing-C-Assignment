@@ -66,6 +66,9 @@ class ContractResult:
     cost_usd: float
     seed: FeatureSeed | None = None  # 재료의 기능형 칸 — 생성기 입력 그대로 넘긴다
     avoid_terms: tuple[str, ...] = ()
+    # 계약 단계의 승인자 표시 (plan_contract flags — '운영 값 후보가 여럿', 근거 조각 등). 예전에는 운영 경로가 버려 승인 화면에
+    # 나오지 않았다 (평가 러너에서만 보였다)
+    review_flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -192,7 +195,7 @@ async def run_job(
                 contract=c.contract,
                 hidden_plan=b.plan,
                 verification=i.verification,
-                review_flags=merged_flags(task.review_flags, b.review_flags),
+                review_flags=merged_flags(task.review_flags, c.review_flags, b.review_flags),
                 repairs=b.repairs,
             ),
         )

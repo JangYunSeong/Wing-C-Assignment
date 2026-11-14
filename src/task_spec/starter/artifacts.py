@@ -160,9 +160,9 @@ def overlay_files(build_id: str, item: TaskMaterial) -> list[StarterFile]:
     return out
 
 
-def merged_flags(task_flags: Sequence[str], build_flags: Sequence[str]) -> list[str]:
-    """명세의 표시 + 빌드 단계의 표시 (같은 글은 한 번)."""
-    return list(dict.fromkeys([*task_flags, *build_flags]))
+def merged_flags(*stages: Sequence[str]) -> list[str]:
+    """단계마다의 승인자 표시를 차례로 (명세 → 계약 → 빌드, 같은 글은 한 번)."""
+    return list(dict.fromkeys(f for flags in stages for f in flags))
 
 
 def case_results(cases: Any) -> list[dict[str, Any]]:

@@ -107,6 +107,7 @@ class RealSteps:
             cost_usd=_cost(list(res.provenance)),
             seed=inc.feature,
             avoid_terms=tuple(inc.avoid_terms),
+            review_flags=tuple(res.flags),
         )
 
     # ② 빌드
