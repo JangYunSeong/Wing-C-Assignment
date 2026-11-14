@@ -663,10 +663,29 @@ def test_fit_covers_connects_loose_elements_by_their_own_refs() -> None:
         TaskContract.model_validate(_contract()),
         [],
     )
-    # refs 가 공개 수용 기준뿐이면 그 id 에
+    # refs 가 공개 수용 기준뿐이면 잇지 않는다 — 어느 요구와 관련인지 계약에서 알 수 없다 (#180: 예전엔 covers[p2] 를 만들어 통과)
     only_ac = _spec(req_ids=("r1",))
     fitted, _ = fit_covers(contract, only_ac)
-    assert fitted.covers.get("p2") == ["e2"]
+    assert "p2" not in fitted.covers
+    assert _has(
+        check_contract(
+            fitted, HiddenPlan.model_validate(_plan()), only_ac, _manifest(), BACKEND_SEED
+        ).problems,
+        "연결되지 않은 계약 요소",
+        "e2",
+    )
+
+
+def test_acceptance_criterion_keys_are_dropped_from_covers() -> None:
+    """#180: covers 키는 공개 요구만 — 수용 기준(p…) 키는 공개 테스트가 대응하므로 코드가 빼고, 그 아래에만 있던 요소는 요소의 refs 로
+    다시 잇는다. 예전엔 p… 값까지 '연결됨'으로 세어 요소를 수용 기준에만 이어도 통과했다."""
+    c = _contract()
+    c["covers"] = {"r1": ["e1", "m1", "m2"], "p2": ["e2"]}  # e2 의 refs 는 r2·p2
+    fitted, notes = fit_covers(TaskContract.model_validate(c), _spec())
+    assert "p2" not in fitted.covers and fitted.covers["r2"] == ["e2"]
+    assert _has(notes, "공개 수용 기준 키 p2 를 뺌") and _has(notes, "e2", "covers r2")
+    # 맞추지 않은 계약을 그대로 검사하면 수용 기준 키는 문제
+    assert _has(_check(c).problems, "covers 의 키 p2", "공개 수용 기준은 covers 키가 아니다")
 
 
 def test_case_trap_id_is_fixed_from_the_hidden_acceptance_criterion() -> None:
@@ -785,6 +804,15 @@ def test_api_field_names_fixed_by_the_spec_are_accepted() -> None:
     ).problems
     assert not _has(probs, "member_id")  # API 필드는 명세 이름 인정
     assert _has(probs, "order_no")  # 엔티티 필드는 규칙대로
+    # #180: 거울 사례 — 명세가 camel 이름(rechargeId)을 정하고 템플릿 규칙이 snake 여도 명세가 우선
+    camel = replace(spec, public_texts=("응답에 rechargeId와 balance 를 돌려준다",))
+    assert spec_named_fields(camel) == {"rechargeId"}
+    c["endpoints"][0]["request"] = [{"name": "rechargeId", "type": "integer", "refs": ["r1"]}]
+    snake = m.model_copy(
+        update={"naming": m.naming.model_copy(update={"field": r"^[a-z][a-z0-9_]*$"})}
+    )
+    assert _has(_check(c, spec=spec, manifest=snake).problems, "rechargeId")
+    assert not _has(_check(c, spec=camel, manifest=snake).problems, "rechargeId")
 
 
 def test_rounded_quote_value_passes_with_flag() -> None:

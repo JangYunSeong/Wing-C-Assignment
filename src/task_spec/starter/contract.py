@@ -32,6 +32,7 @@ from task_spec.schemas.build import (
     Entity,
     HarnessValue,
     HiddenPlan,
+    Screen,
     TaskContract,
     UiElement,
 )
@@ -792,19 +793,27 @@ def fit_traps(plan: HiddenPlan, spec: SpecView) -> tuple[HiddenPlan, list[str]]:
 
 
 def fit_covers(contract: TaskContract, spec: SpecView) -> tuple[TaskContract, list[str]]:
-    """covers 에 빠진 계약 요소를 그 요소가 스스로 적은 refs 의 공개 요구에 잇는다 — 역색인은 코드가 (기계적 출력).
+    """covers 키는 공개 요구(req_ids)만 — 공개 수용 기준(p…) 키는 빼고, 어느 공개 요구에도 이어지지 않은 계약 요소는 그 요소가 스스로 적은
+    refs 의 공개 요구에 잇는다 (역색인은 코드가, 기계적 출력).
 
     2026-11-08 상류 평가: 200 응답 모양으로 만든 엔티티(필드 refs r1·p1)를 covers 에 잇지도 빼지도 않아 재요청 2회 모두 실패.
-    refs 는 공개 id 만 허용되므로 잇는다고 숨은 요구가 계약에 들어오지는 않는다. refs 가 없는 요소는 그대로 문제로 남긴다."""
-    covered = {i for ids in contract.covers.values() for i in ids}
-    covers = {k: list(v) for k, v in contract.covers.items()}
+    refs 는 공개 id 만 허용되므로 잇는다고 숨은 요구가 계약에 들어오지는 않는다.
+    #180: 수용 기준 키는 공개 테스트가 대응하는 것이라 covers 에 두지 않는다 — 저장된 알파 계약 207개 중 100개가 p… 키를 썼고(재요청하면
+    되풀이), 예전엔 그 값까지 '연결됨'으로 세어 요소를 수용 기준에만 이어도 통과했다. refs 가 수용 기준뿐인 요소는 어느 요구와 관련인지
+    계약에서 알 수 없어 잇지 않는다 — '연결되지 않은 요소'로 재요청."""
+    req = set(spec.req_ids)
+    dropped = [k for k in contract.covers if k not in req and k in spec.public_ac_ids]
+    covers = {k: list(v) for k, v in contract.covers.items() if k not in dropped}
     notes: list[str] = []
+    if dropped:
+        notes.append(
+            f"covers 의 공개 수용 기준 키 {', '.join(dropped)} 를 뺌 — covers 키는 공개 요구만 (수용 기준은 공개 테스트가 대응)"
+        )
+    covered = {i for ids in covers.values() for i in ids}
     for eid, refs in element_refs(contract).items():
         if eid in covered:
             continue
-        keys = [r for r in refs if r in spec.req_ids] or [
-            r for r in refs if r in spec.public_ac_ids
-        ]
+        keys = [r for r in refs if r in req]
         if not keys:
             continue
         for k in keys:
@@ -889,16 +898,22 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
         )
 
     # 명세 → 계약. covers 값에는 입력 환경 id(f*)도 된다 (요구를 입력 환경에 잇는 것은 자연스럽다 — 덮였는지 따지지는 않음).
-    # 공개 수용 기준 id(p*)를 키로 쓴 것은 무시한다 (2026-11-07 종이 단계: 재요청해도 되풀이, 해는 없음 — p* 는 공개 테스트로 대응)
-    # 응답 모양(v*)도 된다 — 응답의 일부라 덮였는지 따지지는 않는다 (2026-11-13)
+    # 응답 모양(v*)도 된다 — 응답의 일부라 덮였는지 따지지는 않는다 (2026-11-13). 키는 공개 요구만 — 수용 기준 키는 fit_covers 가 뺀다 (#180)
     targets = (
         element_ids
         | {fx.fixture_id for fx in contract.fixtures}
         | {s.shape_id for s in contract.response_shapes}
     )
     for key, ids in contract.covers.items():
-        if key not in spec.req_ids and key not in spec.public_ac_ids:
-            problems.append(f"covers 의 키 {key} 가 명세의 공개 요구 id 가 아님")
+        if key not in spec.req_ids:
+            problems.append(
+                f"covers 의 키 {key} 가 명세의 공개 요구 id 가 아님"
+                + (
+                    " (공개 수용 기준은 covers 키가 아니다 — 공개 테스트가 대응)"
+                    if key in spec.public_ac_ids
+                    else ""
+                )
+            )
         bad = [i for i in ids if i not in targets]
         if bad:
             problems.append(f"covers[{key}] 에 계약에 없는 id: {', '.join(bad)}")
@@ -979,17 +994,24 @@ def _command_paths(contract: TaskContract, manifest: TemplateManifest) -> list[s
     return out
 
 
+_IDENT_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9_]*[A-Za-z0-9](?![A-Za-z0-9_])")
+_CAMEL_JOIN = re.compile(r"[a-z0-9][A-Z]")
+
+
 def spec_named_fields(spec: SpecView | None) -> set[str]:
-    """명세에서 지원자에게 보이는 글(제목·상황·공개 요구·공개 수용 기준·자료·추가 요구 답)에 글자 그대로 나온 snake 꼴 이름 —
-    API 요청·응답 필드는 그 이름을 인정한다. 2026-11-10 확장 알파 C #062: 공개 요구가 '요청 본문에 member_id 와 amount, 응답에
-    recharge_id' 로 필드 이름을 정했는데 템플릿 규칙(camelCase)과 달라 재요청 3번에도 실패 — 승인된 명세가 우선이다 (사용자 결정 A).
-    경계는 영문자·숫자·밑줄로만 본다 ('recharge_id와' 처럼 조사가 붙어도)."""
+    """명세에서 지원자에게 보이는 글(제목·상황·공개 요구·공개 수용 기준·자료·추가 요구 답)에 글자 그대로 나온 식별자 이름 — 밑줄로 잇거나
+    (snake) 대문자로 낱말을 이은(camel) 것. API 요청·응답 필드는 그 이름을 인정한다. 2026-11-10 확장 알파 C #062: 공개 요구가 '요청 본문에
+    member_id 와 amount, 응답에 recharge_id' 로 필드 이름을 정했는데 템플릿 규칙(camelCase)과 달라 재요청 3번에도 실패 — 승인된 명세가
+    우선이다 (사용자 결정 A). #180: snake 만 봐 거울 사례(명세 `rechargeId` ↔ snake 규칙 템플릿)는 같은 실패였다.
+    경계는 영문자·숫자·밑줄로만 본다 ('recharge_id와' 처럼 조사가 붙어도). 낱말 하나(amount)는 어느 규칙에도 맞아 볼 필요가 없다."""
     if spec is None:
         return set()
-    rx = re.compile(
-        r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*[A-Za-z0-9](?![A-Za-z0-9_])"
-    )
-    return {w for t in (*spec.public_texts, *spec.visible_texts) for w in rx.findall(t)}
+    return {
+        w
+        for t in (*spec.public_texts, *spec.visible_texts)
+        for w in _IDENT_TOKEN.findall(t)
+        if "_" in w or _CAMEL_JOIN.search(w)
+    }
 
 
 def _naming(
@@ -1308,26 +1330,41 @@ def _entity_existing(contract: TaskContract, plan: HiddenPlan) -> tuple[list[str
 _MUTATING = ("POST", "PUT", "PATCH", "DELETE")
 ROW_NEEDS = ("stateful_target", "transition_rules", "empty_record_entity", "related_entities")
 _NAME_WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+# 개수·합계를 뜻하는 낱말 — 다른 엔티티 행을 세거나 더한 칸 (itemCount·item_count·numItems·totalItems)
+AGGREGATE_WORDS = frozenset({"count", "cnt", "num", "number", "total", "sum"})
+
+
+def _name_words(name: str) -> tuple[str, ...]:
+    """이름 → 소문자 낱말열 (camel·snake 모두): customerName·customer_name → (customer, name)."""
+    return tuple(w.lower() for w in _NAME_WORDS.findall(name))
+
+
+def _singular(words: tuple[str, ...]) -> tuple[str, ...]:
+    return (*words[:-1], words[-1].removesuffix("s")) if words else words
 
 
 def _copied_fields(t: Entity, r: Entity) -> list[str]:
-    """t 의 칸 중 r 에서 읽어야 할 딸린 정보를 복사한 것 — `<r 이름><r 의 칸>` (customerName ← Customer.name) 이나
-    `<r 이름 또는 그 끝 낱말>Count` (itemCount ← OrderItem). 외래 키 칸·id 칸은 뺀다."""
+    """t 의 칸 중 r 에서 읽어야 할 딸린 정보를 복사한 것 — 낱말열로 견준다 (#180: camel 결합·`…Count` 꼴만 봐 `customer_name`·
+    `item_count`·`numItems` 는 지나갔다). `<r 이름 또는 그 끝 낱말><r 의 칸>` (customerName ← Customer.name) 이나
+    `<r 이름 또는 그 끝 낱말>` 앞뒤의 개수·합계 낱말 (itemCount·numItems ← OrderItem). 외래 키 칸·id 칸은 뺀다."""
     fks = {f for f, _ in t.fk_pairs()}
-    base = r.name[:1].lower() + r.name[1:]
-    words = [w.lower() for w in _NAME_WORDS.findall(r.name)]
-    heads = {base.lower(), *(words[-1:] if words else [])}
+    words = _name_words(r.name)
+    heads = {words, words[-1:]} - {()}
     copies = {
-        (base + g.name[:1].upper() + g.name[1:]).lower()
+        h + _name_words(g.name)
+        for h in heads
         for g in r.fields
-        if not g.name.lower().endswith("id")
+        if _name_words(g.name)[-1:] != ("id",)
     }
     out: list[str] = []
     for f in t.fields:
-        name = f.name.lower()
-        if f.name in fks or name.endswith("id"):
+        fw = _name_words(f.name)
+        if f.name in fks or not fw or fw[-1] in ("id", "ids"):
             continue
-        if name in copies or (name.endswith("count") and name.removesuffix("count") in heads):
+        counted = (len(fw) > 1 and fw[0] in AGGREGATE_WORDS and _singular(fw[1:]) in heads) or (
+            len(fw) > 1 and fw[-1] in AGGREGATE_WORDS and _singular(fw[:-1]) in heads
+        )
+        if fw in copies or counted:
             out.append(f.name)
     return out
 
@@ -1655,26 +1692,47 @@ def _ui_load_and_background(contract: TaskContract) -> list[str]:
 LIST_ROLES = frozenset({"list", "item", "listbox", "option", "row", "table", "grid", "listitem"})
 
 
+def _path_named(path: str, text: str) -> bool:
+    """글이 이 API 경로를 말하나 — 메서드·쿼리 문자열은 없어도 되고 경로 변수({id}·:id) 자리는 아무 마디 (`/api/notifications?size=20`)."""
+    parts = [
+        r"[^/\s?]+" if re.fullmatch(r"\{[^}]*\}|:[A-Za-z_]\w*", seg) else re.escape(seg)
+        for seg in path.rstrip("/").split("/")
+    ]
+    return bool(re.search(r"(?<![\w/])" + "/".join(parts) + r"(?![\w/-])", text))
+
+
 def _ui_data_source(contract: TaskContract) -> list[str]:
     """ui 계약: 목록을 보여 주는 화면인데 처음 항목이 어디서 오는지 없음 — 읽는 API(GET)·만드는 API(POST)·브라우저 저장소·브라우저 입력 환경
     중 아무것도 없으면 테스트는 처음 항목을 줄 방법이 없어 하네스에 없는 인자를 지어내고(renderApp(경로, 초기 데이터)), 구현은 샘플 항목을
     코드에 박는다. 2026-11-10 프론트 알파 fe-v3-opt(plan_contract v20): 장바구니 화면 on_load '서버 요청 없음'·API 는 PATCH 하나."""
     if contract.interface_kind != "ui":
         return []
-    if any(e.method in ("GET", "POST") for e in contract.endpoints) or any(
-        f.kind == "browser" for f in contract.fixtures
-    ):
-        return []
+    # 화면마다 본다 (#180: 계약에 GET·POST 가 하나라도 있으면 통째로 건너뛰어, 목록과 무관한 결제 POST 만 있어도 지나갔다).
+    # 화면↔API·화면↔입력 환경을 잇는 칸이 없어 두 가지로 잇는다 — 화면 글(on_load·요소 action)이 그 API 경로를 말함(메서드는 없어도),
+    # 또는 화면과 같은 공개 요구를 refs 로 적음. 읽는 API(GET)만 출처다 — 만드는 API(POST)만으로는 처음 항목이 없다
+    reads = [e for e in contract.endpoints if e.method == "GET"]
+    browser = [f for f in contract.fixtures if f.kind == "browser"]
+
+    def fed(sc: Screen) -> bool:
+        text = " ".join([sc.on_load or "", *(el.action or "" for el in sc.elements)])
+        refs = {*sc.refs, *(r for el in sc.elements for r in el.refs)}
+        return (
+            bool(sc.storage)
+            or any(_path_named(e.path, text) or refs & set(e.refs) for e in reads)
+            or any(refs & set(f.refs) for f in browser)
+        )
+
     empty = [
         sc.route
         for sc in contract.screens
-        if not sc.storage and any(el.role in LIST_ROLES for el in sc.elements)
+        if any(el.role in LIST_ROLES for el in sc.elements) and not fed(sc)
     ]
     if not empty:
         return []
     return [
-        f"목록을 보여 주는 화면 {', '.join(empty)} 의 처음 항목이 어디서 오는지 계약에 없음 (읽는 API·브라우저 저장소·입력 환경이 없음) — "
-        "화면에 들어올 때 목록을 읽는 서버 API(GET, 이미 있는 API 면 existing)를 endpoints 와 on_load 에 적거나, 브라우저 저장소(storage)와 "
+        f"목록을 보여 주는 화면 {', '.join(empty)} 의 처음 항목이 어디서 오는지 계약에 없음 (그 화면이 부르는 읽기 API — 화면 글에 경로가 "
+        "나오거나 같은 공개 요구를 refs 로 적은 GET — ·브라우저 저장소·입력 환경이 없음) — 화면에 들어올 때 목록을 읽는 서버 API(GET, 이미 있는 "
+        "API 면 existing)를 endpoints 와 그 화면 on_load 에 'GET /경로' 로 적거나, 브라우저 저장소(storage)와 "
         "그 처음 내용(fixtures kind=browser)을 적는다. 테스트는 그 API 응답·저장소로만 처음 항목을 줄 수 있다"
     ]
 

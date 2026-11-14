@@ -192,3 +192,32 @@ def test_related_info_must_come_from_other_entities() -> None:
     assert _has(_check(no_fk, seed=NPLUS1).problems, "딸린 정보를 읽을 다른 엔티티")
     # 재료에 선언이 없으면 묻지 않는다
     assert not _has(_check(_list_contract(copied=True)).problems, "칸으로 복사돼 있음")
+
+
+def test_copied_fields_are_matched_by_words_not_one_spelling() -> None:
+    """#180: camel 결합(customerName)·`…Count` 꼴만 봐 snake·앞에 붙은 개수 낱말(customer_name·item_count·numItems)은 지나갔다."""
+    from task_spec.schemas.build import Entity
+    from task_spec.starter.contract import _copied_fields
+
+    customer = Entity.model_validate(
+        {"entity_id": "m2", "name": "Customer", "fields": [_f("id", "integer"), _f("name")]}
+    )
+    item = Entity.model_validate(
+        {
+            "entity_id": "m3",
+            "name": "OrderItem",
+            "fields": [_f("id", "integer"), _f("qty", "integer")],
+        }
+    )
+    names = ["customerName", "customer_name", "item_count", "numItems", "totalItems", "itemCount"]
+    order = Entity.model_validate(
+        {
+            "entity_id": "m1",
+            "name": "Order",
+            "fields": [_f("id", "integer"), _f("customerId", "integer"), _f("note")]
+            + [_f(n, "integer") for n in names],
+            "foreign_keys": ["customerId → Customer"],
+        }
+    )
+    assert _copied_fields(order, customer) == ["customerName", "customer_name"]
+    assert _copied_fields(order, item) == ["item_count", "numItems", "totalItems", "itemCount"]

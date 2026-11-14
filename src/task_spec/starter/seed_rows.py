@@ -178,48 +178,37 @@ def response_list_target(e: Endpoint, contract: TaskContract) -> ListTarget | No
 
 
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
-    """경로 변수로 한 행을 찾는데 여러 행 그룹이 그 필드를 모두 같은 값으로 고정 — 조회가 여러 건이 된다.
+    """경로 변수로 그 엔티티의 한 행을 가리키는 API 에서, 그 변수가 여러 행 그룹 전체에 같은 값이면 문제 — 조회가 여러 건이 된다.
 
-    2026-11-09 알파(cap1): 시드 규칙 글은 "memberId 는 id 와 같다"인데 groups 가 254행 모두 memberId=1 로 고정해
-    `findByGuildIdAndMemberId` 가 여러 건 오류 — 시작 코드·흔한 구현·허용 구현이 모두 같은 500 으로 떨어졌다.
-    """
+    '한 행을 가리킨다' = 경로 변수가 모두 그 엔티티의 칸이고(id 처럼 행마다 다른 칸이 끼면 한 행이 정해진다), 성공 응답이 그 엔티티나
+    응답 모양의 목록이 아니다 (목록이면 같은 값이 여러 행에 있는 것이 정상 — 판별은 response_list_target 한 곳).
+    2026-11-09 alpha-cap1: 시드 규칙 글은 "memberId 는 id 와 같다"인데 groups 가 254행 모두 memberId=1 로 고정해 여러 건 오류로
+    시작 코드·흔한 구현·허용 구현이 모두 같은 500 으로 떨어졌다. 목록 API 를 한 건 응답으로 잘못 적은 계약(2026-11-11 N+1)도 같은 꼴로
+    걸리므로 안내는 두 고침(목록으로 적기·값 빼기)을 함께 준다 (#180: 사례마다 갈래를 두던 것을 하나로)."""
     entities = {m.entity_id: m for m in contract.entities}
     out: list[str] = []
     for e in contract.endpoints:
         params = _PATH_PARAM.findall(e.path)
-        if any(p in _ID_FIELDS for p in params):
-            continue  # id 로 찾으면 행마다 다르다
+        if not params or any(p in _ID_FIELDS for p in params):
+            continue
         target = response_list_target(e, contract)
-        if target is not None and target[0] == "shape":
-            continue  # 응답 모양의 목록 — 같은 경로 변수 값이 여러 행에 있는 것이 정상
         for s in contract.seed:
             m = entities.get(s.entity_id)
-            if m is None:
+            if (
+                m is None
+                or (target is not None and target[0] == "shape")
+                or target == ("entity", m.entity_id)
+            ):
                 continue
-            if target == ("entity", m.entity_id):
-                # 그 엔티티의 목록 API — 같은 경로 변수 값(프로젝트의 게시글들)이 여러 행에 있는 것이 정상. 2026-11-11 N+1 알파:
-                # GET /projects/{projectId}/board/posts(m1[]) 를 '한 행을 찾는 API' 로 짚어 계약을 다시 요청했다.
-                # 길드 감사(GET …/members/{memberId}/audit — 감사 기록 목록)는 멤버 한 행을 찾으므로 계속 본다
-                continue
-            keys = params if set(params) <= {f.name for f in m.fields} else []
-            for (
-                g
-            ) in s.groups:  # 필드가 아닌 경로 변수({memberId} → id 등)가 있으면 그게 행마다 다르다
-                if keys and g.last > g.first and all(k in g.values for k in keys):
-                    # 갈래 둘 — 2026-11-11 N+1 알파: 목록 API 응답을 한 건의 칸으로 적은 계약에 '값을 뺀다' 만 줘서 다시 요청해도
-                    # 응답 모양을 고치지 않았다 (진짜 원인은 목록 표시가 없는 응답)
+            if not set(params) <= {f.name for f in m.fields}:
+                continue  # 칸이 아닌 경로 변수({memberId} → id 등)가 끼면 그게 행마다 다르다
+            for g in s.groups:
+                if g.last > g.first and all(k in g.values for k in params):
                     msg = (
-                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.method or ''} {e.path} 를 {', '.join(keys)} 로 한 행을 찾는 "
-                        f"API 로 적었는데 {', '.join(keys)} 가 모든 행에서 같음 — 여러 건 조회 오류. "
-                        + (
-                            f'목록을 돌려주는 API 면 성공 응답을 returns "{s.entity_id}[]" ({m.name} 목록)으로 적는다. '
-                            f"한 행을 찾는 API 면 {keys[-1]} 는 values 에서 뺀다"
-                            # 목록 표시가 없는 GET 만 — 변경 요청(PATCH 등)은 목록 API 가 아니고, 이미 다른 것의 목록을 돌려주는 GET
-                            # (길드 감사 …/members/{memberId}/audit — 감사 기록)은 경로로 멤버 한 행을 찾는다
-                            if e.method == "GET" and target is None
-                            else f"{keys[-1]} 는 values 에서 뺀다"
-                        )
-                        + " (코드가 행마다 다른 값을 넣는다)"
+                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.method or ''} {e.path} 가 {', '.join(params)} 로 {m.name} 한 행을 "
+                        f"가리키는데 {', '.join(params)} 가 모든 행에서 같음 — 여러 건 조회 오류. 이 API 가 목록을 돌려주면 성공 응답을 "
+                        f'returns "{s.entity_id}[]" ({m.name} 목록)이나 응답 모양 목록으로 적고, 한 행을 찾는 API 면 {params[-1]} 는 '
+                        "values 에서 뺀다 (코드가 행마다 다른 값을 넣는다)"
                     )
                     if msg not in out:
                         out.append(msg)

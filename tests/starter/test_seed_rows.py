@@ -497,18 +497,16 @@ def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
     assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")  # 감싼 목록
     ok.update({"returns": "m1", "body": []})
     assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
-    # GET 인데 응답을 한 건으로 적었으면 — 목록이면 returns "m1[]" 로, 한 행 조회면 값을 뺀다 (갈래 둘)
-    assert _has(
-        seed_problems(TaskContract.model_validate(c)),
-        'returns "m1[]" (Order 목록)',
-        "shopId 는 values 에서 뺀다",
-    )
-    # 다른 것의 목록(멤버 한 행을 찾아 감사 기록을 돌려줌)은 계속 잡는다 — 이 검사가 생긴 경우 (alpha-cap1·trap2)
+    # GET 인데 응답을 한 건으로 적었으면 — 안내 하나에 두 고침 (목록이면 returns "m1[]" 로, 한 행 조회면 값을 뺀다)
+    one = seed_problems(TaskContract.model_validate(c))
+    assert _has(one, 'returns "m1[]" (Order 목록)', "shopId 는 values 에서 뺀다")
+    # 다른 것의 목록(멤버 한 행을 찾아 감사 기록을 돌려줌)도 경로로 한 행을 가리키므로 계속 잡는다 — 이 검사가 생긴 경우 (alpha-cap1·trap2).
+    # 판정·안내는 같다 (#180: 사례마다 안내 갈래를 두던 것을 하나로)
     ok.update({"returns": None, "body": [{"name": "content", "type": "array", "refs": ["r1"]}]})
     got = seed_problems(TaskContract.model_validate(c))
-    assert _has(got, "한 행을 찾는", "shopId") and not _has(
-        got, "목록을 돌려주는"
-    )  # 이미 다른 것의 목록
+    assert _has(got, "Order 한 행을 가리키는데", "shopId") and [
+        m for m in got if "한 행을 가리키는데" in m
+    ] == [m for m in one if "한 행을 가리키는데" in m]
 
 
 def test_list_of_response_shape_with_a_shared_path_key_is_fine() -> None:

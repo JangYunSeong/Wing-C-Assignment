@@ -510,8 +510,28 @@ def test_list_screen_without_a_data_source_is_sent_back() -> None:
     no_source = TaskContract.model_validate(base | {"endpoints": [patch]})
     problems = _ui_data_source(no_source)
     assert len(problems) == 1 and "/search" in problems[0] and "GET" in problems[0]
-    # 읽는 API 가 있거나, 화면에 브라우저 저장소가 있으면 통과
-    assert _ui_data_source(TaskContract.model_validate(base)) == []
+    # 그 화면이 부르는 읽기 API(GET)가 있으면 통과 — 같은 공개 요구를 refs 로 적었거나 화면 글이 그 경로를 말함(메서드 없어도)
+    assert (
+        _ui_data_source(TaskContract.model_validate(base)) == []
+    )  # GET e1 과 화면이 r1 을 함께 적음
+    other = dict(base["endpoints"][0]) | {"refs": ["r2"]}
+    apart = base | {"endpoints": [other]}
+    assert len(_ui_data_source(TaskContract.model_validate(apart))) == 1
+    named = apart | {
+        "screens": [base["screens"][0] | {"on_load": "/api/products/suggest?size=20 요청으로 목록"}]
+    }
+    assert _ui_data_source(TaskContract.model_validate(named)) == []
+    # #180: 계약 어딘가에 POST 가 있다고 넘기지 않는다 — 목록과 무관한 결제 POST 만 있으면 출처가 없다
+    pay = dict(base["endpoints"][0]) | {"method": "POST", "path": "/api/payments"}
+    paid = base | {"endpoints": [patch, pay]}
+    assert len(_ui_data_source(TaskContract.model_validate(paid))) == 1
+    # 같은 refs 를 적은 브라우저 입력 환경(처음 내용)도 출처
+    browser = paid | {
+        "fixtures": [
+            {"fixture_id": "f1", "kind": "browser", "summary": "처음 항목 2개", "refs": ["r1"]}
+        ]
+    }
+    assert _ui_data_source(TaskContract.model_validate(browser)) == []
     stored = base | {"endpoints": [patch]}
     stored["screens"] = [
         base["screens"][0]
