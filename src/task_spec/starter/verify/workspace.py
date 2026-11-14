@@ -21,7 +21,7 @@ import signal
 import subprocess
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from task_spec.starter.static_check import Overlay
@@ -56,9 +56,15 @@ def assemble(t: Template, work: Path, *overlays: Overlay) -> None:
         write_overlay(o, work)
 
 
-def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[int | None, float]:
+def run_logged(
+    cmd: Sequence[str],
+    cwd: Path,
+    log: Path,
+    timeout: int,
+    env: Mapping[str, str] | None = None,
+) -> tuple[int | None, float]:
     """명령 하나 — 출력은 log 에 덧붙인다. 시간 초과면 프로세스 묶음(vitest 일꾼 포함)을 끊고 None.
-    환경은 지금 프로세스 환경 + `CI_ENV`."""
+    환경은 지금 프로세스 환경 + env (주지 않으면 `CI_ENV`) — 테스트 실행은 스택의 채점 스크립트 TEST_ENV 를 준다 (#174)."""
     start = time.monotonic()
     with log.open("a", encoding="utf-8") as fh:
         fh.write(f"$ {shlex.join(cmd)}\n")
@@ -68,7 +74,7 @@ def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[
             cwd=cwd,
             stdout=fh,
             stderr=subprocess.STDOUT,
-            env=os.environ | CI_ENV,
+            env=os.environ | dict(env if env is not None else CI_ENV),
             start_new_session=True,
         )
         try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from task_spec.schemas import GeneratedFile
 from task_spec.starter.static_check import Overlay
@@ -191,7 +192,7 @@ def test_compile_errors_carry_symbol_and_location(tmp_path: Path) -> None:
 def test_skipped_tests_are_not_a_pass(tmp_path: Path) -> None:
     """#173: JUnit XML 의 <skipped/>(@Disabled·assume)는 실패·오류만 보던 판정에서 통과였다 — 검증·채점 모두 HARNESS_ERR."""
     from task_spec.starter.grade.image_grade import junit as grade_junit
-    from task_spec.starter.verify.gradle import SKIPPED
+    from task_spec.starter.verify.gradle import SKIPPED  # 채점 스크립트의 것 그대로
 
     (tmp_path / f"TEST-{CASES}.SkipTest.xml").write_text(
         SUITE.format(cls=f"{CASES}.SkipTest", n=0, body='<skipped message="출력이 없음"/>'), "utf-8"
@@ -205,3 +206,40 @@ def test_skipped_tests_are_not_a_pass(tmp_path: Path) -> None:
     )
     graded = {r["name"]: r for r in grade_junit(tmp_path, {})}
     assert graded["SkipTest"]["result"] == "HARNESS_ERR" and graded["Pt1Test"]["result"] == "PASS"
+
+
+def test_verify_and_grade_share_one_command_env_and_judge(tmp_path: Path, monkeypatch: Any) -> None:
+    """#174: 검증은 `sh ./gradlew`, 채점은 실행 비트에 기대는 `./gradlew` 였고 결과 판정도 두 벌이었다 — 채점 스크립트 한 곳."""
+    from task_spec.starter import images
+    from task_spec.starter.grade import image_grade
+    from task_spec.starter.verify import gradle
+
+    assert images.TEST_COMMAND == image_grade.gradle_command("test")
+    assert image_grade.gradle_command("test")[:2] == ["sh", "./gradlew"]
+    seen: dict[str, Any] = {}
+
+    def fake(
+        image: str, cmd: list[str], work: Path, log: Path, timeout: int, **kw: Any
+    ) -> tuple[int, float]:
+        seen.update(cmd=cmd, env=kw.get("env"))
+        return 0, 1.0
+
+    monkeypatch.setattr(gradle, "run_in_container", fake)
+    gradle.run_gradle_in("img", tmp_path, tmp_path / "log", task="compileTestJava")
+    assert seen["cmd"] == image_grade.gradle_command("compileTestJava")
+    assert seen["env"] == image_grade.TEST_ENV
+    # 같은 XML → 같은 분류 (이름 지도만 다르다 — 채점은 공개도 pt id, 검증은 공개 클래스 이름)
+    _xml(
+        tmp_path,
+        f"{CASES}.PeakBurstTest",
+        ("org.opentest4j.AssertionFailedError", "[[reason:x] 다름]"),
+    )
+    _xml(tmp_path, "com.example.service.publictests.Pt1Test")
+    verified = {
+        (t.group, t.result, t.reason) for t in junit_results(tmp_path, {"PeakBurstTest": "hc1"})
+    }
+    graded = {
+        (r["group"], r["result"], r.get("reason"))
+        for r in image_grade.junit(tmp_path, {"PeakBurstTest": "hc1", "Pt1Test": "pt1"})
+    }
+    assert verified == graded

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
+from task_spec.starter.grade import image_grade
 from task_spec.starter.layers import (  # 런타임 층 정의 — 검증기(#127)와 같이 쓴다
     PY_VENV,
     Podman,
@@ -58,7 +59,7 @@ def _quiet(_: str) -> None:
 
 PUBLIC_ID = r"\bpt\d{1,2}\b"  # 공개 테스트 클래스의 @DisplayName 에 적힌 공개 테스트 id
 TIMEOUT_S = 1200
-TEST_COMMAND = ["./gradlew", "--offline", "--no-daemon", "--console=plain", "--continue", "test"]
+TEST_COMMAND = image_grade.gradle_command("test")  # 과제 생성 검증과 같은 정의 (#174)
 
 
 @dataclass(frozen=True)
@@ -227,6 +228,7 @@ def py_config(t: Template, item: TaskMaterial) -> dict[str, Any]:
         "python": f"{PY_VENV}/bin/python",
         "compile_paths": list(python_verify.COMPILE_PATHS),
         "grading_paths": python_verify.grading_paths(t),
+        "collect_paths": python_verify.collect_paths(t),
         "grading_ini": python_verify.GRADING_INI,
         "grading_rootdir": python_verify.GRADING_ROOTDIR,
         "layout": python_verify.layout_of(t),

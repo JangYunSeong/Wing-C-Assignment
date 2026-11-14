@@ -17,7 +17,7 @@ Java 의 "단언이 아닌 예외"와 같은 자리라 수리는 구현끼리 �
 
 Node 는 이미지와 같은 기반 컨테이너(`NODE_IMAGE`, node:22)에서 돌린다 — 설치·tsc·vitest 모두. 조립 폴더와 node_modules 를
 같은 절대 경로로 붙여 링크가 그대로 풀린다. 2026-11-10 프론트 알파: 호스트 Node 24 에서는 jsdom 의 AbortSignal 을 fetch 가
-거부해 요청을 취소하는 허용 구현이 모든 테스트에서 떨어졌다 — 이미지(Node 22)에서는 31/31 통과. `NODE_VERIFY_IMAGE=host` 면 호스트 Node.
+거부해 요청을 취소하는 허용 구현이 모든 테스트에서 떨어졌다 — 이미지(Node 22)에서는 31/31 통과. 호스트 Node 는 `VERIFY_ISOLATION=host`.
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 from task_spec.starter.verify import tools
 from task_spec.starter.verify.workspace import (
-    CI_ENV,
     assemble,
     isolated,
     run_in_container,
@@ -78,7 +77,13 @@ def node_modules_for(t: Template, timeout: int = 1800) -> Path:
 
 
 def node_image() -> str:
-    return os.environ.get("NODE_VERIFY_IMAGE", NODE_IMAGE)
+    """검증 컨테이너 이미지 — 이미지 이름만 받는다. 호스트 실행은 `VERIFY_ISOLATION=host` (#174)."""
+    image = os.environ.get("NODE_VERIFY_IMAGE", NODE_IMAGE)
+    if image == "host":
+        raise RuntimeError(
+            "NODE_VERIFY_IMAGE=host 는 더 쓰지 않는다 — 호스트 Node 로 검증하려면 VERIFY_ISOLATION=host"
+        )
+    return image
 
 
 def run_node(
@@ -90,11 +95,12 @@ def run_node(
     network: bool = False,
 ) -> tuple[int | None, float]:
     """Node 명령 하나를 이미지와 같은 기반 컨테이너에서 (`run_logged` 와 같은 반환). 경로는 같은 절대 경로로 붙인다.
-    `NODE_VERIFY_IMAGE=host` 또는 `VERIFY_ISOLATION=host` 면 호스트 Node."""
-    image = node_image()
-    if image == "host" or not isolated():
-        return run_logged(cmd, cwd, log, timeout)
-    return run_in_container(image, cmd, cwd, log, timeout, mounts, network, dict(CI_ENV))
+    호스트 Node 는 다른 검증기처럼 `VERIFY_ISOLATION=host` 하나로 (#174: `NODE_VERIFY_IMAGE=host` 특수값은 #127 전 탈출구)."""
+    if not isolated():
+        return run_logged(cmd, cwd, log, timeout, env=judge.TEST_ENV)
+    return run_in_container(
+        node_image(), cmd, cwd, log, timeout, mounts, network, dict(judge.TEST_ENV)
+    )
 
 
 def tsc_errors(log_text: str, limit: int = 20) -> list[CompileError]:

@@ -161,3 +161,24 @@ def test_skipped_todo_and_conditional_skips_are_not_a_pass() -> None:
     assert got["hc1"].result == "HARNESS_ERR" and SKIPPED in got["hc1"].message
     assert got["hc2"].result == "HARNESS_ERR"
     assert got["pt1"].result == "PASS"
+
+
+def test_node_runs_with_the_grade_env_and_host_only_by_isolation(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """#174: 호스트 Node 탈출구가 둘(NODE_VERIFY_IMAGE=host·VERIFY_ISOLATION=host)이었다 — VERIFY_ISOLATION 하나, 환경은 채점과 같게."""
+    import pytest
+
+    from task_spec.starter.grade import image_grade_node as judge
+    from task_spec.starter.verify import node as nv
+
+    monkeypatch.setenv("NODE_VERIFY_IMAGE", "host")
+    with pytest.raises(RuntimeError, match="VERIFY_ISOLATION=host"):
+        nv.node_image()
+    monkeypatch.delenv("NODE_VERIFY_IMAGE")
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        nv, "run_in_container", lambda *a, **k: (seen.update(env=a[7]), (0, 0.1))[1]
+    )
+    nv.run_node(["node", "-v"], tmp_path, tmp_path / "log", 10)
+    assert seen["env"] == judge.TEST_ENV

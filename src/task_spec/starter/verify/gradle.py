@@ -21,12 +21,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from task_spec.schemas import CompileError, TargetRun, TestResult, VerifyReport
+from task_spec.starter.grade import image_grade as judge
 from task_spec.starter.layers import ensure_verify_layer
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 from task_spec.starter.verify import tools
 from task_spec.starter.verify.workspace import (
-    CI_ENV,
     assemble,
     isolated,
     run_in_container,
@@ -34,10 +34,9 @@ from task_spec.starter.verify.workspace import (
 )
 
 _JAVAC = re.compile(r"^(/\S+\.java):(\d+): error: (.+)$")
-_REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
-_ASSERTION_TYPES = ("AssertionError", "AssertionFailedError", "MultipleFailuresError")
-# 건너뛴 테스트 — 판정하지 않은 것이라 통과로 세지 않는다 (#173: 조건부 건너뛰기가 검증을 지나 채점에서 통과로 기록될 수 있었다)
-SKIPPED = "테스트를 건너뜀 — 판정하지 않았으므로 통과가 아니다"
+# 판정·실행 정의는 채점 스크립트 한 곳 (#174) — 검증과 채점이 같은 명령·환경·결과 분류
+SKIPPED = judge.SKIPPED
+failed_line = judge.failed_line
 _BOOT = ("Failed to load ApplicationContext", "ApplicationContext failure threshold")
 
 
@@ -45,7 +44,8 @@ def gradle_env() -> dict[str, str]:
     return os.environ | {"GRADLE_USER_HOME": str(tools.gradle_user_home())}
 
 
-GRADLE_ARGS = ("--console=plain", "--no-daemon", "--continue")
+# 호스트 Gradle(`VERIFY_ISOLATION=host`)은 의존성을 내려받을 수 있게 --offline 만 뺀다
+HOST_GRADLE_ARGS = tuple(a for a in judge.GRADLE_ARGS if a != "--offline")
 
 
 def run_gradle_in(
@@ -55,11 +55,11 @@ def run_gradle_in(
     log.write_text("", "utf-8")
     code, seconds = run_in_container(
         image,
-        ["sh", "./gradlew", task, "--offline", *GRADLE_ARGS],
+        judge.gradle_command(task),
         work,
         log,
         timeout,
-        env=dict(CI_ENV),  # 호스트 실행과 같은 환경 변수
+        env=dict(judge.TEST_ENV),  # 채점과 같은 환경 변수
     )
     return code, round(seconds, 1)
 
@@ -73,9 +73,9 @@ def run_gradle(
     with log.open("w") as fh:
         try:
             proc = subprocess.run(
-                [str(tools.gradle_bin()), task, *GRADLE_ARGS],
+                [str(tools.gradle_bin()), task, *HOST_GRADLE_ARGS],
                 cwd=work,
-                env=gradle_env(),
+                env=gradle_env() | judge.TEST_ENV,
                 stdout=fh,
                 stderr=subprocess.STDOUT,
                 timeout=timeout,
@@ -150,72 +150,13 @@ def boot_cause(results_dir: Path) -> str:
 def junit_results(
     results_dir: Path, ids: dict[str, str], sources: Path | None = None
 ) -> list[TestResult]:
-    """Gradle JUnit XML → 클래스(기존 테스트)·케이스(숨은 테스트)마다 결과 하나. 첫 실패를 대표로.
+    """Gradle JUnit XML → 클래스(기존 테스트)·케이스(숨은 테스트)마다 결과 하나 — 채점과 같은 판정(image_grade.junit, #174).
     실패한 줄(테스트 파일:줄 — 그 클래스의 스택 프레임)을 `at` 에, sources(조립한 프로젝트)를 주면 그 줄의 코드까지 — 수리 요청이
     어느 단언이 틀렸는지 보이게 (2026-11-13: AssertJ 메시지 'Expecting value to be true but was false' 만으로는 같은 틀린 단언을 되풀이했다)."""
-    out: list[TestResult] = []
-    for xml in sorted(results_dir.glob("TEST-*.xml")):
-        root = ET.parse(xml).getroot()  # Gradle 이 쓴 보고서 (값은 이스케이프됨)
-        first: tuple[str, str, str] | None = None
-        skipped: str | None = None
-        classname = root.get("name", xml.stem)
-        for tc in root.iter("testcase"):
-            classname = tc.get("classname", classname)
-            bad = tc.find("failure")
-            if bad is None:
-                bad = tc.find("error")
-            if bad is not None and first is None:
-                first = (
-                    bad.get("type", ""),
-                    bad.get("message", "") or (bad.text or ""),
-                    bad.text or "",
-                )
-            if skipped is None and (sk := tc.find("skipped")) is not None:  # @Disabled·assume…
-                skipped = f"{SKIPPED}: {tc.get('name', '')} {sk.get('message', '')}".strip()
-        if first is None and skipped is not None:
-            first = ("skipped", skipped, "")
-        simple = classname.rsplit(".", 1)[-1]
-        if ".grading.cases." in classname:
-            group, name = "hidden", ids.get(simple, simple)
-        elif ".publictests." in classname:
-            group, name = "public", simple
-        elif ".grading." in classname:
-            group, name = "selftest", simple
-        else:
-            group, name = "existing", simple
-        if first is None:
-            out.append(TestResult(group=group, name=name, result="PASS"))  # type: ignore[arg-type]
-            continue
-        kind, message, trace = first
-        assertion = kind.rsplit(".", 1)[-1] in _ASSERTION_TYPES
-        reason = _REASON.search(message)
-        out.append(
-            TestResult(
-                group=group,  # type: ignore[arg-type]
-                name=name,
-                result="ASSERT" if assertion else "HARNESS_ERR",
-                reason=reason.group(1) if reason else None,
-                message=" ".join(message.split())[:400],
-                at=failed_line(trace, simple, sources),
-            )
-        )
-    return out
-
-
-def failed_line(trace: str, simple: str, sources: Path | None = None) -> str:
-    """실패 스택에서 그 테스트 클래스 파일의 첫 프레임 → 'Pt3Test.java:27 `assertThat(found).isTrue();`' (코드는 sources 가 있을 때)."""
-    m = re.search(rf"\(({re.escape(simple)}\.java):(\d+)\)", trace)
-    if m is None:
-        return ""
-    where = f"{m.group(1)}:{m.group(2)}"
-    if sources is not None:
-        for f in sources.rglob(m.group(1)):
-            lines = f.read_text("utf-8", errors="ignore").splitlines()
-            n = int(m.group(2))
-            if 0 < n <= len(lines):
-                where += f" `{lines[n - 1].strip()}`"
-            break
-    return where[:300]
+    return [
+        TestResult.model_validate(r)
+        for r in judge.junit(results_dir, ids, locate=True, sources=sources)
+    ]
 
 
 class GradleVerifier:

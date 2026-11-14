@@ -48,6 +48,8 @@ def test_python_stack_and_grade_config() -> None:
     cfg = b.py_config(t, _material(_plan(), _contract()))
     assert cfg["python"] == "/opt/venv/bin/python" and cfg["template_dir"] == "/workspace"
     assert cfg["grading_paths"] == ["grading/selftest", "grading/cases", "public_tests"]
+    # 컴파일 확인 대상은 commands.test_compile 에서 — 검증과 같은 정의 (#174, selftest 를 이름으로 빼던 손 조립 대신)
+    assert cfg["collect_paths"] == ["grading/cases", "public_tests"]
     assert cfg["grading_ini"] == "grading/harness/grader-pytest.ini"
     assert cfg["layout"] == {
         "cases": "grading/cases",

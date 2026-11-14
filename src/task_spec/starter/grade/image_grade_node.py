@@ -36,6 +36,8 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
 # 건너뛴 테스트 — 판정하지 않은 것이라 통과로 세지 않는다 (#173: 조건부 건너뛰기가 검증을 지나 채점에서 통과로 기록될 수 있었다)
 SKIPPED = "테스트를 건너뜀 — 판정하지 않았으므로 통과가 아니다"
+# 실행 환경 — 과제 생성 검증(starter/verify/node.py)도 이것을 쓴다 (#174). 비대화·색 없이 — 로그에서 판정 문구를 읽는다
+TEST_ENV = {"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"}
 _PT = re.compile(r"\bpt\d{1,2}\b")
 # 실패 메시지 뒤에 붙는 DOM 덤프·스택 — 앞부분만 남긴다
 _TAIL = re.compile(r"\n\s*\n\s*Ignored nodes:|\n\s+at |\n\s*\n\s*<")
@@ -239,7 +241,7 @@ def run(cmd: Sequence[str], log: Path, timeout: int) -> int | None:
     with log.open("a", encoding="utf-8") as fh:
         fh.write(f"$ {' '.join(cmd)}\n")
         fh.flush()
-        env = os.environ | {"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"}
+        env = os.environ | TEST_ENV
         try:
             return subprocess.run(
                 list(cmd),
