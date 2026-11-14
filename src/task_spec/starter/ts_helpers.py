@@ -493,7 +493,34 @@ HARNESS_EXPORTS: dict[str, str] = {
     "reason": "(",
     "tag": "(",
 }
-TESTING_LIBRARY: dict[str, str] = {"screen": ".", "waitFor": "(", "within": "("}
+# @testing-library/react(템플릿이 고정한 16.3)와 그것이 다시 내보내는 @testing-library/dom(10.4)의 값 내보내기 → 쓰는 꼴('.' 속성, '(' 호출).
+# 빠진 import 를 코드가 채운다 (ensure_test_imports). #177: screen·waitFor·within 셋만 채워 하네스가 쓰는 act·cleanup·render·fireEvent 는
+# 빠진 채 컴파일 오류로 갔다. 이름별 쿼리 함수(getByText 등 — 화면 밖 단독 호출)는 넣지 않는다 (screen.… 으로 쓰고, 단독 이름은 짐작 쿼리다)
+TESTING_LIBRARY: dict[str, str] = {
+    "act": "(",
+    "buildQueries": "(",
+    "cleanup": "(",
+    "configure": "(",
+    "createEvent": ".(",
+    "fireEvent": ".(",
+    "getConfig": "(",
+    "getDefaultNormalizer": "(",
+    "getNodeText": "(",
+    "getQueriesForElement": "(",
+    "getRoles": "(",
+    "isInaccessible": "(",
+    "logDOM": "(",
+    "logRoles": "(",
+    "prettyDOM": "(",
+    "queries": ".",
+    "queryHelpers": ".",
+    "render": "(",
+    "renderHook": "(",
+    "screen": ".",
+    "waitFor": "(",
+    "waitForElementToBeRemoved": "(",
+    "within": "(",
+}
 TL_MODULE = "@testing-library/react"
 _IMPORT_STMT = re.compile(
     r"^import\s+(?:type\s+)?(?P<what>[\s\S]*?)\s+from\s*['\"](?P<mod>[^'\"]+)['\"]\s*;?[ \t]*$",
@@ -541,7 +568,8 @@ def _add_import(text: str, names: list[str], module: str, same: Callable[[str], 
 
 
 def _uses(code: str, name: str, how: str) -> bool:
-    return re.search(rf"(?<![\w.$]){re.escape(name)}\s*{re.escape(how)}", code) is not None
+    """이름을 그 꼴로 쓰나 — how 는 뒤에 오는 글자들 ('.' 속성, '(' 호출, '.(' 둘 다)."""
+    return re.search(rf"(?<![\w.$]){re.escape(name)}\s*[{re.escape(how)}]", code) is not None
 
 
 def _defines(code: str, name: str) -> bool:

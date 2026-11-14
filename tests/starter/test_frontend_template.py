@@ -397,11 +397,45 @@ def test_guessed_accessible_names_are_reasked() -> None:
     ).replace(
         "import { describe", "import { screen } from '@testing-library/react';\nimport { describe"
     )
-    assert any("접근 가능한 이름" in m for m in _run(guess))
+    assert any("계약 test id 밖으로 요소를 찾음" in m and "ByRole" in m for m in _run(guess))
     by_id = guess.replace(
         "findByRole('textbox', { name: /상품 검색/ })", "findByTestId('search-input')"
     )
-    assert not any("접근 가능한 이름" in m for m in _run(by_id))
+    assert not any("test id 밖으로" in m for m in _run(by_id))
+
+
+def test_element_lookups_outside_test_ids_are_one_rule() -> None:
+    """#177: ByRole 이름·querySelector 를 사례마다 따로 잡아 글·레이블·자리표시자 쿼리와 closest()·getElementById 는 지나갔다 —
+    test id 밖 요소 찾기 하나로. 문서가 권하는 `queryByRole('alert')` 는 둔다."""
+    from task_spec.starter.static_check import element_guesses
+
+    def hits(line: str) -> list[str]:
+        return element_guesses(
+            [_f("src/__grading__/cases/hc1.test.tsx", line)], _contract(), "숨은 테스트"
+        )
+
+    for guess in (
+        "screen.getByText('결제 완료');",
+        "within(list).getByText(item.name);",
+        "await screen.findByLabelText('검색어');",
+        "screen.getByPlaceholderText('검색');",
+        "screen.getAllByRole('option');",
+        "await screen.findByRole('textbox');",
+        "input.closest('form');",
+        "document.getElementById('q');",
+        "form.querySelector(sel);",
+    ):
+        assert hits(guess), guess
+    for fine in (
+        "expect(screen.queryByRole('alert'), reason('x', 'y')).toBe(null);",
+        "await screen.findByTestId(TID.SEARCH_INPUT);",
+        "byTestId(item, TID.NAME);",
+        "within(item).getByTestId(TID.NAME);",
+        "expect(textsByRole('option', TID.LIST)).toEqual(['가상']);",
+    ):
+        assert not hits(fine), fine
+    # 화면 계약이 없으면 보지 않는다
+    assert element_guesses([_f("x.test.tsx", "screen.getByText('a');")], None, "숨은 테스트") == []
 
 
 def test_frontend_contract_needs_are_checked_without_row_seeds() -> None:
@@ -717,8 +751,8 @@ def test_test_checks_array_contains_vitest_imports_and_selector_guesses() -> Non
     """2026-11-10 알파 fe7b·fe7c·fe7d: 항목 글 배열에 toContain('글자') · waitFor 를 vitest 에서 import · querySelector 로 입력란 짐작."""
     from task_spec.starter.static_check import (
         array_substring_contains,
+        element_guesses,
         misplaced_test_imports,
-        selector_guesses,
     )
 
     bad = (
@@ -743,8 +777,11 @@ def test_test_checks_array_contains_vitest_imports_and_selector_guesses() -> Non
     assert array_substring_contains([f_good], "숨은 테스트") == []
     assert "waitFor" in misplaced_test_imports([f_bad], "숨은 테스트")[0]
     assert misplaced_test_imports([f_good], "숨은 테스트") == []
-    assert "querySelector" in selector_guesses([f_bad], _contract(), "숨은 테스트")[0]
-    assert selector_guesses([f_good], _contract(), "숨은 테스트") == []
+    assert "querySelector" in element_guesses([f_bad], _contract(), "숨은 테스트")[0]
+    assert element_guesses([f_good], _contract(), "숨은 테스트") == []
+    # 화면 도구 이름은 testing-library 내보내기 표 하나에서 — act·cleanup 도 vitest 에서 가져오면 잡는다 (#177)
+    act = "import { describe, it, act, cleanup } from 'vitest';\n"
+    assert "act, cleanup" in misplaced_test_imports([_f("a.test.tsx", act)], "숨은 테스트")[0]
 
 
 def test_form_without_its_fields_is_sent_back() -> None:
@@ -1067,6 +1104,15 @@ def test_missing_harness_and_testing_library_imports_are_added_by_code() -> None
     assert "import { screen } from '@testing-library/react';" in p
     assert m == mine  # 직접 정의한 이름·이미 가져온 이름은 건드리지 않음
     assert len(notes) == 2
+    # #177: screen·waitFor·within 셋만이 아니라 testing-library 내보내기 표 전부 — act·cleanup·fireEvent(속성·호출 둘 다)
+    tools = (
+        "import { it } from 'vitest';\n"
+        "it('t', async () => { await act(async () => {}); fireEvent.click(document.body); cleanup(); });\n"
+    )
+    [t], _ = ensure_test_imports(
+        [_f(f"{CASES}/hc2.test.tsx", tools)], "src/__grading__/harness/grader"
+    )
+    assert "import { act, cleanup, fireEvent } from '@testing-library/react';" in t.content
 
 
 def test_bare_body_in_reply_slot_is_wrapped_by_code() -> None:

@@ -84,6 +84,13 @@ def test_smoke_routes_every_endpoint_with_its_success_example_and_types_inputs()
     assert CONFORM_TEST.startswith("__conform__/")  # tsconfig(src)·지원자 설정(src/**)·채점 설정 밖
     assert "__conform__/**/*.test.{ts,tsx}" in files[CONFORM_CONFIG]
     assert "from '../src/__grading__/harness/grader'" in test
+    # #177: 앱 오류는 모양(글 네 꼴)이 아니라 종류로 — Error 객체·'…Error' 글·처리되지 않은 Promise 거부 (실제 실행 확인 2026-11-14:
+    # 비동기 throw·'x is not iterable' 거부·잡아서 console.error 로 남긴 Error 는 실패, 'Warning: …' 개발 경고만은 통과)
+    assert "a instanceof Error" in test and "APP_ERROR = /^(?:Uncaught )?[A-Za-z]*Error\\b" in test
+    assert (
+        "addEventListener('unhandledrejection'" in test and "proc?.on('unhandledRejection'" in test
+    )
+    assert "is not a function" not in test
 
 
 def test_not_applied_to_java_templates() -> None:
@@ -292,12 +299,15 @@ def test_dev_mock_server_reading_request_bodies_is_not_flagged() -> None:
     mock = "http.post('/api/x', async ({ request }) => { const body = (await request.json()) as { id: number }; return HttpResponse.json(body); })"
     o = Overlay(kind="starter", files=(GeneratedFile(path="src/mocks/handlers.ts", content=mock),))
     assert _contract_types_usage(o, FE, _list_contract()) == []
-    o = Overlay(
-        kind="starter",
-        files=(
-            GeneratedFile(
-                path="src/api/x.ts", content="import type { A } from './contract-types';\n" + mock
-            ),
-        ),
-    )
-    assert _contract_types_usage(o, FE, _list_contract()) == []
+    # #177: 가짜 서버는 경로 글자·변수 이름이 아니라 msw 를 쓰는 코드로 안다 — 폴더 밖 핸들러·변수 r 도 면제
+    msw = "import { http, HttpResponse } from 'msw';\n"
+    for path, body in (
+        ("src/api/x.ts", mock),
+        ("src/dev/handlers.ts", mock.replace("request", "r")),
+    ):
+        o = Overlay(kind="starter", files=(GeneratedFile(path=path, content=msw + body),))
+        assert _contract_types_usage(o, FE, _list_contract()) == [], path
+    # msw 를 쓰지 않는 앱 코드가 응답을 `as { … }` 로 읽으면 변수 이름(request·req)과 상관없이 잡는다
+    app = "import type { A } from './contract-types';\nconst req = await fetch('/api/x');\nconst v = (await req.json()) as { id: number };\n"
+    o = Overlay(kind="starter", files=(GeneratedFile(path="src/api/y.ts", content=app),))
+    assert _contract_types_usage(o, FE, _list_contract())

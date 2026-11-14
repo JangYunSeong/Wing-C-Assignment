@@ -81,7 +81,12 @@ from task_spec.starter.templates import (
     is_java,
     is_python,
 )
-from task_spec.starter.ts_helpers import app_type_names, fault_fn, render_app_types
+from task_spec.starter.ts_helpers import (
+    TESTING_LIBRARY,
+    app_type_names,
+    fault_fn,
+    render_app_types,
+)
 
 KIND_SLOT: dict[str, SlotKind] = {
     "starter": "starter",
@@ -688,8 +693,29 @@ def _starter_options(o: Overlay, contract: TaskContract | None) -> list[StaticPr
 
 _JSON_INLINE = re.compile(
     r":\s*\{[^;=]*\}\s*(?:\[\])?\s*=\s*await\s+[\w.$]+\.json\(\)"  # const data: { items: X[] } = await res.json()
-    r"|(?<!request)(?<!req)\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … } — 요청 본문(request.json())은 빼고
+    r"|\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … }
 )
+_MSW_IMPORT = re.compile(r"""from\s+['"]msw(?:/[\w-]+)?['"]""")
+
+
+@functools.lru_cache(maxsize=8)
+def mock_dirs(project: Path) -> tuple[str, ...]:
+    """템플릿 프로젝트에서 개발용 가짜 서버(msw)를 두는 폴더 — msw 를 import 하는 파일들의 폴더 (React 템플릿 src/mocks/)."""
+    dirs = {
+        p.parent.relative_to(project).as_posix() + "/"
+        for p in project.rglob("*.ts*")
+        if "node_modules" not in p.parts
+        and _MSW_IMPORT.search(p.read_text("utf-8", errors="ignore"))
+    }
+    return tuple(sorted(dirs))
+
+
+def is_mock_server(f: GeneratedFile, t: Template) -> bool:
+    """개발용 가짜 서버 코드 — msw 를 import 하거나 템플릿의 가짜 서버 폴더 안 (응답을 만드는 쪽이라 요청 본문 request.json() 을 읽는다).
+    #177: 경로 글자(src/mocks/)와 변수 이름(request·req) 두 겹으로 면제해, 핸들러가 그 폴더 밖이고 변수가 r·input 이면 빗나갔다."""
+    return bool(_MSW_IMPORT.search(f.content)) or f.path.startswith(mock_dirs(t.project))
+
+
 _TYPES_IMPORT = re.compile(r"""from\s+['"](?:\.{1,2}/)+(?:[\w-]+/)*contract-types['"]""")
 
 
@@ -835,9 +861,7 @@ def _contract_types_usage(
             f.path == types.path
             or not f.path.endswith((".ts", ".tsx"))
             or ".test." in f.path
-            or f.path.startswith(
-                "src/mocks/"
-            )  # 개발용 가짜 서버 — 응답을 만드는 쪽 (요청 본문 request.json() 을 읽는다)
+            or is_mock_server(f, t)
         ):
             continue
         redefined = sorted(set(decl.findall(f.content)))
@@ -1564,11 +1588,10 @@ def _hidden_cases(
     out += unrun_input_days(cases, contract, "숨은 테스트")
     out += future_input_days(cases, contract, "숨은 테스트")
     out += unreadable_as_pass(cases, "숨은 테스트")
-    out += guessed_names(cases, contract, "숨은 테스트")
+    out += element_guesses(cases, contract, "숨은 테스트")
     out += type_escapes(cases, "숨은 테스트")
     out += array_substring_contains(cases, "숨은 테스트")
     out += misplaced_test_imports(cases, "숨은 테스트")
-    out += selector_guesses(cases, contract, "숨은 테스트")
     out += option_guesses(cases, contract, "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
@@ -1630,9 +1653,6 @@ def helper_names(helper: GeneratedFile) -> set[str]:
     return set(methods) | set(consts)
 
 
-_ROLE_NAME = re.compile(r"""ByRole\(\s*['"]([a-z]+)['"]\s*,\s*\{[^}]*\bname\s*:\s*([^,}]+)""")
-
-
 _TYPE_ESCAPE = re.compile(
     r"\bas\s+unknown\s+as\b|\bas\s+any\b|:\s*any\b|@ts-(?:ignore|expect-error|nocheck)"
 )
@@ -1659,21 +1679,9 @@ def type_escapes(cases: Iterable[GeneratedFile], label: str) -> list[str]:
 _ARRAY_OF_TEXTS = re.compile(
     r"\b(?:const|let)\s+(\w+)\s*(?::\s*string\[\]\s*)?=\s*(?:textsByRole\(|[^;]*?\.map\(\s*\(?\s*\w+\s*\)?\s*=>[^;]*?textContent)"
 )
-_TL_NAMES = frozenset(
-    {
-        "waitFor",
-        "screen",
-        "render",
-        "within",
-        "fireEvent",
-        "cleanup",
-        "act",
-        "renderHook",
-        "userEvent",
-    }
-)
+# 화면 도구 이름 — testing-library 내보내기 표(ts_helpers.TESTING_LIBRARY, 템플릿이 고정한 판) + userEvent (#177: 이름 9개를 따로 적었다)
+_TL_NAMES = frozenset({*TESTING_LIBRARY, "userEvent"})
 _VITEST_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]vitest['\"]")
-_QUERY_SELECTOR = re.compile(r"\.querySelector(?:All)?\(\s*['\"`]([^'\"`]+)")
 
 
 def array_substring_contains(cases: Iterable[GeneratedFile], label: str) -> list[str]:
@@ -1752,40 +1760,46 @@ def misplaced_test_imports(cases: Iterable[GeneratedFile], label: str) -> list[s
     return out
 
 
-def selector_guesses(
+# 계약 test id 밖에서 요소를 찾는 꼴 — Testing Library 의 이름·글·레이블 쿼리와 DOM 선택자 (#177: 사례마다 ByRole 이름·querySelector 를
+# 따로 잡아 getByText·getByLabelText·closest()·getElementById 는 지나갔다)
+_TL_QUERY = re.compile(
+    r"\b(?:get|query|find)(?:All)?By(Role|Text|LabelText|PlaceholderText|DisplayValue|Title|AltText)\(\s*([^)\n]{0,60})"
+)
+_DOM_SELECT = re.compile(
+    r"\.(querySelector(?:All)?|closest|getElementsBy\w+|getElementById)\(\s*([^)\n]{0,40})"
+)
+# 하네스 문서·생성기 프롬프트가 권하는 역할만 쿼리 — 앱 오류 표시(alert)가 없음을 보는 `screen.queryByRole('alert')`
+DOC_ROLE_QUERIES = frozenset({"alert"})
+
+
+def element_guesses(
     cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
 ) -> list[str]:
-    """화면 계약이 있는 과제에서 테스트가 querySelector 로 요소를 짐작(`input[name="userId"]`) — 계약에 없는 꼴이라 올바른 구현도 못 찾는다.
-    2026-11-10 알파 fe7d-user: 계약 로그인 폼에 입력란 test id 가 없어 테스트가 name 속성으로 찾다 모든 구현에서 예외."""
+    """화면 계약이 있는 과제에서 테스트가 계약 test id 밖으로 요소를 찾음 — 접근 가능한 이름·보이는 글·레이블·자리표시자·역할이나 DOM 선택자는
+    계약에 없는 꼴이라 짐작이고, 올바른 구현도 못 찾는다. 요소는 test id 로만 (`findByTestId`·`byTestId`, 목록 글은 `textsByRole`).
+    2026-11-09 React 알파: 하네스 문서 예시의 '상품 검색'(ByRole 이름)을 따라 써 모든 구현에서 예외. 2026-11-10 fe7d-user: 계약 로그인 폼에
+    입력란 test id 가 없어 name 속성(querySelector)으로 찾다 모든 구현에서 예외. 예외: 문서가 권하는 역할만 쿼리(DOC_ROLE_QUERIES)."""
     if contract is None or not contract.screens:
         return []
     out: list[str] = []
     for f in cases:
-        found = sorted({m.group(1) for m in _QUERY_SELECTOR.finditer(f.content)})
-        if found:
-            out.append(
-                f"{label} {f.path} 가 querySelector 로 요소를 짐작함 ({', '.join(found[:3])}) — 요소는 계약의 test id 로만 찾는다 "
-                "(`await screen.findByTestId(TID.X)`·`byTestId(범위, TID.X)`). 계약에 그 요소가 없으면 짐작하지 말고 화면 결과로 확인한다"
-            )
-    return out
-
-
-def guessed_names(
-    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
-) -> list[str]:
-    """화면 계약(screens)이 있는 과제에서 테스트가 요소를 접근 가능한 이름으로 찾음 — 계약에는 이름이 없어(test id·역할·설명만)
-    짐작한 이름이고, 올바른 구현도 못 찾는다. 2026-11-09 React 알파: 하네스 문서 예시의 '상품 검색'을 따라 써 모든 구현에서 예외."""
-    if contract is None or not contract.screens:
-        return []
-    out: list[str] = []
-    for f in cases:
-        hits = sorted(
-            {f"{role} {name.strip()[:30]}" for role, name in _ROLE_NAME.findall(f.content)}
-        )
+        hits: list[str] = []
+        for m in _TL_QUERY.finditer(f.content):
+            kind, args = m.group(1), m.group(2).strip()
+            only_role = re.fullmatch(r"""['"]([a-z]+)['"]""", args)
+            if kind == "Role" and only_role and only_role.group(1) in DOC_ROLE_QUERIES:
+                continue
+            hits.append(f"By{kind}({args[:30]})")
+        hits += [
+            f".{m.group(1)}({m.group(2).strip()[:30]})" for m in _DOM_SELECT.finditer(f.content)
+        ]
         if hits:
             out.append(
-                f"{label} {f.path} 가 요소를 접근 가능한 이름으로 찾음 ({'; '.join(hits[:3])}) — 계약에 이름이 없다. "
-                "계약의 test id 로 찾는다: await screen.findByTestId(TID.X) · byTestId(TID.X)"
+                f"{label} {f.path} 가 계약 test id 밖으로 요소를 찾음 ({'; '.join(dict.fromkeys(hits))}"[
+                    :260
+                ]
+                + ") — 요소는 계약의 test id 로만 찾는다 (`await screen.findByTestId(TID.X)`·`byTestId(범위, TID.X)`, 목록 글은 "
+                "`textsByRole(역할, TID.X)`). 이름·글·레이블·선택자는 계약에 없어 짐작이 된다 — 계약에 그 요소가 없으면 화면 결과로 확인한다"
             )
     return out
 
@@ -2521,11 +2535,10 @@ def _public_cases(
     out += unrun_input_days(cases, contract, "공개 테스트")
     out += future_input_days(cases, contract, "공개 테스트")
     out += unreadable_as_pass(cases, "공개 테스트")
-    out += guessed_names(cases, contract, "공개 테스트")
+    out += element_guesses(cases, contract, "공개 테스트")
     out += type_escapes(cases, "공개 테스트")
     out += array_substring_contains(cases, "공개 테스트")
     out += misplaced_test_imports(cases, "공개 테스트")
-    out += selector_guesses(cases, contract, "공개 테스트")
     out += option_guesses(cases, contract, "공개 테스트")
     text = "\n".join(f.content for f in cases)
     missing = [
