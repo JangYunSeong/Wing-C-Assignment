@@ -397,7 +397,7 @@ def test_regenerated_design_alone_stuck_in_a_hidden_case_suspects_the_test_once(
     plan = _assign(_report(naive, d1), gen_accepted__d1=1)
     assert _keys(plan) == ["gen_hidden"] and plan.actions[0].pool is DESIGN
     assert "다른 구현(naive-all)은 판정까지 갔다" in plan.actions[0].note
-    assert "응답하지 않은 요청을 붙잡은 채 다음 요청을 기다리지 말고" in plan.actions[0].note
+    assert "구현마다 다를 수 있는 진행을 기다리지 말고" in plan.actions[0].note  # 스택 중립 (#182)
     # 그 한 번을 썼으면 예전처럼 그 구현 (예산은 재생성 쪽이 센다)
     counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN.suffix}": 1}
     plan = assign(_report(naive, d1), PLAN2, OVERLAYS, MISSED, counts)
@@ -1047,7 +1047,9 @@ def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() ->
     assert [a.key for a in first.actions] == ["gen_accepted:d2"]  # 처음엔 그 구현
     again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1})
     assert [(a.key, a.pool) for a in again.actions] == [("gen_public", DESIGN)]
-    assert "naive-all, d1" in again.actions[0].note and "match" in again.actions[0].note
+    assert (
+        "naive-all, d1" in again.actions[0].note and "골라 확인" in again.actions[0].note
+    )  # 스택 중립 (#182)
     spent = assign(
         report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1, f"gen_public{DESIGN.suffix}": 1}
     )
@@ -1202,3 +1204,31 @@ def test_build_collects_the_cases_any_version_of_a_design_passed() -> None:
         "hc1",
         "hc2",
     }  # 어느 판이든 통과한 케이스 — 지금 판이 떨어져도 남는다
+
+
+def test_repair_notes_carry_no_other_stack_or_case_shapes() -> None:
+    """#182: 수리 요청 문구의 분기 조건은 일반 규칙인데 문구에 한 사례·한 스택의 모양(React 하네스 API·Java 컴파일 예시·트랜잭션
+    구조·사례 날짜)이 들어 다른 스택의 수리에도 나갔다 — 코드의 문자열에는 스택 중립 원칙만 둔다 (사례 인용은 주석으로만).
+    매니페스트가 처방을 고르는 데이터·React 문구(질의 문법·MemoryRouter)는 매니페스트 repair_terms 로 옮길 때(#176) 함께 뺀다."""
+    import ast
+    from pathlib import Path
+
+    import task_spec.starter.repair as repair_mod
+
+    tree = ast.parse(Path(repair_mod.__file__).read_text("utf-8"))
+    texts = [
+        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    ]
+    forbidden = (
+        "waitFor",
+        "TestRestTemplate",
+        "람다 안에서",
+        "검사 예외",
+        "무엇을 어디서 열고",
+        "응답하지 않은 요청을 붙잡은 채",
+        "정리 함수의 무시 표시",
+        "목록 길이·한 번에 보내는 건수",
+        "알파 5회차",
+    )
+    hits = [(f, t[:60]) for t in texts for f in forbidden if f in t]
+    assert hits == []
