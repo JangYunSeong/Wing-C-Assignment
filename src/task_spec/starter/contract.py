@@ -215,17 +215,19 @@ _UNIT_MS = {
 }
 
 
+def timed_matches(name: str, value: HarnessValue, texts: Iterable[str]) -> list[str]:
+    """시간 조절값 값과 단위를 환산해 맞는 자료 줄 — 근거를 '없음'으로 쓴 값이 자료에 있는지 볼 때 보정(unevidenced)과
+    검사(_harness)가 같은 후보(TIMED_CANDIDATES)로 본다 (#179: 같은 계산이 두 벌이었다)."""
+    unit = param_unit(name)
+    if unit is None or not isinstance(value, (int, float)) or isinstance(value, bool):
+        return []
+    return [h for h in timed_hints(name, texts) if float(value) in _converted(h, unit)]
+
+
 def unevidenced(param: HarnessParam, value: HarnessValue, texts: Iterable[str]) -> bool:
     """근거를 '없음'으로 쓴 조절값이 자료 어디에도 없는가 — 템플릿 표기로 뽑히는 값도, 단위를 환산해 맞는 시간 값도 없다."""
     texts = list(texts)
-    if extract_values(param, texts):
-        return False
-    unit = param_unit(param.name)
-    if unit is None or not isinstance(value, (int, float)) or isinstance(value, bool):
-        return True
-    return not any(
-        float(value) in _converted(h, unit) for h in timed_hints(param.name, texts, limit=20)
-    )
+    return not extract_values(param, texts) and not timed_matches(param.name, value, texts)
 
 
 EVIDENCE_FRAGMENT = "근거 인용 일부만 자료와 일치 — "
@@ -291,7 +293,12 @@ def _converted(quote: str, unit: str) -> set[float]:
     return out
 
 
-def timed_hints(name: str, texts: Iterable[str], limit: int = 4) -> list[str]:
+# 시간 조절값의 근거 후보 줄 수 — 근거 대조(timed_matches)와 재질문 힌트(plan_contract)가 같은 후보를 본다 (#179: 20·20·4 로 갈려
+# 대조가 받는 줄을 힌트가 보여 주지 않을 수 있었다)
+TIMED_CANDIDATES = 20
+
+
+def timed_hints(name: str, texts: Iterable[str], limit: int = TIMED_CANDIDATES) -> list[str]:
     """시간 조절값의 근거 후보 — 명세 자료·답에서 그 단위로 환산할 수 있는 수가 든 줄 (근거를 '없음'으로 쓴 답을 다시 묻는다)."""
     if param_unit(name) is None:
         return []
@@ -638,17 +645,7 @@ def _harness(
         if quote and quote.strip() == NO_EVIDENCE:
             # 시간 조절값인데 자료에 단위를 환산해 그 값이 되는 줄이 있으면 막지 않고 승인자에게 — 2026-11-10 nplus1-i: 자료의
             # '응답 p99 ≤ 800 ms' 로 request_timeout_s=1 을 맞게 정하고도 '시간 초과 값' 이 따로 없다며 근거를 세 번 다 '없음'으로 썼다
-            matched = (
-                [
-                    h
-                    for h in timed_hints(p.name, spec.visible_texts, limit=20)
-                    if isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and float(value) in _converted(h, param_unit(p.name) or "")
-                ]
-                if param_unit(p.name)
-                else []
-            )
+            matched = timed_matches(p.name, value, spec.visible_texts)
             if matched:
                 flags.append(
                     f"운영 값 {p.name}={value} 의 근거를 계약이 '없음'으로 썼지만 자료의 시간 값과 환산해 맞음: "
@@ -660,10 +657,7 @@ def _harness(
                     f"명세 1단계 자료·추가 요구 구체 답에 운영 수치 {p.name} 이 없음 — "
                     "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"
                 )
-            else:
-                problems.append(
-                    f"HiddenPlan {p.name} 은 자료에 없다고 했으니 harness 에서 뺀다 (선택 조절값)"
-                )
+            # 선택 조절값의 '없음'은 보정(plan_contract.fit_unevidenced)이 먼저 뺀다 — 검사 가지를 두지 않는다 (#179: 닿지 않던 검사)
         elif quote:
             problems.append(
                 f"HiddenPlan {p.name}={value} 의 근거 {quote[:120]!r} 가 자료에 그대로 없거나 값이 그 안에 없음 — "
@@ -1114,16 +1108,25 @@ def _reasons(
     ]
 
 
-_API = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+`?(/[A-Za-z0-9_\-/{}.]*)")
+# 글에 나온 'METHOD /path' — 백틱으로 감싸도, 경로 변수는 {id}·:id 둘 다, 끝 문장 부호는 빼고 (`POST /x.` → /x).
+# 계약 검사·화면 폼 대조가 같은 파서를 쓴다 (#179: 두 정규식이 같은 글을 다르게 잘랐다)
+_API = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+`?(/(?:[A-Za-z0-9_\-./:{}]*[A-Za-z0-9_\-/}])?)")
+
+
+def api_mentions(text: str) -> list[tuple[str, str]]:
+    """글의 (메서드, 경로) 들."""
+    return _API.findall(text)
 
 
 def _api_key(method: str, path: str) -> str:
-    return f"{method.upper()} {re.sub(r'{[^}]*}', '{}', path.rstrip('/') or '/')}"
+    """같은 API 인지 견줄 키 — 경로 변수({id}·:id)는 {} 로."""
+    shape = re.sub(r"\{[^}]*\}|:[A-Za-z_]\w*", "{}", path.rstrip("/") or "/")
+    return f"{method.upper()} {shape}"
 
 
 def mentioned_apis(texts: Iterable[str]) -> list[str]:
     """글에 나온 'METHOD /path' (경로 변수는 {} 로) — 예: 'PATCH /deliveries/{}/status'."""
-    return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in _API.findall(t)))
+    return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in api_mentions(t)))
 
 
 def existing_endpoints(contract: TaskContract, spec: SpecView) -> list[Endpoint]:
@@ -1174,7 +1177,7 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
     sources += [(c.case_id, f"{c.scenario} {c.expect}") for c in plan.cases]
     stray: dict[str, list[str]] = {}
     for where, text in sources:
-        for m, p in _API.findall(text):
+        for m, p in api_mentions(text):
             if not _in_contract(_api_key(m, p), rx):
                 stray.setdefault(f"{m.upper()} {p}", []).append(where)
     if stray:
@@ -1682,7 +1685,6 @@ _FIELD_ROLES = frozenset(
 
 
 # 경로는 경로 글자만 — 'POST /api/auth/login으로'·'… login.' 의 조사·마침표를 먹지 않게 (리뷰 2026-11-11)
-_MENTION = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_\-./:{}]*[A-Za-z0-9_\-/}])")
 # 사용자가 입력하지 않는 요청 칸 — 앱이 만드는 번호·토큰·시각 (폼 입력란으로 만들지 않는다). 화면·API 경로 변수도 앱이 채운다.
 # 'userId' 처럼 이름이 …Id 여도 로그인 폼에선 사용자가 입력하므로 …Id 전체를 빼지 않는다 (2026-11-11 fe7d-user 재생).
 _SYSTEM_FIELD = re.compile(
@@ -1700,17 +1702,17 @@ def _form_endpoint(contract: TaskContract, form: UiElement) -> Endpoint | None:
     """폼의 조작·설명에 적힌 제출 요청(메서드·경로)과 같은 계약 API. 적혀 있지 않으면, 본문을 받는 변경 API(POST·PUT·PATCH)가
     계약에 하나뿐이고 다른 요소의 조작이 그 API 를 말하지 않을 때만 그것 (2026-11-10 fe7c-user: 조작 '제출하면 로그인 요청을 보내고…')."""
     for text in (form.action or "", form.description):
-        for method, path in _MENTION.findall(text):
+        for method, path in api_mentions(text):
             for e in contract.endpoints:
                 if e.method == method and _route_shape(e.path) == _route_shape(path):
                     return e
-    if _MENTION.search(form.action or ""):
+    if api_mentions(form.action or ""):
         return None  # 다른 요청을 적었다 — 짐작하지 않는다
     writes = [e for e in contract.endpoints if e.method in ("POST", "PUT", "PATCH") and e.request]
     if len(writes) != 1:
         return None
     mentioned = any(
-        (m := _MENTION.search(el.action or "")) is not None
+        (m := _API.search(el.action or "")) is not None
         and m.group(1) == writes[0].method
         and _route_shape(m.group(2)) == _route_shape(writes[0].path)
         for sc in contract.screens

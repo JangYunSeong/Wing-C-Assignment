@@ -521,3 +521,28 @@ def test_list_of_response_shape_with_a_shared_path_key_is_fine() -> None:
     assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")  # 감싼 목록
     ok.update({"returns": "v1", "body": []})  # 한 건 — 경로 변수로 한 행을 찾는다
     assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
+
+
+def test_one_answer_to_what_a_response_lists() -> None:
+    """#179: '성공 응답이 무엇의 목록인가'를 세 함수가 따로 답했다 — response_list_target 하나로."""
+    from task_spec.starter.seed_rows import response_list_target
+
+    c = _contract()
+    ent = c["entities"][0]
+    c["response_shapes"] = [{"shape_id": "v1", "name": "OrderRow", "fields": ent["fields"][:1]}]
+    e = c["endpoints"][1]
+    e["responses"][0] |= {"returns": f"{ent['entity_id']}[]", "body": []}
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) == ("entity", ent["entity_id"])
+    e["responses"][0] |= {"returns": "v1[]"}
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) == ("shape", "v1")
+    e["responses"][0] |= {
+        "returns": None,
+        "body": [{"name": "tags", "type": "string[]", "refs": ["r1"]}],
+    }
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) == ("other", "string[]")
+    e["responses"][0] |= {"body": [{"name": "id", "type": "integer", "refs": ["r1"]}]}
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) is None

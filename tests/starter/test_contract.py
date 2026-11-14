@@ -490,9 +490,15 @@ def test_invented_optional_visible_value_is_a_problem_not_a_gap() -> None:
     p["harness"]["server_threads"] = 64  # 자료 어디에도 없음
     res = _check(plan=p, manifest=_manifest(harness_params=params))
     assert not res.spec_gaps and _has(res.problems, "server_threads=64", "근거가 없음")
+    # 근거를 '없음'으로 쓴 선택 조절값은 보정(fit_unevidenced)이 뺀다 — 검사에는 같은 규칙의 가지를 두지 않는다 (#179)
+    from task_spec.nodes.starter.plan_contract import fit_unevidenced
+
     p["evidence"] = {"server_threads": "없음"}
-    res = _check(plan=p, manifest=_manifest(harness_params=params))
-    assert not res.spec_gaps and _has(res.problems, "server_threads", "선택 조절값")
+    manifest = _manifest(harness_params=params)
+    fixed, notes = fit_unevidenced(HiddenPlan.model_validate(p), manifest, _spec())
+    assert "server_threads" not in fixed.harness and any("server_threads" in n for n in notes)
+    res = _check(plan=fixed.model_dump(), manifest=manifest)
+    assert not res.spec_gaps and not _has(res.problems, "server_threads")
 
 
 # ── 스모크(v1)에서 드러난 빈틈 — 기존 API 누락·운영 값 누락·목록 응답 (2026-11-07) ──
@@ -1008,3 +1014,51 @@ def test_describe_rule_reads_like_the_material_note() -> None:
     )
     assert describe_rule(_LIMIT, "s") == "여럿이면 가장 큰 값, 초 단위로 바꿔 올림"
     assert describe_rule(_BURST, None) == "건 단위가 붙은 수, 여럿이면 가장 큰 값"
+
+
+# ── #179 계약 검사·보정의 중복 정리 ─────────────────────────────
+
+
+def test_unknown_param_survives_fitting_and_the_check_asks_again() -> None:
+    """보정(fit_material_params)이 재료로 좁힌 목록 밖 키를 모두 지워 '템플릿에 없는 조절값' 검사가 운영에서 걸리지 않았다 —
+    재료가 고르지 않은 템플릿 조절값만 빼고, 템플릿에 없는 키는 검사가 다시 묻는다."""
+    from task_spec.nodes.starter.plan_contract import fit_output
+    from task_spec.schemas import PlanContractOutput
+
+    m = _manifest()
+    known = {p.name for p in m.harness_params}
+    plan = _plan(harness={"pool_size": 8, "concurrency": 32, "pool": 3})
+    raw = PlanContractOutput.model_validate({"contract": _contract(), "hidden_plan": plan})
+    fitted, _ = fit_output(raw, m, _spec(), None, known)
+    assert fitted.hidden_plan.harness.get("pool") == 3
+    res = check_contract(fitted.contract, fitted.hidden_plan, _spec(), m, BACKEND_SEED)
+    assert _has(res.problems, "템플릿에 없는 조절값", "pool")
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("기존 `PATCH /orders/{id}/status` 는 그대로", [("PATCH", "/orders/{id}/status")]),
+        ("제출하면 POST /x. 로 보낸다", [("POST", "/x")]),  # 끝 문장 부호는 경로가 아니다
+        ("GET /orders/:id 로 읽는다", [("GET", "/orders/:id")]),
+        ("GET / 로 확인", [("GET", "/")]),
+    ],
+)
+def test_one_api_mention_parser(text: str, want: list[tuple[str, str]]) -> None:
+    """#179: 'METHOD /path' 정규식이 둘이라 같은 글을 다르게 잘랐다 (`POST /x.` → '/x.' 와 '/x')."""
+    from task_spec.starter.contract import _api_key, api_mentions
+
+    assert api_mentions(text) == want
+    assert (
+        _api_key("get", "/orders/:id") == _api_key("GET", "/orders/{orderId}/") == "GET /orders/{}"
+    )
+
+
+def test_timed_hints_show_the_lines_the_check_accepts() -> None:
+    """#179: 근거 대조는 앞 20줄, 재질문 힌트는 앞 4줄을 봐 — 대조가 받는 줄을 힌트가 보여 주지 않을 수 있었다."""
+    from task_spec.starter.contract import TIMED_CANDIDATES, timed_hints, timed_matches
+
+    texts = ["\n".join(f"- 지표 {i}: {i * 100} ms" for i in range(1, 8))]
+    hits = timed_matches("request_timeout_s", 1, texts)  # 700 ms → 1 초 (올림)
+    assert hits and all(h in timed_hints("request_timeout_s", texts) for h in hits)
+    assert len(timed_hints("request_timeout_s", texts)) == 7 <= TIMED_CANDIDATES

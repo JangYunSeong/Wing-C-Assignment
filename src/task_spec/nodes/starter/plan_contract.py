@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 
 from pydantic import BaseModel
@@ -261,17 +262,6 @@ def forbidden_text(seed: FeatureSeed | None, spec: SpecView) -> str:
     )
 
 
-def material_params(seed: FeatureSeed | None, m: TemplateManifest) -> set[str]:
-    """계약 생성기에 보이고 숨은 계획에 남는 조절값 — 재료가 조절값을 나열했으면(FeatureSeed.harness 가 비지 않은 목록) 그것만,
-    아니면(None·[] — 필수 없음일 뿐 동시 요청 등은 쓸 수 있다) 템플릿 전부.
-    2026-11-11 N+1 백엔드 알파: 템플릿 조절값이 모두 보여 LLM 이 이 함정과 무관한 concurrency=1·bursts=1 을 넣고(지원자에게 보이는 값이라
-    자료 근거가 없어 계약 실패), pool_size·connection_timeout_ms 는 함정용 자료(개발 환경 DB 설정)에서 베꼈다."""
-    names = {p.name for p in m.harness_params}
-    if seed is None or not seed.harness:
-        return names
-    return (set(seed.harness) | template_mechanics(m)) & names
-
-
 def template_mechanics(m: TemplateManifest) -> set[str]:
     """재료가 조절값을 나열해도 남기는 숨은 장치 — 지원자에게 보이지 않고 기본값이 있는 조절값(예: bursts 반복 수).
     재료 나열은 지원자가 자료에서 찾을 **운영 값**을 고르는 것이고, 숨은 장치는 재료와 무관한 템플릿 것이라 코드가 기본값으로 채운다
@@ -346,16 +336,19 @@ def fit_unevidenced(
 
 
 def fit_material_params(
-    plan: HiddenPlan, seed: FeatureSeed | None, m: TemplateManifest
+    plan: HiddenPlan, m: TemplateManifest, known: Collection[str] | None = None
 ) -> tuple[HiddenPlan, list[str]]:
-    """재료가 나열하지 않은 조절값을 LLM 이 넣으면 뺀다 (입력에 보이지 않는 값 — 안전망). 동시 요청 조절값(burst_rows)이 빠지면
-    숨은 케이스 데이터의 버스트 표시도 끈다 (버스트 행 수를 잴 조절값이 없다)."""
-    keep = material_params(seed, m)
-    extra = sorted(k for k in plan.harness if k not in keep)
+    """재료가 고르지 않은 템플릿 조절값을 LLM 이 넣으면 뺀다 (입력에 보이지 않는 값 — 안전망). m 은 재료로 좁힌 매니페스트
+    (for_material), known 은 좁히기 전 템플릿의 조절값 이름. 템플릿에 없는 키는 지우지 않는다 — 계약 검사가 '템플릿에 없는 조절값'으로
+    다시 묻는다 (#179: 예전에는 그것까지 조용히 지워 그 검사가 운영에서 한 번도 걸리지 않았다).
+    동시 요청 조절값(burst_rows)이 빠지면 숨은 케이스 데이터의 버스트 표시도 끈다 (버스트 행 수를 잴 조절값이 없다)."""
+    keep = {p.name for p in m.harness_params}
+    template = set(known) if known is not None else keep
+    extra = sorted(k for k in plan.harness if k not in keep and k in template)
     if not extra:
         return plan, []
-    harness = {k: v for k, v in plan.harness.items() if k in keep}
-    evidence = {k: v for k, v in plan.evidence.items() if k in keep}
+    harness = {k: v for k, v in plan.harness.items() if k not in extra}
+    evidence = {k: v for k, v in plan.evidence.items() if k not in extra}
     no_burst = any(n not in keep for n in m.burst_rows)
     cases = [
         c.model_copy(update={"data": [d.model_copy(update={"burst": False}) for d in c.data]})
@@ -379,14 +372,9 @@ def plan_input(
         f"- {p.name} ({p.kind}{', 필수' if p.required else ', 선택'}"
         f"{', 지원자에게 보임 — 자료·답에 적힌 값 그대로' if p.visible else ''}"
         f"{_range(p.minimum, p.maximum)}) — {p.description}"
-        for p in m.harness_params
-        if p.name in material_params(seed, m)
+        for p in m.harness_params  # 재료로 좁힌 템플릿 (for_material) — 조절값·사유를 여기서 다시 거르지 않는다 (#179)
     )
-    # 재료가 이 숨은 요구의 사유를 선언했으면 그것만 보인다 (FeatureSeed.reasons)
-    allowed = set(seed.reasons) if seed is not None and seed.reasons else None
-    reasons = "\n".join(
-        reason_line(r) for r in m.failure_reasons if allowed is None or r.code in allowed
-    )
+    reasons = "\n".join(reason_line(r) for r in m.failure_reasons)
     return PlanContractInputAll(
         template=(
             f"{m.ref} — 인터페이스: {', '.join(m.interfaces)}\n"
@@ -459,10 +447,12 @@ def fit_output(
     manifest: TemplateManifest,
     spec: SpecView,
     seed: FeatureSeed | None = None,
+    known: Collection[str] | None = None,
 ) -> tuple[PlanContractOutput, list[str]]:
     """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
-    회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다."""
-    trimmed, notes = fit_material_params(out.hidden_plan, seed, manifest)
+    회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다. manifest 는 재료로 좁힌 것(for_material),
+    known 은 좁히기 전 템플릿의 조절값 이름 (없으면 manifest 것)."""
+    trimmed, notes = fit_material_params(out.hidden_plan, manifest, known)
     trimmed, free_notes = fit_unevidenced(trimmed, manifest, spec)
     notes += free_notes
     trimmed, frag_notes = fit_evidence_fragments(trimmed, manifest, spec, seed)
@@ -529,6 +519,9 @@ async def plan_contract(
     """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획."""
     res = PlanResult()
     spec = SpecView.from_task(task)
+    known = {
+        p.name for p in template.manifest.harness_params
+    }  # 좁히기 전 — 템플릿에 없는 키는 검사가 말한다
     template = for_material(template, seed)
     manifest = template.manifest
     # 2026-11-07: 템플릿 표기 패턴으로 못 찾으면 LLM 전에 실패시켰는데, 패턴이 한 예시 표현에만 맞아 값이 있는 명세도 막혔다
@@ -562,7 +555,7 @@ async def plan_contract(
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
         raw = out
-        out, notes = fit_output(out, manifest, spec, seed)
+        out, notes = fit_output(out, manifest, spec, seed, known)
         check = check_contract(
             out.contract, out.hidden_plan, spec, manifest, seed, first_answer=attempt == 0
         )
@@ -586,7 +579,9 @@ async def plan_contract(
                 for p in manifest.harness_params
                 if p.visible
                 and plan_evidence_missing(out.hidden_plan, p.name)
-                and (h := timed_hints(p.name, spec.visible_texts))
+                and (
+                    h := timed_hints(p.name, spec.visible_texts)
+                )  # 검사와 같은 후보 (TIMED_CANDIDATES)
             ]
             if check.spec_gaps and attempt < ATTEMPTS - 1
             else []

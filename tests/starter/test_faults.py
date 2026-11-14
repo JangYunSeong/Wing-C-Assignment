@@ -180,11 +180,7 @@ def test_material_listing_params_keeps_only_those() -> None:
     import json
     from pathlib import Path
 
-    from task_spec.nodes.starter.plan_contract import (
-        fit_material_params,
-        for_material,
-        material_params,
-    )
+    from task_spec.nodes.starter.plan_contract import fit_material_params, for_material
     from task_spec.schemas.incident import PublicIncident
     from task_spec.starter.templates import load_template
 
@@ -196,16 +192,16 @@ def test_material_listing_params_keeps_only_those() -> None:
     lost = PublicIncident.model_validate(
         json.loads((root / "sw.backend.lost-update.json").read_text("utf-8"))
     ).feature
+    known = {p.name for p in java.manifest.harness_params}
     t = for_material(java, nplus1)
-    # 나열한 운영 값 + 숨은 장치(지원자에게 안 보이고 기본값 있는 값 — bursts): 재료 나열은 운영 값만 고른다
-    assert material_params(nplus1, t.manifest) == {"query_delay_ms", "request_timeout_s", "bursts"}
+    # 나열한 운영 값 + 숨은 장치(지원자에게 안 보이고 기본값 있는 값 — bursts): 재료 나열은 운영 값만 고른다 (좁히기는 for_material 하나)
     assert {p.name for p in t.manifest.harness_params} == {
         "query_delay_ms",
         "request_timeout_s",
         "bursts",
     }
     lt = for_material(java, lost)
-    assert "concurrency" in material_params(lost, lt.manifest)
+    assert "concurrency" in {p.name for p in lt.manifest.harness_params}
     # 갱신 손실 재료는 버스트 조절값 concurrency 를 자료에서 읽는다 (필수·보임·이 과제 설명) — 2026-11-13
     conc = lt.manifest.param("concurrency")
     assert conc is not None and conc.required and conc.visible and "— 이 과제:" in conc.description
@@ -224,16 +220,18 @@ def test_material_listing_params_keeps_only_those() -> None:
                 "request_timeout_s": 1,
                 "concurrency": 1,
                 "pool_size": 10,
+                "pool": 3,  # 템플릿에 없는 키 — 지우지 않고 계약 검사가 다시 묻는다 (#179)
             }
         }
     )
-    fixed, notes = fit_material_params(plan, nplus1, t.manifest)
-    assert fixed.harness == {"query_delay_ms": 12, "request_timeout_s": 1}
+    fixed, notes = fit_material_params(plan, t.manifest, known)
+    assert fixed.harness == {"query_delay_ms": 12, "request_timeout_s": 1, "pool": 3}
     assert not any(d.burst for c in fixed.cases for d in c.data)
     assert "concurrency, pool_size" in notes[0] and "버스트 표시도 끔" in notes[0]
     # 갱신 손실 재료는 concurrency 만 나열 — 다른 운영 값은 빼지만 버스트 장치(bursts)는 남아 버스트 표시를 끄지 않는다
-    fixed, notes = fit_material_params(plan, lost, lt.manifest)
-    assert fixed.harness == {"concurrency": 1} and all(d.burst for c in fixed.cases for d in c.data)
+    fixed, notes = fit_material_params(plan, lt.manifest, known)
+    assert fixed.harness == {"concurrency": 1, "pool": 3}
+    assert all(d.burst for c in fixed.cases for d in c.data)
     assert "버스트 표시도 끔" not in notes[0]
 
 

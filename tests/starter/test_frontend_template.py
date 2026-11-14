@@ -320,7 +320,10 @@ def test_material_reasons_narrow_the_plan_input_and_check() -> None:
     )
     assert inc is not None and inc.feature is not None
     seed = inc.feature
-    text = plan_input(_approved(), FE, seed=seed).failure_reasons
+    from task_spec.nodes.starter.plan_contract import for_material
+
+    # 계약 입력은 재료로 좁힌 템플릿을 받는다 — 사유를 입력에서 다시 거르지 않는다 (#179)
+    text = plan_input(_approved(), for_material(FE, seed), seed=seed).failure_reasons
     assert "stale_response_shown" in text and "duplicate_request" not in text
     off = _plan().model_copy(
         update={

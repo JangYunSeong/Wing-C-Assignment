@@ -14,6 +14,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import Endpoint, Entity
@@ -146,48 +147,34 @@ def _scope_gap_problems(contract: TaskContract) -> list[str]:
     return out
 
 
-def _returns_any_list(e: Endpoint) -> bool:
-    """성공 응답에 목록이 있는가 (무엇의 목록이든) — returns X[] 이거나 본문에 목록 칸."""
+ListTarget = tuple[Literal["entity", "shape", "other"], str]
+
+
+def response_list_target(e: Endpoint, contract: TaskContract) -> ListTarget | None:
+    """성공 응답이 무엇의 목록인가 — ("entity", 엔티티 id) · ("shape", 응답 모양 id) · ("other", 원소 형식), 목록이 아니면 None.
+    returns `X[]` 를 먼저, 없으면 본문의 목록 칸(`{items: X[]}`). 엔티티·모양은 id 또는 이름으로 적어도 된다.
+    한 질문을 세 함수(무엇이든 목록·그 엔티티의 목록·모양의 목록)가 따로 답하던 것을 하나로 (#179).
+    2026-11-11 N+1: 엔티티 목록 API(`GET /projects/{projectId}/board/posts` → m1[])를 '한 행을 찾는 API' 로 짚었다.
+    2026-11-13 송금 내역: 응답 모양의 목록(`… → v1[]`)도 목록 API 다 — 모양에는 어느 엔티티의 모양인지 칸이 없다."""
     ok = e.success()
     if ok is None:
-        return False
+        return None
+    entities = {k: m.entity_id for m in contract.entities for k in (m.entity_id, m.name)}
+    shapes = {k: sh.shape_id for sh in contract.response_shapes for k in (sh.shape_id, sh.name)}
+    names: list[str] = []
     if ok.returns and ok.returns.endswith("[]"):
-        return True
-    return any(parse_field(f.type).kind == "list" for f in ok.body)
-
-
-def _lists_entity(e: Endpoint, m: Entity) -> bool:
-    """성공 응답이 그 엔티티의 목록인가 — returns 가 `m1[]`·`이름[]` 이거나, 본문에 그 엔티티의 목록 칸(`{items: m1[]}`)이 있다.
-    다른 것의 목록(멤버 한 행을 찾아 그 감사 기록을 돌려주는 API)은 아니다 — 경로 변수로 그 엔티티 한 행을 찾는다."""
-    ok = e.success()
-    if ok is None:
-        return False
-    keys = {m.entity_id, m.name}
-    if ok.returns and ok.returns.endswith("[]") and ok.returns[:-2] in keys:
-        return True
+        names.append(ok.returns[:-2])
     for f in ok.body:
         ft = parse_field(f.type)
-        if ft.kind == "list" and ft.items[0].kind == "ref" and ft.items[0].name in keys:
-            return True
-    return False
-
-
-def _lists_shape(e: Endpoint, contract: TaskContract) -> bool:
-    """성공 응답이 응답 모양(response_shapes)의 목록인가 — 조인한 칸이 붙은 목록 항목(`v1[]`·`{items: v1[]}`)도 목록 API 다.
-    2026-11-13 송금 내역(ct-4fb4cffa89b4-b1): plan_contract v24 대로 고객별 목록을 `GET /customers/{customerId}/remittances` → `v1[]` 로
-    적으면 '한 행을 찾는 API' 로 짚고 '값에서 customerId 를 빼라'(목록이면 틀린 지시)를 줘, 다시 요청해도 못 고쳐 계약이 실패했다.
-    모양에는 어느 엔티티의 모양인지 칸이 없어 모양의 목록이면 모두 목록 API 로 본다."""
-    ok = e.success()
-    if ok is None:
-        return False
-    keys = {k for s in contract.response_shapes for k in (s.shape_id, s.name)}
-    if ok.returns and ok.returns.endswith("[]") and ok.returns[:-2] in keys:
-        return True
-    for f in ok.body:
-        ft = parse_field(f.type)
-        if ft.kind == "list" and ft.items[0].kind == "ref" and ft.items[0].name in keys:
-            return True
-    return False
+        if ft.kind == "list":
+            elem = ft.items[0] if ft.items else None
+            names.append(elem.name if elem is not None and elem.kind == "ref" else f.type)
+    for name in names:
+        if name in entities:
+            return ("entity", entities[name])
+        if name in shapes:
+            return ("shape", shapes[name])
+    return ("other", names[0]) if names else None
 
 
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
@@ -202,13 +189,14 @@ def _lookup_key_problems(contract: TaskContract) -> list[str]:
         params = _PATH_PARAM.findall(e.path)
         if any(p in _ID_FIELDS for p in params):
             continue  # id 로 찾으면 행마다 다르다
-        if _lists_shape(e, contract):
+        target = response_list_target(e, contract)
+        if target is not None and target[0] == "shape":
             continue  # 응답 모양의 목록 — 같은 경로 변수 값이 여러 행에 있는 것이 정상
         for s in contract.seed:
             m = entities.get(s.entity_id)
             if m is None:
                 continue
-            if _lists_entity(e, m):
+            if target == ("entity", m.entity_id):
                 # 그 엔티티의 목록 API — 같은 경로 변수 값(프로젝트의 게시글들)이 여러 행에 있는 것이 정상. 2026-11-11 N+1 알파:
                 # GET /projects/{projectId}/board/posts(m1[]) 를 '한 행을 찾는 API' 로 짚어 계약을 다시 요청했다.
                 # 길드 감사(GET …/members/{memberId}/audit — 감사 기록 목록)는 멤버 한 행을 찾으므로 계속 본다
@@ -228,7 +216,7 @@ def _lookup_key_problems(contract: TaskContract) -> list[str]:
                             f"한 행을 찾는 API 면 {keys[-1]} 는 values 에서 뺀다"
                             # 목록 표시가 없는 GET 만 — 변경 요청(PATCH 등)은 목록 API 가 아니고, 이미 다른 것의 목록을 돌려주는 GET
                             # (길드 감사 …/members/{memberId}/audit — 감사 기록)은 경로로 멤버 한 행을 찾는다
-                            if e.method == "GET" and not _returns_any_list(e)
+                            if e.method == "GET" and target is None
                             else f"{keys[-1]} 는 values 에서 뺀다"
                         )
                         + " (코드가 행마다 다른 값을 넣는다)"
