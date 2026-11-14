@@ -467,11 +467,18 @@ def test_table_columns_are_read() -> None:
 
 def test_headers_have_their_own_naming_rule() -> None:
     c = _contract()
-    c["endpoints"][0]["headers"] = [{"name": "X-Actor", "type": "string", "refs": ["r1"]}]
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Actor", "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
     assert _check(c).ok
-    c["endpoints"][0]["headers"] = [{"name": "actor", "type": "string", "refs": ["r1"]}]
+    c["endpoints"][0]["headers"] = [
+        {"name": "actor", "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
     res = _check(c)
     assert _has(res.problems, "헤더 이름", "actor")
+    # 요청마다 새 값인지(per_request)를 적지 않은 헤더는 재요청 (#181 — 이름 낱말로 짐작하지 않는다)
+    c["endpoints"][0]["headers"] = [{"name": "X-Actor", "type": "string", "refs": ["r1"]}]
+    assert _has(_check(c).problems, "X-Actor", "per_request 가 없음")
 
 
 def test_invented_optional_visible_value_is_a_problem_not_a_gap() -> None:

@@ -94,6 +94,7 @@ TaskContract                         ← 지원자에게 보임 (README "계약"
                 · existing(이 과제 전에 있던 테이블인가 — 숨은 케이스 data 는 existing 엔티티에만, 새 엔티티는 0행)
                 · state(상태를 바꾸는 엔티티만: field · values · transitions "A→B" · rejected_status) [확정: 2026-11-08, plan_contract v10]
     필드:        name · type · required · constraints · refs(r*·p* — 이 필드가 나온 공개 요구·수용 기준, 1개 이상)
+    헤더 필드:   위 필드 + per_request(요청마다 새 값인가 — 요청 번호·멱등 키는 true, 요청자는 false. 권한 칸 auth 의 헤더 밖에서 비면 재요청) [2026-11-14, plan_contract v27 — #181]
   response_shapes[]: id(v1…) · name · fields — 응답에만 있는 모양, 테이블 아님 (시드·외래 키·state·existing 없음) [2026-11-13]
   settings[]:    key(스프링 속성, 점 표기) · type(int) · default · meaning · refs — 구현이 읽어야 하는 설정 (스프링 템플릿만) [2026-11-13, #161]
   seed[]:       entity id · rows(정확한 행 수, id 1~rows) · groups(id 범위마다 처음 값, 1~rows 를 빈틈·겹침 없이) · 값 규칙 (가상 데이터만, §10-16)

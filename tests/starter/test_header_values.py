@@ -19,7 +19,9 @@ HEADER = "X-Requester-Id"
 
 def _with_header(*checks: str, deny: bool = True) -> TaskContract:
     c: dict[str, Any] = _contract()
-    c["endpoints"][0]["headers"] = [{"name": HEADER, "type": "string", "refs": ["r1"]}]
+    c["endpoints"][0]["headers"] = [
+        {"name": HEADER, "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
     if deny:
         c["endpoints"][0]["responses"].append({"status": 403, "description": "권한 없음"})
     for t, text in zip(c["public_tests"], checks, strict=False):
@@ -73,6 +75,10 @@ def test_reask_names_placeholders_and_asks_for_real_values() -> None:
     assert "pt1 의 <MASTER 등급 멤버의 memberId>" in msg
     [plain] = header_problems(_with_header("권한 없는 요청자로 PATCH 시 403"))
     assert "자리표시자" not in plain
+    # #181: `<…>` 꼴만이 아니라 값 글자로 읽지 못한 대입 전부를 진단에
+    for shown in ("{통과 값}", "[관리자 id]", "(통과하는 값)", "관리자로"):
+        [msg] = header_problems(_with_header(f"{HEADER}={shown} PATCH /orders/1/status → 200"))
+        assert f"pt1 의 {shown}" in msg, (shown, msg)
 
 
 def test_helpers_carry_the_constants() -> None:
@@ -124,21 +130,51 @@ def test_request_key_header_gets_a_new_value_per_request() -> None:
 
     c = _contract()
     c["endpoints"][0]["headers"] = [
-        {"name": "X-Request-Id", "type": "string", "constraints": "UUID v4 형식", "refs": ["r1"]}
+        {
+            "name": "X-Request-Id",
+            "type": "string",
+            "constraints": "UUID v4 형식",
+            "per_request": True,
+            "refs": ["r1"],
+        }
     ]
     contract = TaskContract.model_validate(c)
     assert per_request(contract, "X-Request-Id")
     [h] = header_values(contract)
     assert h.source == PER_REQUEST and h.ok is None and h.denied is None
     assert not header_problems(contract)
-    c["endpoints"][0]["headers"] = [{"name": "X-Actor", "type": "string", "refs": ["r1"]}]
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Actor", "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
     assert not per_request(TaskContract.model_validate(c), "X-Actor")
+    # #181: 이름·제약 낱말이 아니라 칸으로 — 사전 밖 이름(X-Nonce)도 칸이 true 면 요청마다, 이름이 X-Request-Id 여도 false 면 상수
+    c["endpoints"][0]["headers"] = [
+        {
+            "name": "X-Nonce",
+            "type": "string",
+            "constraints": "고유·중복 불가",
+            "per_request": True,
+            "refs": ["r1"],
+        }
+    ]
+    [h] = header_values(TaskContract.model_validate(c))
+    assert h.source == PER_REQUEST
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Request-Id", "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
+    assert not per_request(TaskContract.model_validate(c), "X-Request-Id")
 
 
 def test_helper_gives_fresh_request_key_and_a_retry_overload() -> None:
     c = _contract()
     c["endpoints"][0]["headers"] = [
-        {"name": "X-Request-Id", "type": "string", "constraints": "UUID v4 형식", "refs": ["r1"]}
+        {
+            "name": "X-Request-Id",
+            "type": "string",
+            "constraints": "UUID v4 형식",
+            "per_request": True,
+            "refs": ["r1"],
+        }
     ]
     helper = render_contract_case(
         TaskContract.model_validate(c), HiddenPlan.model_validate(_plan()), JAVA.manifest
@@ -158,7 +194,13 @@ def test_literal_request_key_in_tests_is_re_requested() -> None:
 
     c = _contract()
     c["endpoints"][0]["headers"] = [
-        {"name": "X-Request-Id", "type": "string", "constraints": "UUID v4 형식", "refs": ["r1"]}
+        {
+            "name": "X-Request-Id",
+            "type": "string",
+            "constraints": "UUID v4 형식",
+            "per_request": True,
+            "refs": ["r1"],
+        }
     ]
     contract = TaskContract.model_validate(c)
 

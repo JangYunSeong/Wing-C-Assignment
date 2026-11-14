@@ -70,6 +70,20 @@ class ContractField(Schema):
         return _check_refs(v)
 
 
+class HeaderField(ContractField):
+    """요청 헤더 1개 — 필드에 '요청마다 새 값인가'를 더한다 (#181).
+
+    2026-11-10 retrydup-c: 요청 번호 X-Request-Id 를 도우미가 상수 하나로 줘 모든 테스트가 같은 번호를 공유 — 명세대로 번호로 중복을 막은
+    허용 구현이 떨어졌다. 예전엔 이름·제약 글의 낱말(request-id·멱등·uuid …)로 짐작해 X-Nonce·X-Dedup-Key·'고유·중복 불가'는 놓쳤다 —
+    계약이 칸으로 정한다. 비어 있으면 계약 검사가 재요청한다 (권한 칸 auth 의 헤더는 권한 규칙이 값을 정하므로 묻지 않는다)."""
+
+    per_request: bool | None = Field(
+        default=None,
+        description="요청마다 새 값이어야 하면 true (요청 번호·멱등 키·nonce 처럼 요청 하나를 가리키는 값 — 테스트가 요청마다 새로 만든다), "
+        "여러 요청이 같은 값을 써도 되면 false (요청자·클라이언트 이름 등)",
+    )
+
+
 class ContractResponse(Schema):
     # HTTP 엔드포인트(메서드 있음)는 상태 코드 100~599, cli·file(메서드 없음)은 종료 코드 0~255 — Endpoint 가 확인
     status: int = Field(ge=0, le=599)
@@ -159,7 +173,7 @@ class Endpoint(Schema):
     method: HttpMethod | None = None  # http 에서만 (필수)
     path: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=200)
-    headers: list[ContractField] = Field(default_factory=list)  # 요청 헤더 (예: X-Actor)
+    headers: list[HeaderField] = Field(default_factory=list)  # 요청 헤더 (예: X-Actor)
     query: list[ContractField] = Field(default_factory=list)  # 쿼리 매개변수
     request: list[ContractField] = Field(default_factory=list)  # 요청 본문
     responses: list[ContractResponse] = Field(min_length=1)
