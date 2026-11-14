@@ -9,30 +9,43 @@ from task_spec.starter.mounts import grade_argv, security_args, volume
 from task_spec.starter.verify.workspace import container_argv
 
 
-def test_generated_code_keeps_host_labels_and_runs_unlabeled(tmp_path: Path) -> None:
-    """과제 생성 검증: 의존성 캐시처럼 함께 쓰는 호스트 폴더를 붙이므로 라벨을 바꾸지 않고 이 컨테이너만 라벨 분리를 끈다."""
-    argv = container_argv("img", ["true"], tmp_path, "n", mounts=[tmp_path / "cache"])
-    assert "label=disable" in argv
-    assert all(not a.endswith((":z", ",z")) for a in argv)
-    assert volume("/a", "/a", "generated", read_only=True) == "/a:/a:ro"
+def test_verify_keeps_confinement_with_private_run_and_shared_cache(tmp_path: Path) -> None:
+    """과제 생성 검증도 격리를 켠다 — 실행마다 만든 조립 폴더는 전용 라벨 :Z, 함께 쓰는 캐시는 공유 라벨 :z (2026-11-14 사용자 검토)."""
+    work, cache = tmp_path / "r1-d1", tmp_path / "cache" / "node_modules"
+    argv = container_argv("img", ["true"], work, "n", mounts=[cache])
+    assert "label=disable" not in argv
+    assert f"{work.resolve()}:{work.resolve()}:Z" in argv
+    assert f"{cache.resolve()}:{cache.resolve()}:z" in argv
+    # 캐시를 만드는 설치에서는 캐시가 작업 폴더여도 공유 — 전용 라벨이면 다음 검증 컨테이너가 못 읽는다
+    install = container_argv(
+        "img", ["npm", "ci"], cache.parent, "n2", network=True, cwd_shared=True
+    )
+    assert f"{cache.parent.resolve()}:{cache.parent.resolve()}:z" in install
+    assert volume("/a", "/a", "shared", read_only=True) == "/a:/a:ro,z"
 
 
-def test_applicant_code_keeps_selinux_confinement() -> None:
-    """채점(신뢰할 수 없는 지원자 코드): 격리를 켠 채 붙이는 사본만 공유 라벨로 — label=disable 은 라벨을 못 바꾸는 저장소용 대안에만."""
+def test_applicant_code_gets_a_private_label_on_its_copies() -> None:
+    """채점: 공유 라벨(:z)이면 컨테이너를 탈출한 지원자 코드가 앞서 붙인 다른 제출물을 읽을 수 있다 — 사본마다 전용 라벨 :Z."""
     argv = grade_argv("grader:1", "/s", "/o")
     assert "label=disable" not in argv
-    assert "/s:/submission:ro,z" in argv and "/o:/out:z" in argv
-    assert security_args("applicant") == [] and security_args("generated") == list(
-        security_args("applicant", relabel=False)
-    )
+    assert "/s:/submission:ro,Z" in argv and "/o:/out:Z" in argv
+    assert security_args() == [] and security_args(relabel=False) == [
+        "--security-opt",
+        "label=disable",
+    ]
 
 
-def test_delivered_grade_commands_stay_the_same_strings() -> None:
-    """grader.json 의 두 명령은 받는 쪽 계약 — 한 정의로 옮겨도 글자가 같다 (예전 문자열 바꾸기 판)."""
+def test_delivered_grade_commands_and_their_notes() -> None:
+    """grader.json 의 두 명령은 받는 쪽 계약 — 글자를 고정하고, 칸 설명에 사본 폴더·격리를 끄는 대안의 조건을 적는다."""
+    from task_spec.schemas.package import COPY_NOTE, NO_RELABEL_NOTE, GraderDescriptor
+
     assert grade_command("g:1") == (
-        "podman run --rm --network none -v <제출물>:/submission:ro,z -v <결과>:/out:z g:1 grade"
+        "podman run --rm --network none -v <제출물>:/submission:ro,Z -v <결과>:/out:Z g:1 grade"
     )
     assert grade_command("g:1", relabel=False) == (
         "podman run --rm --network none --security-opt label=disable "
         "-v <제출물>:/submission:ro -v <결과>:/out g:1 grade"
     )
+    fields = GraderDescriptor.model_fields
+    assert fields["grade"].description == COPY_NOTE and "사본 폴더" in COPY_NOTE
+    assert fields["grade_without_selinux_relabel"].description == NO_RELABEL_NOTE

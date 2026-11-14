@@ -168,7 +168,7 @@ templates/<직군>/<스택>/CURRENT
 |---|---|
 | 응시 | 응시용 이미지로 지원자별 컨테이너. 작업 경로 `manifest.workspace`(기본 `/workspace`), 시작 명령, 권장 자원 |
 | 제출 | 응시 종료 시 작업 경로를 떠서 제출물로 둔다 (플랫폼 쪽 저장 — 지원자 데이터) |
-| 채점 | `podman run --rm --network none -v <제출물>:/submission:ro -v <결과>:/out <grader>@sha256:… grade` — 네트워크 없음 필수, 제한 시간은 라벨 `grade.timeout_s` |
+| 채점 | `podman run --rm --network none -v <제출물>:/submission:ro,Z -v <결과>:/out:Z <grader>@sha256:… grade` — 네트워크 없음 필수, 제한 시간은 라벨 `grade.timeout_s`. <제출물>·<결과>는 채점할 때마다 로컬 디스크에 새로 만든 사본 폴더(podman 을 돌리는 사용자 소유) — 원본 제출물을 붙이지 않는다 (SELinux 격리를 켠 채 그 사본에만 전용 라벨 `:Z`). 사본을 로컬 디스크에 둘 수 없을 때만 grader.json `grade_without_selinux_relabel`(SELinux 격리를 끈다). 마운트 정책: `starter/mounts.py` (#174) |
 | 결과 | `/out/result.json` — `{common_id, revision, cases:[{id, trap_id, kind, passed, reason}], report_path}` + JUnit 등 원본 보고서. 케이스 목록·선택자는 채점용 이미지 안에 있다 |
 
 - 우리 테스트케이스는 입력→기대 출력 쌍이 아니라 **실행 코드**다 (동시 요청·지연/오류 주입·커넥션 추적) — 그래서 형식(JSON)이 아니라 실행 환경째(이미지) 넘긴다.

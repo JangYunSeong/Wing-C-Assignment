@@ -69,6 +69,7 @@ def node_modules_for(t: Template, timeout: int = 1800) -> Path:
         d / "install.log",
         timeout,
         network=True,
+        cwd_shared=True,  # 이 캐시는 뒤 검증들이 함께 붙인다 — 전용 라벨(:Z)이면 다음 컨테이너가 못 읽는다 (starter/mounts.py)
     )
     if code != 0:
         raise RuntimeError(f"npm ci 실패 ({code}) — {d / 'install.log'}")
@@ -93,13 +94,14 @@ def run_node(
     timeout: int,
     mounts: Sequence[Path] = (),
     network: bool = False,
+    cwd_shared: bool = False,
 ) -> tuple[int | None, float]:
     """Node 명령 하나를 이미지와 같은 기반 컨테이너에서 (`run_logged` 와 같은 반환). 경로는 같은 절대 경로로 붙인다.
     호스트 Node 는 다른 검증기처럼 `VERIFY_ISOLATION=host` 하나로 (#174: `NODE_VERIFY_IMAGE=host` 특수값은 #127 전 탈출구)."""
     if not isolated():
         return run_logged(cmd, cwd, log, timeout, env=judge.TEST_ENV)
     return run_in_container(
-        node_image(), cmd, cwd, log, timeout, mounts, network, dict(judge.TEST_ENV)
+        node_image(), cmd, cwd, log, timeout, mounts, network, dict(judge.TEST_ENV), cwd_shared
     )
 
 

@@ -31,10 +31,10 @@ def test_container_argv_has_no_network_limits_and_same_paths(
     assert argv[:2] == ["podman", "run"] and argv[-4:] == ["img:1", "sh", "-c", "x"]
     s = " ".join(argv)
     assert "--network none" in s and "--cpus 2" in s and "--memory 4g" in s
-    assert f"-w {work.resolve()}" in s and "--security-opt label=disable" in s
+    assert f"-w {work.resolve()}" in s and "label=disable" not in s  # 격리는 켜 둔다 (#174)
     assert (
-        f"-v {work.resolve()}:{work.resolve()}" in s
-        and f"-v {extra.resolve()}:{extra.resolve()}" in s
+        f"-v {work.resolve()}:{work.resolve()}:Z" in s
+        and f"-v {extra.resolve()}:{extra.resolve()}:z" in s
     )
     assert "-e A=1" in s and "--rm" in s and "--name vf-1" in s
     install = workspace.container_argv("img:1", ["npm", "ci"], work, "vf-2", network=True)

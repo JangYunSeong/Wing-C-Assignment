@@ -24,7 +24,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from task_spec.starter.mounts import security_args, volume
+from task_spec.starter.mounts import volume
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 
@@ -111,14 +111,18 @@ def container_argv(
     mounts: Sequence[Path] = (),
     network: bool = False,
     env: dict[str, str] | None = None,
+    cwd_shared: bool = False,
 ) -> list[str]:
-    """`podman run` 명령줄 — cwd·mounts 를 같은 절대 경로로 붙이고 그 cwd 에서 cmd 를 돈다."""
+    """`podman run` 명령줄 — cwd·mounts 를 같은 절대 경로로 붙이고 그 cwd 에서 cmd 를 돈다.
+    마운트 정책(starter/mounts.py): cwd 는 이번 실행 전용 조립 폴더라 `:Z`, mounts 는 여러 실행이 함께 쓰는 캐시라 `:z`.
+    cwd_shared — cwd 자체가 함께 쓰는 캐시일 때 (Node 의존성 설치)."""
+    shared = {str(p.resolve()) for p in mounts} | ({str(cwd.resolve())} if cwd_shared else set())
     paths = sorted({str(p.resolve()) for p in (cwd, *mounts)})
     full = ["podman", "run", "--rm", "--name", name, "-w", str(cwd.resolve())]
-    full += [*security_args("generated"), *limits()]  # 생성 코드의 마운트 정책 (starter/mounts.py)
+    full += limits()  # SELinux 격리는 켜 둔다 — 라벨은 마운트마다 (starter/mounts.py)
     full += [] if network else ["--network", "none"]
     full += [x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}")]
-    full += [x for p in paths for x in ("-v", volume(p, p, "generated"))]
+    full += [x for p in paths for x in ("-v", volume(p, p, "shared" if p in shared else "run"))]
     return [*full, image, *cmd]
 
 
@@ -131,11 +135,12 @@ def run_in_container(
     mounts: Sequence[Path] = (),
     network: bool = False,
     env: dict[str, str] | None = None,
+    cwd_shared: bool = False,
 ) -> tuple[int | None, float]:
     """명령 하나를 자식 컨테이너에서 (`run_logged` 와 같은 반환). 네트워크는 의존성 설치처럼 생성 코드가 없을 때만 켠다."""
     name = f"vf-{uuid.uuid4().hex[:12]}"
     code, seconds = run_logged(
-        container_argv(image, cmd, cwd, name, mounts, network, env), cwd, log, timeout
+        container_argv(image, cmd, cwd, name, mounts, network, env, cwd_shared), cwd, log, timeout
     )
     if code is None:  # 시간 초과 — 클라이언트만 끊겨 컨테이너가 남지 않게
         subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)

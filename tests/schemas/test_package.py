@@ -60,7 +60,7 @@ def _grader(**over: Any) -> dict[str, Any]:
         "image": _image("grader"),
         "load": f"podman load -i {BID}-grader.tar.zst",
         "grader_sha256": H,
-        "grade": f"podman run --rm --network none -v <제출물>:/submission:ro,z -v <결과>:/out:z {img} grade",
+        "grade": f"podman run --rm --network none -v <제출물>:/submission:ro,Z -v <결과>:/out:Z {img} grade",
         "grade_without_selinux_relabel": (
             f"podman run --rm --network none --security-opt label=disable "
             f"-v <제출물>:/submission:ro -v <결과>:/out {img} grade"

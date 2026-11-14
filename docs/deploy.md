@@ -132,6 +132,8 @@ CORS: 다른 origin 의 프론트가 브라우저에서 직접 부를 때만. �
 - rootless podman 에서 API 컨테이너의 app(uid 10001)은 기본 매핑이면 호스트 하위 uid(예: 110000)가 되어 이 파일을 못 읽는다.
   `run.sh` 는 rootless 면 `--userns=keep-id:uid=10001,gid=10001` 로 app 을 호스트 사용자로 맞춘다 (런타임 runc 라 keep-groups 는 못 쓰고,
   SELinux 가 꺼져 있어 라벨 옵션은 필요 없다 — 2026-11-12 운영 서버 확인).
+- 과제 생성 검증·채점 컨테이너의 마운트 정책(`starter/mounts.py`, #174)은 SELinux 가 켜진 서버 기준이다 — 격리를 켠 채 실행 사본은 전용 라벨 `:Z`,
+  함께 쓰는 캐시(Node 검증 node_modules)는 공유 라벨 `:z`. 운영 서버는 SELinux 가 꺼져 있어 동작 변화가 없다.
 - keep-id 로 바꾸면 `task_data` 볼륨(지원자 데이터)의 기존 파일 주인(호스트 하위 uid)이 컨테이너 안에서 app 이 아니게 된다 →
   **한 번** 볼륨 주인을 호스트 사용자로 옮긴다. 주인이 맞지 않으면 `run.sh` 가 기동을 거부한다.
 
