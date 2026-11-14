@@ -37,6 +37,7 @@ from task_spec.starter.layers import (  # 런타임 층 정의 — 검증기(#12
     labels,
     stack_for,
 )
+from task_spec.starter.mounts import grade_argv
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import (
     Template,
@@ -456,15 +457,9 @@ def verify_task_images(
         res_dir.mkdir(parents=True)
         g0 = time.monotonic()
         proc = pm.run(
-            "--rm",
-            "--network",
-            "none",
-            "-v",
-            f"{sub}:/submission:ro,z",
-            "-v",
-            f"{res_dir}:/out:z",
-            x.grader,
-            "grade",
+            *grade_argv(x.grader, str(sub), str(res_dir))[
+                1:
+            ],  # 채점 마운트 정책 (starter/mounts.py) — 'run' 은 pm.run 이 붙인다
             timeout=TIMEOUT_S + 300,
         )
         result = (
@@ -529,7 +524,9 @@ def manifest_entry(x: TaskImages, pm: Podman, leaks: dict[str, list[str]]) -> di
         },
         "grader": {
             **info["grader"],
-            "grade": f"podman run --rm --network none -v <제출물>:/submission:ro -v <결과>:/out {x.grader} grade",
+            "grade": " ".join(
+                ["podman", *grade_argv(x.grader, "<제출물>", "<결과>")]
+            ),  # 전달 묶음과 같은 명령
             "timeout_s": TIMEOUT_S,
             "cases": x.config["cases"],
             "grader_sha256": x.grader_sha256,

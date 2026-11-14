@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from task_spec.starter.mounts import security_args, volume
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 
@@ -114,12 +115,10 @@ def container_argv(
     """`podman run` 명령줄 — cwd·mounts 를 같은 절대 경로로 붙이고 그 cwd 에서 cmd 를 돈다."""
     paths = sorted({str(p.resolve()) for p in (cwd, *mounts)})
     full = ["podman", "run", "--rm", "--name", name, "-w", str(cwd.resolve())]
-    # SELinux 가 켜진 서버에서 붙인 폴더를 컨테이너가 못 읽는다 (2026-11-11 이 서버: 라벨 unlabeled_t → npm ci 'Permission denied').
-    # `:z` 는 호스트 파일의 보안 라벨을 바꾸므로 쓰지 않고, 이 컨테이너만 라벨 분리를 끈다 (SELinux 가 없는 서버에서는 영향 없음).
-    full += ["--security-opt", "label=disable", *limits()]
+    full += [*security_args("generated"), *limits()]  # 생성 코드의 마운트 정책 (starter/mounts.py)
     full += [] if network else ["--network", "none"]
     full += [x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}")]
-    full += [x for p in paths for x in ("-v", f"{p}:{p}")]
+    full += [x for p in paths for x in ("-v", volume(p, p, "generated"))]
     return [*full, image, *cmd]
 
 

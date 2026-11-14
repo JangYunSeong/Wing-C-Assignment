@@ -20,6 +20,7 @@ from task_spec.schemas.package import (
     VerifySummary,
 )
 from task_spec.starter.artifacts import CASE_FIELDS, RESULT_FIELDS, pack, write_role
+from task_spec.starter.mounts import grade_argv
 from task_spec.starter.store import BuildRepo
 
 
@@ -45,8 +46,9 @@ class PackageInputs:
     starter_expected: VerifySummary  # 시작 코드만 채점한 결과 — 받는 쪽 호환성 시험
 
 
-def grade_command(image: str) -> str:
-    return f"podman run --rm --network none -v <제출물>:/submission:ro,z -v <결과>:/out:z {image} grade"
+def grade_command(image: str, relabel: bool = True) -> str:
+    """전달 묶음의 grade 명령 — 견본 채점과 같은 마운트 정책 (starter/mounts.py). relabel=False 는 라벨을 못 바꾸는 저장소용."""
+    return " ".join(["podman", *grade_argv(image, "<제출물>", "<결과>", relabel)])
 
 
 async def register_packages(
@@ -76,9 +78,7 @@ async def register_packages(
         load=f"podman load -i {gimg.file}",
         grader_sha256=p.grader_sha256,
         grade=grade,
-        grade_without_selinux_relabel=grade.replace(":ro,z", ":ro")
-        .replace(":/out:z", ":/out")
-        .replace("--network none", "--network none --security-opt label=disable"),
+        grade_without_selinux_relabel=grade_command(gimg.name, relabel=False),
         timeout_s=p.timeout_s,
         result=ResultContract(fields=RESULT_FIELDS, case_fields=CASE_FIELDS),
         case_ids=p.case_ids,
