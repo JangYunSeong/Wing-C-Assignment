@@ -356,8 +356,27 @@ async def _compile_refs(
         )
         absorb(fix)
         out.overlays[label] = fix.overlay
+        stale = out.compile_flags.pop(
+            label, None
+        )  # 같은 구현을 다시 컴파일했다 — 앞 표시는 옛 판의 것
+        if stale in out.review_flags:
+            out.review_flags.remove(stale)
         if fix.errors:
-            out.review_flags.append(_compile_flag(label, fix))
+            flag = _compile_flag(label, fix)
+            out.compile_flags[label] = flag
+            out.review_flags.append(flag)
+
+
+def _withdraw_compile_flags(out: BuildOutcome, report: VerifyReport) -> None:
+    """참조 구현의 컴파일 실패 표시는 그 구현의 그때 상태다 — 뒤 검증에서 그 구현이 컴파일·기동되면(setup ok) 거둔다.
+    2026-11-14 kakaobank003: d3 컴파일 수리가 끝까지 안 되어 표시가 붙었고, 같은 회차의 기동 수리로 다시 만든 d3 가 검증을 모두
+    통과했는데도 '컴파일 실패' 표시가 승인자 화면에 남았다."""
+    for run in report.runs:
+        flag = out.compile_flags.get(run.target)
+        if flag is not None and run.setup == "ok":
+            del out.compile_flags[run.target]
+            if flag in out.review_flags:
+                out.review_flags.remove(flag)
 
 
 @dataclass
@@ -367,6 +386,8 @@ class BuildOutcome:
     reports: list[VerifyReport] = field(default_factory=list)  # 검증 회차마다
     repairs: list[RepairRecord] = field(default_factory=list)
     review_flags: list[str] = field(default_factory=list)
+    # 참조 구현 라벨 → 그 구현의 컴파일 실패 표시 (review_flags 에도 있음) — 뒤 검증에서 기동되면 거둔다 (_withdraw_compile_flags)
+    compile_flags: dict[str, str] = field(default_factory=dict)
     adjustments: list[str] = field(
         default_factory=list
     )  # 생성기 출력에서 코드가 고친 것 — 승인 화면에
@@ -1023,6 +1044,7 @@ async def build_and_repair(
                 **({"conform": conform} if conform is not None else {}),
             )
             out.reports.append(report)
+            _withdraw_compile_flags(out, report)
             out.snapshots.append(dict(out.overlays))
             shared = set(b.template.files("project")) | {
                 f.path for f in out.overlays[STARTER].files
