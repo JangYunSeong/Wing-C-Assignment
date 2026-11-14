@@ -96,6 +96,9 @@ class BuildRecord(Schema):
     retain_until: datetime | None = (
         None  # 재채점 기간 끝 — 그 전에는 묶음 파일을 지우지 않는다 [미정: 기간]
     )
+    # 빌드 출처 (#175) — request: 생성 요청(builder 가 가져가고 확정한다), eval: 평가·적재 도구가 만든 빌드.
+    # 예전에는 requested_at 이 있는지로 갈랐다 — 유일 색인·큐·확정 대기·앱 계층이 같은 칸 하나를 본다.
+    origin: Literal["request", "eval"] = "eval"
     # ── 큐 (#128) — 생성 요청으로 만든 빌드만 채운다 (eval 적재 빌드는 비어 있다) ──
     requested_by: str | None = Field(default=None, max_length=80)  # 생성을 요청한 사람
     requested_at: datetime | None = None

@@ -81,10 +81,23 @@ async def test_claim_takes_requests_in_order_and_holds_a_lease() -> None:
 
 
 async def test_builds_made_without_a_request_are_not_claimed() -> None:
-    """eval 적재(new_build)로 만든 pending 빌드는 요청 시각이 없어 builder 가 가져가지 않는다."""
+    """eval 적재(new_build)로 만든 pending 빌드는 출처가 eval 이라 builder 가 가져가지 않는다."""
     s = _store()
-    await s.new_build(CID, "onto-test", AT)
+    b = await s.new_build(CID, "onto-test", AT)
+    assert b.origin == "eval"
     assert await s.claim("w1", 60, AT) is None
+
+
+async def test_eval_builds_in_progress_do_not_block_a_request() -> None:
+    """#175: 진행 중 빌드 하나 보장이 DB 색인은 요청 빌드만, 앱 계층은 모든 빌드를 봐서, 진행 중인 eval 빌드가 있으면 생성 요청이
+    그 빌드를 돌려받고 처리되지 않았다 (claim 은 eval 빌드를 가져가지 않으므로). 이제 둘 다 출처 칸 하나(origin = request)를 본다."""
+    s = _store()
+    ev = await s.new_build(CID, "onto-test", AT)
+    await s.set_status(ev.build_id, "generating")
+    b, created = await s.request_build(CID, "가상승인자", AT)
+    assert created and b.build_id != ev.build_id and b.origin == "request"
+    taken = await s.claim("w1", 60, AT)
+    assert taken is not None and taken.build_id == b.build_id
 
 
 async def test_claim_fails_a_request_whose_task_was_superseded() -> None:

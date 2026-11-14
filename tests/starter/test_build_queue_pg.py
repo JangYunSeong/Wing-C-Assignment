@@ -83,11 +83,11 @@ async def env() -> AsyncIterator[Env]:
 
 
 async def _queue_only(env: Env, *common_ids: str) -> None:
-    """시험 DB 에 남은 다른 요청이 끼지 않게 — 이 테스트의 공통 과제 밖 pending 요청은 요청 표시를 지운다 (가져가지 않게)."""
+    """시험 DB 에 남은 다른 요청이 끼지 않게 — 이 테스트의 공통 과제 밖 pending 요청은 출처를 eval 로 돌린다 (가져가지 않게, #175)."""
     async with env.store._pool.connection() as conn:
         await conn.execute(
-            "UPDATE public.common_task_build SET requested_at = NULL "
-            "WHERE status = 'pending' AND requested_at IS NOT NULL AND NOT (common_id = ANY(%s))",
+            "UPDATE public.common_task_build SET origin = 'eval' "
+            "WHERE status = 'pending' AND origin = 'request' AND NOT (common_id = ANY(%s))",
             (list(common_ids),),
         )
 
@@ -255,3 +255,21 @@ async def _approved_request(env: Env, cid: str) -> str:
         b.build_id, "가상승인자", T0, [ReviewDecision.of(FLAG, "confirmed", "가상승인자")]
     )
     return b.build_id
+
+
+async def test_builder_start_checks_every_column_it_reads(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#175: builder(DDL 을 돌리지 않는 역할) 기동이 #128 칸 셋만 봐서 API 가 옛 판이면 첫 claim 에서 KeyError 로 죽었다 —
+    `_build` 가 읽는 칸 전체(BUILD_COLUMNS)를 보고, 하나라도 없으면 기동에서 분명한 오류로 멈춘다."""
+    from task_spec.starter import store as store_mod
+
+    u = _Urls().test_database_url
+    assert u is not None
+    ok = await PgBuildStore.open(u.get_secret_value(), ddl=False)  # 지금 판 — 모든 칸이 있다
+    await ok.close()
+    # 옛 판 API 의 표 — builder 가 읽는 칸 하나가 없다
+    monkeypatch.setattr(store_mod, "BUILD_COLUMNS", (*store_mod.BUILD_COLUMNS, "no_such_column"))
+    with pytest.raises(RuntimeError, match="builder 가 읽는 칸이 없거나"):
+        await PgBuildStore.open(u.get_secret_value(), ddl=False)
+    del env

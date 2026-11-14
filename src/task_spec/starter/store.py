@@ -7,7 +7,9 @@
 - 상태: pending → generating → verifying → review → approved → published (실패 failed).
   수리는 `reopen()` 으로만 verifying·review → generating — 그 빌드의 승인 전 묶음을 지우고 돌려준다 (파일 정리용).
 - 오버레이 파일은 pending·generating 에서만 바꾼다. 생성·검증 결과(outcome)는 generating·verifying 에서만 쓴다.
-  지원자 README(`kind='readme'`)는 `put_readme()` 로 review 까지 쓸 수 있되 verifying·review 에서는 한 번만 (이미 있으면 같은 본문만).
+  지원자 README(`kind='readme'`)는 `put_readme()` 로 pending·generating 에서. README 기능 이전 빌드를 채우는 관리 경로
+  `backfill_readme()` 만 verifying·review 에서 한 번 (이미 있으면 같은 본문만) — 관리 스크립트(eval/starter/backfill_readme.py·
+  import_mock_builds.py)만 부른다 (#175: 일회성 이행이 put_readme 상태 규칙의 영구 예외로 남아 있었다).
   응시용 묶음에 README.md 가 있으면 저장한 README 와 해시가 같아야 하고, 승인에는 저장한 README 가 있어야 한다 (승인자가 볼 문장).
 - 묶음: 응시용·채점용은 review 에서, 평가 키트는 approved 에서(승인자 판단이 들어가므로) 등록한다.
   묶음의 tree_sha256·grader_sha256 은 빌드의 현재 outcome 과 같아야 하고, 한 번 등록하면 바꾸지 않는다.
@@ -31,7 +33,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -78,10 +80,10 @@ TRANSITIONS: dict[str, set[str]] = {
     "failed": set(),
 }
 _FILES_OPEN = ("pending", "generating")
-_README_ONCE = (
+_README_BACKFILL = (
     "verifying",
     "review",
-)  # 생성 뒤 — 기존 빌드에 README 를 채울 때. 이미 있으면 같은 본문만
+)  # 관리 경로 backfill_readme 만 — 생성 뒤 기존 빌드에 README 를 채울 때
 _OUTCOME_OPEN = ("generating", "verifying")
 _REOPENABLE = ("verifying", "review")
 _ARTIFACT_OPEN: dict[str, tuple[str, ...]] = {
@@ -178,13 +180,59 @@ ALTER TABLE public.common_task_build
     ADD COLUMN IF NOT EXISTS finished_at timestamptz,
     ADD COLUMN IF NOT EXISTS packages_final_at timestamptz,
     ADD COLUMN IF NOT EXISTS stage_log jsonb NOT NULL DEFAULT '[]';  -- 단계 진행 기록 (StageMark)
--- 생성 요청으로 만든 빌드만 — eval 적재(new_build)는 같은 과제에 여러 빌드를 둘 수 있다 (수명 주기 시험·같은 판 동시 빌드)
+-- 빌드 출처 (#175) — '생성 요청 빌드' 표지를 requested_at 대신 칸 하나로. 있던 행은 requested_at 으로 채운다 (몇 번 돌려도 같다)
+ALTER TABLE public.common_task_build ADD COLUMN IF NOT EXISTS origin text;
+UPDATE public.common_task_build SET origin = CASE WHEN requested_at IS NULL THEN 'eval' ELSE 'request' END
+    WHERE origin IS NULL;
+ALTER TABLE public.common_task_build ALTER COLUMN origin SET DEFAULT 'eval';
+ALTER TABLE public.common_task_build ALTER COLUMN origin SET NOT NULL;
+-- 진행 중 빌드는 생성 요청 빌드만 과제마다 하나 — eval 적재(new_build)는 같은 과제에 여러 빌드를 둘 수 있다 (수명 주기 시험·같은 판
+-- 동시 빌드), 생성 요청을 막지도 않는다. 앱 계층(request_build)·큐·확정 대기도 같은 조건 (origin = 'request')
 DROP INDEX IF EXISTS public.common_task_build_active;
-CREATE UNIQUE INDEX IF NOT EXISTS common_task_build_active_request ON public.common_task_build (common_id)
-    WHERE status IN ('pending', 'generating', 'verifying') AND requested_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS common_task_build_queue ON public.common_task_build (requested_at)
-    WHERE status = 'pending' AND requested_at IS NOT NULL;
+DROP INDEX IF EXISTS public.common_task_build_active_request;
+DROP INDEX IF EXISTS public.common_task_build_queue;
+CREATE UNIQUE INDEX IF NOT EXISTS common_task_build_active_origin ON public.common_task_build (common_id)
+    WHERE status IN ('pending', 'generating', 'verifying') AND origin = 'request';
+CREATE INDEX IF NOT EXISTS common_task_build_queue_origin ON public.common_task_build (requested_at)
+    WHERE status = 'pending' AND origin = 'request';
 """
+
+# `_build` 가 읽는 칸 — builder(DDL 을 돌리지 않는 역할)의 기동 확인이 이 칸 전체를 본다 (#175: #128 칸 셋만 봐서, API 가 옛 판이면
+# 기동은 통과하고 첫 claim 에서 KeyError 로 죽었다 — 자동 업그레이드는 기동 로그만 보고 성공으로 처리)
+BUILD_COLUMNS = (
+    "id",
+    "common_id",
+    "seq",
+    "status",
+    "ontology_version",
+    "template_ref",
+    "template_sha256",
+    "tree_sha256",
+    "grader_sha256",
+    "contract",
+    "hidden_plan",
+    "verification",
+    "review_flags",
+    "repairs",
+    "review_decisions",
+    "created_at",
+    "approved_by",
+    "approved_at",
+    "retain_until",
+    "origin",
+    "requested_by",
+    "requested_at",
+    "worker",
+    "lease_until",
+    "attempt",
+    "stage",
+    "cost_usd",
+    "error",
+    "started_at",
+    "finished_at",
+    "packages_final_at",
+    "stage_log",
+)
 
 
 @dataclass(frozen=True)
@@ -267,11 +315,20 @@ def check_artifact_open(build: BuildRecord, artifact: BuildArtifact) -> None:
 
 
 def check_readme_put(build: BuildRecord, readme: StarterFile, existing: StarterFile | None) -> None:
+    """생성 중 README 저장 — 다른 오버레이 파일과 같이 pending·generating 에서만."""
+    del existing  # 생성 중에는 다시 써도 된다
     if readme.kind != "readme" or readme.build_id != build.build_id:
         raise BuildRuleError(f"{build.build_id}: 이 빌드의 readme 파일이 아니다")
-    if build.status in _FILES_OPEN:
-        return
-    _require_status(build, _README_ONCE, "README 저장")
+    _require_status(build, _FILES_OPEN, "README 저장")
+
+
+def check_readme_backfill(
+    build: BuildRecord, readme: StarterFile, existing: StarterFile | None
+) -> None:
+    """관리 경로 — README 기능 이전에 생성된 빌드(verifying·review)에 README 를 한 번 채운다. 이미 있으면 같은 본문만."""
+    if readme.kind != "readme" or readme.build_id != build.build_id:
+        raise BuildRuleError(f"{build.build_id}: 이 빌드의 readme 파일이 아니다")
+    _require_status(build, _README_BACKFILL, "README 채우기")
     if existing is not None and existing.sha256 != readme.sha256:
         raise BuildRuleError(
             f"{build.build_id}: 저장한 README 는 생성 뒤 바꾸지 않는다 (수리는 reopen)"
@@ -444,6 +501,10 @@ class BuildRepo(Protocol):
     async def put_files(self, build_id: str, files: list[StarterFile]) -> None: ...
 
     async def put_readme(self, readme: StarterFile) -> None: ...
+
+    async def backfill_readme(self, readme: StarterFile) -> None:
+        """관리 경로 — README 기능 이전 빌드(verifying·review)에 README 를 한 번 (check_readme_backfill)."""
+        ...
 
     async def files(
         self, build_id: str, kinds: Iterable[StoredFileKind] | None = None
@@ -624,6 +685,11 @@ class InMemoryBuildStore:
         check_readme_put(build, readme, await self.readme(readme.build_id))
         self._files[(readme.build_id, "readme", "", README_PATH)] = readme
 
+    async def backfill_readme(self, readme: StarterFile) -> None:
+        build = _require(self._builds.get(readme.build_id), readme.build_id)
+        check_readme_backfill(build, readme, await self.readme(readme.build_id))
+        self._files[(readme.build_id, "readme", "", README_PATH)] = readme
+
     async def files(
         self, build_id: str, kinds: Iterable[StoredFileKind] | None = None
     ) -> list[StarterFile]:
@@ -752,12 +818,18 @@ class InMemoryBuildStore:
         self, common_id: str, requested_by: str, at: datetime | None = None
     ) -> tuple[BuildRecord, bool]:
         common = check_requestable(self.commons.get(common_id), common_id)
-        active = [b for b in await self.builds(common_id) if b.status in ACTIVE_STATUSES]
+        active = [
+            b
+            for b in await self.builds(common_id)
+            if b.status in ACTIVE_STATUSES and b.origin == "request"
+        ]
         if active:
             return active[-1], False
         build = await self.new_build(common_id, common.ontology_version, at)
         when = at or datetime.now(UTC)
-        return self._put(build, requested_by=requested_by, requested_at=when), True
+        return self._put(
+            build, origin="request", requested_by=requested_by, requested_at=when
+        ), True
 
     async def claim(
         self,
@@ -777,7 +849,7 @@ class InMemoryBuildStore:
             if spent >= daily_budget_usd:
                 return None
         queue = sorted(
-            (b for b in self._builds.values() if b.status == "pending" and b.requested_at),
+            (b for b in self._builds.values() if b.status == "pending" and b.origin == "request"),
             key=lambda b: (b.requested_at, b.build_id),
         )
         for b in queue:
@@ -866,7 +938,7 @@ class InMemoryBuildStore:
             for b in self._builds.values()
             if b.status == "approved"
             and b.packages_final_at is None
-            and b.requested_at is not None
+            and b.origin == "request"
             and b.error is None
         ]
         return sorted(rows, key=lambda b: (b.approved_at or b.created_at, b.build_id))[:limit]
@@ -912,16 +984,15 @@ class PgBuildStore:
                 await conn.execute(COMMON_TASK_DDL)
                 await conn.execute(DDL)
             else:
-                try:  # 큐 칸까지 있는지 (#128) — 없으면 API 를 새 버전으로 먼저 띄워야 한다
+                try:  # 이 판이 읽는 칸이 모두 있는지 — 없으면 API 를 새 버전으로 먼저 띄워야 한다 (#175)
                     await conn.execute(
-                        "SELECT requested_at, lease_until, cost_usd FROM public.common_task_build "
-                        "LIMIT 0"
+                        f"SELECT {', '.join(BUILD_COLUMNS)} FROM public.common_task_build LIMIT 0"
                     )
                 except Exception as exc:
                     await pool.close()
                     raise RuntimeError(
-                        "common_task_build 큐 칸이 없거나 읽을 권한이 없다 — API 를 새 버전으로 먼저 "
-                        "기동하고 builder DB 역할 권한을 확인 (docs/deploy.md 2-8)"
+                        "common_task_build 에 이 판의 builder 가 읽는 칸이 없거나 읽을 권한이 없다 — API 를 새 "
+                        "버전으로 먼저 기동하고 builder DB 역할 권한을 확인 (docs/deploy.md 2-8)"
                     ) from exc
         return cls(pool)
 
@@ -958,6 +1029,7 @@ class PgBuildStore:
             approved_by=r["approved_by"],
             approved_at=r["approved_at"],
             retain_until=r["retain_until"],
+            origin=r["origin"],
             requested_by=r["requested_by"],
             requested_at=r["requested_at"],
             worker=r["worker"],
@@ -1164,13 +1236,23 @@ class PgBuildStore:
             )
 
     async def put_readme(self, readme: StarterFile) -> None:
+        await self._write_readme(readme, check_readme_put)
+
+    async def backfill_readme(self, readme: StarterFile) -> None:
+        await self._write_readme(readme, check_readme_backfill)
+
+    async def _write_readme(
+        self,
+        readme: StarterFile,
+        check: Callable[[BuildRecord, StarterFile, StarterFile | None], None],
+    ) -> None:
         async with (
             self._pool.connection() as conn,
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
             build = await self._locked(cur, readme.build_id)
-            check_readme_put(build, readme, await self._readme_of(cur, readme.build_id))
+            check(build, readme, await self._readme_of(cur, readme.build_id))
             await cur.execute(
                 "INSERT INTO public.starter_file (build_id, kind, variant, path, content, sha256, size) "
                 "VALUES (%s, 'readme', '', %s, %s, %s, %s) ON CONFLICT (build_id, kind, variant, path) "
@@ -1397,7 +1479,7 @@ class PgBuildStore:
             )
             await cur.execute(
                 "SELECT * FROM public.common_task_build WHERE common_id = %s AND status = ANY(%s) "
-                "ORDER BY seq DESC LIMIT 1",
+                "AND origin = 'request' ORDER BY seq DESC LIMIT 1",
                 (common_id, list(ACTIVE_STATUSES)),
             )
             active = await cur.fetchone()
@@ -1405,8 +1487,8 @@ class PgBuildStore:
                 return self._build(active), False
             await cur.execute(
                 "INSERT INTO public.common_task_build (id, common_id, seq, ontology_version, created_at, "
-                "requested_by, requested_at) "
-                "SELECT %(c)s || '-b' || n, %(c)s, n, %(o)s, COALESCE(%(at)s, now()), %(by)s, "
+                "origin, requested_by, requested_at) "
+                "SELECT %(c)s || '-b' || n, %(c)s, n, %(o)s, COALESCE(%(at)s, now()), 'request', %(by)s, "
                 "COALESCE(%(at)s, now()) FROM "
                 "(SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM public.common_task_build "
                 " WHERE common_id = %(c)s) s RETURNING *",
@@ -1441,7 +1523,7 @@ class PgBuildStore:
                 await cur.execute(
                     "SELECT b.id, c.status AS common_status FROM public.common_task_build b "
                     "JOIN public.common_task c ON c.id = b.common_id "
-                    "WHERE b.status = 'pending' AND b.requested_at IS NOT NULL "
+                    "WHERE b.status = 'pending' AND b.origin = 'request' "
                     "ORDER BY b.requested_at, b.id LIMIT 1 FOR UPDATE OF b SKIP LOCKED"
                 )
                 r = await cur.fetchone()
@@ -1550,7 +1632,7 @@ class PgBuildStore:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "SELECT * FROM public.common_task_build WHERE status = 'approved' "
-                "AND packages_final_at IS NULL AND requested_at IS NOT NULL AND error IS NULL "
+                "AND packages_final_at IS NULL AND origin = 'request' AND error IS NULL "
                 "ORDER BY approved_at, id LIMIT %s",
                 (limit,),
             )

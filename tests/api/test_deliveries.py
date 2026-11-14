@@ -55,7 +55,7 @@ async def _approved_build(store: InMemoryBuildStore, revision: int | None = 3) -
     await store.save_outcome(bid, _outcome(H_NEW))
     await store.set_status(bid, "review")
     readme = StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n")
-    await store.put_readme(readme)
+    await store.backfill_readme(readme)
     await store.put_artifact(_artifact(bid, "candidate", H_NEW, readme))
     await store.put_artifact(_artifact(bid, "grader", H_NEW))
     ok = ReviewDecision.of(FLAG, "accepted_risk", "reviewer-fake", note="가상 메모")

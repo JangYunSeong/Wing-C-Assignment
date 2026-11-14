@@ -152,12 +152,14 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
     readme = StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n")
     with pytest.raises(BuildRuleError, match="저장한 README 와 다르다"):
         await store.put_artifact(_artifact(bid, "candidate", H_NEW, readme))  # README 저장 전
-    await store.put_readme(readme)  # review 에서 처음 한 번 (기존 빌드 채우기)
-    await store.put_readme(readme)  # 같은 본문은 그대로
+    with pytest.raises(BuildRuleError, match="README 저장"):
+        await store.put_readme(readme)  # 생성 경로는 pending·generating 에서만 (#175)
+    await store.backfill_readme(readme)  # 관리 경로 — review 에서 처음 한 번 (기존 빌드 채우기)
+    await store.backfill_readme(readme)  # 같은 본문은 그대로
     with pytest.raises(BuildRuleError, match="생성 뒤 바꾸지 않는다"):
-        await store.put_readme(StarterFile.of(bid, "readme", README_PATH, "# 다른 문장\n"))
+        await store.backfill_readme(StarterFile.of(bid, "readme", README_PATH, "# 다른 문장\n"))
     with pytest.raises(BuildRuleError, match="readme 파일이 아니다"):
-        await store.put_readme(files[0])
+        await store.backfill_readme(files[0])
     assert await store.readme(bid) == readme
     assert await store.files(bid, ["readme"]) == [readme]
     await store.put_artifact(_artifact(bid, "candidate", H_NEW, readme))
@@ -259,10 +261,10 @@ async def test_approve_needs_readme() -> None:
     ok = ReviewDecision.of(FLAG, "accepted_risk", "reviewer-fake")
     with pytest.raises(BuildRuleError, match="README 가 없다"):
         await store.approve(bid, "reviewer-fake", AT, [ok])
-    await store.put_readme(StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n"))
+    await store.backfill_readme(StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n"))
     assert (await store.approve(bid, "reviewer-fake", AT, [ok])).status == "approved"
-    with pytest.raises(BuildRuleError, match="README 저장"):
-        await store.put_readme(StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n"))
+    with pytest.raises(BuildRuleError, match="README 채우기"):
+        await store.backfill_readme(StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n"))
 
 
 def test_readme_path_fixed() -> None:
@@ -392,9 +394,58 @@ async def test_finalize_only_after_approval_and_pending_list() -> None:
     )  # 생성 요청으로 만든 빌드만 (eval 적재 빌드는 builder 가 확정하지 않는다)
     b = await store.get(approved)
     assert b is not None
-    store._builds[approved] = b.model_copy(update={"requested_at": AT})  # 생성 요청 빌드로
+    store._builds[approved] = b.model_copy(
+        update={"origin": "request", "requested_at": AT}
+    )  # 생성 요청 빌드로
     assert [x.build_id for x in await store.pending_finalize()] == [approved]
     await store.note_error(approved, "finalize: 가상 실패")
     assert (
         await store.pending_finalize() == []
     )  # 실패 사유가 남은 것은 사람이 볼 때까지 다시 하지 않는다
+
+
+def test_build_columns_are_exactly_what_a_row_mapping_reads() -> None:
+    """#175: builder 기동 확인의 칸 목록(BUILD_COLUMNS)과 행 변환(PgBuildStore._build)이 같은 칸을 본다 — 하나를 빼면 변환이
+    KeyError, 목록만으로 변환이 된다 (새 칸을 _build 에 더하고 목록에 빠뜨리면 여기서 걸린다)."""
+    from task_spec.starter.store import BUILD_COLUMNS, PgBuildStore
+
+    o = _outcome(H_NEW)
+    row: dict[str, object] = {
+        "id": "ct-0123456789ab-b1",
+        "common_id": "ct-0123456789ab",
+        "seq": 1,
+        "status": "review",
+        "ontology_version": "onto-test",
+        "template_ref": o.template_ref,
+        "template_sha256": o.template_sha256,
+        "tree_sha256": o.tree_sha256,
+        "grader_sha256": o.grader_sha256,
+        "contract": o.contract.model_dump(),
+        "hidden_plan": o.hidden_plan.model_dump(),
+        "verification": {k: v.model_dump() for k, v in o.verification.items()},
+        "review_flags": list(o.review_flags),
+        "repairs": [r.model_dump() for r in o.repairs],
+        "review_decisions": [],
+        "created_at": AT,
+        "approved_by": None,
+        "approved_at": None,
+        "retain_until": None,
+        "origin": "request",
+        "requested_by": "가상승인자",
+        "requested_at": AT,
+        "worker": None,
+        "lease_until": None,
+        "attempt": 0,
+        "stage": None,
+        "cost_usd": 0.0,
+        "error": None,
+        "started_at": None,
+        "finished_at": None,
+        "packages_final_at": None,
+        "stage_log": [],
+    }
+    assert set(row) == set(BUILD_COLUMNS)
+    assert PgBuildStore._build(row).origin == "request"
+    for col in BUILD_COLUMNS:
+        with pytest.raises(KeyError):
+            PgBuildStore._build({k: v for k, v in row.items() if k != col})
