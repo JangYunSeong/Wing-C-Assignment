@@ -19,14 +19,11 @@ from typing import Literal
 
 from task_spec.schemas.build import ContractField, Entity, GeneratedFile, SeedRule, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.field_types import non_null, parse
 from task_spec.starter.tables import contract_tables, spring_snake
 
 HEADER = "-- 시드 데이터 — 계약의 시드(행 수·id 범위별 처음 값)로 빌드 파이프라인이 쓴다. 손으로 고치지 않는다 (가상 데이터)."
 FIXED_DATETIME = "2026-01-01T00:00:00"
-_NUMBER = re.compile(r"^(?:long|int|integer|bigint|short|number|numeric|decimal|double|float)\b")
-_DATETIME = re.compile(
-    r"^(?:datetime|timestamp|instant|offsetdatetime|localdatetime|zoneddatetime)\b"
-)
 _SKIP_ITEMS = {"primary", "constraint", "foreign", "unique", "check", "key", "index"}
 
 
@@ -44,14 +41,6 @@ def _literal(v: object) -> str:
     return "'" + str(v).replace("'", "''") + "'"
 
 
-def _enum_first(type_: str) -> str | None:
-    m = re.match(r"^enum\s*\(([^)]*)\)", type_.strip(), re.I)
-    if not m:
-        return None
-    first = re.split(r"[|,]", m.group(1))[0].strip().strip("'\"")
-    return first or None
-
-
 _BASE_TIME = datetime.fromisoformat(FIXED_DATETIME)
 # 문자열 칸이지만 날짜·시각을 담는 칸 — 제약 글로 알아본다 (보조: 계약이 형식을 datetime 으로 적는 것이 원칙, plan_contract 몫)
 _TIME_WORDS = re.compile(r"\bhh\b|시간|\btime\b|'?t'?hh|\dT\d|yyyy-mm-dd'?t", re.I)
@@ -67,15 +56,13 @@ def time_kind(f: ContractField) -> TimeKind | None:
     """날짜·시각 칸인가 — 형식(datetime·date·time…)이 먼저, 형식이 글자면 제약 글(ISO 8601·YYYY-MM-DD·날짜-시간)과 이름(…At)으로.
     2026-11-12 행마다 조회 알파: `createdAt`(string, 제약 'ISO 8601 날짜-시간 문자열')에 시드 값이 없어 'createdAt-<id>' 가 들어가
     '최신순'이 뜻을 잃었다 (풀이 6개 모두 진행자에게 물음)."""
-    t = f.type.strip().lower()
-    if _enum_first(f.type) is not None or _NUMBER.match(t) or t.startswith("bool"):
+    ft = non_null(
+        parse(f.type)
+    )  # 형식 판정은 계약 형식 해석 한 곳 (#172 — 'date-time' 을 날짜로, 'localdate' 를 글자로 읽었다)
+    if ft.kind in ("datetime", "date", "time"):
+        return ft.kind  # type: ignore[return-value]
+    if ft.kind not in ("string", "unknown"):
         return None
-    if _DATETIME.match(t):
-        return "datetime"
-    if t.startswith("date"):
-        return "date"
-    if t.startswith("time"):
-        return "time"
     text = f.constraints or ""
     if _DATE_WORDS.search(text):  # YYYY-MM-DD — 시각 표기가 함께면 날짜-시각
         return "datetime" if _TIME_WORDS.search(text) else "date"
@@ -103,12 +90,12 @@ def time_value(kind: TimeKind, row: int) -> str:
 
 def default_value(f: ContractField, row: int) -> object:
     """그룹 값이 없는 필수 필드의 결정적 기본값 (행 id 로 서로 다르게)."""
-    t = f.type.strip().lower()
-    if (first := _enum_first(f.type)) is not None:
-        return first
-    if _NUMBER.match(t):
+    ft = non_null(parse(f.type))
+    if ft.kind == "enum" and ft.values:
+        return ft.values[0]
+    if ft.kind in ("integer", "number"):
         return row
-    if t.startswith("bool"):
+    if ft.kind == "boolean":
         return False
     if (kind := time_kind(f)) is not None:
         return time_value(kind, row)

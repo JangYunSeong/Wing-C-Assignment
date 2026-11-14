@@ -18,6 +18,7 @@ from collections import Counter
 
 from task_spec.schemas import AuthRule, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import ContractField, Endpoint, Entity
+from task_spec.starter.field_types import enum_values
 from task_spec.starter.seed_sql import default_value
 from task_spec.starter.state_rule import seed_values
 
@@ -25,7 +26,6 @@ DENIED = (401, 403)
 _REASON = re.compile(r"\b(PERMISSION_DENIED|UNAUTHORIZED|FORBIDDEN|ACCESS_DENIED)\b")
 _PATH_PARAM = re.compile(r"\{(\w+)\}")
 _QUOTED = re.compile(r"""["']([A-Za-z0-9_-]+)["']""")
-_ENUM_TYPE = re.compile(r"^enum\(([^)]*)\)$", re.I)
 _FIXED_DENIED = ("guest", "denied-user", "anonymous")
 FLAG_OTHER = "권한 규칙 자동 보장 안 됨 (kind=other — 사람 확인): "
 
@@ -58,8 +58,7 @@ def _choices(contract: TaskContract, m: Entity, attribute: str) -> list[str]:
     out = seed_values(contract, m.entity_id, attribute)
     f = _field(m, attribute)
     if f is not None:
-        if em := _ENUM_TYPE.match(f.type.strip()):
-            out += [v.strip() for v in re.split(r"[|,]", em.group(1)) if v.strip()]
+        out += enum_values(f.type) or ()  # 형식이 정한 값 목록 — 계약 형식 해석 한 곳 (#172)
         out += _QUOTED.findall(f.constraints or "")
     return list(dict.fromkeys(out))
 

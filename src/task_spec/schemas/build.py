@@ -178,6 +178,11 @@ class Endpoint(Schema):
     def _refs(cls, v: list[str]) -> list[str]:
         return _check_refs(v)
 
+    def success(self) -> ContractResponse | None:
+        """성공 응답 — 처음 나오는 2xx (201 만 선언한 생성 API 도). 도우미·예시·시드 배정이 모두 이것으로 고른다 (#172:
+        Java 도우미만 200 을 봐서 201 만 선언한 엔드포인트에 본문 함수가 생기지 않았다)."""
+        return next((r for r in self.responses if 200 <= r.status < 300), None)
+
     @model_validator(mode="after")
     def _statuses(self) -> Endpoint:
         """2026-11-07 종이 단계: CLI 결과를 종료 코드(0·1)로 적자 HTTP 전용 상태(≥100)에 걸려 응답 전체가 거부됐다."""

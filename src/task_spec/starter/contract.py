@@ -41,6 +41,8 @@ from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import ORDINAL_FAULT, find_terms
 from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
 from task_spec.starter.feasibility import feasibility_problems
+from task_spec.starter.field_types import non_null
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import header_problems
 from task_spec.starter.seed_rows import case_rows_problems, row_use_problems, seed_problems
 from task_spec.starter.state_rule import legacy_rule, state_problems
@@ -1687,7 +1689,6 @@ _SYSTEM_FIELD = re.compile(
     r"^(?:id|token|.+Token|.+At|.+_at|(?:request|idempotency|client|trace|correlation)(?:Id|Key|_id|_key))$"
 )
 _PATH_VAR = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}|:([A-Za-z_][A-Za-z0-9_]*)")
-_NUMBER_TYPES = frozenset({"integer", "int", "long", "number", "float", "double", "decimal"})
 _MAX_ELEMENTS = 30  # UiScreen.elements 상한
 
 
@@ -1735,20 +1736,20 @@ def _input_fields(e: Endpoint, route: str) -> list[ContractField]:
         if not _SYSTEM_FIELD.match(f.name)
         and f.name not in path_vars
         and _kebab(f.name)
-        and not f.type.strip().endswith("[]")
-        and f.type.strip().lower() not in ("array", "list", "object", "map", "json")
+        and non_null(parse_field(f.type)).kind not in ("list", "object")
     ]
 
 
 def _field_element(form: UiElement, f: ContractField) -> UiElement:
-    t = f.type.strip()
-    enum = re.fullmatch(r"enum\s*\((.+)\)", t, re.I)
-    values = [v.strip() for v in re.split(r"[|,]", enum.group(1)) if v.strip()] if enum else []
+    ft = non_null(
+        parse_field(f.type)
+    )  # 계약 형식 해석 한 곳 (#172 — 선택지가 따옴표째 나오고 bigint·smallint 는 글자 칸이었다)
+    values = list(ft.values) if ft.kind == "enum" else []
     if values and len(values) <= 20 and all(len(v) <= 60 for v in values):
         role, options = "combobox", values
-    elif t.lower() in ("boolean", "bool"):
+    elif ft.kind == "boolean":
         role, options = "checkbox", []
-    elif t.lower() in _NUMBER_TYPES or "password" in f.name.lower():
+    elif ft.kind in ("integer", "number") or "password" in f.name.lower():
         role, options = "input", []  # 숫자(spinbutton)·비밀번호 입력란 — 역할이 textbox 가 아니다
     else:
         role, options = "textbox", []

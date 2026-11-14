@@ -114,7 +114,7 @@ def render_ts_contract(
         ok_status = {
             f"{e.method} {msw_path(e.path)}": ok.status
             for e in endpoints
-            if (ok := next((r for r in e.responses if 200 <= r.status < 300), None)) is not None
+            if (ok := e.success()) is not None
         }
         lines += [
             "/** 계약을 하네스에 알린다 (import 할 때 한 번) — 상태를 주지 않은 응답(respond(본문)·always·once·collection)은 계약의 성공 상태로 나가고,",
@@ -153,7 +153,7 @@ def render_ts_contract(
     for e in endpoints:
         q = ", ".join(f.name for f in e.query)
         base = method_name(e)[:1].upper() + method_name(e)[1:]
-        ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+        ok = e.success()
         errs = [r for r in e.responses if r.status >= 400 and (r.body or r.returns)]
         err_types = list(dict.fromkeys(_body_type(r, names, by_name) for r in errs))
         req_body = (
@@ -266,7 +266,7 @@ def id_kinds(contract: TaskContract) -> dict[str, str]:
     }
     seen: dict[str, set[str]] = {}
     for e in contract.endpoints:
-        ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+        ok = e.success()
         if not e.method or ok is None:
             continue
         if ok.returns:
@@ -344,7 +344,7 @@ def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> Gene
         if not e.method:
             continue
         base = method_name(e)[:1].upper() + method_name(e)[1:]
-        ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+        ok = e.success()
         errs = [r for r in e.responses if r.status >= 400 and (r.body or r.returns)]
         err_types = list(dict.fromkeys(_body_type(r, names, by_name) for r in errs))
         lines += [

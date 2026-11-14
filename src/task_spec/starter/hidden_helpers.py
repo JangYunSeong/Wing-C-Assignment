@@ -70,7 +70,7 @@ def _const(name: str) -> str:
 
 
 def _body_kind(e: Endpoint) -> str | None:
-    ok = next((r for r in e.responses if r.status == 200), None)
+    ok = e.success()
     if ok is None:
         return None
     if ok.returns:

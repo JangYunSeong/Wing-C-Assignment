@@ -39,6 +39,8 @@ from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
+from task_spec.starter.field_types import non_null
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
     api_functions,
@@ -1123,7 +1125,6 @@ def _hidden_tables(
     return out
 
 
-_INTEGER_TYPE = re.compile(r"^\s*(?:long|int|integer|bigint|short|number)\b", re.I)
 # 그대로 두는 단언: null·형식 확인, 기대값을 Integer 로 맞춘 비교 (2026-11-07 배송 감사 숨은 테스트 `isEqualTo(((Number) id).intValue())` — 작은 id 라 동작)
 _NULL_CHECK = re.compile(r"\.is(?:Not)?Null\(\)|\.isInstanceOf\(|\.intValue\(\)")
 
@@ -1133,7 +1134,13 @@ def _raw_number_asserts(
 ) -> list[str]:
     """계약에서 정수 형식인 필드를 JSON Map 값 그대로 단언 — 크기에 따라 Integer·Long 이라 long 과 비교하면 모든 구현이 실패.
     null 확인(isNull·isNotNull)·형식 확인(isInstanceOf)·기대값을 Integer 로 맞춘 비교(intValue)는 그대로 둔다."""
-    numeric = {f.name for _, f in contract_fields(contract) if _INTEGER_TYPE.match(f.type)}
+    # 숫자 칸(정수·number) — JSON 의 정수 꼴 값은 선언 형식과 무관하게 Integer·Long 으로 읽힌다. 목록(long[])은 Map 값이 List 라 아니다.
+    # 형식 판정은 계약 형식 해석 한 곳 (#172 — smallint·int64 가 빠지고 long[] 이 들어갔다)
+    numeric = {
+        f.name
+        for _, f in contract_fields(contract)
+        if non_null(parse_field(f.type)).kind in ("integer", "number")
+    }
     if not numeric:
         return []
     out: list[str] = []

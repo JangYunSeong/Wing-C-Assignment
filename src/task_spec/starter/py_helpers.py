@@ -14,28 +14,18 @@ from typing import Literal
 
 from task_spec.schemas.build import ContractField, GeneratedFile, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.field_types import FieldType, parse
 
-_SCALAR = {
-    **dict.fromkeys(
-        (
-            "string",
-            "text",
-            "uuid",
-            "date",
-            "datetime",
-            "date-time",
-            "timestamp",
-            "time",
-            "email",
-            "url",
-        ),
-        "str",
-    ),
-    **dict.fromkeys(("integer", "int", "long", "bigint", "number_int"), "int"),
-    **dict.fromkeys(("number", "float", "double", "decimal"), "float"),
-    **dict.fromkeys(("boolean", "bool"), "bool"),
-    **dict.fromkeys(("array", "list"), "list[Any]"),
-    **dict.fromkeys(("object", "map", "json", "dict"), "dict[str, Any]"),
+# 계약 형식 해석(field_types.parse)의 종류 → Python 타입 (#172: 자체 형식표가 enum 따옴표를 남기고 smallint·bigdecimal 을 몰랐다)
+_PY = {
+    "string": "str",
+    "datetime": "str",
+    "date": "str",
+    "time": "str",
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "object": "dict[str, Any]",
 }
 
 
@@ -52,20 +42,24 @@ def flag(name: str) -> str:
 
 
 def py_type(t: str, entities: dict[str, str]) -> str:
-    """계약 필드 형식 → Python 타입 표기 (모르는 형식은 Any)."""
-    t = t.strip()
-    if t.endswith("[]"):
-        return f"list[{py_type(t[:-2], entities)}]"
-    m = re.fullmatch(r"(?:array|list)\s*<\s*(.+?)\s*>", t, re.I)
-    if m:
-        return f"list[{py_type(m.group(1), entities)}]"
-    m = re.fullmatch(r"enum\s*\((.+)\)", t, re.I)
-    if m:
-        values = [v.strip() for v in re.split(r"[|,]", m.group(1)) if v.strip()]
-        return "Literal[" + ", ".join(repr(v) for v in values) + "]" if values else "str"
-    if py_ident(t) in entities:
-        return entities[py_ident(t)]
-    return _SCALAR.get(t.lower(), "Any")
+    """계약 필드 형식 → Python 타입 표기 (모르는 형식은 Any). 형식 해석은 field_types.parse 한 곳."""
+    name = t.strip()
+    # 엔티티 이름이 형식 이름(Record 등)과 겹쳐도 엔티티 — 이름 하나일 때만 (`Order[]` 는 목록)
+    if re.fullmatch(r"\w+", name) and py_ident(name) in entities:
+        return entities[py_ident(name)]
+    return _py(parse(t), entities)
+
+
+def _py(ft: FieldType, entities: dict[str, str]) -> str:
+    if ft.kind == "list":
+        return f"list[{_py(ft.items[0], entities) if ft.items else 'Any'}]"
+    if ft.kind == "enum":
+        out = "Literal[" + ", ".join(repr(v) for v in ft.values) + "]" if ft.values else "str"
+    elif ft.kind == "ref":
+        out = entities.get(py_ident(ft.name), "Any")
+    else:
+        out = _PY.get(ft.kind, "Any")
+    return f"{out} | None" if ft.nullable and out != "Any" else out
 
 
 def command_name(path: str) -> str:

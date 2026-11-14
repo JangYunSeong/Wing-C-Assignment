@@ -19,6 +19,7 @@ from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedSca
 from task_spec.schemas.build import Endpoint, Entity
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import requester_rows
+from task_spec.starter.field_types import enum_values
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.seed_sql import _insert_fields, default_value, time_kind
 
@@ -26,7 +27,6 @@ PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 
 RESERVED_ROWS = 10  # 작은 id 쪽 — 숨은 케이스에 나눠 주지 않는다 (지원자 테스트·공개 테스트·시작 코드 테스트 몫)
 _ID_FIELDS = {"id"}
 _QUOTED = re.compile(r"""["'`]([^"'`]+)["'`]""")
-_ENUM_TYPE = re.compile(r"^enum\(([^)]*)\)$", re.I)
 
 
 @dataclass(frozen=True)
@@ -57,9 +57,8 @@ class RowAllocation:
 
 def _enum_values(type_: str, constraints: str | None) -> set[str] | None:
     """필드가 값 목록을 정하면 그 목록 — `enum(A|B)` 형식, 또는 제약 문장의 따옴표 낱말 2개 이상."""
-    m = _ENUM_TYPE.match(type_.strip())
-    if m:
-        return {v.strip() for v in re.split(r"[|,]", m.group(1)) if v.strip()}
+    if (values := enum_values(type_)) is not None:  # 계약 형식 해석 한 곳 (#172)
+        return set(values)
     quoted = _QUOTED.findall(constraints or "")
     return set(quoted) if len(quoted) >= 2 else None
 
@@ -149,7 +148,7 @@ def _scope_gap_problems(contract: TaskContract) -> list[str]:
 
 def _returns_any_list(e: Endpoint) -> bool:
     """성공 응답에 목록이 있는가 (무엇의 목록이든) — returns X[] 이거나 본문에 목록 칸."""
-    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    ok = e.success()
     if ok is None:
         return False
     if ok.returns and ok.returns.endswith("[]"):
@@ -160,7 +159,7 @@ def _returns_any_list(e: Endpoint) -> bool:
 def _lists_entity(e: Endpoint, m: Entity) -> bool:
     """성공 응답이 그 엔티티의 목록인가 — returns 가 `m1[]`·`이름[]` 이거나, 본문에 그 엔티티의 목록 칸(`{items: m1[]}`)이 있다.
     다른 것의 목록(멤버 한 행을 찾아 그 감사 기록을 돌려주는 API)은 아니다 — 경로 변수로 그 엔티티 한 행을 찾는다."""
-    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    ok = e.success()
     if ok is None:
         return False
     keys = {m.entity_id, m.name}
@@ -178,7 +177,7 @@ def _lists_shape(e: Endpoint, contract: TaskContract) -> bool:
     2026-11-13 송금 내역(ct-4fb4cffa89b4-b1): plan_contract v24 대로 고객별 목록을 `GET /customers/{customerId}/remittances` → `v1[]` 로
     적으면 '한 행을 찾는 API' 로 짚고 '값에서 customerId 를 빼라'(목록이면 틀린 지시)를 줘, 다시 요청해도 못 고쳐 계약이 실패했다.
     모양에는 어느 엔티티의 모양인지 칸이 없어 모양의 목록이면 모두 목록 API 로 본다."""
-    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+    ok = e.success()
     if ok is None:
         return False
     keys = {k for s in contract.response_shapes for k in (s.shape_id, s.name)}

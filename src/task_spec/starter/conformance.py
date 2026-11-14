@@ -102,7 +102,7 @@ class _Examples:
 
 
 def ok_response(e: Endpoint) -> ContractResponse | None:
-    return next((r for r in e.responses if 200 <= r.status < 300), None)
+    return e.success()
 
 
 def _route(route: str) -> str:
