@@ -23,19 +23,60 @@ NEUTRAL = "grader"
 
 
 PER_REQUEST = "요청마다"
+# 요청 하나를 가리키는 이름·제약 — 계약 칸 per_request 의 바닥 (fit_per_request). '고유 식별자'·uuid 는 회원 id 에도 써서 넣지 않는다
+_REQUEST_KEY = re.compile(
+    r"request[-_]?id|idempot|nonce|dedup|요청\s*(?:번호|id|식별자)|멱등", re.I
+)
 
 
 def per_request(contract: TaskContract, header: str) -> bool:
     """요청마다 새 값이어야 하는 헤더 — 계약 헤더 칸 per_request (HeaderField). 2026-11-10 retrydup-c: 요청 번호 X-Request-Id 를
     도우미가 상수 하나로 줘 모든 공개·숨은 테스트가 같은 번호를 공유 — 명세대로 번호로 중복을 막은 허용 구현 d2 가 서로 다른 충전을
     재요청으로 보고 다른 회원의 처음 결과를 돌려줘 떨어졌다. #181: 이름·제약 글의 낱말 사전으로 짐작하던 것을 칸으로 — 사전 밖 이름
-    (X-Nonce·X-Dedup-Key)·제약 '고유·중복 불가'는 놓쳤다. 칸이 비면 False (계약 검사가 재요청한다 — unset_per_request)."""
+    (X-Nonce·X-Dedup-Key)·제약 '고유·중복 불가'는 놓쳤다. 칸이 비면 False (계약 검사가 재요청한다 — unset_per_request).
+    사전은 칸이 틀린 경우의 바닥으로 남았다 — fit_per_request 가 칸을 맞춘 뒤 여기는 칸만 본다."""
     return any(h.per_request for e in contract.endpoints for h in e.headers if h.name == header)
 
 
 def _auth_headers(contract: TaskContract) -> set[str]:
     """권한 칸(auth)이 가리키는 헤더 — 값은 권한 규칙이 정한다 (요청자)."""
     return {e.auth.header for e in contract.endpoints if e.auth is not None}
+
+
+def fit_per_request(contract: TaskContract) -> tuple[TaskContract, list[str]]:
+    """이름·제약이 요청 하나를 가리키는 헤더(요청 번호·멱등 키·nonce)는 per_request 를 true 로 (권한 칸의 헤더 밖, 기계적 출력).
+
+    2026-11-15 알파 pilot-retry-ae030: 계약이 X-Request-Id(제약 '요청 고유 식별자')에 false 를 적어 도우미가 상수 하나를 줬다 —
+    공개 테스트의 세 번 충전이 같은 번호라, 명세대로 번호로 중복을 막은 허용 구현 d1·d2 가 둘째·셋째를 재요청으로 보고 떨어졌고
+    수리는 구현·테스트를 다시 만들다 예산을 다 썼다. 같은 날 같은 이름·거의 같은 제약의 계약 셋 중 둘은 true 였다.
+    #181 이 사전을 칸으로 바꾼 뒤 칸이 틀리면 막는 것이 없었다 — 사전은 바닥, 사전 밖 이름은 칸이 맡는다. 틀림의 값이 한쪽으로
+    쏠려 있다: 요청마다 새 값이어야 할 헤더에 상수를 주면 맞는 구현이 떨어지지만, 상수여도 되는 헤더에 새 값을 주면 해가 없다."""
+    auth = _auth_headers(contract)
+    was: dict[str, set[bool | None]] = {}
+    for e in contract.endpoints:
+        for h in e.headers:
+            if h.name not in auth and _REQUEST_KEY.search(f"{h.name} {h.constraints or ''}"):
+                was.setdefault(h.name, set()).add(h.per_request)
+    names = {n for n in was if not per_request(contract, n)}
+    if not names:
+        return contract, []
+    endpoints = [
+        e.model_copy(
+            update={
+                "headers": [
+                    h.model_copy(update={"per_request": True}) if h.name in names else h
+                    for h in e.headers
+                ]
+            }
+        )
+        for e in contract.endpoints
+    ]
+    notes = [
+        f"헤더 {n} 의 per_request 를 true 로 (계약은 {'비어 있음' if was[n] == {None} else 'false'}) — "
+        "이름·제약이 요청 하나를 가리킴: 도우미가 요청마다 새 값을 준다"
+        for n in sorted(names)
+    ]
+    return contract.model_copy(update={"endpoints": endpoints}), notes
 
 
 def unset_per_request(contract: TaskContract) -> list[str]:

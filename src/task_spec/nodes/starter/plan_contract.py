@@ -51,6 +51,7 @@ from task_spec.starter.contract import (
     timed_hints,
     unevidenced,
 )
+from task_spec.starter.header_values import fit_per_request
 from task_spec.starter.hidden_helpers import SETTING_MIN_ROWS, SETTING_PROBE, SETTING_PROBE_ALT
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_row_targets, fit_seed
 from task_spec.starter.state_rule import fit_state
@@ -474,7 +475,7 @@ def fit_output(
     seed: FeatureSeed | None = None,
     known: Collection[str] | None = None,
 ) -> tuple[PlanContractOutput, list[str]]:
-    """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · covers). 결정적 — 저장한 LLM 답으로
+    """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · 요청 번호 헤더 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다. manifest 는 재료로 좁힌 것(for_material),
     known 은 좁히기 전 템플릿의 조절값 이름 (없으면 manifest 것)."""
     trimmed, notes = fit_material_params(out.hidden_plan, manifest, known)
@@ -504,6 +505,9 @@ def fit_output(
     )  # 요청자 행은 행 수 맞춘 뒤 시드 끝에
     out = out.model_copy(update={"contract": authed})
     notes += auth_notes
+    keyed, key_notes = fit_per_request(out.contract)  # 요청 번호·멱등 키 헤더 — 권한 칸이 정해진 뒤
+    out = out.model_copy(update={"contract": keyed})
+    notes += key_notes
     covered, cover_notes = fit_covers(out.contract, spec)
     out = out.model_copy(update={"contract": covered})
     notes += cover_notes
