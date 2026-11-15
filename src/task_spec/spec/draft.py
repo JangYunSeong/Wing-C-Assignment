@@ -52,7 +52,13 @@ DIFFICULTY_KO = {
     "low": "low — 공고가 '이해' 수준 이하. 개념을 설명하고 간단히 적용하는 수준",
 }
 FLAG_DRAFT_FAILED = "과제 서술 생성 실패 — 결정적 골격만 (제목·상황·행동 기준 없음)"
-FLAG_DRAFT_INVALID = "과제 서술 자동 검증 실패 (재요청 후에도) — 고쳐 쓴 항목 확인 필요: "
+FLAG_DRAFT_INVALID = "과제 서술 자동 검증 실패 (재요청·고쳐 쓰기 후에도) — 남은 문제 확인 필요: "
+# 재요청 뒤에도 걸렸지만 코드의 고쳐 쓰기(잘못된 참조 걷어내기·되풀이한 추가 요구 빼기 등) 뒤 다시 검사해 풀린 문제 — 실패가 아니라
+# 코드가 고친 것으로 승인자에게 보인다. 2026-11-15 손 시범 후보 seats-ae1029: 고쳐 쓰기가 c3(응답 형식)를 지워 최종 명세는 검사를 통과했는데
+# 지우기 전 문제로 '자동 검증 실패' 가 붙어 평가가 명세 실패로 멈췄다
+FLAG_DRAFT_REPAIRED = (
+    "과제 서술 자동 검증 문제를 코드가 고침 (재요청 후에도 남아 고쳐 쓰기로) — 고친 항목 확인: "
+)
 FLAG_ARTIFACT_TRIMMED = (
     "자료가 3000자를 넘어 코드가 줄 단위로 줄임 — 남은 내용으로 단서가 보이는지 사람 확인: "
 )
@@ -583,8 +589,9 @@ async def draft_task(
     shuffler: Callable[[Any, str], Any] = shuffle_artifacts,
     patch: bool = False,
 ) -> DraftResult:
-    """생성 → 검증 → 1회 재요청 → 고쳐 쓰기. 공통 과제(draft_task)·확장 슬롯(draft_slot)·기능형(draft_feature_task,
-    checker/repairer/shuffler 를 spec/feature.py 것으로)이 같이 쓴다."""
+    """생성 → 검증 → 1회 재요청 → 고쳐 쓰기 → 다시 검증. 공통 과제(draft_task)·확장 슬롯(draft_slot)·기능형(draft_feature_task,
+    checker/repairer/shuffler 를 spec/feature.py 것으로)이 같이 쓴다. 표시: 고쳐 쓰기 뒤에도 남은 문제는 FLAG_DRAFT_INVALID,
+    고쳐 쓰기가 푼 문제는 FLAG_DRAFT_REPAIRED."""
     template = prompts.get(task)
     res = DraftResult()
     if "incident" in template.input_model.model_fields and ctx.incident is not None:
@@ -663,7 +670,12 @@ async def draft_task(
             out, problems = fixed, left
     if problems:
         out, res.anchors_ok = repairer(out, ctx)
-        res.flags.append(FLAG_DRAFT_INVALID + "; ".join(problems))
+        # 고쳐 쓴 결과를 다시 검사해 남은 문제만 실패로 — 고쳐 쓰기가 푼 것은 코드가 고친 것으로 따로 보인다
+        left = checker(out, ctx) + (extra_check(out) if extra_check else [])
+        if fixed := [p for p in problems if p not in left]:
+            res.flags.append(FLAG_DRAFT_REPAIRED + "; ".join(fixed))
+        if left:
+            res.flags.append(FLAG_DRAFT_INVALID + "; ".join(left))
     if trimmed := trimmed_artifacts(out):
         res.flags.append(FLAG_ARTIFACT_TRIMMED + ", ".join(trimmed))
     res.output = out

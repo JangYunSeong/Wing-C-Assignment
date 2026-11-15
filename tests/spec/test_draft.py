@@ -13,6 +13,7 @@ from task_spec.schemas import DraftTaskOutput, NcsCriterion, TargetCompetency, T
 from task_spec.spec.draft import (
     FLAG_DRAFT_FAILED,
     FLAG_DRAFT_INVALID,
+    FLAG_DRAFT_REPAIRED,
     FLAG_NOTE_DROPPED,
     FLAG_NOTE_TOO_LONG,
     DraftContext,
@@ -203,12 +204,15 @@ async def test_draft_reasks_once_then_ok() -> None:
 
 
 async def test_draft_invalid_twice_repairs_and_flags() -> None:
+    """고쳐 쓰기 뒤 다시 검사 — 풀린 문제는 '코드가 고침', 남은 문제만 '자동 검증 실패' (2026-11-15 손 시범 seats-ae1029)."""
     bad = json.dumps(_draft(tech_used=["Rust"]), ensure_ascii=False)
     fake = FakeBackend().push(Completion(bad), Completion(bad))
     res = await draft_task(_ctx(), llm=_client(fake), prompts=PROMPTS)  # type: ignore[arg-type]
     assert len(fake.calls) == 2
     assert res.output is not None and res.output.tech_used == []
-    assert len(res.flags) == 1 and res.flags[0].startswith(FLAG_DRAFT_INVALID)
+    assert len(res.flags) == 1 and res.flags[0].startswith(FLAG_DRAFT_REPAIRED)
+    assert "Rust" in res.flags[0]  # 무엇을 고쳤는지 승인자가 본다
+    assert not any(f.startswith(FLAG_DRAFT_INVALID) for f in res.flags)
 
 
 async def test_draft_llm_failure_keeps_skeleton() -> None:
