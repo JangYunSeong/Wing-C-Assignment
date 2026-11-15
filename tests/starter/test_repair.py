@@ -712,6 +712,19 @@ def test_different_errors_or_one_ref_are_regenerated_as_before() -> None:
         _report(_breaks("naive-all", "ref_naive", NOT_NULL), _run("d1", "ref_accepted", *GOOD_ACC))
     )
     assert _keys(plan) == ["gen_naive:naive-all"] and not plan.unresolved
+    # 다시 만든 구현이 모두 또 같은 기존 테스트를 깨면(오류는 달라도) 그 테스트가 계약에 없는 동작을 단언한 것 → 시작 코드 (#187 데이터 알파:
+    # 기존 테스트가 '진입점이 NotImplementedError 로 실패'를 단언해 구현 넷이 모두 깼는데 구현만 거듭 다시 만들었다)
+    again = _assign(
+        _report(_breaks("naive-all", "ref_naive", NOT_NULL), _breaks("d1", "ref_accepted", other)),
+        **{"gen_naive__naive-all": 1, "gen_accepted__d1": 1},
+    )
+    assert _keys(again) == ["gen_starter"] and "계약에 없는 동작" in again.actions[0].note
+    # 한 구현만 다시 만들었으면 아직 예전대로
+    once = _assign(
+        _report(_breaks("naive-all", "ref_naive", NOT_NULL), _breaks("d1", "ref_accepted", other)),
+        **{"gen_naive__naive-all": 1},
+    )
+    assert "gen_starter" not in _keys(once)
 
 
 def test_same_failure_as_naive_is_not_evidence_against_the_accepted_design() -> None:

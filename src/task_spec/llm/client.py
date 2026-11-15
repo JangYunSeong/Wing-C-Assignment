@@ -103,8 +103,10 @@ def _parse_json(content: str) -> Any:
 def _violation_kinds(exc: Exception) -> str:
     """로그용 — 어느 칸이 어떤 종류로 깨졌는지만 (위치·오류 종류). 메시지·값은 넣지 않는다 (원문이 섞일 수 있음)."""
     if isinstance(exc, ValidationError):
+        # 받은 값의 형식 이름만 (내용 아님) — 목록 칸에 무엇이 왔는지 가리게 (2026-11-15 #187 woori001: list_type 이 null 인지 글자인지 몰랐다)
         return ";".join(
-            f"{'.'.join(map(str, e['loc'])) or '(root)'}:{e['type']}" for e in exc.errors()[:5]
+            f"{'.'.join(map(str, e['loc'])) or '(root)'}:{e['type']}({type(e.get('input')).__name__})"
+            for e in exc.errors()[:5]
         )
     return "json_parse"
 

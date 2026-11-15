@@ -11,7 +11,8 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
    기동 실패 → 그 참조 구현, 시간 초과(⑨) → `gen_hidden`.
 3. 참조 구현이 둘 이상이고 모두 같은 기존 테스트를 같은 오류로 깸 → 계약 모호 의심 (다시 만들지 않고 사람 확인).
    참조 구현이 시작 코드에서 통과하던 기존 테스트를 깨뜨림 → 그 참조 구현 (§7 표 ⑤ 는 `gen_starter`(누설)이지만 2026-11-07 스모크에서는
-   흔한 구현이 필수 필드를 빠뜨린 결함이었다 — 참조 구현을 먼저 다시 만들고, 그래도 깨면 누설 의심으로 남긴다).
+   흔한 구현이 필수 필드를 빠뜨린 결함이었다 — 참조 구현을 먼저 다시 만든다). 다시 만든 구현이 모두 또 같은 기존 테스트를 깨면(오류는 달라도)
+   그 테스트가 계약에 없는 동작을 단언한 것 → `gen_starter` (2026-11-15 데이터 알파: 기존 테스트가 '미구현 예외'를 단언).
 4. 숨은 케이스 `HARNESS_ERR`(테스트 자체 예외)·결과 없음 — 구현끼리 비교: 모든 구현에서면 `gen_hidden`, 일부 구현에서만이면 그 구현
    (2026-11-08: 한 구현만 계약과 다른 응답 모양을 돌려 테스트가 파싱하다 예외인데 숨은 테스트를 고치러 갔다).
    ③·④ 도 같은 생각 — 흔한 구현이 통과하면 흔한 구현부터, 허용 구현이 흔한 구현과 같은 메시지로 실패하면 허용 구현 탓으로 보지 않음.
@@ -722,6 +723,33 @@ def _contract_ambiguity(
     return flags, common
 
 
+def _starter_test_broken_by_all(
+    runs: Sequence[TargetRun], starter: TargetRun, skip: set[str], counts: Mapping[str, int]
+) -> list[RepairAction]:
+    """참조 구현 둘 이상이 **다시 만든 뒤에도 모두** 시작 코드에서 통과하던 같은 기존 테스트를 깸 — 오류는 서로 달라도 (같은 오류면 _contract_ambiguity).
+    따로 만든 구현이 거듭 모두 같은 테스트를 깨면 그 테스트가 계약에 없는 동작을 단언한 것이다 — 구현이 아니라 시작 코드(그 테스트)를 다시 만든다.
+    첫 회차는 예전대로 구현을 다시 만든다 (2026-11-07 스모크: 흔한 구현이 필수 필드를 빠뜨린 결함이었다 — 문서 위 3번).
+    2026-11-15 #187 데이터 알파(g187c-de-kb002): 시작 코드 기존 테스트가 '진입점이 NotImplementedError 로 실패'를 단언해 구현 넷이 모두 깼는데,
+    실패 메시지에 구현마다 다른 실행 출력이 붙어 '같은 오류'로 묶이지 않아 구현 넷을 하나씩 다시 만들다 예산을 썼다."""
+    if len(runs) < 2 or any(counts.get(f"{_gen_for(r)}:{r.target}", 0) < 1 for r in runs):
+        return []
+    per_run = [{t.name: t.message for t in _broke_existing(r, starter)} for r in runs]
+    names = sorted(set.intersection(*(set(b) for b in per_run)) - skip)
+    if not names:
+        return []
+    lines = "\n".join(f"- {n}: {_short(per_run[0][n])}" for n in names)
+    return [
+        RepairAction(
+            "gen_starter",
+            "",
+            "②",
+            f"참조 구현 {len(runs)}개가 모두 기존 테스트 {', '.join(names)} 를 깸 — 그 테스트가 계약에 없는 동작을 단언",
+            "시작 코드의 기존 테스트를 따로 만든 참조 구현이 모두 깬다 — 기존 테스트는 계약이 정한 이미 있는 동작만 단언한다. 새 기능 자리의 "
+            "미구현 상태(예외·실패 종료·빈 결과)나 계약에 없는 동작을 단언하지 않는다:\n" + lines,
+        )
+    ]
+
+
 def _starter_test_context(
     runs: Sequence[TargetRun], starter: TargetRun, terms: RepairTerms | None
 ) -> list[RepairAction]:
@@ -1336,6 +1364,12 @@ def assign(
         return res
     ambiguous, skip = _contract_ambiguity(ready, starter, shared)
     res.unresolved += ambiguous
+    if acts := _starter_test_broken_by_all(ready, starter, skip, counts):
+        res.actions = [
+            *actions,
+            *acts,
+        ]  # 시작 코드가 바뀌면 참조 구현은 새 시작 코드 위에 다시 검증된다
+        return res
     for run in ready:
         actions += _ref_existing(run, starter, skip)
     public_acts, trusted = _public_refs(ready, counts, shared, terms)
