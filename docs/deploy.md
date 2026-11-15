@@ -374,6 +374,25 @@ curl -sfH "$H" -H 'content-type: application/json' \
 - 새 빌드 알림은 없다 — 받는 쪽이 `/pull/builds` 를 주기적으로 본다 [제안: 알림은 받는 쪽이 원하면].
 - 토큰을 바꾸려면 env 값을 바꾸고 API 를 다시 만든다. 토큰 유출 시 그 줄을 지우면 그 대상은 바로 막힌다.
 
+### 2-13. 한 번에 배포 — API + builder (`docker/deploy_all.sh`)
+
+배포 사용자로 레포 루트에서 (main 을 받은 뒤). 비밀번호·sudo 가 필요 없다 — API 는 배포 사용자의 컨테이너, builder 는 받는 폴더에 넣으면
+task-builder 가 스스로 업그레이드한다 (2-10).
+
+```bash
+git pull
+docker/deploy_all.sh                  # API 이미지 빌드·교체(헬스체크 실패면 이전 이미지로 되돌림) → builder 이미지 보내기·결과 기다림
+docker/deploy_all.sh --api-only       # API 만 · --builder-only 는 builder 만 (= deliver.sh)
+```
+
+작업 폴더가 따로면 `TASK_API_ENV` 로 메인 폴더의 API env 파일을 지정한다.
+
+- DB 에 열을 더하는 변경이면 **builder 도 같이** 배포한다 — API 가 기동 때 DDL 을 적용하면 예전 builder 는 연결에 캐시한 준비문(`SELECT *`)으로
+  `FeatureNotSupported` 가 난다 (2026-11-15).
+- builder 자동 업그레이드 유닛은 **task-builder 사용자에게만** 둔다. 배포 사용자에게도 설치돼 있으면 두 유닛이 같은 배달을 다퉈, 늦은 쪽이
+  "체크섬이 맞지 않거나 파일이 빠짐"을 쓰거나 배포 사용자 쪽이 기동에 실패한다 (#199). 확인: 배포 사용자로
+  `systemctl --user is-enabled task-builder-upgrade.path` → `disabled` 또는 없음.
+
 ## 3. 확인
 
 ```bash
