@@ -735,3 +735,48 @@ def test_variants_change_one_place_and_split_rules_spread_over_places() -> None:
     assert [s.note for _, s in kept] == ["이름 없음", "개수 늘 0"]
     assert [s.label for _, s in kept] == ["var-r2-omit", "var-r2-omit2"]
     assert len(dropped) == 1 and "2군데" in dropped[0]
+
+
+def test_renaming_one_name_at_declaration_and_call_is_one_place() -> None:
+    """2026-11-15 손 시범 retry-ae1005: 정렬이 Spring Data 파생 메서드 이름에 있어 Asc 로 바꾸려면 선언·호출 두 곳을 같이 고쳐야 했다 —
+    이름 하나만 바꾼 것은 한 곳으로 센다. 서로 다른 두 곳을 고친 것(낱말 쌍 둘)은 그대로 버린다."""
+    from task_spec.starter.variants import renamed
+
+    repo = "interface R {\n  List<C> findByMemberIdOrderByCreatedAtDesc(Long m);\n}\n"
+    svc = "class S {\n  int x = 1;\n  List<C> list(Long m) { return r.findByMemberIdOrderByCreatedAtDesc(m); }\n}\n"
+    impl = {"R.java": repo, "S.java": svc}
+    asc = "OrderByCreatedAtAsc"
+    flip = GenVariantOutput.model_validate(
+        {
+            "variants": [
+                {
+                    "op": "invert",
+                    "note": "오름차순",
+                    "files": [
+                        {"path": "R.java", "content": repo.replace("OrderByCreatedAtDesc", asc)},
+                        {"path": "S.java", "content": svc.replace("OrderByCreatedAtDesc", asc)},
+                    ],
+                },
+                {  # 이름 바꾸기 + 다른 곳(x = 1 → 2) — 두 곳
+                    "op": "omit",
+                    "note": "두 곳",
+                    "files": [
+                        {"path": "R.java", "content": repo.replace("OrderByCreatedAtDesc", asc)},
+                        {
+                            "path": "S.java",
+                            "content": svc.replace("OrderByCreatedAtDesc", asc).replace(
+                                "x = 1", "x = 2"
+                            ),
+                        },
+                    ],
+                },
+            ]
+        }
+    )
+    kept, dropped = build_variants(VariantTarget("r2", "최신순", ("p2",)), flip, _base(), impl)
+    assert [s.label for _, s in kept] == ["var-r2-invert"]
+    assert any("바꾼 곳" in d for d in dropped)
+    assert renamed(repo, repo.replace("Desc", "Asc")) == {
+        ("findByMemberIdOrderByCreatedAtDesc", "findByMemberIdOrderByCreatedAtAsc")
+    }
+    assert renamed("a = b + 1;\n", "a = b - 1;\n") is None  # 낱말이 아닌 글자가 바뀜
