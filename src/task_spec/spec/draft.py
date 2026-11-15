@@ -355,8 +355,19 @@ def check_artifact_list(
         problems.append(f"{label}artifact_id 가 겹침")
     roles = [a.role for a in arts]
     if roles.count("key") < 1 or roles.count("distractor") < min_distractor:
+        # 지금 개수와 고칠 방법까지 — 2026-11-15 알파(N+1 kb005·v10b #049): '방해 2개 이상'만 알려 주니 재요청도 방해 1개로 다시 썼다
+        how = []
+        if roles.count("key") < 1:
+            how.append("원인을 가리키는 자료 하나를 핵심(key)으로")
+        if roles.count("distractor") < min_distractor:
+            how.append(
+                f"방해(distractor)를 {min_distractor - roles.count('distractor')}개 더 — 그럴듯하지만 원인과 무관한 자료"
+                "(다른 환경·다른 기간·관계없는 구성 요소의 기록 등)를 더하거나, 결론에 쓰이지 않는 보조(support) 자료를 방해로 바꾼다"
+                " (핵심 자료는 그대로)"
+            )
         problems.append(
-            f"{label}자료는 핵심(key) 1개 이상, 방해(distractor) {min_distractor}개 이상이어야 함"
+            f"{label}자료는 핵심(key) 1개 이상, 방해(distractor) {min_distractor}개 이상이어야 함 — 지금 핵심 "
+            f"{roles.count('key')}개·보조 {roles.count('support')}개·방해 {roles.count('distractor')}개: {'; '.join(how)}"
         )
     if limit is not None and limit > max(roles.count("key") + 1, len(arts) // 3):
         problems.append(

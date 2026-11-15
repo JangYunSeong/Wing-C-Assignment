@@ -1139,3 +1139,54 @@ def test_bare_body_in_reply_slot_is_wrapped_by_code() -> None:
     assert "api.always<{ a: number }>('GET', '/n', { json: { a: 1 } });" in out
     for kept in ("{ status: 200, json: [] }", "{ ...base }", "'/m', {})", "'/m', memo)"):
         assert kept in out
+
+
+def test_input_without_action_is_filled_only_when_one_submit_target() -> None:
+    """2026-11-15 c0df 재빌드: 로그인 화면 입력란 login-email·login-password 에 조작 방법이 없어 계약이 막혔다 — 요청을 보내는 제출 대상이
+    하나뿐인 화면의 글자·숫자 입력란만 '제출 전에는 요청 없음'으로 채운다. 검색 입력·제출 대상이 둘인 화면은 그대로 (검사가 묻는다)."""
+    from task_spec.starter.contract import _FIELD_ACTION, _ui_actions, fit_field_actions
+
+    def el(
+        test_id: str, role: str, action: str | None = None, desc: str = "가상 요소"
+    ) -> dict[str, Any]:
+        return {
+            "test_id": test_id,
+            "role": role,
+            "description": desc,
+            "action": action,
+            "refs": ["r1"],
+        }
+
+    submit = "클릭하면 POST /api/auth/login 요청, 성공하면 /orders 로 이동"
+    c = _login_contract(
+        submit,
+        [_field("email"), _field("password")],
+        [
+            el("login-email", "textbox"),
+            el("login-password", "input"),
+            el("login-submit", "button", submit),  # 폼과 같은 API — 제출 대상 하나
+            el("login-keyword", "searchbox"),  # 검색칸 역할은 건드리지 않음
+            el("login-memo", "textbox", desc="검색어 입력"),  # 검색으로 보이는 입력은 짐작하지 않음
+        ],
+    )
+    fitted, notes = fit_field_actions(c)
+    els = {e.test_id: e for e in fitted.screens[1].elements}
+    assert (
+        els["login-email"].action == _FIELD_ACTION and els["login-password"].action == _FIELD_ACTION
+    )
+    assert els["login-keyword"].action is None and els["login-memo"].action is None
+    assert len(notes) == 1 and "login-email, login-password" in notes[0]
+    assert fitted.screens[0] == c.screens[0]
+    assert fit_field_actions(fitted) == (fitted, [])  # 멱등
+    assert not any("login-email" in p for p in _ui_actions(fitted))
+
+    # 제출 대상이 둘(다른 API)이면 어느 쪽에서 요청이 나가는지 모른다 — 그대로
+    two = _login_contract(
+        submit,
+        [_field("email")],
+        [
+            el("login-email", "textbox"),
+            el("login-reset", "button", "클릭하면 POST /api/auth/reset 요청"),
+        ],
+    )
+    assert fit_field_actions(two) == (two, [])
