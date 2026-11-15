@@ -782,3 +782,74 @@ def test_generated_mutants_target_each_measured_requirement() -> None:
     for r, text in got.items():
         acs = [p for p, rs in m.req_ids.items() if r in rs]
         assert all(p in text for p in acs) and ("회원당" in text or "수량만큼" in text or r in text)
+
+
+def test_starter_shows_rules_the_facts_did_not_mark_info_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-15 손 시범: coupons 시작 코드가 새 차감 API 를 구현, retry 저장소에 findByMemberIdOrderByCreatedAtDesc —
+    재료를 쓸 때 시작 코드를 보지 않아 정보 값을 잘못 적었다. 시작 코드가 보여 주는 규칙인데 사실이 정보 값 0 이 아니면 알린다."""
+    import json as _json
+    from types import SimpleNamespace
+
+    import eval.pilot.model as pm
+
+    java = tmp_path / "data/eval/build/x/candidate/src/main/java/S.java"
+    java.parent.mkdir(parents=True)
+    java.write_text(
+        "class S {\n"
+        "  ResponseEntity<?> post() { repo.save(x); return ok(); }\n"
+        '  ResponseEntity<?> get() { throw new UnsupportedOperationException("e2 GET /coupons"); }\n'
+        "  List<C> findByMemberIdOrderByCreatedAtDesc(Long m);\n"
+        "}\n",
+        "utf-8",
+    )
+    (tmp_path / "data/eval/build/x/contract.json").write_text(
+        _json.dumps(
+            {
+                "contract": {
+                    "endpoints": [
+                        {"method": "POST", "path": "/coupons", "refs": ["r1"]},
+                        {"method": "GET", "path": "/coupons", "refs": ["r2"]},
+                    ]
+                }
+            }
+        ),
+        "utf-8",
+    )
+    monkeypatch.setattr(pm, "ROOT", tmp_path)
+
+    class M(Material):
+        def task(self):  # type: ignore[no-untyped-def,override]
+            return SimpleNamespace(
+                requirements=[
+                    SimpleNamespace(req_id="r1", text="쿠폰을 발급한다"),
+                    SimpleNamespace(req_id="r2", text="발급 목록을 최신순으로 보여 준다"),
+                ]
+            )
+
+    base = _material()
+    m = M.model_validate(
+        base.model_dump()
+        | {
+            "facts": [
+                *(f.model_dump() for f in base.facts),
+                {
+                    "fact_id": "f3",
+                    "covers": ["r2"],
+                    "topic": "순서",
+                    "match_terms": ["순서"],
+                    "answer": "최신순",
+                },
+            ]
+        }
+    )
+    shown = pm.starter_shows(m)
+    assert any("POST /coupons 를 구현함" in x and "f1" in x for x in shown)  # 자리 표시 없는 API
+    assert not any("GET /coupons" in x for x in shown)  # 자리 표시인 API
+    assert any("findByMemberIdOrderByCreatedAtDesc" in x and "f3" in x for x in shown)
+    # 정보 값 0 으로 적으면 알리지 않는다
+    zero = M.model_validate(
+        m.model_dump() | {"facts": [f.model_dump() | {"info_zero": True} for f in m.facts]}
+    )
+    assert pm.starter_shows(zero) == []
