@@ -526,6 +526,37 @@ def _public_refs(
     return out, trusted
 
 
+def _shared_cause(
+    runs: Sequence[TargetRun], shared: str = "", terms: RepairTerms | None = None
+) -> list[str]:
+    """따로 만든 공개 테스트와 숨은 테스트가 모든 구현에서 **전부 같은 오류**로 실패 — 한 생성기를 다시 불러서는 설명되지 않는다.
+    공개 테스트(gen_public)·숨은 테스트(gen_hidden)·참조 구현(구현마다)은 서로 따로 만들어지므로, 이들을 모두 같은 방식으로 깨는 것은
+    함께 기대는 것(하네스·계약·템플릿)이다 — 다시 만들지 않고 승인자에게 (failed + review_flags). 2026-11-15 프론트 빌드: React 템플릿
+    v12 하네스가 `/items/:id` 처리기를 나중에 등록해 `/items/list` 요청을 가로채, 모든 구현의 모든 공개·숨은 테스트가 '요청이 오지 않음'
+    으로 같게 실패했는데 '테스트 의심' 으로 공개 테스트만 다시 만들어 예산을 썼다.
+    서버 쪽 예외(repair_terms.server_side)는 다시 만들 수 있는 공유 코드(시작 코드)라 여기서 멈추지 않는다 (_public_refs → gen_starter)."""
+    if len(runs) < 2:
+        return []
+    msgs: list[str] = []
+    for r in runs:
+        tests = [*r.results("public"), *r.results("hidden")]
+        if (
+            not r.results("public")
+            or not r.results("hidden")
+            or any(t.result == "PASS" for t in tests)
+        ):
+            return []
+        msgs += [t.message for t in tests]
+    if len({_signature(m) for m in msgs}) != 1:
+        return []
+    if terms is not None and terms.server_side and re.search(terms.server_side, msgs[0]):
+        return []
+    return [
+        f"모든 구현({len(runs)}개)이 공개·숨은 테스트 전부에서 같은 오류로 실패 — 따로 만든 테스트를 함께 깨는 공통 원인"
+        f"(하네스·계약·템플릿) 의심, 다시 만들지 않음: {_short(msgs[0])}{shared}"
+    ]
+
+
 def _starter_solves(
     run: TargetRun,
     plan: HiddenPlan,
@@ -1369,6 +1400,9 @@ def assign(
             *actions,
             *acts,
         ]  # 시작 코드가 바뀌면 참조 구현은 새 시작 코드 위에 다시 검증된다
+        return res
+    if not actions and (cause := _shared_cause(ready, shared, terms)):
+        res.unresolved += cause  # 다시 만들 생성기가 없다 — 예산을 쓰지 않고 승인자에게
         return res
     for run in ready:
         actions += _ref_existing(run, starter, skip)

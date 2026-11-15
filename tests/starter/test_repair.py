@@ -1245,3 +1245,41 @@ def test_repair_notes_carry_no_other_stack_or_case_shapes() -> None:
     )
     hits = [(f, t[:60]) for t in texts for f in forbidden if f in t]
     assert hits == []
+
+
+def test_one_error_across_separately_made_public_and_hidden_tests_is_a_shared_cause() -> None:
+    """2026-11-15 프론트 빌드: React v12 하네스가 `/items/:id` 처리기를 나중에 등록해 목록 요청을 가로채, 모든 구현의 모든 공개·숨은
+    테스트가 '요청이 오지 않음' 으로 같게 실패했다 — 공개 테스트만 다시 만들어 예산을 썼다. 따로 만든 테스트를 함께 깨는 것은 공통 원인."""
+    from task_spec.schemas.template import RepairTerms
+    from task_spec.starter.repair import _shared_cause
+
+    stuck = "요청이 오지 않음: GET /api/content/list — 응답하지 않은 요청 1개가 붙잡혀 있는 동안 기다렸다"
+
+    def all_fail(target: str, kind: str, msg: str = stuck) -> TargetRun:
+        return _run(
+            target,
+            kind,
+            *[_t("public", n, "HARNESS_ERR", msg=msg) for n in ("pt1", "pt2")],
+            *[_t("hidden", n, "HARNESS_ERR", msg=msg) for n in ("hc1", "hc2")],
+        )
+
+    plan = _assign(_report(all_fail("naive-all", "ref_naive"), all_fail("d1", "ref_accepted")))
+    assert not plan.actions  # 공개 테스트를 다시 만들지 않는다
+    assert len(plan.unresolved) == 1 and "공통 원인" in plan.unresolved[0]
+    assert "/api/content/list" in plan.unresolved[0]
+    # 숨은 테스트 하나라도 통과하면 공통 원인이 아니다 — 예전 규칙(모든 구현이 같은 공개 실패 → 테스트 의심)
+    part = _run(
+        "d1",
+        "ref_accepted",
+        *[_t("public", n, "HARNESS_ERR", msg=stuck) for n in ("pt1", "pt2")],
+        *GOOD_ACC,
+    )
+    plan = _assign(_report(all_fail("naive-all", "ref_naive"), part))
+    assert "gen_public" in _keys(plan) and not plan.unresolved
+    # 서버 쪽 예외는 다시 만들 수 있는 공유 코드(시작 코드)라 멈추지 않는다
+    boom = "Request processing failed: org.hibernate.exception.SQLGrammarException: x"
+    runs = [all_fail("naive-all", "ref_naive", boom), all_fail("d1", "ref_accepted", boom)]
+    assert _shared_cause(runs, "", RepairTerms(server_side=r"SQLGrammarException")) == []
+    assert _shared_cause(runs, "", RepairTerms()) != []
+    # 구현이 하나뿐이면 '모든 구현' 이 성립하지 않는다
+    assert _shared_cause(runs[:1]) == []
