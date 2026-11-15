@@ -26,7 +26,13 @@ from typing import Protocol
 
 from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.build import RepairRecord
-from task_spec.schemas.build_record import README_PATH, BuildOutcome, BuildRecord, StarterFile
+from task_spec.schemas.build_record import (
+    README_PATH,
+    BuildFailure,
+    BuildOutcome,
+    BuildRecord,
+    StarterFile,
+)
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.schemas.package import VerifySummary
 from task_spec.starter.artifacts import merged_flags
@@ -41,9 +47,14 @@ class StepFailed(Exception):
     """생성·검증이 끝까지 가지 못함 — 메시지는 저장소 실패 사유로 그대로 (짧게, 원문 없이).
     cost_usd: 실패하기 전까지 그 단계가 쓴 LLM 비용 — 하루 상한에 들어가야 한다 (2026-11-12 스모크: 계약 3회 실패가 $0 으로 남음)."""
 
-    def __init__(self, message: str, cost_usd: float = 0.0) -> None:
+    def __init__(
+        self, message: str, cost_usd: float = 0.0, detail: BuildFailure | None = None
+    ) -> None:
         super().__init__(message)
         self.cost_usd = cost_usd
+        self.detail = (
+            detail  # 실패한 단계가 그때까지 만든 것 (숨은 계획·표시·수리 기록) — 실패 빌드 기록에
+        )
 
 
 class BudgetExceeded(StepFailed):
@@ -169,6 +180,9 @@ async def run_job(
     run = _Run(store, cfg, build)
     images: list[str] = []
     ok = False
+    task: TaskItem | None = None
+    c: ContractResult | None = None
+    b: BuildResult | None = None
     try:
         task = await store.task(build.common_id)
         label = (await store.task_labels([build.common_id])).get(build.common_id)
@@ -222,14 +236,46 @@ async def run_job(
         if e.cost_usd:  # 실패한 단계가 쓴 비용도 쌓는다
             with contextlib.suppress(Exception):
                 await store.record_stage(build.build_id, run.stage, e.cost_usd)
-        return await _fail(store, work, build, str(e), run.stage, None)
+        detail = failure_detail(task, c, b, e.detail)
+        return await _fail(store, work, build, str(e), run.stage, None, detail)
     except Exception as e:  # 인프라·코드 오류 — 사유는 단계와 예외 종류만
-        return await _fail(store, work, build, f"{run.stage}: {type(e).__name__}", run.stage, e)
+        detail = failure_detail(task, c, b, None)
+        return await _fail(
+            store, work, build, f"{run.stage}: {type(e).__name__}", run.stage, e, detail
+        )
     finally:
         with contextlib.suppress(Exception):
             await steps.cleanup(images)
         if ok or not cfg.keep_failed_work:
             await asyncio.to_thread(shutil.rmtree, work, True)
+
+
+def failure_detail(
+    task: TaskItem | None,
+    c: ContractResult | None,
+    b: BuildResult | None,
+    part: BuildFailure | None,
+) -> BuildFailure | None:
+    """끝까지 가지 못한 빌드가 그때까지 만든 것 — 계약(계약 단계를 지났으면)·숨은 계획·승인자 표시·수리 기록.
+    빌드 단계가 실패하면 그 단계가 StepFailed.detail 로 수리 기록을 넘긴다 (빌드 결과는 돌려주지 못하므로). 아무것도 없으면 None."""
+    if c is None and b is None and part is None:
+        return None
+    plan = (
+        (b.plan if b is not None else None)
+        or (part.hidden_plan if part is not None else None)
+        or (c.plan if c is not None else None)
+    )
+    return BuildFailure(
+        contract=c.contract if c is not None else (part.contract if part is not None else None),
+        hidden_plan=plan,
+        review_flags=merged_flags(
+            task.review_flags if task is not None else [],
+            c.review_flags if c is not None else (),
+            b.review_flags if b is not None else (),
+            part.review_flags if part is not None else (),
+        ),
+        repairs=list(b.repairs if b is not None else (part.repairs if part is not None else [])),
+    )
 
 
 async def _fail(
@@ -239,6 +285,7 @@ async def _fail(
     reason: str,
     stage: str,
     exc: BaseException | None,
+    detail: BuildFailure | None = None,
 ) -> BuildRecord:
     if exc is not None:  # 예외 전문은 작업 폴더에만 (git 밖, 저장소·로그에는 넣지 않음)
         await asyncio.to_thread(_write_error, work, exc)
@@ -252,7 +299,7 @@ async def _fail(
     current = await store.get(build.build_id)
     if current is None or current.status not in ("pending", "generating", "verifying", "review"):
         return current or build  # 이미 끝난 빌드 (다른 쪽이 실패 처리)
-    return await store.fail(build.build_id, reason)
+    return await store.fail(build.build_id, reason, detail=detail)
 
 
 async def run_with_lease(

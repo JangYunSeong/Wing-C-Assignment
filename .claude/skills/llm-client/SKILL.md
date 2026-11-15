@@ -38,7 +38,7 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 | 증상 | 처리 |
 |---|---|
 | 빈 응답 + 출력 토큰이 추론에 소진 | `reasoning_effort=low` 로 1회 재시도 (시험 사실: `qwen3.8-flash` 는 긴 입력에서 기본 추론 설정이면 빈 응답) |
-| 빈 응답 + 잘림(`finish_reason=length`), 추론 설정이 이미 low | 최대 3회 다시 — 같은 설정. `reasoning_off_last=True` 를 넘긴 호출(빌드 생성기 — 계약·시작 코드·테스트·참조 구현)만 마지막은 추론 끔(`NO_REASONING` — opencode 는 `reasoning_effort=none`). 판정·선택·겹침 확인 같은 판단 호출은 켜지 않는다 (2026-11-09 사용자 결정) (`MAX_RESAMPLES`, split 모드는 1회 — `MAX_SPLIT_RESAMPLES`) [2026-11-09 — qwen low 추론은 정상일 때 4096 에서 끊기고 본문 ~2k, 빈 응답은 가끔의 추론 폭주: 출력 상한을 낮춰 빨리 실패시키고 여러 번 다시]. 추론 길이가 호출마다 크게 달라 다시 부르면 대개 산다 [확정: 2026-11-05 — v2 e2e 진단: select·verify·extract 빈 응답이 전부 이 경우, 재현 다시 묻기 2/2 성공]. 잘리지 않은 빈 응답은 예전처럼 바로 `EmptyResponse`. 두 호출 비용 모두 provenance 에 |
+| 빈 응답(잘렸든 아니든), 추론 설정이 이미 low | 최대 3회 다시 — 같은 설정. `reasoning_off_last=True` 를 넘긴 호출(빌드 생성기 — 계약·시작 코드·테스트·참조 구현)만 마지막은 추론 끔(`NO_REASONING` — opencode 는 `reasoning_effort=none`). 판정·선택·겹침 확인 같은 판단 호출은 켜지 않는다 (2026-11-09 사용자 결정) (`MAX_RESAMPLES`, split 모드는 1회 — `MAX_SPLIT_RESAMPLES`) [2026-11-09 — qwen low 추론은 정상일 때 4096 에서 끊기고 본문 ~2k, 빈 응답은 가끔의 추론 폭주: 출력 상한을 낮춰 빨리 실패시키고 여러 번 다시]. 추론 길이가 호출마다 크게 달라 다시 부르면 대개 산다 [확정: 2026-11-05 — v2 e2e 진단: select·verify·extract 빈 응답이 전부 이 경우, 재현 다시 묻기 2/2 성공]. 잘리지 않은 빈 응답도 같다 — 내용 필터(`finish_reason=content_filter`)만 다시 부르지 않고 바로 `EmptyResponse` [2026-11-15 — 잘리지 않은 빈 응답을 재시도하지 않아 알파 둘(gen_public·plan_contract)이 생성기와 무관하게 떨어졌다. 잘린 것만 재시도한 것은 그때 측정한 경우였고 뺀 근거는 없었다]. 두 호출 비용 모두 provenance 에 |
 | 5xx·연결 오류·429 | 지수 백오프 최대 3회 |
 | 시간 초과 | **1회만** 다시 [확정: 2026-11-03 — 운영에서 120초 × 4회 재시도로 draft_spec 이 수십 분 멈춤]. 요청 제한 시간 `LLM_TIMEOUT_SECONDS`(기본 300초) |
 | JSON 파싱·스키마 검증 실패 | 검증 에러 메시지를 붙여 1회 재요청. 그래도 실패면 `SchemaViolation` |

@@ -82,6 +82,17 @@ def next_stage_log(
     return out
 
 
+class BuildFailure(Schema):
+    """실패한 빌드가 끝까지 가지 못한 데까지 남긴 것 — 원인을 보려고 로그·작업 폴더를 따로 받지 않게 (2026-11-15 프론트 빌드:
+    실패한 빌드는 계약을 저장하지 않아 하네스 경로 버그를 메시지 구조로만 짚었다). 성공 빌드의 `BuildOutcome` 과 같은 칸에 같은 것만 —
+    계약·숨은 계획은 공고·재료에서 만든 공통 과제(지원자 데이터 아님), 수리 사유에는 숨은 테스트 문구가 올 수 있어 DB 에만 둔다."""
+
+    contract: TaskContract | None = None
+    hidden_plan: HiddenPlan | None = None
+    review_flags: list[str] = Field(default_factory=list)
+    repairs: list[RepairRecord] = Field(default_factory=list)
+
+
 class BuildRecord(Schema):
     """`common_task_build` 행."""
 
@@ -91,6 +102,7 @@ class BuildRecord(Schema):
     status: BuildStatus
     ontology_version: str = Field(min_length=1)
     outcome: BuildOutcome | None = None
+    failure: BuildFailure | None = None  # 실패한 빌드가 남긴 계약·수리 기록 (status=failed 일 때만)
     review_decisions: list[ReviewDecision] = Field(default_factory=list)
     created_at: datetime
     approved_by: str | None = None

@@ -19,6 +19,9 @@ from task_spec.schemas import (
     RunState,
 )
 
+# 호출 하나가 EmptyResponse 로 끝나는 경우 — 다시 부르지 않는 빈 응답(내용 필터). 그냥 빈 응답은 클라이언트가 다시 부른다 (2026-11-15)
+FAILED_CALL = Completion("", finish_reason="content_filter")
+
 PROMPTS = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
 PSEUDO = (
     "가상 물류 창고 개편 2031.01~2031.06\n"
@@ -179,7 +182,7 @@ async def test_failed_batch_is_split_and_asked_again(tmp_path: Path) -> None:
     # G안: 첫 묶음이 빈 응답(추론 토큰 소진 등)으로 통째로 실패 → 반씩(2개 + 1개) 다시 → ok
     out, fake = await _run(
         _state(tmp_path),
-        Completion(""),
+        FAILED_CALL,
         _answer(("comp:a", "action", ["c1"]), ("comp:b", "none", [])),
         _answer(("comp:c", "related", ["c2"])),
     )
@@ -202,9 +205,9 @@ async def test_failed_batch_is_split_and_asked_again(tmp_path: Path) -> None:
 async def test_split_retry_half_fails_is_partial(tmp_path: Path) -> None:
     out, fake = await _run(
         _state(tmp_path),
-        Completion(""),
+        FAILED_CALL,
         _answer(("comp:a", "action", ["c1"]), ("comp:b", "related", ["c2"])),
-        Completion(""),
+        FAILED_CALL,
     )
     res = out["overlap_check"]
     assert res.status == "partial" and len(fake.calls) == 3
@@ -219,7 +222,7 @@ async def test_split_retry_half_fails_is_partial(tmp_path: Path) -> None:
 
 
 async def test_all_calls_fail_is_failed_with_bounded_calls(tmp_path: Path) -> None:
-    out, fake = await _run(_state(tmp_path), Completion(""), Completion(""), Completion(""))
+    out, fake = await _run(_state(tmp_path), FAILED_CALL, FAILED_CALL, FAILED_CALL)
     assert out["overlap_check"].status == "failed" and len(fake.calls) == 3
     assert [e.code for e in out["errors"] if e.code == "EmptyResponse"] == ["EmptyResponse"] * 3
     assert len(out["provenance"]) == 3
@@ -384,7 +387,7 @@ async def test_failed_batch_among_many_is_split(tmp_path: Path) -> None:
     st = _many(tmp_path, 65)
     ids = [c.competency_id for c in st.posting_profile.competencies]  # type: ignore[union-attr]
     fake = _Capture().push(
-        Completion(""),  # 첫 묶음(40개) 실패
+        FAILED_CALL,  # 첫 묶음(40개) 실패
         _answer(*[(c, "none", []) for c in ids[40:]]),  # 둘째 묶음(25개) 답
         _answer(*[(c, "none", []) for c in ids[:20]]),  # 실패 묶음 앞 반
         _answer(*[(c, "none", []) for c in ids[20:40]]),  # 뒤 반

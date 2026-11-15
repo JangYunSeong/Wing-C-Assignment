@@ -27,6 +27,7 @@ from task_spec.nodes.starter.build import HIDDEN, PUBLIC, build_and_repair
 from task_spec.nodes.starter.generate import BuildInputs
 from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
+from task_spec.schemas.build_record import BuildFailure
 from task_spec.schemas.package import PackageHeader
 from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
 from task_spec.starter.artifacts import summaries
@@ -137,7 +138,14 @@ class RealSteps:
                 f"{last.gate} {last.target} {last.result}" if last is not None else "수리 기록 없음"
             )
             raise StepFailed(
-                f"build: 수리 루프 실패 (회차 {out.rounds}) — {why}", cost_usd=out.cost_usd
+                f"build: 수리 루프 실패 (회차 {out.rounds}) — {why}",
+                cost_usd=out.cost_usd,
+                # 사유 문장(숨은 테스트 문구가 올 수 있음)은 저장소 사유가 아니라 실패 빌드 기록(DB)에만
+                detail=BuildFailure(
+                    hidden_plan=out.hidden_plan or c.plan,
+                    review_flags=list(out.review_flags),
+                    repairs=list(out.repairs),
+                ),
             )
         readme = render_readme(
             job.task, c.contract, c.template, starter=out.overlays[STARTER].files

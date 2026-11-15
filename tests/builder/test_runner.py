@@ -19,7 +19,8 @@ from task_spec.builder.runner import (
     run_with_lease,
 )
 from task_spec.schemas import GeneratedFile
-from task_spec.schemas.build_record import BuildRecord
+from task_spec.schemas.build import RepairRecord
+from task_spec.schemas.build_record import BuildFailure, BuildRecord
 from task_spec.schemas.package import VerifySummary
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.store import BuildRepo, CommonRef, InMemoryBuildStore, TaskLabel
@@ -142,6 +143,33 @@ async def test_a_step_failure_keeps_a_short_reason_and_the_work_dir(tmp_path: Pa
     done = await run_job(store, steps, _cfg(tmp_path), b)
     assert (done.status, done.error) == ("failed", "contract: 가상 실패")
     assert steps.calls == ["contract"] and steps.works[0].is_dir()  # 원인 확인용으로 남긴다
+
+
+async def test_a_failed_build_keeps_its_contract_plan_flags_and_repairs(tmp_path: Path) -> None:
+    """2026-11-15 프론트 빌드: 실패한 빌드는 계약을 저장하지 않아 하네스 경로 버그를 메시지 구조로만 짚었다 —
+    끝까지 가지 못한 데까지의 계약·숨은 계획·표시·수리 기록을 DB 에 (사유 칸은 그대로 짧게)."""
+    store, b = await _claimed()
+    rec = RepairRecord(
+        gate="⑤", target="gen_public", reason="모든 구현이 pt1 실패 — 테스트 의심", result="skipped"
+    )
+    part = BuildFailure(hidden_plan=_plan(), review_flags=["빌드 단계 가상 표시"], repairs=[rec])
+    steps = FakeSteps(
+        tmp_path, fail_at="build", error=StepFailed("build: 수리 루프 실패 (회차 1)", detail=part)
+    )
+    done = await run_job(store, steps, _cfg(tmp_path), b)
+    assert (done.status, done.error) == ("failed", "build: 수리 루프 실패 (회차 1)")
+    assert done.outcome is None and done.failure is not None
+    assert done.failure.contract == _contract() and done.failure.hidden_plan == _plan()
+    assert done.failure.repairs == [rec]
+    assert done.failure.review_flags == [
+        "명세 가상 표시",
+        "계약 단계 가상 표시",
+        "빌드 단계 가상 표시",
+    ]
+    # 계약 단계에서 실패하면 남길 것이 없다
+    store, b = await _claimed()
+    done = await run_job(store, FakeSteps(tmp_path, fail_at="contract"), _cfg(tmp_path), b)
+    assert done.status == "failed" and done.failure is None
 
 
 async def test_budget_stops_before_the_next_stage(tmp_path: Path) -> None:
