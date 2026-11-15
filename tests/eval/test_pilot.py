@@ -461,6 +461,41 @@ def test_validity_needs_every_mutant_of_a_requirement_caught() -> None:
     assert not out["usable"]
 
 
+def test_validity_leaves_invalid_mutants_out_like_the_gate() -> None:
+    """컴파일·기동 실패·다른 요구만 떨어진 돌연변이는 무효 — 셈에서 빼고, 유효한 것이 없으면 측정에서 뺀다 (관문 ⑩ 과 같은 판정, #151)."""
+    m = _with_methods(_material())
+    meta = {
+        "skip": {"req": "r1", "note": "빼먹기"},
+        "broken": {"req": "r1", "note": "뒤집기"},
+        "asc": {"req": "r3", "note": "뒤집기"},
+        "wide": {"req": "r3", "note": "지나침"},
+        "r2off": {"req": "r2", "note": "빼먹기"},
+    }
+    runs = {
+        "skip": _suite(("Pt1A.records",)),
+        "broken": SuiteRun(setup="compile_error"),  # 무효 — r1 은 남은 하나로 잰다
+        "asc": _suite(("Pt2B.newestFirst",)),
+        "wide": _suite(("Pt1A.records",)),  # r3 를 겨냥했는데 r1 메서드만 떨어짐 → 무효
+        "r2off": _suite(("Pt1A.records",)),  # r2 의 돌연변이는 이것뿐이고 무효 → r2 는 측정 밖
+    }
+    out = judge(m, _suite(), runs, meta)
+    verdicts = {k: v["verdict"] for k, v in out["mutants"].items()}
+    assert verdicts == {
+        "skip": "caught",
+        "broken": "invalid",
+        "asc": "caught",
+        "wide": "invalid",
+        "r2off": "invalid",
+    }
+    assert out["mutants"]["broken"]["detail"] == "compile_error"
+    assert out["measured"] == ["r1", "r3"]
+    assert out["excluded_why"] == {"r2": "유효한 돌연변이 없음 (모두 무효)"}
+    runs["wide"] = _suite()  # 살아남으면 그 요구는 측정 밖 (무효와 다름)
+    out = judge(m, _suite(), runs, meta)
+    assert out["measured"] == ["r1"]
+    assert out["excluded_why"]["r3"] == "살아남은 돌연변이 있음"
+
+
 def test_made_by_requirement_per_method(monkeypatch: pytest.MonkeyPatch) -> None:
     m = _with_methods(_material())
     monkeypatch.setattr(Material, "measured", lambda self: ["r2", "r3"])

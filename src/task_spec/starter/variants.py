@@ -238,6 +238,26 @@ class VariantResult:
         return f"{head}: 살아남음 (공개 테스트 모두 통과)"
 
 
+def verdict_of(
+    setup: str, ran_public: bool, failed: Sequence[str], own: Sequence[str], setup_detail: str = ""
+) -> tuple[Verdict, str]:
+    """변형 하나의 판정과 무효 이유 — 관문 ⑩(`judge`)과 손 시범 유효성(`eval/pilot/validity.py`)이 같은 정의를 쓴다 (#151).
+    컴파일·기동 실패·결과 없음은 무효, 공개 테스트가 모두 통과하면 살아남음, 겨냥한 요구(기준)의 테스트(own)가 떨어지면 잡힘,
+    다른 요구의 테스트만 떨어지면 무효 — 한 곳만 어기지 않은 변형이라 그 요구의 변별 근거가 아니다."""
+    if setup != "ok":
+        return "invalid", setup + (f": {setup_detail[:120]}" if setup_detail else "")
+    if not ran_public:
+        return "invalid", "공개 테스트 결과 없음"
+    if not failed:
+        return "survived", ""
+    if own:
+        return "caught", ""
+    return (
+        "invalid",
+        f"다른 기준의 공개 테스트만 떨어짐 ({', '.join(failed[:3])}) — 한 곳만 어기지 않음",
+    )
+
+
 _PT = re.compile(r"\bpt(\d{1,2})\b", re.IGNORECASE)
 
 
@@ -284,17 +304,8 @@ def judge(
         if run is None:
             out.append(bad("실행 없음"))
             continue
-        if run.setup != "ok":
-            out.append(bad(run.setup + (f": {run.setup_detail[:120]}" if run.setup_detail else "")))
-            continue
         public = run.results("public")
-        if not public:
-            out.append(bad("공개 테스트 결과 없음"))
-            continue
         failed = [t.name for t in public if t.result != "PASS"]
-        if not failed:
-            out.append(VariantResult(s.label, s.rule_id, s.op, s.note, "survived"))
-            continue
         acs = pt_ac or {}
         mine = set(s.acs)
         own = (
@@ -302,12 +313,18 @@ def judge(
             if known and mine
             else failed
         )
-        if own:
-            out.append(VariantResult(s.label, s.rule_id, s.op, s.note, "caught", failed=tuple(own)))
+        verdict, detail = verdict_of(run.setup, bool(public), failed, own, run.setup_detail)
+        if verdict == "invalid":
+            out.append(bad(detail))
         else:
             out.append(
-                bad(
-                    f"다른 기준의 공개 테스트만 떨어짐 ({', '.join(failed[:3])}) — 한 곳만 어기지 않음"
+                VariantResult(
+                    s.label,
+                    s.rule_id,
+                    s.op,
+                    s.note,
+                    verdict,
+                    failed=tuple(own) if verdict == "caught" else (),
                 )
             )
     return out
