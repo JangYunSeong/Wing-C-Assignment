@@ -29,7 +29,7 @@ P1 내부 문서다 (`gen_hidden` 입력에 들어감). 채점용 이미지에�
 - 깨진 출력 파일을 읽으면 예외가 난다 — 크래시 뒤 화면을 볼 때는 `try/except` 로 "읽을 수 없음"을 값으로 바꾸고, **그 값이 보이면 실패**로 단언한다 (예외로 끝내지 않는다 — 아래 판정 규칙 "크래시 뒤").
 
 **실행 결과 — `JobResult`**: `code`(종료 코드, 시간 초과면 None, 시그널로 죽으면 음수) · `ok`(code == 0) · `crashed` · `timed_out` · `stdout` · `stderr` · `last_error()`
-- 쓰기 중 크래시: `run_…(…, crash_after_bytes=128)` — 그만큼 넘게 쓰는 순간 프로세스가 죽는다 (정리 코드도 돌지 않음 — 실제 장애처럼).
+- 쓰기 중 크래시: `run_…(…, crash_after_bytes=128)` — **파일 하나**가 그 크기를 넘으려는 쓰기에서 프로세스가 죽는다 (파일마다 따로, 합이 아님 · DuckDB·pyarrow 쓰기도 걸림 · 정리 코드도 돌지 않음 — 실제 장애처럼). 출력 파일이 모두 그보다 작으면 죽지 않는다 — 그때 작업이 끝까지 성공하면 하네스가 `CrashNotTriggered` 를 낸다(케이스가 시험하려던 실패가 일어나지 않음). 출력이 상한보다 충분히 커지는 입력으로 쓴다.
 
 **실패 사유 — `reason(code, description)`**: `assert 값 == 기대, reason('late_data_missed', '늦게 온 9/1 레코드가 빠짐')`.
 코드는 아래 숨은 테스트 입력의 "실패 사유 코드" 목록 안의 것만. **조절값 — `params.int(name, fallback)`·`params.str`·`params.list`**.

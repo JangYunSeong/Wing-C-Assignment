@@ -130,7 +130,7 @@ failure_reasons:
   - code: partial_output_visible
     description: 실행 도중 죽은(실패한) 실행이 반쯤 쓴 출력을 남겨 읽는 쪽이 틀린 값을 봄
     log_patterns: ['\[reason:partial_output_visible\]']
-    how: 정상 실행 뒤 다음 실행을 run_…(…, crash_after_bytes=128) 로 쓰는 중에 죽이고, 읽는 쪽 화면(출력)의 날짜·구간마다 '직전 성공 값' 또는 '이번 실행이 성공했을 때의 값' 인지 단언. 그 뒤 다시 실행하면 정상 값인지도. 다른 숨은 요구(늦은 데이터·사본)를 같은 케이스에 섞지 않는다
+    how: 정상 실행 뒤 다음 실행을 run_…(…, crash_after_bytes=128) 로 쓰는 중에 죽이고(상한은 파일 하나의 크기 — 출력 파일이 그보다 커지는 입력으로, 안 죽으면 하네스가 CrashNotTriggered), 읽는 쪽 화면(출력)의 날짜·구간마다 '직전 성공 값' 또는 '이번 실행이 성공했을 때의 값' 인지 단언. 그 뒤 다시 실행하면 정상 값인지도. 다른 숨은 요구(늦은 데이터·사본)를 같은 케이스에 섞지 않는다
   - code: rerun_not_idempotent
     description: 같은 입력으로 같은 날짜·구간을 다시 실행하면 결과가 달라짐 (덧붙음·중복)
     log_patterns: ['\[reason:rerun_not_idempotent\]']

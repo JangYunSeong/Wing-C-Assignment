@@ -154,3 +154,23 @@ def test_half_written_csv_is_a_broken_file() -> None:
     ws.write_text("y.csv", "a,b\n1,2,3\n")
     with pytest.raises(ValueError):
         ws.read_csv("y.csv")
+
+
+def test_requested_crash_that_does_not_happen_is_a_harness_error() -> None:
+    """v2: crash_after_bytes 는 파일 하나의 크기 상한 — 쓰는 파일이 모두 그보다 작아 끝까지 성공하면 CrashNotTriggered (케이스 전제가 서지 않음).
+    작업이 오류로 먼저 끝나면 그대로 돌려준다 (구현 탓)."""
+    import pytest
+
+    from harness.grader import CrashNotTriggered
+
+    ws = workspace()
+    small = ws.path("small.py")
+    small.write_text("open(__import__('sys').argv[1], 'w').write('x' * 10)\n", "utf-8")
+    with pytest.raises(CrashNotTriggered):
+        run(str(small), ws.path("out.txt"), crash_after_bytes=128)
+    big = ws.path("big.py")
+    big.write_text("open(__import__('sys').argv[1], 'w').write('x' * 4096)\n", "utf-8")
+    assert run(str(big), ws.path("out2.txt"), crash_after_bytes=128).crashed
+    fail = ws.path("fail.py")
+    fail.write_text("raise SystemExit(3)\n", "utf-8")
+    assert run(str(fail), crash_after_bytes=128).code == 3

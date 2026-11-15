@@ -89,6 +89,12 @@ params = _Params()
 # ── 작업 실행 ───────────────────────────────────────────────────────────
 
 
+class CrashNotTriggered(RuntimeError):
+    """크래시를 요청했는데(crash_after_bytes) 작업이 끝까지 성공함 — 그 케이스의 전제(쓰는 도중에 죽음)가 서지 않아 아무것도 시험하지 못한다.
+    단언이 아니라 하네스 오류(HARNESS_ERR)로 남아 테스트 쪽 문제로 보인다 (v2 — 2026-11-15 #187 알파 g187b-de-kb002: 출력 파일이 119~124B 라
+    crash_after_bytes=128 에서 아무 구현도 죽지 않았고, 허용 구현 셋이 'Crash run unexpectedly succeeded' 단언에서 떨어졌다)."""
+
+
 @dataclass(frozen=True)
 class JobResult:
     code: int | None  # 종료 코드 (시간 초과면 None, 시그널로 죽으면 음수)
@@ -133,7 +139,9 @@ def run(
     crash_after_bytes: int | None = None,
 ) -> JobResult:
     """저장소 루트에서 `python <script> <args…>` — 계약의 명령 그대로 (계약 도우미 run_…() 가 이것을 부른다).
-    crash_after_bytes: 그만큼 넘게 쓰는 순간 프로세스를 죽인다 (실행 도중 실패 — 반쯤 쓴 결과가 남는지 볼 때)."""
+    crash_after_bytes: 파일 하나의 크기 상한(RLIMIT_FSIZE) — 어떤 파일이 그 크기를 넘으려는 쓰기에서 프로세스가 죽는다 (파일마다 따로,
+    여러 파일 합이 아님 · DuckDB·pyarrow 같은 네이티브 쓰기도 걸림). 쓰는 파일이 모두 그보다 작으면 죽지 않는다 — 그때 작업이 끝까지
+    성공하면 CrashNotTriggered (케이스가 시험하려던 '쓰는 도중 실패'가 일어나지 않음). 작업이 오류 종료 코드로 먼저 끝나면 그대로 돌려준다."""
     home = Path(tempfile.mkdtemp(prefix="home-"))
     env = _env(home)
     cmd: list[str] = [sys.executable, script, *(str(a) for a in args)]
@@ -160,7 +168,13 @@ def run(
         err = f"{limit}초 안에 끝나지 않음"
     finally:
         shutil.rmtree(home, ignore_errors=True)
-    return JobResult(code, out[-4000:], err[-4000:], round(time.monotonic() - t0, 2))
+    result = JobResult(code, out[-4000:], err[-4000:], round(time.monotonic() - t0, 2))
+    if crash_after_bytes is not None and result.ok:
+        raise CrashNotTriggered(
+            f"크래시를 요청했지만 일어나지 않음 — crash_after_bytes={int(crash_after_bytes)} 는 파일 하나의 크기 상한이라, 이 실행이 쓴 파일이 "
+            "모두 그보다 작아 끝까지 성공했다. 출력 파일이 그보다 커지게 입력을 늘리거나 상한을 줄인다"
+        )
+    return result
 
 
 # ── 입력·출력 파일 ──────────────────────────────────────────────────────
