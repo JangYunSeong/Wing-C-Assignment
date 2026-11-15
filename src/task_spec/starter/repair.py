@@ -338,8 +338,11 @@ PERSISTENCE = (
 )
 
 
+_PT_NO = re.compile(r"^[Pp]t(\d{1,2})(?!\d)")
+
+
 def _starter_public(
-    run: TargetRun, regen_counts: Mapping[str, int]
+    run: TargetRun, regen_counts: Mapping[str, int], new_tests: Collection[str] = ()
 ) -> tuple[list[RepairAction], list[str]]:
     """시작 코드 + 공개 테스트 — 저장 확인은 통과해야 하고, 새 기능 공개 테스트는 실패해야 한다 (지원자 몫).
     2026-11-08 알파 4케이스: 시작 코드의 새 엔티티에 id 생성 전략이 없어 참조 구현 둘이 같은 오류로 깨졌다 — 저장 확인이 여기서 잡는다."""
@@ -377,6 +380,28 @@ def _starter_public(
         else:
             flags.append(
                 f"다시 만든 시작 코드에서도 새 기능 공개 테스트가 모두 통과: {', '.join(passed)} (사람 확인)"
+            )
+    elif new_hits := [
+        n
+        for n in passed
+        if (m := _PT_NO.match(n)) is not None and f"pt{int(m.group(1))}" in new_tests
+    ]:
+        # 새 API 에만 걸린 공개 테스트가 시작 코드로 통과 — 이미 있는 동작일 수 없다. 2026-11-15 손 시범 coupons: 계약이 새 차감 API 를
+        # existing 으로 적어 시작 코드가 차감·거절을 구현했고, 공개 테스트 4개 중 1개만 통과해 '모두 통과' 기준을 비켜 표시로만 남았다
+        if not exhausted(regen_counts, "gen_starter"):
+            acts.append(
+                RepairAction(
+                    "gen_starter",
+                    "",
+                    "②'",
+                    f"시작 코드만으로 새 API 의 공개 테스트 통과 ({', '.join(new_hits)}) — 새 기능이 들어 있음",
+                    f"시작 코드에서 새 API(계약의 existing 이 아닌 엔드포인트)의 공개 테스트({', '.join(new_hits)})가 통과했다 — 새 API 의 "
+                    "처리는 자리 표시(TODO)로 둔다. 이미 있는 API 만 공개 요구 전의 동작으로 구현한다.",
+                )
+            )
+        else:
+            flags.append(
+                f"다시 만든 시작 코드에서도 새 API 의 공개 테스트가 통과: {', '.join(new_hits)} (사람 확인)"
             )
     elif passed:
         flags.append(
@@ -1348,8 +1373,10 @@ def assign(
     feature_reasons: Collection[str] = (),
     regen_log: Mapping[str, RegenNote] | None = None,
     passed_before: Mapping[str, Collection[str]] | None = None,
+    new_tests: Collection[str] = (),
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
+    new_tests: 새 API(계약 existing 아님)에만 걸린 공개 테스트 id (pt#) — 시작 코드로 통과하면 새 기능이 들어 있다 (②').
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
     shared_paths: 템플릿·시작 코드에 이미 있는 파일 — 모든 구현이 같은 오류를 낼 때, 모두 다시 쓴 파일을 원인 후보로 싣는다."""
     counts = regen_counts or {}
@@ -1373,7 +1400,7 @@ def assign(
         # 다음 회차에 고친 구현까지 모두 다시 비교한다.
         res.actions = acts
         return res
-    acts, flags = _starter_public(starter, counts)
+    acts, flags = _starter_public(starter, counts, new_tests)
     res.flags += flags
     if (
         acts

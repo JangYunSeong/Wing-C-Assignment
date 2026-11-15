@@ -73,6 +73,9 @@ class SpecView:
     public_texts: tuple[str, ...] = ()
     # 숨김 수용 기준 ac_id → 승인된 실패 지정 (HiddenAcceptance.faults) — 숨은 케이스가 같은 값으로 옮겼는지 대조
     hidden_faults: dict[str, tuple[HiddenFault, ...]] = field(default_factory=dict)
+    req_texts: dict[str, str] = field(
+        default_factory=dict
+    )  # r* → 공식 요구 문장 (새로 추가하는 API 인지 — _added_marked_existing)
 
     @classmethod
     def from_task(cls, task: TaskItem) -> SpecView:
@@ -94,6 +97,7 @@ class SpecView:
                 *(a.text for a in task.acceptance_public),
             ),
             hidden_faults={h.ac_id: tuple(h.faults) for h in task.acceptance_hidden if h.faults},
+            req_texts={r.req_id: r.text for r in task.requirements},
         )
 
 
@@ -1281,15 +1285,64 @@ def mentioned_apis(texts: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in api_mentions(t)))
 
 
+# 새로 만드는 API 라는 말 — 'API 를 추가한다'·'엔드포인트를 구현한다'·'새로'·'신규'
+_ADDS = re.compile(r"추가|새로|신규|구현한다|구현해|구현하고|만든다|만들어")
+_SENT = re.compile(r"[^.。\n]+")
+
+
+def added_apis(texts: Iterable[str]) -> set[str]:
+    """새로 만든다고 말한 문장에 나온 'METHOD /path' — 그 문장은 그 API 가 이미 있다는 근거가 아니다."""
+    return {
+        k
+        for t in texts
+        for sent in _SENT.findall(t)
+        if _ADDS.search(sent)
+        for k in mentioned_apis([sent])
+    }
+
+
 def existing_endpoints(contract: TaskContract, spec: SpecView) -> list[Endpoint]:
     """이미 있는 API (시작 코드가 동작하게 만든다) = 계약이 `existing` 으로 표시한 것 + 명세 공개 글에 `METHOD /path` 로 나온 계약 API.
-    시작 코드 생성 입력(generate.existing_apis)과 시작 코드 정적 검사(static_check._starter_new_api_tests)가 같은 판정을 쓴다."""
-    named = set(mentioned_apis(spec.public_texts))
+    시작 코드 생성 입력(generate.existing_apis)과 시작 코드 정적 검사(static_check._starter_new_api_tests)가 같은 판정을 쓴다.
+    '…엔드포인트를 구현한다'처럼 새로 만든다고 말한 문장의 언급은 빼고 센다 (2026-11-15 손 시범 retry: 'POST /api/v1/charges 엔드포인트를 구현한다')."""
+    named = set(mentioned_apis(spec.public_texts)) - added_apis(spec.public_texts)
     out: list[Endpoint] = []
     for e in contract.endpoints:
         key = mentioned_apis([f"{e.method} {e.path}"]) if e.method else []
         if e.existing or (key and key[0] in named):
             out.append(e)
+    return out
+
+
+def _added_marked_existing(contract: TaskContract, spec: SpecView) -> list[str]:
+    """요구가 새로 추가한다는 API 를 계약이 existing(이미 있음)으로 적음 — 시작 코드가 그 API 를 구현해 지원자 몫이 줄어든다.
+    2026-11-15 손 시범 coupons: r1 '…차감 후 남은 수량을 응답하는 API를 추가한다' 인데 POST /tools/{toolId}/deduct 가 existing — 시작 코드가
+    차감·수량 부족 거절을 다 구현했고, 공개 테스트 4개 중 1개만 통과해 수리 ②' 의 '모두 통과' 기준도 비켜 갔다."""
+    added = added_apis(spec.public_texts)
+    out = []
+    for e in contract.endpoints:
+        if not e.existing:
+            continue
+        key = mentioned_apis([f"{e.method} {e.path}"]) if e.method else []
+        # 그 요구를 함께 가리키는 새 API 가 있으면 추가되는 것은 그쪽이다 — 2026-11-15 N+1: r1 '목록 GET 엔드포인트를 추가한다' 를
+        # 새 GET /api/posts 와 이미 있는 GET /api/posts/{id} 가 함께 가리켰다 (단건 조회는 정말 이미 있는 API)
+        why = [
+            r
+            for r in e.refs
+            if (t := spec.req_texts.get(r))
+            and re.search(r"(?:API|엔드포인트|기능)[^.。\n]{0,10}(?:추가|새로|신규|구현)", t)
+            and not any(not o.existing and r in o.refs for o in contract.endpoints)
+        ]
+        if (key and key[0] in added) or why:
+            out.append(
+                f"API {e.method} {e.path} 를 existing(이미 있는 API)으로 적었지만 "
+                + (
+                    f"요구 {', '.join(why)} 가 새로 만든다고 한다"
+                    if why
+                    else "명세가 새로 만든다고 한다"
+                )
+                + " — existing: false 로 둔다 (시작 코드는 새 API 를 자리 표시로 둔다)"
+            )
     return out
 
 
@@ -2254,6 +2307,7 @@ def check_contract(
     problems += _naming(contract, manifest, spec)
     problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
+    problems += _added_marked_existing(contract, spec)
     problems += _leaks(contract, spec, seed)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)

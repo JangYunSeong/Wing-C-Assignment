@@ -538,7 +538,9 @@ def _llm(**over: list[Completion]) -> tuple[LLMClient, RoutedBackend]:
         "gen_accepted": [SVC],
     } | over
     backend = RoutedBackend(**routes)
-    return LLMClient({"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep), backend  # type: ignore[dict-item]
+    return LLMClient(
+        {"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep
+    ), backend  # type: ignore[dict-item]
 
 
 async def _no_sleep(_: float) -> None:
@@ -1319,3 +1321,29 @@ def test_gate4_regenerates_implementations_first_when_all_fall_into_the_trap() -
     assert "gen_hidden" in _keys(plan) and not any(
         k.startswith("gen_accepted") for k in _keys(plan)
     )
+
+
+def test_a_new_api_public_test_passing_on_the_starter_remakes_the_starter() -> None:
+    """2026-11-15 손 시범 coupons: 시작 코드가 새 차감 API 를 구현해 공개 테스트 4개 중 1개가 통과했는데, '모두 통과'가 아니라 표시로만 남았다 —
+    새 API 에만 걸린 공개 테스트가 시작 코드로 통과하면 시작 코드를 다시 만든다. 이미 있는 API 의 테스트는 지금처럼 표시."""
+    from task_spec.starter.repair import _starter_public
+
+    run = TargetRun.model_validate(
+        {
+            "target": "starter",
+            "kind": "starter",
+            "setup": "ok",
+            "tests": [
+                {"group": "public", "name": "Pt1Test", "result": "PASS"},
+                {"group": "public", "name": "Pt2Test", "result": "ASSERT", "message": "x"},
+            ],
+        }
+    )
+    acts, flags = _starter_public(run, {}, {"pt1", "pt2"})
+    assert (
+        [a.generator for a in acts] == ["gen_starter"] and "새 API" in acts[0].reason and not flags
+    )
+    acts, flags = _starter_public(run, {}, set())  # 이미 있는 API 의 테스트 — 표시만
+    assert not acts and any("시작 코드에서 통과하는 공개 테스트" in f for f in flags)
+    acts, flags = _starter_public(run, {"gen_starter": 1}, {"pt1"})  # 예산을 다 썼으면 표시
+    assert not acts and any("다시 만든 시작 코드에서도 새 API" in f for f in flags)
