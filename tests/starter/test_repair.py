@@ -1283,3 +1283,39 @@ def test_one_error_across_separately_made_public_and_hidden_tests_is_a_shared_ca
     assert _shared_cause(runs, "", RepairTerms()) != []
     # 구현이 하나뿐이면 '모든 구현' 이 성립하지 않는다
     assert _shared_cause(runs[:1]) == []
+
+
+def test_gate4_regenerates_implementations_first_when_all_fall_into_the_trap() -> None:
+    """2026-11-15 b2: 허용 구현 둘이 모두 의도한 사유(흔한 구현이 빠지는 함정)로 떨어졌고 흔한 구현도 그 사유로 잡혔는데, '허용 구현
+    모두 실패 → 숨은 테스트 의심' 이 먼저 걸려 맞던 숨은 테스트를 다시 만들어 깨뜨렸다. 구현이 설계를 못 따랐을 수도 있으니 싼 쪽부터."""
+    naive = _run("naive-all", "ref_naive", *GOOD_NAIVE)
+
+    def acc(target: str, reason: str | None) -> TargetRun:
+        return _run(
+            target,
+            "ref_accepted",
+            _t("hidden", "hc1", "ASSERT", reason, f"{target} 응답 수"),
+            GOOD_ACC[1],
+        )
+
+    trapped = (acc("d1", "pool_acquire_timeout"), acc("d2", "pool_acquire_timeout"))
+    # 1) 처음: 허용 구현을 하나씩 다시 — 숨은 테스트는 그대로
+    plan = _assign(_report(naive, *trapped))
+    assert _keys(plan) == ["gen_accepted:d1", "gen_accepted:d2"]
+    # 2) 다시 만든 뒤에도 모두 같은 함정 → 이번엔 테스트를 의심 (사유 표시가 잘못 붙은 테스트일 수 있다 — 출구)
+    plan = _assign(_report(naive, *trapped), gen_accepted__d1=1, gen_accepted__d2=1)
+    assert _keys(plan) == ["gen_hidden"] and "모두(d1, d2)" in plan.actions[0].note
+    # 3) 사유 없는 단언으로 모두 떨어지면 숨은 요구가 아니라 테스트의 다른 조건 — 지금처럼 바로 테스트를 의심
+    plan = _assign(_report(naive, acc("d1", None), acc("d2", None)))
+    assert _keys(plan) == ["gen_hidden"]
+    # 4) 흔한 구현이 그 사유로 잡히지 않으면(다른 사유) 함정이라는 근거가 없다 — 테스트를 의심
+    other = _run(
+        "naive-all",
+        "ref_naive",
+        _t("hidden", "hc1", "ASSERT", "rollback_left_success", "다른 사유"),
+        GOOD_NAIVE[1],
+    )
+    plan = _assign(_report(other, *trapped))
+    assert "gen_hidden" in _keys(plan) and not any(
+        k.startswith("gen_accepted") for k in _keys(plan)
+    )

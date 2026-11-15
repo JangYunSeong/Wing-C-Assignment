@@ -1174,7 +1174,23 @@ def _gate4(
         if not failed:
             continue
         labels = ", ".join(r.target for r, _ in failed)
-        if len(runs) >= 2 and len(failed) == len(runs):
+        # 따로 만든 허용 구현이 모두 떨어지면 테스트를 의심한다 — 단 모두 그 케이스의 의도한 사유(흔한 구현이 빠지는 바로 그 함정)로
+        # 떨어지고 흔한 구현도 그 사유로 잡혔으면 "구현들이 설계를 못 따름"과 "테스트가 올바른 설계까지 함정으로 봄"을 가를 수 없다.
+        # 싼 쪽부터 — 허용 구현을 한 번 다시 만든다(아래 구현별 흐름). 다시 만든 뒤에도 모두 같으면(예산 소진) 여기서 테스트를 의심한다
+        # (사유 표시가 잘못 붙은 테스트일 수 있어 이 출구는 남긴다 — 2026-11-07 루프). 2026-11-15 b2: 허용 구현 둘이 함정에 빠졌는데
+        # 맞던 숨은 테스트를 다시 만들어 깨뜨렸다.
+        on_trap = (
+            c.intended_reason is not None
+            and all(res.reason == c.intended_reason for _, res in failed)
+            and any(
+                (n_res := n.case(c.case_id)) is not None
+                and n_res.result == "ASSERT"
+                and n_res.reason == c.intended_reason
+                for n in naive
+            )
+            and not any(exhausted(regen_counts, "gen_accepted", r.target) for r, _ in failed)
+        )
+        if len(runs) >= 2 and len(failed) == len(runs) and not on_trap:
             actions.append(
                 RepairAction(
                     "gen_hidden",
