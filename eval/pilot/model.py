@@ -221,16 +221,25 @@ _NAME_RULES = (
 _TODO = re.compile(r"UnsupportedOperationException\(\s*\"([^\"]*)\"")
 
 
+def _thin_sources(m: Material) -> list[str]:
+    """판 0·1·2·4 가 받는 Java 시작 코드 — 응시용 프로젝트에 재료 `starter-thin/` 사본을 덮은 것 (prepare.apply_starter_thin)."""
+    cand = m.alpha_dir / "candidate"
+    src = cand / "src" / "main"
+    out: list[str] = []
+    for p in sorted(src.rglob("*.java")) if src.exists() else []:
+        thin = m.dir / "starter-thin" / p.relative_to(cand)
+        out.append((thin if thin.is_file() else p).read_text("utf-8", errors="ignore"))
+    return out
+
+
 def starter_shows(m: Material) -> list[str]:
     """시작 코드가 이미 보여 주는 규칙인데 그 요구를 덮는 사실이 정보 값 0(`info_zero`)이 아닌 곳 — §9.1 "기능 코드가 이미 보여 주는 규칙은 정보 값 0".
     2026-11-15 손 시범: coupons 의 시작 코드가 새 차감 API 를 구현(계약이 existing 으로 적음), retry 의 저장소에
     `findByMemberIdOrderByCreatedAtDesc` 가 있었는데, 재료를 쓸 때 시작 코드를 보지 않아 두 재료 모두 정보 값을 잘못 적었다.
-    Java 시작 코드만 본다 (손 시범 재료는 백엔드). (1) 자리 표시(UnsupportedOperationException)가 없는 계약 API = 시작 코드가 구현,
-    (2) 규칙을 이름으로 말하는 파생 쿼리 메서드 — 그 규칙 낱말이 있는 요구."""
-    src = m.alpha_dir / "candidate" / "src" / "main"
-    files = (
-        [p.read_text("utf-8", errors="ignore") for p in src.rglob("*.java")] if src.exists() else []
-    )
+    Java 시작 코드만 본다 (손 시범 재료는 백엔드) — starter-thin 을 덮은 것. (1) 자리 표시(UnsupportedOperationException)가 없는 계약 API =
+    시작 코드가 구현, (2) 규칙을 이름으로 말하는 파생 쿼리 메서드 — 그 규칙 낱말이 있는 요구. 부르는 곳이 없는 선언(이름이 한 번만 나옴)은
+    정보 값 0 이 아니라 starter-thin 에서 지운다 (§9.1 예외 [확정: 2026-11-15 사용자]) — 정보 값과 상관없이 알린다."""
+    files = _thin_sources(m)
     if not files:
         return []
     code = "\n".join(files)
@@ -256,7 +265,12 @@ def starter_shows(m: Material) -> list[str]:
             if not name_rx.search(name):
                 continue
             reqs = {r for r, t in req_text.items() if words.search(t)}
-            if facts := unzeroed(reqs):
+            if reqs and len(re.findall(rf"\b{name}\b", code)) == 1:
+                out.append(
+                    f"시작 코드의 메서드 이름 {name} 이 규칙을 말하는데 부르는 곳이 없음 (요구 {', '.join(sorted(reqs))}) — "
+                    "starter-thin 에서 선언을 지운다 (§9.1)"
+                )
+            elif facts := unzeroed(reqs):
                 out.append(
                     f"시작 코드의 메서드 이름 {name} 이 규칙을 말함 — 요구 {', '.join(sorted(reqs))} 의 사실 {', '.join(facts)} 정보 값 0 후보"
                 )

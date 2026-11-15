@@ -844,12 +844,37 @@ def test_starter_shows_rules_the_facts_did_not_mark_info_zero(
             ]
         }
     )
+    monkeypatch.setattr(pm, "DATA", tmp_path / "pilot")
     shown = pm.starter_shows(m)
     assert any("POST /coupons 를 구현함" in x and "f1" in x for x in shown)  # 자리 표시 없는 API
     assert not any("GET /coupons" in x for x in shown)  # 자리 표시인 API
-    assert any("findByMemberIdOrderByCreatedAtDesc" in x and "f3" in x for x in shown)
-    # 정보 값 0 으로 적으면 알리지 않는다
+    # 부르는 곳이 없는 선언 — 정보 값 0 이 아니라 starter-thin 에서 지운다 (§9.1 예외), 정보 값과 상관없이
     zero = M.model_validate(
         m.model_dump() | {"facts": [f.model_dump() | {"info_zero": True} for f in m.facts]}
     )
+    for mat in (m, zero):
+        assert any(
+            "findByMemberIdOrderByCreatedAtDesc" in x and "부르는 곳이 없음" in x
+            for x in pm.starter_shows(mat)
+        )
+    # 부르는 곳이 있으면 기능 코드 — 정보 값 0 후보, 정보 값 0 으로 적으면 알리지 않는다
+    called = java.read_text("utf-8").replace(
+        "return ok(); }", "return ok(repo.findByMemberIdOrderByCreatedAtDesc(1L)); }"
+    )
+    java.write_text(called, "utf-8")
+    assert any(
+        "findByMemberIdOrderByCreatedAtDesc" in x and "f3" in x and "정보 값 0 후보" in x
+        for x in pm.starter_shows(m)
+    )
     assert pm.starter_shows(zero) == []
+    # starter-thin 이 선언을 지웠으면 (판 0·1·2·4 가 받는 코드) 알리지 않는다
+    java.write_text(called.replace("repo.findByMemberIdOrderByCreatedAtDesc(1L)", ""), "utf-8")
+    thin = tmp_path / "pilot/materials/m1/starter-thin/src/main/java/S.java"
+    thin.parent.mkdir(parents=True)
+    thin.write_text(
+        java.read_text("utf-8").replace(
+            "  List<C> findByMemberIdOrderByCreatedAtDesc(Long m);\n", ""
+        ),
+        "utf-8",
+    )
+    assert not any("findByMemberId" in x for x in pm.starter_shows(m))
