@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any
 
 from task_spec.schemas import GeneratedFile, HiddenPlan
@@ -740,8 +741,9 @@ def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:
 
 
 def test_datasource_settings_not_in_the_template_are_rejected() -> None:
-    # 2026-11-10 v19-be: 고정 H2 URL 로 테스트 컨텍스트끼리 DB 를 나눠 써 schema.sql 이 두 번 돌아 기동 실패
-    from task_spec.starter.static_check import _datasource_config
+    # 2026-11-10 v19-be: 고정 H2 URL 로 테스트 컨텍스트끼리 DB 를 나눠 써 schema.sql 이 두 번 돌아 기동 실패.
+    # #176: 막을 키와 이유는 매니페스트 config_pitfalls — 선언이 없는 템플릿·선언 밖 산출물에서는 걸지 않는다
+    from task_spec.starter.static_check import _config_pitfalls
 
     fixed = "spring:\n  datasource:\n    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1\n  sql:\n    init:\n      mode: always\n"
     plain = "spring:\n  jpa:\n    hibernate:\n      ddl-auto: none\n  sql:\n    init:\n      mode: always\n"
@@ -750,9 +752,17 @@ def test_datasource_settings_not_in_the_template_are_rejected() -> None:
             kind="starter",
             files=(GeneratedFile(path="src/main/resources/application.yml", content=content),),
         )
-        got = _datasource_config(o, JAVA)
+        got = _config_pitfalls(o, JAVA)
         assert bool(got) is bad, got
         assert not got or "spring.datasource.url" in got[0].message
+    o = Overlay(
+        kind="starter",
+        files=(GeneratedFile(path="src/main/resources/application.yml", content=fixed),),
+    )
+    bare = JAVA.manifest.model_copy(update={"config_pitfalls": []})
+    assert _config_pitfalls(o, replace(JAVA, manifest=bare)) == []
+    hidden = Overlay(kind="hidden", files=o.files)  # 기본 대상은 시작 코드·참조 구현
+    assert _config_pitfalls(hidden, JAVA) == []
 
 
 def test_java_runtime_only_pitfalls_in_starter_tests_and_schema() -> None:

@@ -167,6 +167,21 @@ burst_rows: [concurrency, bursts]
 
 # 하네스 조절값 — HiddenPlan.harness 의 키. visible = 명세 1단계 자료·구체 답에서 같은 값이 보여야 함 (spec-to-code §3.3).
 # spec_patterns 그룹 1 = 값. config_keys 는 GraderSupport.OPERATING 과 같아야 한다 (tests/starter/test_templates.py).
+# 템플릿이 정하지 않은 값을 쓰면 안 되는 설정 키 — 검사 전용 (#176: 코드에 박혀 있던 Java 전용 검사를 옮김).
+# 2026-11-10 v19-be: 시작 코드가 url 을 jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1 로 고정해 하네스 자체 시험(다른 테스트 컨텍스트)이 같은 DB 에
+# schema.sql·data.sql 을 다시 돌려 기동 실패. 풀 크기(hikari.*)는 운영 값 검사(harness_params.config_keys)가 본다.
+config_pitfalls:
+  - keys:
+      - spring.datasource.url
+      - spring.datasource.jdbc-url
+      - spring.datasource.name
+      - spring.datasource.generate-unique-name
+      - spring.datasource.driver-class-name
+      - spring.datasource.username
+      - spring.datasource.password
+    fix: >-
+      템플릿은 테스트 컨텍스트마다 새 메모리 DB 를 쓴다. 고정 URL(예: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1)은 컨텍스트끼리 DB 를 나눠 써
+      schema.sql·data.sql 이 두 번 돌아 기동이 실패한다 — spring.datasource 설정은 쓰지 않는다
 harness_params:
   - name: pool_size
     kind: int

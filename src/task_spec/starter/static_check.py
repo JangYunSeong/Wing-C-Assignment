@@ -391,27 +391,14 @@ def _harness_overrides(
     return out
 
 
-# 코드로 연결 풀·데이터소스·요청 스레드를 만들거나 바꾸는 것 — 하네스가 넣는 운영 값(@DynamicPropertySource)을 우회한다.
-# 어느 DB 에 붙는지 정하는 키 — 풀 크기(hikari.*)는 운영 값 검사(_operating_values·_harness_overrides)가 본다
-_DATASOURCE_KEYS = frozenset(
-    f"spring.datasource.{k}"
-    for k in (
-        "url",
-        "jdbc-url",
-        "name",
-        "generate-unique-name",
-        "driver-class-name",
-        "username",
-        "password",
-    )
-)
-
-
-def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
-    """구현·시작 코드가 템플릿이 정하지 않은 데이터소스 설정(spring.datasource.*)을 씀 — 템플릿은 컨텍스트마다 새 메모리 DB.
-    2026-11-10 v19-be: 시작 코드가 url 을 jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1 로 고정해 하네스 자체 시험(다른 테스트 컨텍스트)이
-    같은 DB 에 schema.sql·data.sql 을 다시 돌려 Table already exists·PK 위반으로 기동 실패 (2026-11-09 d3 도 같은 설정)."""
-    if not is_java(t.manifest):
+def _config_pitfalls(o: Overlay, t: Template) -> list[StaticProblem]:
+    """산출물 설정이 템플릿이 정하지 않은 값을 매니페스트 `config_pitfalls` 의 키에 씀 — 키와 이유는 템플릿이 선언한다 (#176).
+    Java 판: 2026-11-10 v19-be 시작 코드가 spring.datasource.url 을 jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1 로 고정해 하네스 자체 시험
+    (다른 테스트 컨텍스트)이 같은 DB 에 schema.sql·data.sql 을 다시 돌려 Table already exists·PK 위반으로 기동 실패 (2026-11-09 d3 도 같은 설정)."""
+    slot = KIND_SLOT[o.kind]
+    rules = [r for r in t.manifest.config_pitfalls if slot in r.overlays]
+    configs = [f for f in o.files if f.path.endswith(_CONFIG_SUFFIX)]
+    if not rules or not configs:
         return []
     base = _config_map(
         (rel, (t.project / rel).read_text("utf-8", errors="ignore"))
@@ -419,21 +406,17 @@ def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
         if rel.endswith(_CONFIG_SUFFIX)
     )
     out: list[StaticProblem] = []
-    for f in o.files:
-        if not f.path.endswith(_CONFIG_SUFFIX):
-            continue
-        keys = sorted(
-            k for k in _config_map([(f.path, f.content)]) if k in _DATASOURCE_KEYS and k not in base
-        )
-        if keys:
-            out.append(
-                StaticProblem(
-                    o.target,
-                    f"{o.name} 설정 {f.path} 에 템플릿에 없는 데이터소스 설정 {', '.join(keys)} — 템플릿은 테스트 컨텍스트마다 새 메모리 DB 를 쓴다. "
-                    "고정 URL(예: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1)은 컨텍스트끼리 DB 를 나눠 써 schema.sql·data.sql 이 두 번 돌아 "
-                    "기동이 실패한다 — spring.datasource 설정은 쓰지 않는다",
+    for f in configs:
+        got = _config_map([(f.path, f.content)])
+        for r in rules:
+            keys = sorted(k for k in got if k in r.keys and k not in base)
+            if keys:
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"{o.name} 설정 {f.path} 에 템플릿에 없는 설정 {', '.join(keys)} — {r.fix}",
+                    )
                 )
-            )
     return out
 
 
@@ -2567,11 +2550,11 @@ def static_check(
                     )
                 )
         res.problems += _code_pitfalls(o, template)  # 항목마다 overlays 로 거른다 (#176·#177)
+        res.problems += _config_pitfalls(o, template)  # 매니페스트 config_pitfalls (#176)
         if o.kind in ("starter", "ref_naive", "ref_accepted"):
             res.problems += _unavailable_imports(o, template)
             res.problems += _test_folder_imports(o, template)
             res.problems += _script_imports(o, template, contract)
-            res.problems += _datasource_config(o, template)
             res.problems += _contract_types_usage(o, template, contract)
             res.problems += _skeleton_kept(o, template, contract)
             res.problems += _java_test_pitfalls(

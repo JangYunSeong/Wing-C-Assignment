@@ -419,6 +419,16 @@ class CodePitfall(Schema):
         return v
 
 
+class ConfigPitfall(Schema):
+    """템플릿이 정하지 않은 값을 쓰면 안 되는 설정 키 — 산출물의 설정 파일(.yml·.yaml·.properties)이 이 키를 쓰는데 템플릿 project/
+    설정에는 없으면 실행 전에 이유와 함께 재요청. 키는 설정을 펼친 이름(properties 의 a.b.c, yaml 은 중첩을 점으로).
+    #176: Java 전용 검사(spring.datasource.* 키 목록)가 코드에 박혀 있었다 — 설정 읽기는 코드, 어느 키를 왜 막는지는 템플릿 지식."""
+
+    keys: list[str] = Field(min_length=1)
+    fix: str = Field(min_length=1)  # 재요청 문구 — 왜 쓰면 안 되는지
+    overlays: list[SlotKind] = Field(default_factory=lambda: _code_overlays())
+
+
 class TemplateManifest(Schema):
     """템플릿 `templates/<직군>/<스택>/vN/manifest.yaml`."""
 
@@ -440,6 +450,7 @@ class TemplateManifest(Schema):
     hidden_rules: HiddenRules = Field(default_factory=HiddenRules)
     naming: NamingRules = Field(default_factory=NamingRules)
     harness_params: list[HarnessParam] = Field(default_factory=list)
+    config_pitfalls: list[ConfigPitfall] = Field(default_factory=list)  # 검사 전용 (#176)
     failure_reasons: list[FailureReason] = Field(default_factory=list)
     stack_conditions: list[str] = Field(
         default_factory=list
