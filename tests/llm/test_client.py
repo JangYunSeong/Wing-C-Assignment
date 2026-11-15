@@ -317,3 +317,17 @@ async def test_empty_without_truncation_is_resampled_too() -> None:
     with pytest.raises(EmptyResponse):
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert len(fake.calls) == 1
+
+
+async def test_empty_response_says_how_the_last_call_ended() -> None:
+    # 2026-11-15 운영 계약 실패: 빈 응답이 잘림인지 그냥 빈 답인지 builder 로그를 봐야 알 수 있었다
+    # (잘리지 않은 빈 응답도 같은 설정으로 다시 부른다 — 다 비면 마지막 끝 이유와 재시도 사유가 예외에 남는다)
+    fake = FakeBackend().push(*[Completion("", Usage(500, 10, 0), "stop")] * (MAX_RESAMPLES + 1))
+    with pytest.raises(EmptyResponse) as ei:
+        await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert ei.value.finish_reason == "stop" and "finish_reason=stop" in str(ei.value)
+    assert "empty_resample->resample" in str(ei.value)
+    fake = FakeBackend().push(*[TRUNC_EMPTY] * (MAX_RESAMPLES + 1))
+    with pytest.raises(EmptyResponse) as ei:
+        await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert ei.value.finish_reason == "length" and "empty_truncated->resample" in str(ei.value)

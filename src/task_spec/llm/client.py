@@ -76,9 +76,12 @@ class SchemaViolation(Exception):
 
 
 class EmptyResponse(Exception):
-    """재시도 후에도 빈 응답. provenance = 실패까지 쓴 토큰·비용 (본문 없음)."""
+    """재시도 후에도 빈 응답. provenance = 실패까지 쓴 토큰·비용 (본문 없음).
+    finish_reason = 마지막 호출이 끝난 이유 — length 면 추론·출력이 상한을 다 씀(잘림), stop 이면 그냥 빈 답.
+    2026-11-15 운영 계약 실패: 빈 응답이 잘림인지 그냥 빈 답인지 실패 사유로는 알 수 없어 builder 로그를 봐야 했다."""
 
     provenance: Provenance | None = None
+    finish_reason: str | None = None
 
 
 class OutputTruncated(EmptyResponse):
@@ -252,6 +255,7 @@ class LLMClient:
                     continue
                 cut = OutputTruncated(f"{prompt.template.ref}: 출력 잘림 — {summary}")
                 cut.provenance = record()
+                cut.finish_reason = completion.finish_reason
                 logger.warning(
                     "llm truncated prompt=%s model=%s reason=output_truncated elapsed_ms=%d",
                     prompt.template.ref,
@@ -299,8 +303,12 @@ class LLMClient:
                     "low",
                     *NO_REASONING.values(),
                 ):
-                    empty = EmptyResponse(f"{prompt.template.ref}: 빈 응답")
+                    empty = EmptyResponse(
+                        f"{prompt.template.ref}: 빈 응답 (finish_reason={completion.finish_reason}, "
+                        f"재시도 {','.join(retries) or '없음'})"
+                    )
                     empty.provenance = record()
+                    empty.finish_reason = completion.finish_reason
                     raise empty
                 empty_retry_used = True
                 retries.append("empty_response->reasoning_effort=low")

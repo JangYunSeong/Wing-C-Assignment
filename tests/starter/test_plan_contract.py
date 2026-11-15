@@ -100,7 +100,7 @@ async def test_first_answer_ok() -> None:
     fake = FakeBackend().push(_out())
     res = await _run(fake)
     assert res.ok and len(fake.calls) == 1 and res.flags == []
-    assert res.provenance[0].prompt == "plan_contract@30"
+    assert res.provenance[0].prompt == "plan_contract@31"
     assert res.contract is not None and [e.endpoint_id for e in res.contract.endpoints] == [
         "e1",
         "e2",
@@ -114,7 +114,7 @@ async def test_failed_calls_are_counted_in_provenance() -> None:
     res = await _run(fake)
     assert not res.ok and res.contract is None
     assert len(fake.calls) == 6
-    assert len(res.provenance) == 3 and all(p.prompt == "plan_contract@30" for p in res.provenance)
+    assert len(res.provenance) == 3 and all(p.prompt == "plan_contract@31" for p in res.provenance)
     assert sum(p.tokens.out for p in res.provenance) == 6 * 500
 
 
@@ -354,7 +354,7 @@ def test_material_decides_required_harness_params_and_fk_targets_use_names() -> 
         ),
     ).manifest.param("query_delay_ms")
     assert ruled is not None and ruled.description.endswith(
-        "— 이 과제: DB 왕복 p50 (근거에서 값을 만드는 규칙: 이름표 p50 의 값, ms 단위로 바꿔 반올림)"
+        "— 이 과제: DB 왕복 p50 (근거에서 값을 만드는 규칙: 이름표 p50 의 값, 범위로 적혔으면 범위 안의 값, ms 단위로 바꿔 반올림)"
     )  # 계약 검사가 대조하는 규칙을 계약 입력에도 같은 말로
     c = _contract()
     c["entities"][1]["foreign_keys"] = [f"orderId → {c['entities'][0]['entity_id']}"]

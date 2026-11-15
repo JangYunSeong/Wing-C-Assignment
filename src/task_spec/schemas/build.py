@@ -680,11 +680,17 @@ class HiddenPlan(Schema):
         description='템플릿 조절값 이름 → 값 (예: {"pool_size": 8}) — 지원자에게 보이는 값은 자료에 적힌 값 그대로',
     )
     cases: list[HiddenCase] = Field(min_length=1)
-    # 공개 조절값마다 그 값이 적힌 자료 문장을 그대로 — 코드가 자료에 있는지·값이 그 안에 있는지 확인 (starter/contract.py evidence_ok).
+    # 공개 조절값마다 그 값이 적힌 자료 문장을 그대로 — 코드가 자료에 있는지 확인 (starter/contract.py value_check).
     # 자료에 없으면 "없음" — 그 조절값이 필수면 명세 결함. 2026-11-07 종이 단계: 템플릿 표기 패턴이 한 예시 표현에만 맞아 값이 있는데도 못 찾았다.
     evidence: dict[str, str] = Field(
         default_factory=dict,
         description='공개 조절값 이름 → 그 값이 적힌 자료·답 문장을 그대로 (예: {"pool_size": "db.maxConnections=20"}). 자료에 없으면 "없음"',
+    )
+    # 근거 인용 안에서 값이 적힌 글자 그대로 — 코드는 인용 문장에서 어느 수가 값인지 추측하지 않고 이 글자가 가리키는 값만 재료 규칙대로
+    # 환산한다. 2026-11-15 운영 계약 실패: 인용 줄머리 절 번호 '3.1' 을 값으로 읽어 기대값을 잘못 만들었다. 예전 계획에는 없다(빈 dict).
+    evidence_value: dict[str, str] = Field(
+        default_factory=dict,
+        description='공개 조절값 이름 → 근거 인용 안에서 값이 적힌 글자 그대로 — 수와 단위, 범위면 범위째 (예: {"pool_size": "20", "request_timeout_s": "500ms", "query_delay_ms": "14~16ms"}). 근거가 "없음"이면 넣지 않음',
     )
 
 
