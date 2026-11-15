@@ -79,7 +79,9 @@ def _llm(**over: list[Completion]) -> tuple[LLMClient, VariantBackend]:
         "gen_variant": [_variants(("invert", "오래된 순으로 돌려줌", [(SVC_PATH, BROKEN)]))],
     } | over
     backend = VariantBackend(**routes)
-    return LLMClient({"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep), backend  # type: ignore[dict-item]
+    return LLMClient(
+        {"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep
+    ), backend  # type: ignore[dict-item]
 
 
 class VariantVerifier:

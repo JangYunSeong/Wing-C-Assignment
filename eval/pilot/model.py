@@ -207,6 +207,62 @@ def legacy_limits(task: TaskItem) -> tuple[int | None, int | None]:
     return task.max_clarifications, task.max_requests
 
 
+# 규칙을 이름으로 말하는 저장소 메서드 (Spring Data 파생 쿼리) → 그 규칙을 말하는 요구 문장의 낱말
+_DERIVED = re.compile(r"\b(?:find|count|exists|delete|get|read|query|stream)\w*?By\w+")
+_NAME_RULES = (
+    (re.compile(r"OrderBy\w*(?:Asc|Desc)"), re.compile(r"정렬|순서|최신|오름|내림|최근")),
+    (re.compile(r"Top\d*|First\d*"), re.compile(r"건수|최대|개까지|상한|크기|개를|개만")),
+    (
+        re.compile(r"GreaterThan|LessThan|Between|Before|After"),
+        re.compile(r"이상|이하|초과|미만|이전|이후|사이|기간"),
+    ),
+    (re.compile(r"Distinct"), re.compile(r"중복")),
+)
+_TODO = re.compile(r"UnsupportedOperationException\(\s*\"([^\"]*)\"")
+
+
+def starter_shows(m: Material) -> list[str]:
+    """시작 코드가 이미 보여 주는 규칙인데 그 요구를 덮는 사실이 정보 값 0(`info_zero`)이 아닌 곳 — §9.1 "기능 코드가 이미 보여 주는 규칙은 정보 값 0".
+    2026-11-15 손 시범: coupons 의 시작 코드가 새 차감 API 를 구현(계약이 existing 으로 적음), retry 의 저장소에
+    `findByMemberIdOrderByCreatedAtDesc` 가 있었는데, 재료를 쓸 때 시작 코드를 보지 않아 두 재료 모두 정보 값을 잘못 적었다.
+    Java 시작 코드만 본다 (손 시범 재료는 백엔드). (1) 자리 표시(UnsupportedOperationException)가 없는 계약 API = 시작 코드가 구현,
+    (2) 규칙을 이름으로 말하는 파생 쿼리 메서드 — 그 규칙 낱말이 있는 요구."""
+    src = m.alpha_dir / "candidate" / "src" / "main"
+    files = (
+        [p.read_text("utf-8", errors="ignore") for p in src.rglob("*.java")] if src.exists() else []
+    )
+    if not files:
+        return []
+    code = "\n".join(files)
+    task = m.task()
+    req_text = {r.req_id: r.text for r in task.requirements}
+    stubs = " ".join(_TODO.findall(code))
+    out: list[str] = []
+
+    def unzeroed(reqs: set[str]) -> list[str]:
+        return sorted({f.fact_id for r in reqs for f in m.covering_facts(r) if not f.info_zero})
+
+    for e in m.contract().get("endpoints", []):  # type: ignore[union-attr]
+        api = f"{e.get('method')} {e.get('path')}"
+        reqs = {r for r in e.get("refs", []) if r in req_text}
+        if api in stubs or not reqs:
+            continue
+        if facts := unzeroed(reqs):
+            out.append(
+                f"시작 코드가 {api} 를 구현함 (자리 표시 없음) — 덮는 요구 {', '.join(sorted(reqs))} 의 사실 {', '.join(facts)} 정보 값 0 후보"
+            )
+    for name in sorted(set(_DERIVED.findall(code))):
+        for name_rx, words in _NAME_RULES:
+            if not name_rx.search(name):
+                continue
+            reqs = {r for r, t in req_text.items() if words.search(t)}
+            if facts := unzeroed(reqs):
+                out.append(
+                    f"시작 코드의 메서드 이름 {name} 이 규칙을 말함 — 요구 {', '.join(sorted(reqs))} 의 사실 {', '.join(facts)} 정보 값 0 후보"
+                )
+    return out
+
+
 def check_material(m: Material) -> list[str]:
     """손으로 쓴 재료 점검 (§4.1·§4.2·§5.1 의 명세 쪽 검사 중 시범에 필요한 것). 빈 목록이면 통과."""
     task = m.task()
@@ -243,6 +299,7 @@ def check_material(m: Material) -> list[str]:
         if leak:
             problems.append(f"{f.fact_id}: 사실 답에 숨은 요구 개념 {leak}")
     problems += term_overlaps(facilitator_items(m, "new"))
+    problems += starter_shows(m)
     thin = m.dir / "starter-thin"
     for path in sorted(thin.rglob("*")) if thin.exists() else []:
         rel = path.relative_to(thin)
