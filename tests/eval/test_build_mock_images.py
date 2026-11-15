@@ -18,7 +18,7 @@ def _run(root: Path, name: str, report: dict[str, object]) -> Path:
 def test_template_follows_the_job_family_and_the_pinned_version(tmp_path: Path) -> None:
     """빌드 폴더의 직군으로 템플릿, 직군 없는 손 예시 루프는 Java, 알파가 고정한 판이 있으면 그 판."""
     for sub, ref in (
-        ("sw.frontend", "frontend/react-vite-ts@v12"),
+        ("sw.frontend", "frontend/react-vite-ts@v13"),
         ("sw.backend", "backend/java-spring-boot3-jpa@v2"),
         ("data.eng", "data/python-duckdb@v1"),
     ):
