@@ -25,6 +25,8 @@ podman run --rm --network none --entrypoint sh "task-builder:${VER}" -c \
   'test ! -e /app/.env && test ! -e /app/data && test ! -e /app/tests && test ! -e /app/eval && test -z "$(find /app/templates -name .gradle -o -name node_modules)"' \
   || { echo "builder 이미지에 넣으면 안 되는 파일이 있습니다" >&2; exit 1; }
 
+# 보내기 전 기록 시각 — 같은 판을 다시 보내면 예전 기록이 이미 그 판이라 바로 끝났다 (2026-11-15: 21:49 실패 기록을 결과로 읽음)
+before=$(stat -c %Y "$INBOX/last-upgrade.json" 2>/dev/null || echo 0)
 # 체크섬 파일을 마지막에 쓴다 — path 유닛은 그 파일이 생길 때 돌므로 반쯤 쓴 tar 를 읽지 않는다
 podman save -o "$INBOX/.task-builder-$VER.tar.part" "task-builder:${VER}"
 mv -f "$INBOX/.task-builder-$VER.tar.part" "$INBOX/task-builder-$VER.tar"
@@ -34,7 +36,8 @@ echo "보냄: task-builder:$VER — task-builder 의 업그레이드를 기다�
 
 for _ in $(seq 1 450); do  # 최대 75분 — 업그레이드 유닛 TimeoutStartSec 과 같게
   sleep 10
-  if [[ -f "$INBOX/last-upgrade.json" ]] && grep -q "\"version\": \"$VER\"" "$INBOX/last-upgrade.json"; then
+  if [[ -f "$INBOX/last-upgrade.json" ]] && (( $(stat -c %Y "$INBOX/last-upgrade.json") > before )) \
+    && grep -q "\"version\": \"$VER\"" "$INBOX/last-upgrade.json"; then
     cat "$INBOX/last-upgrade.json"
     grep -q '"result": "ok"' "$INBOX/last-upgrade.json" && exit 0 || exit 1
   fi
