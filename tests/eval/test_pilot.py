@@ -31,6 +31,7 @@ from task_spec.starter.answer_rule import NO_INFO as NO
 from task_spec.starter.answer_rule import ONE_AT_A_TIME, Reply
 from task_spec.starter.facilitator import Answer
 from task_spec.starter.facilitator import Material as Doc
+from task_spec.starter.grade.image_grade import SKIPPED
 
 T = "2026-11-13T10:00:00+09:00"
 F1 = Answer(
@@ -139,6 +140,27 @@ def test_junit_methods_are_grouped_by_package(tmp_path: Path) -> None:
         ("hidden", "hc1", True),
     ]
     assert ms[1].method == "최신순정렬"  # Gradle 이 붙인 괄호를 뗀다 — method_req 키와 맞게
+
+
+def test_skipped_junit_methods_are_not_passes(tmp_path: Path) -> None:
+    """@Disabled·assume 로 건너뛴 메서드는 판정하지 않았으므로 통과가 아니다 (#173, #151 시범 전에 고칠 것 2)."""
+    (tmp_path / "TEST-x.xml").write_text(
+        """<testsuite name="s">
+<testcase classname="com.example.service.publictests.Pt1ListTest" name="a"><skipped/></testcase>
+<testcase classname="com.example.service.grading.cases.Hc1Test" name="h"><skipped message="Assumption failed: no output"/></testcase>
+<testcase classname="com.example.service.grading.cases.Hc1Test" name="k"/>
+</testsuite>""",
+        "utf-8",
+    )
+    ms = methods(tmp_path, {"Pt1ListTest": "pt1"}, {"Hc1Test": "hc1"})
+    assert [(m.group, m.case, m.method, m.ok) for m in ms] == [
+        ("public", "pt1", "a", False),
+        ("hidden", "hc1", "h", False),
+        ("hidden", "hc1", "k", True),
+    ]
+    assert ms[0].message == SKIPPED
+    assert ms[1].message == f"{SKIPPED}: Assumption failed: no output"
+    assert ms[2].message == ""
 
 
 # ── 판정 ──

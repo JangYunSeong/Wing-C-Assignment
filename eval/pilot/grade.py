@@ -22,6 +22,7 @@ from pydantic import Field
 from eval.pilot.model import DATA, RUNS, load_material, parse_label
 from task_spec.schemas import GeneratedFile
 from task_spec.schemas.base import Schema
+from task_spec.starter.grade.image_grade import SKIPPED
 from task_spec.starter.images import PUBLIC_ID
 from task_spec.starter.layers import ensure_verify_layer
 from task_spec.starter.static_check import Overlay
@@ -90,7 +91,8 @@ def method_name(name: str) -> str:
 
 
 def methods(results: Path, public_ids: dict[str, str], hidden_ids: dict[str, str]) -> list[Method]:
-    """JUnit 보고서 → 메서드마다 결과. 공개 테스트 클래스 → pt id (@DisplayName), 숨은 테스트 클래스 → 케이스 id."""
+    """JUnit 보고서 → 메서드마다 결과. 공개 테스트 클래스 → pt id (@DisplayName), 숨은 테스트 클래스 → 케이스 id.
+    건너뛴 메서드는 통과가 아니다 — 채점(image_grade)과 같은 판정 (#173)."""
     out: list[Method] = []
     for xml in sorted(results.glob("TEST-*.xml")):
         for tc in ET.parse(xml).getroot().iter("testcase"):
@@ -99,6 +101,8 @@ def methods(results: Path, public_ids: dict[str, str], hidden_ids: dict[str, str
             bad = tc.find("failure")
             if bad is None:
                 bad = tc.find("error")
+            # @Disabled·assume… 로 건너뜀 — 판정하지 않았으므로 통과가 아니다 (#173)
+            skipped = tc.find("skipped") if bad is None else None
             if ".publictests." in cls:
                 group, case = (
                     ("persistence", simple)
@@ -109,18 +113,20 @@ def methods(results: Path, public_ids: dict[str, str], hidden_ids: dict[str, str
                 group, case = "hidden", hidden_ids.get(simple, simple)
             else:
                 group, case = "other", simple
-            msg = (
-                ""
-                if bad is None
-                else " ".join((bad.get("message") or bad.text or "").split())[:300]
-            )
+            if bad is not None:
+                msg = " ".join((bad.get("message") or bad.text or "").split())[:300]
+            elif skipped is not None:
+                why = " ".join((skipped.get("message") or "").split())
+                msg = (f"{SKIPPED}: {why}" if why else SKIPPED)[:300]
+            else:
+                msg = ""
             out.append(
                 Method(
                     group=group,
                     case=case,
                     cls=simple,
                     method=method_name(tc.get("name", "")),
-                    ok=bad is None,
+                    ok=bad is None and skipped is None,
                     message=msg,
                 )
             )
