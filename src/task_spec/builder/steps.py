@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 from task_spec.builder.runner import (
@@ -25,7 +27,7 @@ from task_spec.builder.runner import (
 from task_spec.llm import LLMClient
 from task_spec.nodes.starter.build import HIDDEN, PUBLIC, build_and_repair
 from task_spec.nodes.starter.generate import BuildInputs
-from task_spec.nodes.starter.plan_contract import plan_contract
+from task_spec.nodes.starter.plan_contract import PlanResult, plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas.package import PackageHeader
 from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
@@ -53,11 +55,45 @@ def _cost(provenance: list[object]) -> float:
     return round(sum(getattr(p, "cost_usd", None) or 0.0 for p in provenance), 4)
 
 
-def _kinds(items: list[str], n: int = 2) -> str:
-    """문제 문장의 종류만 (첫 ' — '·':' 앞) — 뒤에는 명세의 숨은 요구·테스트 문구가 올 수 있어 사유에 넣지 않는다
-    (2026-11-12 스모크: 계약 실패 사유에 숨은 요구 문장이 그대로 들어갔다)."""
-    heads = dict.fromkeys(" ".join(x.split(" — ")[0].split(":")[0].split())[:60] for x in items)
-    return " | ".join(list(heads)[:n])
+# 검사 문장에서 값·인용·괄호가 시작되는 곳 — 종류는 그 앞까지 ('HiddenPlan request_timeout_s=1 이 근거 인용 …' → 조절값 이름까지)
+_VALUE_START = re.compile(r"[=(\"'“‘]")
+
+
+def _kind(item: str) -> str:
+    """검사 문제·명세 결함 한 줄의 종류만 — 첫 ' — '·':' 앞, 그리고 값·인용·괄호가 시작되기 전까지.
+    뒤에는 명세의 숨은 요구·테스트 문구나 자료 인용이 올 수 있어 사유에 넣지 않는다 (2026-11-12 스모크: 계약 실패 사유에
+    숨은 요구 문장이 그대로 들어갔다. 2026-11-15: HiddenPlan 조절값 문장은 머리에 값과 자료 인용이 온다)."""
+    head = _VALUE_START.split(item.split(" — ")[0].split(":")[0], maxsplit=1)[0]
+    return " ".join(head.split())[:60]
+
+
+def _call_kind(item: str) -> str:
+    """호출 실패 한 줄의 종류 — 예외 이름과 끝난 이유 (plan_contract 가 'EmptyResponse(finish_reason=stop): …' 로 적는다)."""
+    return " ".join(item.split(":")[0].split())[:60]
+
+
+def _counted(kinds: list[str], n: int = 3) -> str:
+    """종류별 개수 — 많은 순(같으면 먼저 나온 순)으로 n 종까지."""
+    seen = Counter(k for k in kinds if k)
+    shown = [f"{k} ×{c}" if c > 1 else k for k, c in seen.most_common(n)]
+    rest = len(seen) - len(shown)
+    return " | ".join(shown) + (f" 외 {rest}종" if rest > 0 else "")
+
+
+def contract_failure(res: PlanResult) -> str:
+    """계약 단계 실패 사유 — 호출 실패·명세 결함·검사 문제를 모두 싣는다. 2026-11-15 운영 계약 실패: 첫 번째로 비어 있지 않은
+    목록만 실어, 세 번 중 한 번 빈 응답이 나면 나머지 두 번이 검사에서 걸린 사유가 빠지고 EmptyResponse 만 남았다.
+    검사 문제·명세 결함은 채택한 답(가장 문제가 적은 회차)의 것, 호출 실패는 실패한 호출마다 하나."""
+    parts = [
+        f"{label} {_counted(kinds)}"
+        for label, kinds in (
+            ("호출 실패", [_call_kind(x) for x in res.fail_reasons]),
+            ("명세 결함", [_kind(x) for x in res.spec_gaps]),
+            ("검사 문제", [_kind(x) for x in res.problems]),
+        )
+        if kinds
+    ]
+    return " · ".join(parts) or "사유 없음"
 
 
 class RealSteps:
@@ -95,9 +131,8 @@ class RealSteps:
             seed=inc.feature,
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
-            why = res.fail_reasons or res.spec_gaps or res.problems
             raise StepFailed(
-                f"contract: 계약 생성 실패 — {_kinds(why) or '사유 없음'}",
+                f"contract: 계약 생성 실패 — {contract_failure(res)}",
                 cost_usd=_cost(list(res.provenance)),
             )
         return ContractResult(
