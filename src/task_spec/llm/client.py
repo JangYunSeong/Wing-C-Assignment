@@ -3,7 +3,7 @@
 재시도 정책 (이 한 곳에만 있다)
 | 증상                               | 처리                                         |
 | 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회                   |
-| 빈 응답 + 잘림, 추론 설정이 이미 low | 최대 MAX_RESAMPLES 회 다시 — 같은 설정, reasoning_off_last 호출(빌드 생성기)만 마지막은 추론 끔(NO_REASONING, 확인한 프로바이더만) — 잘리지 않은 빈 응답은 예외 그대로 |
+| 빈 응답, 추론 설정이 이미 low       | 최대 MAX_RESAMPLES 회 다시 — 같은 설정(잘렸든 아니든), reasoning_off_last 호출(빌드 생성기)만 마지막은 추론 끔(NO_REASONING, 확인한 프로바이더만) — 내용 필터(finish_reason=content_filter)만 예외 그대로 |
 | TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
 | 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
@@ -261,11 +261,18 @@ class LLMClient:
                 raise cut
 
             if not completion.content.strip():
+                # 빈 응답은 다시 부르면 대개 산다 — 잘림(추론이 상한을 다 씀, 추론 길이는 호출마다 다름)이든 아니든. 내용 필터만은
+                # 같은 입력에 같은 결정이라 다시 부르지 않는다. 2026-11-15: 잘리지 않은 빈 응답은 재시도 없이 바로 실패해 알파 둘
+                # (retry-lig024 gen_public@8 두 번 · g187c woori001 plan_contract@30)이 생성기와 무관하게 떨어졌다 — 잘린 빈 응답
+                # 재시도(2026-11-05·09 측정)만 있었고 잘리지 않은 것을 뺀 근거는 없었다
+                kind = (
+                    "empty_truncated" if completion.finish_reason == "length" else "empty_resample"
+                )
                 if (
-                    completion.finish_reason == "length"
+                    completion.finish_reason != "content_filter"
                     and params.get("reasoning_effort") == "low"
                     and resamples < MAX_RESAMPLES
-                ):  # 추론이 상한을 다 씀 — 추론 길이는 호출마다 달라 같은 설정으로 다시 부르면 대개 산다
+                ):
                     resamples += 1
                     # 마지막 한 번은 추론을 끈다 — 폭주가 이어져도 빈 응답으로 끝나지 않게 (품질은 정적 검사·수리 루프가 본다)
                     off = (
@@ -274,14 +281,14 @@ class LLMClient:
                         else None
                     )
                     retries.append(
-                        f"empty_truncated->reasoning_effort={off}"
-                        if off
-                        else "empty_truncated->resample"
+                        f"{kind}->reasoning_effort={off}" if off else f"{kind}->resample"
                     )
                     logger.warning(
-                        "llm retry prompt=%s model=%s reason=empty_truncated%s elapsed_ms=%d",
+                        "llm retry prompt=%s model=%s reason=%s finish=%s%s elapsed_ms=%d",
                         prompt.template.ref,
                         prompt.model,
+                        kind,
+                        completion.finish_reason,
                         f" next=reasoning_effort={off}" if off else "",
                         int((time.monotonic() - started) * 1000),
                     )
