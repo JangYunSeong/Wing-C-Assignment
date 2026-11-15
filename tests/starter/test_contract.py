@@ -15,13 +15,12 @@ from task_spec.starter.contract import (
     check_contract,
     contract_text,
     describe_rule,
-    evidence_check,
     evidence_fragment,
     extract_values,
     fit_covers,
     hidden_terms,
-    rule_check,
     spec_missing_params,
+    value_check,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -321,14 +320,17 @@ def test_evidence_quote_confirms_values_patterns_miss() -> None:
     spec = _spec(visible_texts=("pool: 8", text))
     plan = _plan(harness={"pool_size": 8, "concurrency": 40, "query_delay_ms": 20})
     plan["evidence"] = {"concurrency": "동시 요청 수가 최대 40건에 도달합니다"}
+    plan["evidence_value"] = {"concurrency": "40건"}
     assert not _check(plan=plan, spec=spec).problems
-    for quote, value in (
-        ("동시 요청 수가 최대 40건에 도달합니다", 32),
-        ("동시 요청은 최대 40건", 40),
-        ("40", 40),
+    for quote, vtext, value in (
+        ("동시 요청 수가 최대 40건에 도달합니다", "40건", 32),  # 값 글자와 다른 값
+        ("동시 요청은 최대 40건", "40건", 40),  # 자료에 그대로 없는 인용
+        ("40", "40", 40),  # 너무 짧은 인용
+        ("동시 요청 수가 최대 40건에 도달합니다", "", 40),  # 값 글자 없음
     ):
         plan = _plan(harness={"pool_size": 8, "concurrency": value, "query_delay_ms": 20})
         plan["evidence"] = {"concurrency": quote}
+        plan["evidence_value"] = {"concurrency": vtext}
         assert _has(_check(plan=plan, spec=spec).problems, "concurrency", "근거"), quote
 
 
@@ -364,16 +366,21 @@ def test_unique_pick_with_several_values_is_flagged() -> None:
     )
 
 
-def test_evidence_check_ignores_percent_and_time_and_flags_ambiguity() -> None:
+def test_value_check_ignores_percent_and_time_and_flags_ambiguity() -> None:
     texts = [DIST, "피크(19:00~22:00) 동시 요청 40건", "17–18시 피크, 풀 8, 스레드 32"]
-    assert evidence_check(1, DIST, texts) == "ambiguous"  # 1·2·3·4 가 남음
-    assert evidence_check(38, DIST, texts) == "bad"  # 38% 는 값 후보가 아니다
-    assert evidence_check(40, "피크(19:00~22:00) 동시 요청 40건", texts) == "ok"
-    assert evidence_check(8, "17–18시 피크, 풀 8, 스레드 32", texts) == "ambiguous"
-    assert evidence_check(4, DIST * 5, [DIST * 5]) == "bad"  # MAX_QUOTE 넘는 통째 인용
+    got = value_check(1, DIST, "1개", texts, None)
+    assert got.verdict == "ok" and "숫자가 여럿" in got.notes[0]  # 1·2·3·4 개 — 통과, 승인자 표시
+    assert (
+        value_check(38, DIST, "38%", texts, None).verdict == "bad_value_text"
+    )  # 백분율은 값이 아니다
+    assert value_check(40, "피크(19:00~22:00) 동시 요청 40건", "40건", texts, None).verdict == "ok"
+    got = value_check(8, "17–18시 피크, 풀 8, 스레드 32", "8", texts, None)
+    assert got.verdict == "ok" and got.notes  # 8·32 (17–18시는 개수가 아니다)
+    assert value_check(4, DIST * 5, "4개", [DIST * 5], None).verdict == "bad_quote"  # 통째 인용
     spec = _spec(visible_texts=("pool: 8", "17–18시 피크, 풀 8, 스레드 32"))
     plan = _plan(harness={"pool_size": 8, "concurrency": 32})  # 패턴 없음 → 근거 인용 경로
     plan["evidence"] = {"concurrency": "17–18시 피크, 풀 8, 스레드 32"}
+    plan["evidence_value"] = {"concurrency": "32"}
     res = _check(plan=plan, spec=spec)
     assert res.ok and _has(res.review_flags, "concurrency=32", "숫자가 여럿")
 
@@ -758,7 +765,7 @@ def test_trap_fix_follows_each_acceptance_criterion_with_several_hidden_requirem
 
 def test_timed_evidence_accepts_unit_conversion_and_rounding() -> None:
     # 2026-11-10 nplus1-e: '왕복 p50은 11.4ms' → query_delay_ms=12, '목표는 500ms' → request_timeout_s=1 을 거절했다
-    from task_spec.starter.contract import evidence_check, param_unit
+    from task_spec.starter.contract import param_unit
 
     texts = [
         "단일 SELECT 왕복 p50은 11.4ms 이고",
@@ -766,13 +773,19 @@ def test_timed_evidence_accepts_unit_conversion_and_rounding() -> None:
     ]
     assert param_unit("query_delay_ms") == "ms" and param_unit("request_timeout_s") == "s"
     assert param_unit("pool_size") is None
-    assert evidence_check(12, "단일 SELECT 왕복 p50은 11.4ms", texts, "ms") == "ok"
-    assert evidence_check(1, "목록 API 응답 목표는 500ms", texts, "s") == "ok"
-    assert evidence_check(1, "1초를 넘으면 이탈한다", texts, "s") == "ok"  # 조사가 붙은 단위
-    assert evidence_check(3, "목록 API 응답 목표는 500ms", texts, "s") == "bad"  # 환산해도 다른 값
+
+    def verdict(value: int, quote: str, vtext: str, unit: str | None) -> str:
+        got = value_check(value, quote, vtext, texts, unit)
+        assert not got.notes, got  # 시간 단위를 바꿔 맞춘 반올림·올림은 표시 없이
+        return got.verdict
+
+    assert verdict(12, "단일 SELECT 왕복 p50은 11.4ms", "11.4ms", "ms") == "ok"
+    assert verdict(1, "목록 API 응답 목표는 500ms", "500ms", "s") == "ok"
+    assert verdict(1, "1초를 넘으면 이탈한다", "1초", "s") == "ok"  # 조사가 붙은 단위
+    assert verdict(3, "목록 API 응답 목표는 500ms", "500ms", "s") == "mismatch"  # 환산해도 다른 값
     assert (
-        evidence_check(12, "단일 SELECT 왕복 p50은 11.4ms", texts) == "bad"
-    )  # 단위 없는 조절값은 예전처럼
+        verdict(12, "단일 SELECT 왕복 p50은 11.4ms", "11.4ms", None) == "wrong_unit"
+    )  # 단위 없는 조절값에 시간 값
 
 
 def test_timed_hints_list_lines_with_time_values_for_a_missed_quote() -> None:
@@ -834,15 +847,24 @@ def test_api_field_names_fixed_by_the_spec_are_accepted() -> None:
 def test_rounded_quote_value_passes_with_flag() -> None:
     """2026-11-11 백엔드 N+1: 'p50: 8.1' 을 인용하고 8 을 썼다 — 정수로 맞춘 값은 통과, 승인자 확인 [확정: 2026-11-11 사용자]."""
     texts = ["metric: db_query_roundtrip_ms\np50: 8.1\np95: 14.7"]
-    assert evidence_check(8, "p50: 8.1", texts) == "rounded"
-    assert evidence_check(9, "p50: 8.1", texts) == "rounded"  # 올림
-    assert evidence_check(10, "p50: 8.1", texts) == "bad"  # 1 이상 차이
-    assert evidence_check(8, "p50: 8.1\np95: 14.7", texts) == "bad"  # 후보가 여럿
+
+    def check(value: int, quote: str) -> tuple[str, tuple[str, ...]]:
+        got = value_check(value, quote, "8.1", texts, None)
+        return got.verdict, got.notes
+
+    verdict, notes = check(8, "p50: 8.1")
+    assert verdict == "ok" and "정수로 맞춘" in notes[0]
+    assert check(9, "p50: 8.1")[0] == "ok"  # 올림
+    assert check(10, "p50: 8.1")[0] == "mismatch"  # 1 이상 차이
+    # 값 글자가 8.1 을 가리키므로 통과 — 같은 종류의 수가 여럿이라는 표시가 하나 더 붙는다
+    verdict, notes = check(8, "p50: 8.1\np95: 14.7")
+    assert verdict == "ok" and len(notes) == 2
     spec = _spec(visible_texts=("pool: 8\nthreads: 32", "p50: 8.1"))
     m = _manifest().model_dump()
     m["harness_params"][2] |= {"visible": True, "spec_patterns": [r"쿼리\s*지연\s*(\d+)\s*ms"]}
     plan = _plan(harness={"pool_size": 8, "concurrency": 32, "query_delay_ms": 8})
     plan["evidence"] = {"query_delay_ms": "p50: 8.1"}
+    plan["evidence_value"] = {"query_delay_ms": "8.1"}
     res = _check(plan=plan, spec=spec, manifest=TemplateManifest.model_validate(m))
     assert not _has(res.problems, "query_delay_ms"), res.problems
     assert _has(res.review_flags, "query_delay_ms=8", "정수로 맞춘")
@@ -877,22 +899,21 @@ def test_partial_quote_uses_longest_verbatim_fragment_with_flag() -> None:
     src = "2024-11-15 10:00:01 시각대 로그에서 차감 요청이 1초 안에 30건 이상 기록되어 있습니다. 다음 줄"
     texts = ["pool: 8\nthreads: 32", src]
     llm = "2024-11-15T10:00:01 시각대 로그에서 차감 요청이 1초 안에 30건 이상 기록되어 있습니다"
-    assert evidence_check(30, llm, texts) == "bad"
-    frag = evidence_fragment(30, llm, texts)
-    # 가장 짧은 '30건 이상 기록되어'(ok)가 아니라 가장 긴 조각 — 후보 숫자 여럿이면 ambiguous 로 남는다
+    assert value_check(30, llm, "30건", texts, None).verdict == "bad_quote"
+    frag = evidence_fragment(30, llm, "30건", texts)
+    # 가장 짧은 '30건 이상 기록되어'가 아니라 가장 긴 조각 — 같은 종류의 값이 여럿이면 표시가 붙는 판정을 그대로 받는다
+    assert frag is not None and frag.startswith("10:00:01")
+    assert value_check(30, frag, "30건", texts, None).verdict == "ok"  # 1초는 개수가 아니다
     assert (
-        frag is not None
-        and frag.startswith("10:00:01")
-        and evidence_check(30, frag, texts) == "ambiguous"
-    )
-    assert evidence_fragment(30, "피크 동시 요청은 30건입니다", texts) is None  # 지어낸 인용
-    assert evidence_fragment(45, llm, texts) is None  # 조각에 그 값이 없음
-    assert evidence_fragment(30, src[:40], texts) is None  # 그대로 있으면 대상이 아니다
+        evidence_fragment(30, "피크 동시 요청은 30건입니다", "30건", texts) is None
+    )  # 지어낸 인용
+    assert evidence_fragment(45, llm, "45건", texts) is None  # 조각에 그 값이 없음
+    assert evidence_fragment(30, src[:40], "30건", texts) is None  # 그대로 있으면 대상이 아니다
 
     spec = _spec(visible_texts=tuple(texts))
     plan = HiddenPlan.model_validate(
         _plan(harness={"pool_size": 8, "concurrency": 30, "query_delay_ms": 20})
-        | {"evidence": {"concurrency": llm}}
+        | {"evidence": {"concurrency": llm}, "evidence_value": {"concurrency": "30건"}}
     )
     fixed, notes = fit_evidence_fragments(plan, _manifest(), spec)
     assert fixed.evidence["concurrency"] == frag
@@ -905,110 +926,239 @@ def test_partial_quote_uses_longest_verbatim_fragment_with_flag() -> None:
     )  # 다시 돌려도 같다 (결정적)
 
 
-# ── 재료 규칙으로 근거 대조 (FeatureSeed.harness_rules) ─────────────────
+# ── 근거 값 글자로 대조 (evidence_value · FeatureSeed.harness_rules) ─────────────────
 
 _P50 = HarnessRule(labels=["p50", "중앙값", "평균"], round="nearest")
 _LIMIT = HarnessRule(pick="max", round="up")
 _BURST = HarnessRule(units=["건"], pick="max")
+_EXCERPT = "3.1 스크롤 무한 로딩 시 서버 응답 상한: 500ms (p95 기준)"  # 가상 자료 줄 (2026-11-15 운영 실패의 모양)
 
 
 @pytest.mark.parametrize(
-    ("rule", "unit", "value", "quote", "verdict", "expected"),
+    ("rule", "unit", "value", "quote", "vtext", "verdict", "expected"),
     [
         # 2026-11-13 목록 재료 hana006: 숫자가 둘이라 일반 검사가 세 번 거절 — 규칙은 p50 을 골라 반올림
-        (_P50, "ms", 20, "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8", "ok", 20),
-        (_P50, "ms", 21, "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8", "mismatch", 20),
+        (_P50, "ms", 20, "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8", "19.8", "ok", 20),
+        (_P50, "ms", 21, "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8", "19.8", "mismatch", 20),
+        (
+            _P50,
+            "ms",
+            21,
+            "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8",
+            "21.3",
+            "wrong_label",
+            None,
+        ),
         (
             _P50,
             "ms",
             21,
             "왕복 시간이 평균 21ms, p95 28ms입니다",
+            "21ms",
             "ok",
             21,
         ),  # p50 이 없으면 다음 이름표
-        (_P50, "ms", 28, "p95 28ms 수준입니다", "missing", None),  # 규칙에 없는 백분위만
-        (_P50, "ms", 11, "쿼리 한 번에 11ms 가 걸립니다", "ok", 11),  # 이름표 없는 수
-        (_P50, "ms", 12, "p50 은 11.4ms 입니다", "mismatch", 11),  # 반올림이지 올림이 아니다
-        (_P50, "ms", 3, "p50: 2.5 p95: 4.0", "ok", 3),  # .5 는 올림 (은행가 반올림 아님)
-        (_LIMIT, "s", 2, "목록 화면 초기 로딩: 2초 이내", "ok", 2),
-        (_LIMIT, "s", 1, "응답 시간 목표 p95 ≤ 500 ms · p99 ≤ 800 ms (200건 기준)", "ok", 1),
+        (
+            _P50,
+            "ms",
+            28,
+            "p95 28ms 수준입니다",
+            "28ms",
+            "wrong_label",
+            None,
+        ),  # 규칙에 없는 백분위만
+        (_P50, "ms", 11, "쿼리 한 번에 11ms 가 걸립니다", "11ms", "ok", 11),  # 이름표 없는 수
+        (
+            _P50,
+            "ms",
+            12,
+            "p50 은 11.4ms 입니다",
+            "11.4ms",
+            "mismatch",
+            11,
+        ),  # 반올림이지 올림이 아니다
+        (_P50, "ms", 3, "p50: 2.5 p95: 4.0", "2.5", "ok", 3),  # .5 는 올림 (은행가 반올림 아님)
+        (_LIMIT, "s", 2, "목록 화면 초기 로딩: 2초 이내", "2초", "ok", 2),
+        (
+            _LIMIT,
+            "s",
+            1,
+            "응답 시간 목표 p95 ≤ 500 ms · p99 ≤ 800 ms (200건 기준)",
+            "800 ms",
+            "ok",
+            1,
+        ),
+        (
+            _LIMIT,
+            "s",
+            1,
+            "응답 시간 목표 p95 ≤ 500 ms · p99 ≤ 800 ms (200건 기준)",
+            "500 ms",
+            "not_extreme",
+            None,
+        ),
         (
             _LIMIT,
             "s",
             2,
             "SLA 기준(2000ms) 초과 비율: 전체 요청의 34%",
+            "2000ms",
             "ok",
             2,
         ),  # 백분율은 값이 아니다
-        (_BURST, None, 17, "개시 직후 3초 동안 EV-2024-011에 대한 신청이 17건 이상 기록", "ok", 17),
+        # 2026-11-15 운영 계약 실패: 줄머리 절 번호를 값으로 읽어 기대값 4 — 값 글자가 가리키는 500ms 만 본다
+        (_LIMIT, "s", 1, _EXCERPT, "500ms", "ok", 1),
+        (
+            _LIMIT,
+            "s",
+            4,
+            _EXCERPT,
+            "3.1",
+            "no_unit",
+            None,
+        ),  # 시간 단위가 붙은 값이 있으면 단위 없는 수는 값이 아니다
+        (
+            _BURST,
+            None,
+            17,
+            "개시 직후 3초 동안 EV-2024-011에 대한 신청이 17건 이상 기록",
+            "17건",
+            "ok",
+            17,
+        ),
         (
             _BURST,
             None,
             3,
             "개시 직후 3초 동안 EV-2024-011에 대한 신청이 17건 이상 기록",
+            "17건",
             "mismatch",
             17,
         ),
-        (_BURST, None, 47, "오픈 시각 14:00:00부터 14:00:02 구간에서 47건의 차감 요청", "ok", 47),
-        (_BURST, None, 42, "초당 최대 42건이 같은 대상 id에 몰립니다.", "ok", 42),
+        (
+            _BURST,
+            None,
+            3,
+            "개시 직후 3초 동안 EV-2024-011에 대한 신청이 17건 이상 기록",
+            "3초",
+            "wrong_unit",
+            None,
+        ),
+        (
+            _BURST,
+            None,
+            47,
+            "오픈 시각 14:00:00부터 14:00:02 구간에서 47건의 차감 요청",
+            "47건",
+            "ok",
+            47,
+        ),
+        (_BURST, None, 42, "초당 최대 42건이 같은 대상 id에 몰립니다.", "42건", "ok", 42),
         (
             HarnessRule(units=["건"]),
             None,
             5,
             "평소 3건, 피크 5건",
+            "5건",
             "ambiguous",
             None,
         ),  # only 인데 여럿
+        (
+            _P50,
+            "ms",
+            15,
+            "쿼리 지연 15ms / 24ms / 33ms 순",
+            "15ms",
+            "ambiguous",
+            None,
+        ),  # 이름표 없는 값이 여럿
+        (
+            _P50,
+            "ms",
+            15,
+            "쿼리 지연 p50/p95: 15/33ms 수준",
+            "15",
+            "wrong_label",
+            None,
+        ),  # 짝 표기는 확인할 수 없다
+        (
+            _P50,
+            "ms",
+            15,
+            "쿼리 지연 p50 기준 14~16ms",
+            "16ms",
+            "ok",
+            None,
+        ),  # 범위의 끝을 가리켜도 범위째
     ],
 )
-def test_rule_check_derives_value_from_quote(
+def test_value_check_derives_value_from_value_text(
     rule: HarnessRule,
     unit: str | None,
     value: int,
     quote: str,
+    vtext: str,
     verdict: str,
     expected: int | None,
 ) -> None:
-    got = rule_check(value, quote, [quote], unit, rule)
+    got = value_check(value, quote, vtext, [quote], unit, rule)
     assert got.verdict == verdict, got
-    assert got.expected == (None if expected is None else float(expected))
+    if expected is not None:
+        assert got.expected == (float(expected), float(expected))
 
 
-def test_rule_check_bare_number_takes_header_unit() -> None:
-    """단위 없는 수는 머리 줄의 단위 표기('(초)')로, 없으면 조절값 단위로 본다."""
+@pytest.mark.parametrize(
+    "quote",
+    ["p50 기준 14~16ms", "p50 기준 14-16ms", "p50 기준 14ms~16ms", "p50 기준 14 ~ 16 ms"],
+)
+def test_range_value_follows_pick(quote: str) -> None:
+    """2026-11-15: 범위는 이름표가 앞 수에만·단위가 뒤 수에만 붙어 갈렸다 — 범위째 한 값으로 보고 only 면 범위 안, max·min 이면 그 끝."""
+    for value, verdict in ((14, "ok"), (15, "ok"), (16, "ok"), (13, "mismatch"), (17, "mismatch")):
+        got = value_check(value, quote, quote.split("기준 ")[1], [quote], "ms", _P50)
+        assert got.verdict == verdict and got.expected == (14.0, 16.0), (value, got)
+    top = HarnessRule(labels=["p50"], pick="max")
+    assert value_check(16, quote, quote.split("기준 ")[1], [quote], "ms", top).verdict == "ok"
+    assert value_check(15, quote, quote.split("기준 ")[1], [quote], "ms", top).verdict == "mismatch"
+
+
+def test_value_check_bare_number_takes_header_unit() -> None:
+    """단위 없는 수는 머리 줄의 단위 표기('(초)')로, 인용에 시간 단위가 하나도 없으면 조절값 단위로 보고 승인자 표시."""
     rule = HarnessRule(labels=["p99"], round="up")
+    q = "응답 시간 (초) p95: 0.6 p99: 0.9"
+    assert value_check(1, q, "0.9", [q], "s", rule).verdict == "ok"
+    q = "응답 시간 (ms) p99: 900"
+    assert value_check(1, q, "900", [q], "s", rule).verdict == "ok"
+    got = value_check(900, "p99: 900 정도", "900", ["p99: 900 정도"], "s", rule)
     assert (
-        rule_check(
-            1, "응답 시간 (초) p95: 0.6 p99: 0.9", ["응답 시간 (초) p95: 0.6 p99: 0.9"], "s", rule
-        ).verdict
-        == "ok"
-    )
-    assert (
-        rule_check(1, "응답 시간 (ms) p99: 900", ["응답 시간 (ms) p99: 900"], "s", rule).verdict
-        == "ok"
-    )
-    assert (
-        rule_check(900, "p99: 900 정도", ["p99: 900 정도"], "s", rule).verdict == "ok"
-    )  # 단위 없음 → 조절값 단위
+        got.verdict == "ok" and "단위가 없어" in got.notes[0]
+    )  # 단위 없음 → 조절값 단위, 승인자 확인
 
 
-def test_rule_check_quote_must_be_in_material() -> None:
+def test_value_check_quote_and_value_text_must_be_in_material() -> None:
     texts = ["p50: 19.8\np95: 28.4"]
-    assert rule_check(20, "p50: 19.8 p95: 28.4", texts, "ms", _P50).verdict == "ok"  # 공백 무시
-    assert rule_check(20, "p50 은 19.8 입니다", texts, "ms", _P50).verdict == "bad_quote"
+    assert (
+        value_check(20, "p50: 19.8 p95: 28.4", "19.8", texts, "ms", _P50).verdict == "ok"
+    )  # 공백 무시
+    assert value_check(20, "p50 은 19.8 입니다", "19.8", texts, "ms", _P50).verdict == "bad_quote"
+    assert value_check(20, "p50: 19.8 p95: 28.4", "", texts, "ms", _P50).verdict == "no_value_text"
+    assert (
+        value_check(20, "p50: 19.8 p95: 28.4", "20", texts, "ms", _P50).verdict == "bad_value_text"
+    )
+    # 값 둘을 덮는 글자는 값 하나를 가리키지 않는다
+    assert (
+        value_check(20, "p50: 19.8 p95: 28.4", "19.8 p95: 28.4", texts, "ms", _P50).verdict
+        == "bad_value_text"
+    )
 
 
-def test_material_rule_replaces_generic_evidence_check() -> None:
-    """재료 규칙이 있으면 계약 검사는 그 규칙으로 대조 — 숫자가 여럿인 인용도 규칙이 고른 값이면 통과, 아니면 규칙을 적어 재요청."""
+def test_material_rule_checks_value_text_and_reasks_with_the_rule() -> None:
+    """재료 규칙이 있으면 계약 검사는 값 글자를 그 규칙으로 대조 — 숫자가 여럿인 인용도 규칙에 맞는 값을 가리키면 통과, 아니면 규칙을 적어 재요청."""
     block = "단일 SELECT 왕복 시간 (ms)\n  평균: 21.3\n  p50: 19.8\n  p95: 28.4"
     quote = "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8"
     spec = _spec(visible_texts=("pool: 8\nthreads: 32", block))
     m = _manifest().model_dump()
     m["harness_params"][2] |= {"visible": True, "spec_patterns": [r"쿼리\s*지연\s*(\d+)\s*ms"]}
     manifest = TemplateManifest.model_validate(m)
-    assert (
-        evidence_check(20, quote, spec.visible_texts, "ms") == "bad"
-    )  # 일반 검사로는 거절 (hana006)
     seed = BACKEND_SEED.model_copy(
         update={
             "harness": ["pool_size", "concurrency", "query_delay_ms"],
@@ -1017,31 +1167,40 @@ def test_material_rule_replaces_generic_evidence_check() -> None:
     )
     plan = _plan(harness={"pool_size": 8, "concurrency": 32, "query_delay_ms": 20})
     plan["evidence"] = {"query_delay_ms": quote}
+    plan["evidence_value"] = {"query_delay_ms": "19.8"}
     res = _check(plan=plan, spec=spec, manifest=manifest, seed=seed)
     assert not _has(res.problems, "query_delay_ms"), res.problems
     assert not _has(res.review_flags, "query_delay_ms"), (
         res.review_flags
-    )  # 규칙으로 확인 — 승인자 표시 없음
+    )  # 규칙으로 확인 — 표시 없음
     plan["harness"]["query_delay_ms"] = 21
     res = _check(plan=plan, spec=spec, manifest=manifest, seed=seed)
     assert _has(res.problems, "query_delay_ms=21", "재료 규칙", "p50", "20", "19.8"), res.problems
-    # 규칙이 없으면 예전 검사 그대로 (숫자가 여럿이면 거절)
+    plan["evidence_value"] = {"query_delay_ms": "21.3"}
+    res = _check(plan=plan, spec=spec, manifest=manifest, seed=seed)
+    assert _has(res.problems, "query_delay_ms", "21.3", "규칙에 맞는 값: 19.8"), res.problems
+    # 규칙이 없으면 값 글자 그대로·정수로 맞춤 — 같은 종류의 수가 여럿이라 통과하되 승인자 표시
     res = _check(
-        plan=plan | {"harness": {**plan["harness"], "query_delay_ms": 20}},
+        plan=plan
+        | {
+            "harness": {**plan["harness"], "query_delay_ms": 20},
+            "evidence_value": {"query_delay_ms": "19.8"},
+        },
         spec=spec,
         manifest=manifest,
     )
-    assert _has(res.problems, "query_delay_ms=20")
+    assert not _has(res.problems, "query_delay_ms"), res.problems
+    assert _has(res.review_flags, "query_delay_ms=20", "숫자가 여럿")
 
 
 def test_fragment_fitting_uses_material_rule() -> None:
-    """근거 인용 글자를 바꾼 경우 자료 원문 조각을 고를 때도 규칙으로 — 규칙이 받는 조각만."""
+    """근거 인용 글자를 바꾼 경우 자료 원문 조각을 고를 때도 같은 값 글자 검사로 — 그 검사가 받는 조각만."""
     texts = ["단일 SELECT 왕복 시간 (ms)\n  평균: 21.3\n  p50: 19.8\n  p95: 28.4"]
     llm = "단일 SELECT 왕복시간 (ms) 평균: 21.3 p50: 19.8"
-    assert evidence_fragment(20, llm, texts, "ms") is None  # 일반 검사로는 받을 조각이 없다
-    frag = evidence_fragment(20, llm, texts, "ms", _P50)
+    frag = evidence_fragment(20, llm, "19.8", texts, "ms", _P50)
     assert frag is not None and "p50: 19.8" in frag
-    assert rule_check(20, frag, texts, "ms", _P50).verdict == "ok"
+    assert value_check(20, frag, "19.8", texts, "ms", _P50).verdict == "ok"
+    assert evidence_fragment(21, llm, "21.3", texts, "ms", _P50) is None  # 규칙에 맞지 않는 값 글자
 
 
 def test_harness_rules_must_name_material_params() -> None:
@@ -1053,11 +1212,11 @@ def test_harness_rules_must_name_material_params() -> None:
 
 
 def test_describe_rule_reads_like_the_material_note() -> None:
-    assert (
-        describe_rule(_P50, "ms") == "이름표 p50(없으면 중앙값·평균) 의 값, ms 단위로 바꿔 반올림"
+    assert describe_rule(_P50, "ms") == (
+        "이름표 p50(없으면 중앙값·평균) 의 값, 범위로 적혔으면 범위 안의 값, ms 단위로 바꿔 반올림"
     )
-    assert describe_rule(_LIMIT, "s") == "여럿이면 가장 큰 값, 초 단위로 바꿔 올림"
-    assert describe_rule(_BURST, None) == "건 단위가 붙은 수, 여럿이면 가장 큰 값"
+    assert describe_rule(_LIMIT, "s") == "여럿이면(범위면) 가장 큰 값, 초 단위로 바꿔 올림"
+    assert describe_rule(_BURST, None) == "건 단위가 붙은 수, 여럿이면(범위면) 가장 큰 값"
 
 
 # ── #179 계약 검사·보정의 중복 정리 ─────────────────────────────

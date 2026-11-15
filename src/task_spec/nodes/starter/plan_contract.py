@@ -1,7 +1,7 @@
 """공개 계약 생성 `plan_contract` (docs/design/spec-to-code.md §2 ②·§3) — LLM 1회 → 결정적 검사 → 1회 재요청.
 
 입력은 승인된 기능형 공통 과제(TaskItem)와 템플릿뿐이다 — 공고·온톨로지·재료에서 나온 글, 지원서 없음 (불변식 3).
-- 공개 운영 값은 LLM 이 값 + 근거 인용(hidden_plan.evidence)을 내고 코드가 자료와 대조한다. 근거가 "없음"인 필수 값은 명세 결함 — 재요청 없이 실패.
+- 공개 운영 값은 LLM 이 값 + 근거 인용(hidden_plan.evidence) + 그 안의 값 글자(evidence_value)를 내고 코드가 자료와 대조한다. 근거가 "없음"인 필수 값은 명세 결함 — 재요청 없이 실패.
 - 계약 검사(`starter.contract.check_contract`)의 `problems` 는 재요청 사유로 붙이고, `spec_gaps` 는 재요청 없이 실패로 둔다.
 - 재요청 뒤에도 문제가 남으면 가장 문제가 적은 답을 돌려주고 표시를 남긴다 — 빌드 그래프가 `failed` 로 승인 화면에 올린다.
 """
@@ -273,8 +273,8 @@ def template_mechanics(m: TemplateManifest) -> set[str]:
 def fit_evidence_fragments(
     plan: HiddenPlan, m: TemplateManifest, spec: SpecView, seed: FeatureSeed | None = None
 ) -> tuple[HiddenPlan, list[str]]:
-    """근거 인용이 자료에 그대로 없으면(LLM 이 글자를 바꿈) 자료에 그대로 있는 가장 긴 조각으로 바꾼다 — 그 조각을 지금 판정(ok·ambiguous·
-    rounded)으로 다시 보고, 결과와 상관없이 승인자 표시를 붙인다 (값이 자료에서 왔다는 건 확인되지만 그 값이 이 조절값이라는 연결은 LLM 이
+    """근거 인용이 자료에 그대로 없으면(LLM 이 글자를 바꿈) 자료에 그대로 있는 가장 긴 조각으로 바꾼다 — 그 조각을 값 글자 검사(value_check)로
+    다시 보고, 결과와 상관없이 승인자 표시를 붙인다 (값이 자료에서 왔다는 건 확인되지만 그 값이 이 조절값이라는 연결은 LLM 이
     고친 부분이 만들 수 있다). 저장하는 근거도 자료 원문 조각 — 승인자가 실제 문장을 본다. 결정적이라 replay_contracts 가 다시 만든다.
     [확정: 2026-11-12 사용자 — 날짜·시각 'T' 같은 하나씩 땜질 대신 일반적인 방법]"""
     evidence = dict(plan.evidence)
@@ -286,6 +286,7 @@ def fit_evidence_fragments(
         frag = evidence_fragment(
             plan.harness[p.name],
             quote,
+            plan.evidence_value.get(p.name),
             spec.visible_texts,
             param_unit(p.name),
             seed.harness_rules.get(p.name) if seed is not None else None,
@@ -322,6 +323,7 @@ def fit_unevidenced(
         return plan, []
     harness = {k: v for k, v in plan.harness.items() if k not in drop}
     evidence = {k: v for k, v in plan.evidence.items() if k not in drop}
+    values = {k: v for k, v in plan.evidence_value.items() if k not in drop}
     no_burst = any(n in drop for n in m.burst_rows)
     cases = [
         c.model_copy(update={"data": [d.model_copy(update={"burst": False}) for d in c.data]})
@@ -329,7 +331,9 @@ def fit_unevidenced(
         else c
         for c in plan.cases
     ]
-    fixed = plan.model_copy(update={"harness": harness, "evidence": evidence, "cases": cases})
+    fixed = plan.model_copy(
+        update={"harness": harness, "evidence": evidence, "evidence_value": values, "cases": cases}
+    )
     return fixed, [
         f"근거가 '없음'인 선택 조절값 뺌: {', '.join(drop)} (자료에 그 값이 없음)"
         + (" — 버스트 표시도 끔" if no_burst and cases != list(plan.cases) else "")
@@ -350,6 +354,7 @@ def fit_material_params(
         return plan, []
     harness = {k: v for k, v in plan.harness.items() if k not in extra}
     evidence = {k: v for k, v in plan.evidence.items() if k not in extra}
+    values = {k: v for k, v in plan.evidence_value.items() if k not in extra}
     no_burst = any(n not in keep for n in m.burst_rows)
     cases = [
         c.model_copy(update={"data": [d.model_copy(update={"burst": False}) for d in c.data]})
@@ -357,7 +362,9 @@ def fit_material_params(
         else c
         for c in plan.cases
     ]
-    fixed = plan.model_copy(update={"harness": harness, "evidence": evidence, "cases": cases})
+    fixed = plan.model_copy(
+        update={"harness": harness, "evidence": evidence, "evidence_value": values, "cases": cases}
+    )
     return fixed, [
         f"재료가 쓰지 않는 조절값 뺌: {', '.join(extra)} (FeatureSeed.harness 에 없음)"
         + (" — 버스트 표시도 끔" if no_burst and cases != list(plan.cases) else "")
@@ -570,7 +577,11 @@ async def plan_contract(
             res.errors.append(
                 NodeError(node=TASK, code=type(exc).__name__, message="공개 계약 생성 실패")
             )
-            res.fail_reasons.append(f"{type(exc).__name__}: {str(exc)[:300]}")
+            # 종류(':' 앞)에 끝난 이유를 붙인다 — 빈 응답이 잘림(length)인지 그냥 빈 답(stop)인지 실패 사유만 보고 안다
+            fr = getattr(exc, "finish_reason", None)
+            res.fail_reasons.append(
+                f"{type(exc).__name__}{f'(finish_reason={fr})' if fr else ''}: {str(exc)[:300]}"
+            )
             if (spent := getattr(exc, "provenance", None)) is not None:
                 res.provenance.append(spent)  # 실패한 호출도 비용·호출 수에
             continue
@@ -625,7 +636,7 @@ async def plan_contract(
         if hints:
             lines += (
                 "\n- 운영 수치 근거를 '없음'으로 썼지만 자료에 그 단위의 수가 있다 — 이 중 근거가 되는 문장을 그대로 인용하고 "
-                "그 값(조절값 단위로 환산·반올림)을 쓴다. 정말 근거가 아니면 '없음':\n"
+                "evidence_value 에 그 안의 값 글자를, 값은 조절값 단위로 환산·반올림해 쓴다. 정말 근거가 아니면 '없음':\n"
                 + "\n".join(hints)
             )
         note = "\n".join(

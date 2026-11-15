@@ -98,6 +98,7 @@ def summarize(sub: str, t: Template, task: TaskItem, res: PlanResult) -> dict[st
         ],
         "fixtures": [f"{fx.fixture_id} ({fx.kind}) {fx.summary}" for fx in c.fixtures],
         "evidence": plan.evidence,
+        "evidence_value": plan.evidence_value,
         "harness": plan.harness,
         "cases": [
             {

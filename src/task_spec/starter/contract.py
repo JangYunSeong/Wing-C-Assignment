@@ -12,7 +12,8 @@
 3. 숨은 요구·운영 조건 핵심어(재료 leak_terms·trigger_terms·stage2_cause_terms·먼저 말할 개념)가 계약에 없음 —
    기능형 서술 검사와 같은 낱말 기준(`spec.feature.find_terms`). 식별자는 낱말로 풀어서 본다 (connectionPoolSize → connection pool size).
 4. HiddenPlan 운영 수치 = 명세에 보이는 수치 — 템플릿 `harness_params` 의 표기 패턴으로 1단계 자료 본문·추가 요구 구체 답에서
-   값을 뽑아 대조한다. 자유 글의 숫자를 그대로 찾지 않는다 ("8" 은 아무 데나 나온다).
+   값을 뽑아 대조하고, 패턴이 못 읽으면 계약이 낸 근거 인용과 그 안의 값 글자(`evidence_value`)로 확인한다 (`value_check`).
+   자유 글의 숫자를 그대로 찾지 않는다 ("8" 은 아무 데나 나온다) — 인용 문장에서도 어느 수가 값인지 추측하지 않는다.
 5. HiddenPlan 키는 템플릿 조절값 안, 케이스의 의도한 실패 사유는 템플릿 `failure_reasons` 코드 안.
 """
 
@@ -202,12 +203,6 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
-def evidence_ok(value: HarnessValue, quote: str, texts: Iterable[str]) -> bool:
-    """근거 인용 확인 — 인용이 자료(1단계 자료·구체 답)에 그대로 있고(공백 무시) 값이 인용 안에 있다.
-    정규식 표기 패턴 대신 쓰는 길 (템플릿마다 표현을 맞추지 않아도 됨)."""
-    return evidence_check(value, quote, texts) != "bad"
-
-
 # 단위가 붙은 수 — 조절값 단위(이름 끝 _ms·_s)로 환산해 맞춰 본다
 _TIMED = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])", re.I)
 _UNIT_MS = {
@@ -257,13 +252,15 @@ def _common_spans(a: str, b: str) -> list[str]:
 def evidence_fragment(
     value: HarnessValue,
     quote: str,
+    value_text: str | None,
     texts: Iterable[str],
     unit: str | None = None,
     rule: HarnessRule | None = None,
 ) -> str | None:
-    """인용이 자료에 그대로 없을 때, 자료에 그대로 있는 **가장 긴** 조각 중 값을 근거로 삼을 수 있는 것 (ok·ambiguous·rounded).
-    가장 짧은 조각을 고르면 후보 숫자가 여럿인 인용을 걸러내는 장치(ambiguous)를 피해 가므로 가장 긴 것부터 본다.
-    2026-11-12 백엔드 갱신 손실: 자료의 '2024-11-15 10:00:01 …' 을 '2024-11-15T10:00:01 …' 로 인용해 계약이 세 번 다 막혔다."""
+    """인용이 자료에 그대로 없을 때, 자료에 그대로 있는 조각 중 값 글자가 든 **가장 긴** 것 — 값 글자 검사(`value_check`)가 받을 때만.
+    그 조각이 걸리면 더 짧은 조각으로 내려가지 않는다: 짧게 자르면 같은 종류의 다른 값(이름표 p50 이 붙은 값 등)이 잘려 나가
+    이름표·여럿 판정을 피해 간다. 2026-11-12 백엔드 갱신 손실: 자료의 '2024-11-15 10:00:01 …' 을 '2024-11-15T10:00:01 …' 로
+    인용해 계약이 세 번 다 막혔다."""
     texts = [_norm(t) for t in texts]
     q = _norm(quote).strip(" \"'“”‘’…")
     if any(q in t for t in texts):
@@ -271,12 +268,9 @@ def evidence_fragment(
     spans = sorted({s for t in texts for s in _common_spans(q, t)}, key=len, reverse=True)
     for span in spans:
         frag = span.strip()
-        if MIN_QUOTE <= len(frag) <= MAX_QUOTE and (
-            rule_check(value, frag, texts, unit, rule).verdict == "ok"
-            if rule is not None
-            else evidence_check(value, frag, texts, unit) != "bad"
-        ):
-            return frag
+        if MIN_QUOTE <= len(frag) <= MAX_QUOTE and _value_spans(frag, value_text or ""):
+            ok = value_check(value, frag, value_text, texts, unit, rule).verdict == "ok"
+            return frag if ok else None
     return None
 
 
@@ -317,127 +311,261 @@ def timed_hints(name: str, texts: Iterable[str], limit: int = TIMED_CANDIDATES) 
     return out[:limit]
 
 
-def evidence_check(
-    value: HarnessValue, quote: str, texts: Iterable[str], unit: str | None = None
-) -> Literal["ok", "ambiguous", "rounded", "bad"]:
-    """`evidence_ok` 의 자세한 판정. 백분율·시각은 값 후보에서 빼고, 남은 후보가 여럿이면 ambiguous
-    ("1개: 38% 2개: 41% … 4개 이상: 7%" 를 인용하면 1·2·3·4 아무것이나 근거가 된다 — 알파 테스트 2026-11-07).
-    rounded: 정수 값이 인용 안의 소수 하나를 반올림·올림·내림한 값 (차이 1 미만) — 통과시키고 승인자에게 [확정: 2026-11-11 사용자].
-    2026-11-11 백엔드 N+1 알파: 'p50: 8.1' 을 인용하고 query_delay_ms=8 을 써 계약이 세 번 다 막혔다."""
-    q = _norm(quote).strip(" \"'“”‘’…")
-    if not MIN_QUOTE <= len(q) <= MAX_QUOTE or not any(q in _norm(t) for t in texts):
-        return "bad"
-    numbers = {_number(n) for n in _NUM.findall(_NOT_VALUE.sub(" ", q))}
+def _listed_value_ok(value: HarnessValue, quote: str) -> bool:
+    """수 하나가 아닌 조절값(문자열·목록) — 문자열은 인용 안에 그대로, 목록은 모든 수가 인용의 수 후보에 있다."""
     if isinstance(value, list):
-        return "ok" if all(float(v) in numbers for v in value) else "bad"
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if float(value) not in numbers:
-            if unit is not None and float(value) in _converted(q, unit):
-                return "ok" if len(_TIMED.findall(q)) == 1 else "ambiguous"
-            if isinstance(value, int) and len(numbers) == 1:
-                (n,) = numbers
-                if (
-                    n is not None
-                    and n != int(n)
-                    and value in {round(n), math.floor(n), math.ceil(n)}
-                ):
-                    return "rounded"
-            return "bad"
-        return "ok" if len(numbers) == 1 else "ambiguous"
-    return "ok" if str(value).lower() in q.lower() else "bad"
+        numbers = {_number(n) for n in _NUM.findall(_NOT_VALUE.sub(" ", quote))}
+        return all(float(v) in numbers for v in value)
+    return str(value).lower() in quote.lower()
 
 
-# ── 재료 규칙으로 근거 대조 (FeatureSeed.harness_rules) ─────────────────
+# ── 근거 값 글자로 대조 (hidden_plan.evidence_value · FeatureSeed.harness_rules) ─────────────────
+#
+# 계약은 근거 인용(evidence)과 함께 그 인용 안에서 값이 적힌 글자(evidence_value — 수와 단위, 범위면 범위째)를 낸다.
+# 검사는 인용 문장에서 어느 수가 값인지 추측하지 않는다 — 값 글자가 가리키는 값 토큰만 재료 규칙대로 환산하고, 같은 종류의 값 토큰
+# (시간 조절값이면 시간 단위가 붙은 수)끼리만 이름표·pick·여럿을 본다. 단위 없는 수(절 번호·목록 번호)는 시간·건수 값이 아니다.
+# 2026-11-15 운영 계약 실패: 인용 '3.1 스크롤 … 상한: 500ms (p95 기준)' 의 절 번호 3.1 을 값으로 읽어 request_timeout_s 기대값 4 를
+# 만들었고(재요청이 그 틀린 값을 알려 줬다), 범위 '14~16ms' 는 이름표가 앞 수에만·단위가 뒤 수에만 붙어 갈렸다. 인용 문장에서 값을 다시
+# 읽는 방식은 알파마다 표기 규칙이 하나씩 늘었다 (11-07 분포·11-11 반올림·11-13 이름표·11-15 절 번호·범위).
 
-# 값 후보 수 — 앞이 글자·숫자·점·붙임표면 수가 아니다 (p50 의 50, EV-2024-011 의 011, 버전 1.2.3 의 뒤쪽)
-_RULE_NUM = re.compile(r"(?<![A-Za-z0-9.\-_/])(\d(?:[\d,]*\d)?(?:\.\d+)?)(?![\d])")
 # 값이 아닌 수 — 날짜·시각·백분율 (같은 길이 공백으로 지워 위치를 지킨다)
 _RULE_SKIP = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?|\d[\d,]*(?:\.\d+)?\s*%")
-# 수 바로 뒤 시간 단위 (공백 하나까지)
-_RULE_TIME = re.compile(r"\s?(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])", re.I)
-# 수 바로 뒤에 붙은 말 (공백 없이) — '17건이' 의 '건이'
-_RULE_WORD = re.compile(r"([^\s\d.,:;()\[\]{}/|=~<>≤≥·\-]+)")
-# 공백 하나 뒤에 와도 단위로 보는 말 — 그 밖의 말은 다음 항목이다 ('19.8 p95' · '35.1 최대')
+# 공백 하나 뒤에 와도 단위로 보는 말 — 그 밖의 말은 다음 항목이다 ('19.8 p95' · '35.1 최대' · '3.1 스크롤')
 _COUNT_UNITS = ("건", "개", "명", "회", "번", "행", "배", "대", "곳", "줄")
-# 머리 줄의 단위 표기 — '왕복 시간 (ms)' · '단위: 초'. 단위 없는 수는 이 단위, 없으면 조절값 단위
+# 머리 줄의 단위 표기 — '왕복 시간 (ms)' · '단위: 초'. 단위 없는 수는 이 단위
 _RULE_HEAD = re.compile(
     r"\(\s*(?:단위\s*[:：]?\s*)?(ms|밀리초|초|sec|s|분|min)\s*\)|단위\s*[:：]\s*(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])",
     re.I,
 )
 # 값 앞 이름표 — 백분위·평균·최대 등 (재료 규칙의 이름표와 함께 찾는다)
 _RULE_STAT = r"[pP]\d{2,3}(?:\.\d)?|평균|중앙값|최댓값|최솟값|최대|최소|avg|mean|median|max|min"
-_RULE_LEAD = 16  # 이름표를 찾는 값 앞 글자 수 (앞 수가 끝난 뒤부터)
+_RULE_LEAD = 16  # 이름표를 찾는 값 앞 글자 수 (앞 토큰이 끝난 뒤부터)
+# 시간 단위 낱말 — 앞에서부터 맞춘다 ('ms' 를 's' 보다 먼저). 's' 는 낱말 전체일 때만 ('sql' 은 단위가 아니다)
+_TIME_WORDS = ("밀리초", "sec", "min", "ms", "분", "초", "s")
+_TOK_NUM = r"\d(?:[\d,]*\d)?(?:\.\d+)?"
+_TOK_WORD = r"[^\s\d.,:;()\[\]{}/|=~～∼<>≤≥·\-–—%]+"
+# 값 토큰 — 수 + 붙은 말, 범위면 '수~수' 째 ('~' 는 띄어 써도, 붙임표는 붙여 쓸 때만 — '3건 - 5건' 은 둘).
+# 앞이 글자·숫자·점·붙임표·빗금이면 수가 아니다 (p50 의 50, EV-2024-011 의 011, 버전 1.2.3 의 뒤쪽, 15/33ms 의 33)
+_VALUE_TOKEN = re.compile(
+    rf"(?<![A-Za-z0-9.\-_/])(?P<a>{_TOK_NUM})(?P<ua>{_TOK_WORD})?"
+    rf"(?:(?P<sep>\s*[~～∼]\s*|[\-–—])(?P<b>{_TOK_NUM})(?P<ub>{_TOK_WORD})?)?"
+)
+_SPACED_WORD = re.compile(rf"\s({_TOK_WORD})")
+
+
+def _time_word(word: str) -> str | None:
+    w = word.lower()
+    for t in _TIME_WORDS:
+        if w.startswith(t) and (t != "s" or w == "s"):
+            return t
+    return None
 
 
 @dataclass(frozen=True)
-class _Cited:
-    raw: str  # 인용 속 표기 (예: '19.8', '800 ms')
-    amount: float | None  # 조절값 단위로 환산한 값 — 시간 아닌 단위가 붙은 시간 조절값 후보는 None
+class _Tok:
+    start: int
+    end: int
+    raw: str  # 인용 속 표기 (예: '500ms', '14~16ms')
+    nums: tuple[float, ...]  # 값 하나, 또는 범위의 두 끝
+    units: tuple[
+        str, ...
+    ]  # 끝마다 붙은 말 ('' = 없음) — 범위의 앞 끝에 말이 없으면 뒤 끝의 말을 같이 쓴다
     label: str | None  # 바로 앞 이름표
-    unit: str  # 바로 뒤 단위 ('' = 없음)
 
 
-def _cited_numbers(quote: str, rule: HarnessRule, unit: str | None) -> list[_Cited]:
+def _value_tokens(quote: str, rule: HarnessRule | None) -> tuple[list[_Tok], str | None]:
+    """인용 속 값 토큰과 머리 줄 단위 — 날짜·시각·백분율·머리 줄 단위 표기는 지우고 본다."""
     q = _RULE_SKIP.sub(lambda m: " " * len(m.group(0)), quote)
     head = _RULE_HEAD.search(q)
     head_unit = (head.group(1) or head.group(2)).lower() if head else None
     if head:
         q = q[: head.start()] + " " * (head.end() - head.start()) + q[head.end() :]
-    names = sorted({*rule.labels}, key=len, reverse=True)
+    extra = tuple(rule.units) if rule is not None else ()
+    names = sorted({*(rule.labels if rule is not None else ())}, key=len, reverse=True)
     label_rx = re.compile("|".join([*(re.escape(n) for n in names), _RULE_STAT]), re.I)
-    out: list[_Cited] = []
+    out: list[_Tok] = []
     prev_end = 0
-    for m in _RULE_NUM.finditer(q):
-        n = _number(m.group(1))
-        if n is None:
+    for m in _VALUE_TOKEN.finditer(q):
+        a, b = _number(m.group("a")), _number(m.group("b") or "")
+        if a is None:
             continue
+        end = m.end()
+        tail = m.group("ub") if m.group("b") else m.group("ua")
+        spaced = None if tail else _SPACED_WORD.match(q, end)
+        if spaced and (
+            _time_word(spaced.group(1)) or spaced.group(1).startswith((*_COUNT_UNITS, *extra))
+        ):
+            tail, end = spaced.group(1), spaced.end()  # '500 ms' · '14 ~ 16 ms' · '17 건'
+        if b is None:
+            nums, units = (a,), (tail or "",)
+        else:  # 범위 — 한 끝에만 말이 붙었으면 두 끝이 같이 쓴다 ('14~16ms' · '14ms~16')
+            ua = m.group("ua") or ""
+            nums, units = (a, b), (ua or tail or "", tail or ua)
         lead = q[max(prev_end, m.start() - _RULE_LEAD) : m.start()]
         labels = list(label_rx.finditer(lead))
-        label = labels[-1].group(0) if labels else None
-        rest = q[m.end() :]
-        timed = _RULE_TIME.match(rest)
-        word = _RULE_WORD.match(rest)
-        spaced = rest[:1].isspace() and _RULE_WORD.match(rest[1:])
-        if timed:
-            u, end = timed.group(1).lower(), m.end() + timed.end()
-        elif word:
-            u, end = word.group(1), m.end() + word.end()
-        elif spaced and spaced.group(1).startswith((*_COUNT_UNITS, *rule.units)):
-            u, end = spaced.group(1), m.end() + 1 + spaced.end()
-        else:
-            u, end = "", m.end()
-        amount: float | None = n
-        if unit is not None:
-            src = u if u in _UNIT_MS else head_unit if not u else None
-            amount = (
-                n * _UNIT_MS[src] / (1.0 if unit == "ms" else 1000.0)
-                if src is not None
-                else n
-                if not u
-                else None
+        out.append(
+            _Tok(
+                m.start(),
+                end,
+                quote[m.start() : end].strip(),
+                nums,
+                units,
+                labels[-1].group(0) if labels else None,
             )
-        out.append(_Cited(quote[m.start() : end].strip(), amount, label, u))
+        )
         prev_end = end
-    return out
+    return out, head_unit
 
 
-def _rule_candidates(quote: str, rule: HarnessRule, unit: str | None) -> list[_Cited]:
-    cited = _cited_numbers(quote, rule, unit)
-    if rule.units:
-        cited = [c for c in cited if c.unit.startswith(tuple(rule.units))]
-    elif unit is not None:
-        cited = [
-            c for c in cited if c.amount is not None
-        ]  # 시간 아닌 단위('200건')는 시간 조절값 후보가 아니다
-    else:
-        cited = [c for c in cited if c.unit.lower() not in _UNIT_MS]
-    if not rule.labels:
-        return cited
-    for name in rule.labels:
-        hit = [c for c in cited if c.label is not None and c.label.casefold() == name.casefold()]
-        if hit:
-            return hit
-    return [c for c in cited if c.label is None]
+def _value_spans(quote: str, value_text: str) -> list[tuple[int, int]]:
+    """값 글자가 인용에 나오는 자리 — 띄어쓰기 차이는 무시 ('500ms' ↔ '500 ms', '14~16ms' ↔ '14 ~ 16 ms')."""
+    chars = [c for c in value_text if not c.isspace()]
+    if not chars:
+        return []
+    # 다른 수의 일부는 아니다 ('8' 은 '17–18시' 의 8 이 아니다)
+    head = r"(?<![\d.])" if chars[0].isdigit() else ""
+    tail = r"(?!\.?\d)" if chars[-1].isdigit() else ""
+    rx = re.compile(head + r"\s*".join(re.escape(c) for c in chars) + tail)
+    return [(m.start(), m.end()) for m in rx.finditer(quote)]
+
+
+def _amount(n: float, word: str, head_unit: str | None, unit: str | None) -> float:
+    """조절값 단위로 — 시간 조절값은 붙은 시간 단위(없으면 머리 줄 단위, 그것도 없으면 조절값 단위)로 환산."""
+    if unit is None:
+        return n
+    src = _time_word(word) if word else head_unit
+    return n if src is None else n * _UNIT_MS[src] / (1.0 if unit == "ms" else 1000.0)
+
+
+@dataclass(frozen=True)
+class ValueCheck:
+    verdict: Literal[
+        "ok",
+        "mismatch",
+        "bad_quote",
+        "no_value_text",
+        "bad_value_text",
+        "no_unit",
+        "wrong_unit",
+        "wrong_label",
+        "not_extreme",
+        "ambiguous",
+    ]
+    expected: tuple[float, float] | None = None  # 규칙대로 맞춘 값 (범위면 두 끝)
+    source: tuple[str, ...] = ()  # 판정에 쓴 인용 속 토큰
+    notes: tuple[str, ...] = ()  # 통과지만 승인자 확인
+
+
+def _show(expected: tuple[float, float] | None) -> str:
+    if expected is None:
+        return "?"
+    lo, hi = expected
+    return f"{lo:g}" if lo == hi else f"{lo:g}~{hi:g}"
+
+
+def value_check(
+    value: HarnessValue,
+    quote: str,
+    value_text: str | None,
+    texts: Iterable[str],
+    unit: str | None,
+    rule: HarnessRule | None = None,
+) -> ValueCheck:
+    """근거 인용 + 그 안의 값 글자로 조절값을 확인한다 — 인용이 자료에 그대로 있고, 값 글자가 인용 속 값 토큰 하나를 가리키고, 그 토큰을
+    재료 규칙(없으면 값 그대로·정수로 맞춤)대로 환산한 값이 계약의 값과 같아야 ok. 이름표·pick·여럿은 같은 종류의 값 토큰끼리만 본다
+    (시간 조절값은 시간 단위가 붙은 수, `rule.units` 가 있으면 그 단위가 붙은 수, 그 밖은 단위 없는 수·개수).
+    범위 토큰은 pick 이 max·min 이면 그 끝, only 면 범위 안의 값을 모두 받는다."""
+    q = quoted(quote, texts)
+    if q is None:
+        return ValueCheck("bad_quote")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return ValueCheck("ok" if _listed_value_ok(value, q) else "mismatch")
+    vt = _norm(value_text or "").strip(" \"'“”‘’")
+    if not vt:
+        return ValueCheck("no_value_text")
+    toks, head_unit = _value_tokens(q, rule)
+    hits = sorted(
+        {t for s, e in _value_spans(q, vt) for t in toks if t.start < e and s < t.end},
+        key=lambda t: t.start,
+    )
+    if not hits or len({(t.nums, t.units, t.label) for t in hits}) > 1:
+        return ValueCheck("bad_value_text", source=tuple(t.raw for t in toks))
+    claimed = hits[0]  # 같은 값이 두 번 적혀도 (같은 수·단위·이름표) 하나로 본다
+    extra = tuple(rule.units) if rule is not None else ()
+
+    def kind(t: _Tok) -> Literal["same", "bare", "other"]:
+        words = [w for w in t.units if w]
+        if unit is not None:  # 시간 조절값
+            if words:
+                return "same" if all(_time_word(w) for w in words) else "other"
+            return "same" if head_unit else "bare"
+        if extra:
+            return "same" if words and all(w.startswith(extra) for w in words) else "other"
+        return "same" if all(w.startswith(_COUNT_UNITS) for w in words) else "other"
+
+    same = [t for t in toks if kind(t) == "same"]
+    notes: list[str] = []
+    if kind(claimed) == "other":
+        return ValueCheck("wrong_unit", source=(claimed.raw,))
+    if kind(claimed) == "bare":
+        if (
+            same
+        ):  # 인용에 시간 단위가 붙은 값이 있으면 단위 없는 수는 값이 아니다 (절 번호·목록 번호)
+            return ValueCheck("no_unit", source=tuple(t.raw for t in same))
+        same = [t for t in toks if kind(t) == "bare"]
+        notes.append(f"근거 값 글자 {vt!r} 에 단위가 없어 조절값 단위({unit})로 읽음")
+    cands = same
+    if rule is not None and rule.labels:
+        names = {t.label.casefold() for t in same if t.label}
+        chosen = next((n.casefold() for n in rule.labels if n.casefold() in names), None)
+        cands = [t for t in same if (t.label.casefold() if t.label else None) == chosen]
+        if claimed not in cands:
+            return ValueCheck("wrong_label", source=tuple(t.raw for t in cands))
+    span = {
+        t: (
+            min(_amount(n, w, head_unit, unit) for n, w in zip(t.nums, t.units, strict=True)),
+            max(_amount(n, w, head_unit, unit) for n, w in zip(t.nums, t.units, strict=True)),
+        )
+        for t in cands
+    }
+    lo, hi = span[claimed]
+    pick = rule.pick if rule is not None else "only"
+    if pick == "max":
+        top = max(h for _, h in span.values())
+        if hi != top:
+            return ValueCheck(
+                "not_extreme", source=tuple(t.raw for t in cands if span[t][1] == top)
+            )
+        lo = hi
+    elif pick == "min":
+        bottom = min(low for low, _ in span.values())
+        if lo != bottom:
+            return ValueCheck(
+                "not_extreme", source=tuple(t.raw for t in cands if span[t][0] == bottom)
+            )
+        hi = lo
+    elif len(set(span.values())) > 1:
+        if rule is not None:
+            return ValueCheck("ambiguous", source=tuple(t.raw for t in cands))
+        notes.append(f"근거 인용에 같은 종류의 숫자가 여럿 — 값 글자 {vt!r} 를 씀")
+    v, eps = float(value), 1e-9
+    if rule is not None:
+        expected = (_fit(lo, rule.round), _fit(hi, rule.round))
+        if expected[0] - eps <= v <= expected[1] + eps:
+            return ValueCheck("ok", expected, (claimed.raw,), tuple(notes))
+        return ValueCheck("mismatch", expected, (claimed.raw,))
+    # 규칙 없는 조절값 — 값 그대로, 또는 정수로 맞춘 값. 시간 단위를 바꾼 값의 반올림·올림은 표시 없이 받고(500ms → 1초),
+    # 그 밖에 정수로 맞춘 것은 승인자 표시 [확정: 2026-11-11 사용자 — 'p50: 8.1' 로 8]
+    if lo - eps <= v <= hi + eps:
+        return ValueCheck("ok", (lo, hi), (claimed.raw,), tuple(notes))
+    converted = unit is not None and any(_time_word(w) for w in claimed.units if w)
+    for x in (lo, hi):
+        if converted and v in (_fit(x, "nearest"), _fit(x, "up")):
+            return ValueCheck("ok", (lo, hi), (claimed.raw,), tuple(notes))
+        if v in (_fit(x, "nearest"), _fit(x, "down"), _fit(x, "up")):
+            notes.append(f"근거 값 글자 {claimed.raw!r} 를 정수로 맞춘 값")
+            return ValueCheck("ok", (lo, hi), (claimed.raw,), tuple(notes))
+    return ValueCheck("mismatch", (lo, hi), (claimed.raw,))
 
 
 def _fit(x: float, how: str) -> float:
@@ -451,50 +579,12 @@ def _fit(x: float, how: str) -> float:
     return x
 
 
-@dataclass(frozen=True)
-class RuleCheck:
-    verdict: Literal["ok", "mismatch", "missing", "ambiguous", "bad_quote"]
-    expected: float | None = None
-    source: tuple[str, ...] = ()  # 규칙이 고른 인용 속 표기
-
-
 def quoted(quote: str, texts: Iterable[str]) -> str | None:
     """인용을 공백 정리해 돌려준다 — 길이가 맞고 자료(1단계 자료·구체 답)에 그대로 있을 때만."""
     q = _norm(quote).strip(" \"'“”‘’…")
     if not MIN_QUOTE <= len(q) <= MAX_QUOTE or not any(q in _norm(t) for t in texts):
         return None
     return q
-
-
-def rule_check(
-    value: HarnessValue,
-    quote: str,
-    texts: Iterable[str],
-    unit: str | None,
-    rule: HarnessRule,
-) -> RuleCheck:
-    """재료 규칙으로 근거 인용에서 값을 다시 계산해 대조한다 — 이름표·단위로 후보를 고르고(labels·units), 여럿이면 pick,
-    조절값 단위로 환산해 round 로 맞춘 값이 계약의 값과 같아야 ok. 인용 속 수가 여럿이어도 규칙이 하나를 고르면 받는다
-    (일반 검사 evidence_check 는 후보가 여럿이면 어느 것이 근거인지 몰라 ambiguous)."""
-    q = quoted(quote, texts)
-    if q is None:
-        return RuleCheck("bad_quote")
-    cands = _rule_candidates(q, rule, unit)
-    amounts = sorted({c.amount for c in cands if c.amount is not None})
-    if not amounts:
-        return RuleCheck("missing")
-    if rule.pick == "only" and len(amounts) > 1:
-        return RuleCheck("ambiguous", source=tuple(c.raw for c in cands))
-    x = amounts[-1] if rule.pick == "max" else amounts[0]
-    src = tuple(c.raw for c in cands if c.amount == x)
-    expected = _fit(x, rule.round)
-    if (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and abs(float(value) - expected) < 1e-9
-    ):
-        return RuleCheck("ok", expected, src)
-    return RuleCheck("mismatch", expected, src)
 
 
 def describe_rule(rule: HarnessRule, unit: str | None) -> str:
@@ -506,37 +596,79 @@ def describe_rule(rule: HarnessRule, unit: str | None) -> str:
     if rule.units:
         parts.append(f"{'·'.join(rule.units)} 단위가 붙은 수")
     if rule.pick != "only":
-        parts.append("여럿이면 가장 " + ("큰" if rule.pick == "max" else "작은") + " 값")
+        parts.append("여럿이면(범위면) 가장 " + ("큰" if rule.pick == "max" else "작은") + " 값")
+    else:
+        parts.append("범위로 적혔으면 범위 안의 값")
     fit = {"exact": "", "nearest": " 반올림", "up": " 올림", "down": " 내림"}[rule.round]
     if unit:
         parts.append(f"{'초' if unit == 's' else unit} 단위로 바꿔" + (fit or " 그대로"))
     elif fit:
         parts.append(f"정수로{fit}")
-    return ", ".join(parts) or "인용 속 값 그대로"
+    return ", ".join(parts)
 
 
-def rule_problem(
-    name: str, value: HarnessValue, quote: str, rule: HarnessRule, got: RuleCheck, unit: str | None
+def value_problem(
+    name: str,
+    value: HarnessValue,
+    quote: str,
+    value_text: str | None,
+    got: ValueCheck,
+    rule: HarnessRule | None,
+    unit: str | None,
 ) -> str:
-    how = describe_rule(rule, unit)
-    if got.verdict == "mismatch" and got.expected is not None:
+    """값 글자 검사 결과 → 재요청 사유 (문장 머리는 'HiddenPlan <조절값>' — builder 실패 사유는 그 앞까지만 싣는다)."""
+    how = describe_rule(rule, unit) if rule is not None else ""
+    vt = (value_text or "").strip()
+    q = quote[:120]
+    src = ", ".join(got.source)
+    if got.verdict == "bad_quote":
         return (
-            f"HiddenPlan {name}={value} 이 근거 인용 {quote[:120]!r} 에서 재료 규칙({how})으로 만든 값 "
-            f"{got.expected:g} 과 다름 (인용의 {', '.join(got.source)}) — 규칙대로 쓰거나, 다른 줄이 근거면 그 줄을 인용"
+            f"HiddenPlan {name}={value} 의 근거 {q!r} 가 자료에 그대로 없음 — 자료·답의 문장을 그대로 인용 "
+            f"({MAX_QUOTE}자 이내, 값이 적힌 부분만)"
+        )
+    if got.verdict == "no_value_text":
+        return (
+            f"HiddenPlan {name} 의 근거 값 글자가 없음 — evidence_value 에 근거 인용 안에서 값이 적힌 글자를 그대로 "
+            "(수와 단위, 범위면 범위째)"
+        )
+    if got.verdict == "bad_value_text":
+        return (
+            f"HiddenPlan {name} 의 근거 값 글자 {vt!r} 가 근거 인용 안의 값 하나(수와 단위)를 가리키지 않음 — "
+            f"인용 {q!r} 안에서 값이 적힌 글자를 그대로 (수와 단위, 범위면 범위째)"
+        )
+    if got.verdict == "no_unit":
+        return (
+            f"HiddenPlan {name} 의 근거 값 글자 {vt!r} 에 시간 단위가 없음 — 절 번호·목록 번호 같은 단위 없는 수는 값이 아니다. "
+            f"인용의 시간 값({src}) 중에서 고른다"
+        )
+    if got.verdict == "wrong_unit":
+        want = (
+            "시간 단위"
+            if unit
+            else f"{'·'.join(rule.units)} 단위"
+            if rule is not None and rule.units
+            else "개수 단위 또는 단위 없는 수"
+        )
+        return f"HiddenPlan {name} 의 근거 값 글자 {vt!r} 의 단위가 이 조절값의 것이 아님 — {want}가 붙은 값을 쓴다"
+    if got.verdict in ("wrong_label", "not_extreme"):
+        return f"HiddenPlan {name} 의 근거 값 글자 {vt!r} 가 재료 규칙({how})의 값이 아님 — " + (
+            f"규칙에 맞는 값: {src}"
+            if src
+            else "이 인용에는 규칙에 맞는 값이 없음 (그 이름표가 붙은 값이 적힌 줄을 인용)"
         )
     if got.verdict == "ambiguous":
         return (
-            f"HiddenPlan {name} 의 근거 인용 {quote[:120]!r} 에 재료 규칙({how})의 값 후보가 여럿({', '.join(got.source)}) — "
-            "그 값이 적힌 부분만 인용"
+            f"HiddenPlan {name} 의 근거 인용 {q!r} 에 재료 규칙({how})의 값 후보가 여럿({src}) — "
+            "그 값만 적힌 부분을 인용"
         )
-    if got.verdict == "missing":
+    if rule is not None:
         return (
-            f"HiddenPlan {name} 의 근거 인용 {quote[:120]!r} 에 재료 규칙({how})의 값이 없음 — "
-            "그 값이 적힌 자료·답 줄을 그대로 인용"
+            f"HiddenPlan {name}={value} 이 근거 값 글자 {vt!r} 를 재료 규칙({how})으로 맞춘 값 "
+            f"{_show(got.expected)} 과 다름 — 그 값을 쓴다"
         )
     return (
-        f"HiddenPlan {name}={value} 의 근거 {quote[:120]!r} 가 자료에 그대로 없음 — 자료·답의 문장을 그대로 인용 "
-        f"({MAX_QUOTE}자 이내, 값이 적힌 부분만)"
+        f"HiddenPlan {name}={value} 이 근거 값 글자 {vt!r} 의 값({_show(got.expected)})과 다름 — "
+        "그 값을 쓴다 (정수 조절값이면 반올림·올림, 시간은 조절값 단위로 바꿔)"
     )
 
 
@@ -605,19 +737,22 @@ def _harness(
         if not p.visible:
             continue
         quote = plan.evidence.get(p.name)
+        vtext = plan.evidence_value.get(p.name)
         rule = (rules or {}).get(p.name)
-        if rule is not None and quote and quote.strip() != NO_EVIDENCE:
+        unit = param_unit(p.name)
+        cited = (
+            value_check(value, quote, vtext, spec.visible_texts, unit, rule)
+            if quote and quote.strip() != NO_EVIDENCE
+            else None
+        )
+        if cited is not None and rule is not None:
             # 재료가 값 만드는 규칙을 적었으면 그 규칙으로만 대조 — 템플릿 표기 패턴·일반 검사보다 숨은 요구가 정한 규칙이 정확하다
-            got = rule_check(value, quote, spec.visible_texts, param_unit(p.name), rule)
-            if got.verdict != "ok":
-                problems.append(rule_problem(p.name, value, quote, rule, got, param_unit(p.name)))
+            if cited.verdict != "ok":
+                problems.append(value_problem(p.name, value, quote or "", vtext, cited, rule, unit))
+            elif cited.notes:
+                flags.append(f"운영 값 {p.name}={value} — {'; '.join(cited.notes)}, 승인자 확인")
             continue
         seen = extract_values(p, spec.visible_texts)
-        cited = (
-            evidence_check(value, quote, spec.visible_texts, param_unit(p.name))
-            if quote and quote.strip() != NO_EVIDENCE
-            else "bad"
-        )
         if seen:
             # 템플릿 표기 패턴이 값을 뽑았으면 그 값(pick)이 정답 — 패턴과 다른 값은 근거가 하나로 분명할 때만 받는다
             allowed = picked_values(p, seen)
@@ -627,28 +762,23 @@ def _harness(
                         f"운영 값 {p.name} 후보가 자료에 여럿({', '.join(allowed)}) — {value} 을 썼음, 승인자 확인"
                     )
                 continue
-            if cited == "ok":
+            if cited is not None and cited.verdict == "ok" and not cited.notes:
                 flags.append(
                     f"운영 값 {p.name}={value} 이 템플릿 표기 패턴의 값({', '.join(allowed)})과 다름 — 근거 인용 {quote!r} 로 받음, 승인자 확인"
                 )
                 continue
             problems.append(
-                f"HiddenPlan {p.name}={value} 이 명세 자료의 값({', '.join(allowed)})과 다름 — 명세 자료의 값을 쓰고 evidence 에 그 값이 적힌 부분만 인용"
+                f"HiddenPlan {p.name}={value} 이 명세 자료의 값({', '.join(allowed)})과 다름 — 명세 자료의 값을 쓰고 evidence 에 그 값이 적힌 "
+                "부분만 인용, evidence_value 에 그 안의 값 글자"
             )
             continue
-        if cited == "ok":
-            continue  # 근거 인용으로 확인
-        if cited == "rounded":
-            flags.append(
-                f"운영 값 {p.name}={value} 은 근거 인용 {quote!r} 의 값을 정수로 맞춘 것 — 승인자 확인"
-            )
+        if cited is not None and cited.verdict == "ok":
+            if cited.notes:  # 정수로 맞춤·같은 종류 값이 여럿·단위 없는 수 — 통과, 승인자 확인
+                flags.append(f"운영 값 {p.name}={value} — {'; '.join(cited.notes)}, 승인자 확인")
             continue
-        if cited == "ambiguous":
-            flags.append(
-                f"운영 값 {p.name}={value} 의 근거 인용에 숫자가 여럿 — {quote!r}, 승인자 확인"
-            )
-            continue
-        if quote and quote.strip() == NO_EVIDENCE:
+        if cited is not None:
+            problems.append(value_problem(p.name, value, quote or "", vtext, cited, None, unit))
+        elif quote and quote.strip() == NO_EVIDENCE:
             # 시간 조절값인데 자료에 단위를 환산해 그 값이 되는 줄이 있으면 막지 않고 승인자에게 — 2026-11-10 nplus1-i: 자료의
             # '응답 p99 ≤ 800 ms' 로 request_timeout_s=1 을 맞게 정하고도 '시간 초과 값' 이 따로 없다며 근거를 세 번 다 '없음'으로 썼다
             matched = timed_matches(p.name, value, spec.visible_texts)
@@ -664,15 +794,10 @@ def _harness(
                     "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"
                 )
             # 선택 조절값의 '없음'은 보정(plan_contract.fit_unevidenced)이 먼저 뺀다 — 검사 가지를 두지 않는다 (#179: 닿지 않던 검사)
-        elif quote:
-            problems.append(
-                f"HiddenPlan {p.name}={value} 의 근거 {quote[:120]!r} 가 자료에 그대로 없거나 값이 그 안에 없음 — "
-                f"자료·답의 문장을 그대로 인용하고 그 안의 값을 쓴다 ({MAX_QUOTE}자 이내, 값이 적힌 부분만)"
-            )
         else:
             problems.append(
-                f"공개 조절값 {p.name}={value} 의 근거가 없음 — evidence 에 그 값이 적힌 자료·답 문장을 그대로 적는다 "
-                f'(자료에 없으면 "{NO_EVIDENCE}")'
+                f"공개 조절값 {p.name}={value} 의 근거가 없음 — evidence 에 그 값이 적힌 자료·답 문장을 그대로, evidence_value 에 "
+                f'그 안의 값 글자를 적는다 (자료에 없으면 evidence 에 "{NO_EVIDENCE}")'
             )
     return problems, gaps, flags
 
