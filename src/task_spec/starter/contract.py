@@ -2008,6 +2008,64 @@ def _owned(form: UiElement, el: UiElement) -> bool:
     )
 
 
+# 입력하는 동안 요청이 나갈 수 있는 입력란 — 요청 시점이 판정을 가르므로 조작을 짐작하지 않는다 (2026-11-09 수량 입력)
+_LIVE_INPUT = re.compile(r"검색|search|필터|filter|자동|실시간|즉시|debounce|query", re.I)
+_FIELD_ACTION = "값을 입력한다 — 제출하기 전에는 요청이 나가지 않는다"  # _field_element 가 만드는 입력란과 같은 문장
+
+
+def fit_field_actions(contract: TaskContract) -> tuple[TaskContract, list[str]]:
+    """조작 방법(action)이 빠진 글자·숫자 입력란 — 같은 화면(폼이 여럿이면 그 폼)에서 요청을 보내는 제출 대상(API)이 하나뿐이면
+    '제출하기 전에는 요청 없음'으로 코드가 채운다. 폼과 그 제출 버튼이 같은 API 를 말하면 하나로 센다.
+
+    2026-11-15 c0df 재빌드(React v13 검증): 로그인 화면 입력란 login-email·login-password 에 조작 방법이 없어 재요청 뒤에도 계약이 막혔다
+    (제출은 로그인 요청 하나). 검색·필터·자동 저장처럼 입력하는 동안 요청이 나갈 수 있는 입력란, 제출 대상이 없거나 여럿인 화면은
+    짐작하지 않는다 — 검사(_ui_actions)가 다시 묻는다."""
+    if contract.interface_kind != "ui":
+        return contract, []
+
+    def target(el: UiElement) -> tuple[str, str] | None:
+        if el.role == "form":
+            e = _form_endpoint(contract, el)
+            return (e.method, _route_shape(e.path)) if e is not None else None
+        if el.role == "button":
+            hit = api_mentions(el.action or "")
+            return (hit[0][0], _route_shape(hit[0][1])) if hit else None
+        return None
+
+    notes: list[str] = []
+    screens = []
+    for sc in contract.screens:
+        forms = [el for el in sc.elements if el.role == "form"]
+        filled: list[str] = []
+        elements = []
+        for el in sc.elements:
+            if (
+                el.role in ("input", "textbox")
+                and not (el.action or "").strip()
+                and not _LIVE_INPUT.search(f"{el.test_id} {el.description}")
+            ):
+                own = [f for f in forms if _owned(f, el)]
+                scope = [
+                    x for x in sc.elements if not own or x in own or any(_owned(f, x) for f in own)
+                ]
+                targets = {t for x in scope if (t := target(x)) is not None}
+                if len(targets) == 1:
+                    el = el.model_copy(update={"action": _FIELD_ACTION})
+                    filled.append(el.test_id)
+            elements.append(el)
+        if filled:
+            notes.append(
+                f"화면 {sc.route} 의 입력란 {', '.join(filled)} 에 조작 방법이 없어 '{_FIELD_ACTION}' 으로 채움 "
+                "(요청을 보내는 제출 대상이 하나)"
+            )
+            screens.append(sc.model_copy(update={"elements": elements}))
+        else:
+            screens.append(sc)
+    if not notes:
+        return contract, []
+    return contract.model_copy(update={"screens": screens}), notes
+
+
 def fit_forms(contract: TaskContract) -> tuple[TaskContract, list[str]]:
     """ui 계약의 폼 — 입력란·제출 버튼이 요소로 없으면 폼의 조작에 적힌 제출 요청(메서드·경로)의 요청 칸에서 코드가 채운다.
 

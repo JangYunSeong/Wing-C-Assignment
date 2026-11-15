@@ -43,6 +43,7 @@ from task_spec.starter.contract import (
     evidence_fragment,
     field_style,
     fit_covers,
+    fit_field_actions,
     fit_forms,
     fit_traps,
     hidden_terms,
@@ -511,6 +512,11 @@ def fit_output(
     )  # 폼 입력란·제출 버튼 — 폼이 적은 제출 요청의 칸에서
     out = out.model_copy(update={"contract": formed})
     notes += form_notes
+    acted, act_notes = fit_field_actions(
+        out.contract
+    )  # 조작 방법이 빠진 입력란 — 제출 요소가 하나뿐인 화면만 (폼 보정이 만든 입력란 뒤에)
+    out = out.model_copy(update={"contract": acted})
+    notes += act_notes
     trapped, trap_notes = fit_traps(
         out.hidden_plan, spec
     )  # 사유 코드를 적은 trap_id → 숨김 수용 기준의 숨은 요구

@@ -151,7 +151,13 @@ def test_feature_stage1_needs_only_two_distractors() -> None:
     assert not [p for p in check_feature(out, _seed_ctx()) if "방해(distractor)" in p]
     d["artifacts"][5]["role"] = "key"  # 방해 1 → 걸림
     out = fill_from_seed(DraftFeatureOutputV2.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
-    assert [p for p in check_feature(out, _seed_ctx()) if "방해(distractor) 2개" in p]
+    hit = [p for p in check_feature(out, _seed_ctx()) if "방해(distractor) 2개" in p]
+    # 2026-11-15 알파(N+1 kb005): 기준만 알려 주니 재요청도 방해 1개 — 지금 개수와 고칠 방법을 함께
+    assert (
+        hit
+        and "지금 핵심 4개·보조 1개·방해 1개" in hit[0]
+        and "방해(distractor)를 1개 더" in hit[0]
+    )
 
 
 async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.MonkeyPatch) -> None:
