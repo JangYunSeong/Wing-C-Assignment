@@ -538,7 +538,7 @@ def _llm(**over: list[Completion]) -> tuple[LLMClient, RoutedBackend]:
         "gen_accepted": [SVC],
     } | over
     backend = RoutedBackend(**routes)
-    return LLMClient({"opencode": backend, "openai": backend}, sleep=_no_sleep), backend  # type: ignore[dict-item]
+    return LLMClient({"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep), backend  # type: ignore[dict-item]
 
 
 async def _no_sleep(_: float) -> None:

@@ -26,6 +26,9 @@ class BuilderSettings(BaseSettings):
     openai_api_key: SecretStr
     opencode_api_key: SecretStr
     opencode_base_url: str
+    # 돌연변이 생성기(gen_variant — 빌드 관문 ⑩·손 시범 유효성)는 Gemini [2026-11-15 사용자]. 없으면 gemini: 모델 프롬프트 호출이 실패한다
+    gemini_api_key: SecretStr | None = None
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     llm_timeout_seconds: float = Field(default=300.0, gt=0)
     prompts_dir: Path = Path("prompts")
     incidents_dir: Path = Path("incidents/public_v1")

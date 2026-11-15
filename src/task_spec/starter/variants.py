@@ -135,6 +135,35 @@ def changed_hunks(before: str, after: str) -> int:
     return sum(1 for tag, *_ in ops.get_opcodes() if tag != "equal")
 
 
+_WORD = re.compile(r"\w+|\W")
+
+
+def renamed(before: str, after: str) -> set[tuple[str, str]] | None:
+    """바뀐 곳이 모두 '한 낱말을 다른 낱말로 바꾼 줄'이면 그 (전, 후) 낱말 쌍들, 아니면 None.
+
+    이름 하나를 바꾸면 선언과 부르는 곳이 함께 바뀐다 — 2026-11-15 손 시범 retry-ae1005: 정렬이 Spring Data 파생 메서드 이름
+    `findByMemberIdOrderByCreatedAtDesc` 에 있어 Asc 로 바꾸려면 저장소 선언과 호출 두 곳을 같이 고쳐야 했고, '한 곳만' 규칙에 매번
+    버려져 정렬 요구(r2)를 잴 변형이 하나도 없었다 (빌드 관문 ⑩ 에서도)."""
+    pairs: set[tuple[str, str]] = set()
+    a, b = before.splitlines(), after.splitlines()
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag != "replace" or i2 - i1 != j2 - j1:
+            return None
+        for old, new in zip(a[i1:i2], b[j1:j2], strict=True):
+            x, y = _WORD.findall(old), _WORD.findall(new)
+            diff = [(p, q) for p, q in zip(x, y, strict=False) if p != q]
+            if (
+                len(x) != len(y)
+                or len(diff) != 1
+                or not (diff[0][0].isidentifier() and diff[0][1].isidentifier())
+            ):
+                return None
+            pairs.add(diff[0])
+    return pairs
+
+
 def changed_lines(before: str, after: str) -> int:
     """바꾼 줄 수 — 지운 줄과 더한 줄 중 많은 쪽 (한 줄 고침 = 1)."""
     minus = plus = 0
@@ -175,6 +204,7 @@ def build_variants(
     for v in out.variants:
         why: str | None = None
         changed = hunks = 0
+        renames: set[tuple[str, str]] | None = set()
         for f in v.files:
             if f.path not in impl:
                 why = f"정답 구현에 없는 파일 {f.path} (변형은 있는 앱 파일만 바꾼다)"
@@ -184,9 +214,12 @@ def build_variants(
                 break
             changed += changed_lines(impl[f.path], f.content)
             hunks += changed_hunks(impl[f.path], f.content)
+            got = renamed(impl[f.path], f.content)
+            renames = None if renames is None or got is None else renames | got
         if why is None and changed == 0:
             why = "정답 구현과 같음"
-        if why is None and hunks > 1:
+        # 같은 이름 하나를 선언·부르는 곳에서 함께 바꾼 것은 한 곳 — 낱말 쌍이 하나뿐일 때만 (서로 다른 곳을 고친 것과 가른다)
+        if why is None and hunks > 1 and not (renames is not None and len(renames) == 1):
             # 1차 변이 — 한 곳만 어긴다. 여러 곳을 함께 바꾸면 한 곳의 확인에 걸려 다른 곳의 빈틈이 가려진다
             # (2026-11-13 N+1: '이름 null + 개수 0' 변형이 이름 확인에 잡혀 '개수만 0' 인 구현이 통과하는 빈틈을 못 봤다)
             why = f"바꾼 곳 {hunks}군데 (한 곳만 — 같은 규칙이 여러 곳에 있으면 곳마다 따로)"
