@@ -71,10 +71,11 @@ async def test_empty_response_retries_with_low_effort() -> None:
     assert r.provenance.params["reasoning_effort"] == "low"
 
 
-async def test_empty_response_twice_raises() -> None:
-    fake = FakeBackend().push(Completion(""), Completion(""))
+async def test_empty_response_resamples_up_to_the_limit_then_raises() -> None:
+    fake = FakeBackend().push(*[Completion("")] * (MAX_RESAMPLES + 1))
     with pytest.raises(EmptyResponse):
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert len(fake.calls) == MAX_RESAMPLES + 1
 
 
 async def test_transient_errors_backoff_then_succeed() -> None:
@@ -305,9 +306,14 @@ async def test_default_path_last_resample_can_succeed() -> None:
     assert len(r.parsed.claims) == 1 and r.provenance.retries == MAX_RESAMPLES
 
 
-async def test_empty_without_truncation_keeps_old_behavior() -> None:
-    # 잘리지 않은 빈 응답(이미 low) → 다시 부르지 않고 바로 EmptyResponse (예전 그대로)
+async def test_empty_without_truncation_is_resampled_too() -> None:
+    # 2026-11-15: 잘리지 않은 빈 응답(finish=stop)은 재시도 없이 바로 실패해 알파 둘이 생성기와 무관하게 떨어졌다 — 같은 설정으로 다시
     fake = FakeBackend().push(Completion("", Usage(500, 10, 0), "stop"), Completion(GOOD))
+    r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert len(r.parsed.claims) == 1 and len(fake.calls) == 2 and r.provenance.retries == 1
+    assert fake.calls[0][1] == fake.calls[1][1]  # 같은 설정
+    # 내용 필터는 같은 입력에 같은 결정 — 다시 부르지 않는다
+    fake = FakeBackend().push(Completion("", Usage(500, 0, 0), "content_filter"), Completion(GOOD))
     with pytest.raises(EmptyResponse):
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert len(fake.calls) == 1
@@ -315,10 +321,12 @@ async def test_empty_without_truncation_keeps_old_behavior() -> None:
 
 async def test_empty_response_says_how_the_last_call_ended() -> None:
     # 2026-11-15 운영 계약 실패: 빈 응답이 잘림인지 그냥 빈 답인지 builder 로그를 봐야 알 수 있었다
-    fake = FakeBackend().push(Completion("", Usage(500, 10, 0), "stop"))
+    # (잘리지 않은 빈 응답도 같은 설정으로 다시 부른다 — 다 비면 마지막 끝 이유와 재시도 사유가 예외에 남는다)
+    fake = FakeBackend().push(*[Completion("", Usage(500, 10, 0), "stop")] * (MAX_RESAMPLES + 1))
     with pytest.raises(EmptyResponse) as ei:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert ei.value.finish_reason == "stop" and "finish_reason=stop" in str(ei.value)
+    assert "empty_resample->resample" in str(ei.value)
     fake = FakeBackend().push(*[TRUNC_EMPTY] * (MAX_RESAMPLES + 1))
     with pytest.raises(EmptyResponse) as ei:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)

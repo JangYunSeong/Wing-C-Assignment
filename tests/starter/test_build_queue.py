@@ -10,7 +10,8 @@ from datetime import timedelta
 
 import pytest
 
-from task_spec.schemas.build_record import StarterFile, next_stage_log
+from task_spec.schemas.build import RepairRecord
+from task_spec.schemas.build_record import BuildFailure, StarterFile, next_stage_log
 from task_spec.starter.store import (
     LEASE_EXPIRED,
     SUPERSEDED,
@@ -158,6 +159,21 @@ async def test_fail_keeps_a_short_reason_only() -> None:
     got = await s.fail(b.build_id, "가상 사유\n" + "x" * 1000)
     assert got.status == "failed" and got.error is not None and len(got.error) == 300
     assert "\n" not in got.error and got.lease_until is None
+
+
+async def test_fail_keeps_what_the_build_made() -> None:
+    """실패 빌드 기록(계약·숨은 계획·표시·수리) — 주면 남기고, 안 주면(계약 전 실패) 비운다."""
+    s = _store()
+    await s.request_build(CID, "a", AT)
+    b = await s.claim("w1", 60, AT)
+    assert b is not None
+    rec = RepairRecord(gate="⑤", target="gen_public", reason="가상 수리", result="skipped")
+    got = await s.fail(b.build_id, "가상 실패", detail=BuildFailure(repairs=[rec]))
+    assert got.failure is not None and got.failure.repairs == [rec] and got.outcome is None
+    await s.request_build(CID, "a", AT)
+    b2 = await s.claim("w1", 60, AT)
+    assert b2 is not None
+    assert (await s.fail(b2.build_id, "가상 실패")).failure is None
 
 
 async def test_daily_budget_stops_claiming() -> None:

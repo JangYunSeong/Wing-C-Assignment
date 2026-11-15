@@ -14,6 +14,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from task_spec.schemas.build import RepairRecord
+from task_spec.schemas.build_record import BuildFailure
 from task_spec.spec.store import CommonKey, CommonTaskStore
 from task_spec.starter.store import (
     LEASE_EXPIRED,
@@ -199,8 +201,17 @@ async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: En
             await store.put_files(
                 b.build_id, [StarterFile.of(b.build_id, "readme", README_PATH, "# 가상")]
             )
-            failed = await store.fail(b.build_id, "가상 실패")
+            rec = RepairRecord(gate="⑤", target="gen_public", reason="가상 수리", result="skipped")
+            failed = await store.fail(
+                b.build_id,
+                "가상 실패",
+                detail=BuildFailure(review_flags=["가상 표시"], repairs=[rec]),
+            )
             assert failed.status == "failed"
+            # 실패 빌드 기록 — builder 역할이 결과 칸에 쓰고, 다시 읽으면 outcome 이 아니라 failure 로
+            again = await store.get(b.build_id)
+            assert again is not None and again.outcome is None and again.failure is not None
+            assert again.failure.repairs == [rec] and again.failure.review_flags == ["가상 표시"]
             # 묶음 확정 (#130) — 승인은 API(표 주인)가, 확정은 builder 역할이
             appr = await _approved_request(env, await env.feature_task(prompt=9))
             assert appr in [x.build_id for x in await store.pending_finalize()]

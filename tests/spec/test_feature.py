@@ -17,7 +17,7 @@ from task_spec.prompting import PromptRegistry
 from task_spec.schemas import ApprovalDecision, DraftFeatureOutput, TaskItem
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.common import FEATURE_DEBUG_MIN
-from task_spec.spec.draft import FLAG_DRAFT_INVALID, DraftResult
+from task_spec.spec.draft import FLAG_DRAFT_INVALID, FLAG_DRAFT_REPAIRED, DraftResult
 from task_spec.spec.feature import (
     apply_feature,
     check_feature,
@@ -271,6 +271,29 @@ async def test_draft_feature_reasks_then_repairs() -> None:
     res = await draft_feature_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
     assert len(fake.calls) == 2 and res.output is not None
     assert any(f.startswith(FLAG_DRAFT_INVALID) for f in res.flags)
+
+
+async def test_repaired_format_clarification_is_not_a_failure() -> None:
+    """2026-11-15 손 시범 seats-ae1029: 재요청 뒤에도 단서 아닌 추가 요구가 응답 형식을 정해(c3 '차감 실패 시 응답 형식') 고쳐 쓰기가
+    지웠는데, 지우기 전 문제로 '자동 검증 실패' 가 붙어 명세 실패로 셌다 — 다시 검사해 풀렸으면 '코드가 고침' 만."""
+    bad = copy.deepcopy(_fdraft())
+    bad["clarifications"].append(
+        {
+            "clarification_id": "c3",
+            "topic": "차감 실패 시 응답 형식",
+            "answer": "409 와 사유 코드를 돌려준다",
+            "reveals": [],
+        }
+    )
+    fake = FakeBackend().push(
+        Completion(json.dumps(bad, ensure_ascii=False)),
+        Completion(json.dumps(bad, ensure_ascii=False)),
+    )
+    res = await draft_feature_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    assert len(fake.calls) == 2 and res.output is not None
+    assert [c.clarification_id for c in res.output.clarifications] == ["c1", "c2"]
+    assert not any(f.startswith(FLAG_DRAFT_INVALID) for f in res.flags), res.flags
+    assert any(f.startswith(FLAG_DRAFT_REPAIRED) and "c3" in f for f in res.flags)
 
 
 async def test_node_drafts_feature_when_reviewer_asks(monkeypatch: pytest.MonkeyPatch) -> None:

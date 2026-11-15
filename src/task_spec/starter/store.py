@@ -49,6 +49,7 @@ from task_spec.schemas.build_record import (
     ERROR_MAX,
     README_PATH,
     BuildArtifact,
+    BuildFailure,
     BuildOutcome,
     BuildRecord,
     Delivery,
@@ -574,7 +575,15 @@ class BuildRepo(Protocol):
         self, build_id: str, stage: str, cost_usd: float = 0.0
     ) -> BuildRecord: ...
 
-    async def fail(self, build_id: str, reason: str, at: datetime | None = None) -> BuildRecord: ...
+    async def fail(
+        self,
+        build_id: str,
+        reason: str,
+        at: datetime | None = None,
+        detail: BuildFailure | None = None,
+    ) -> BuildRecord:
+        """failed 로 — detail 이 있으면 끝까지 가지 못한 데까지의 계약·숨은 계획·표시·수리 기록도 남긴다."""
+        ...
 
     async def recover_expired(
         self, at: datetime | None = None, max_attempts: int = 2
@@ -887,7 +896,13 @@ class InMemoryBuildStore:
         log = next_stage_log(build.stage_log, stage, cost, datetime.now(UTC), build.attempt)
         return self._put(build, stage=stage, cost_usd=build.cost_usd + cost, stage_log=log)
 
-    async def fail(self, build_id: str, reason: str, at: datetime | None = None) -> BuildRecord:
+    async def fail(
+        self,
+        build_id: str,
+        reason: str,
+        at: datetime | None = None,
+        detail: BuildFailure | None = None,
+    ) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         check_transition(build, "failed")
         return self._put(
@@ -896,6 +911,7 @@ class InMemoryBuildStore:
             error=_reason(reason),
             finished_at=at or datetime.now(UTC),
             lease_until=None,
+            failure=detail if detail is not None else build.failure,
         )
 
     async def recover_expired(
@@ -914,6 +930,7 @@ class InMemoryBuildStore:
                         b,
                         status="pending",
                         outcome=None,
+                        failure=None,
                         worker=None,
                         lease_until=None,
                         stage=None,
@@ -1020,6 +1037,20 @@ class PgBuildStore:
                 review_flags=list(r["review_flags"]),
                 repairs=[RepairRecord.model_validate(x) for x in r["repairs"]],
             )
+        failure = None
+        if (
+            outcome is None
+            and r["status"] == "failed"
+            and (r["contract"] is not None or r["hidden_plan"] is not None or r["repairs"])
+        ):
+            failure = BuildFailure(
+                contract=TaskContract.model_validate(r["contract"]) if r["contract"] else None,
+                hidden_plan=HiddenPlan.model_validate(r["hidden_plan"])
+                if r["hidden_plan"]
+                else None,
+                review_flags=list(r["review_flags"]),
+                repairs=[RepairRecord.model_validate(x) for x in r["repairs"]],
+            )
         return BuildRecord(
             build_id=r["id"],
             common_id=r["common_id"],
@@ -1027,6 +1058,7 @@ class PgBuildStore:
             status=r["status"],
             ontology_version=r["ontology_version"],
             outcome=outcome,
+            failure=failure,
             review_decisions=[ReviewDecision.model_validate(x) for x in r["review_decisions"]],
             created_at=r["created_at"],
             approved_by=r["approved_by"],
@@ -1578,18 +1610,41 @@ class PgBuildStore:
             r = await cur.fetchone()
         return self._build(r)  # type: ignore[arg-type]
 
-    async def fail(self, build_id: str, reason: str, at: datetime | None = None) -> BuildRecord:
+    async def fail(
+        self,
+        build_id: str,
+        reason: str,
+        at: datetime | None = None,
+        detail: BuildFailure | None = None,
+    ) -> BuildRecord:
         async with (
             self._pool.connection() as conn,
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
             check_transition(await self._locked(cur, build_id), "failed")
-            await cur.execute(
-                "UPDATE public.common_task_build SET status = 'failed', error = %s, "
-                "finished_at = COALESCE(%s, now()), lease_until = NULL WHERE id = %s RETURNING *",
-                (_reason(reason), at, build_id),
-            )
+            if detail is None:
+                await cur.execute(
+                    "UPDATE public.common_task_build SET status = 'failed', error = %s, "
+                    "finished_at = COALESCE(%s, now()), lease_until = NULL WHERE id = %s RETURNING *",
+                    (_reason(reason), at, build_id),
+                )
+            else:  # 성공 빌드의 결과 칸과 같은 칸 — template_ref 는 비워 두므로 읽을 때 outcome 이 아니라 failure 로
+                d = detail.model_dump(mode="json")
+                await cur.execute(
+                    "UPDATE public.common_task_build SET status = 'failed', error = %s, "
+                    "finished_at = COALESCE(%s, now()), lease_until = NULL, contract = %s, hidden_plan = %s, "
+                    "review_flags = %s, repairs = %s WHERE id = %s RETURNING *",
+                    (
+                        _reason(reason),
+                        at,
+                        Jsonb(d["contract"]) if d["contract"] is not None else None,
+                        Jsonb(d["hidden_plan"]) if d["hidden_plan"] is not None else None,
+                        Jsonb(d["review_flags"]),
+                        Jsonb(d["repairs"]),
+                        build_id,
+                    ),
+                )
             r = await cur.fetchone()
         return self._build(r)  # type: ignore[arg-type]
 
