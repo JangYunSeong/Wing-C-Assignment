@@ -40,7 +40,7 @@ from task_spec.schemas import (
     Provenance,
     VerifyReport,
 )
-from task_spec.schemas.build import HiddenPlan, RepairRecord
+from task_spec.schemas.build import HiddenPlan, RepairRecord, TaskContract
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
 from task_spec.starter.hidden_helpers import code_written_paths
@@ -438,6 +438,20 @@ class BuildOutcome:
 
 
 VARIANT_GATE = "⑩"  # 공개 테스트 변별 (#164)
+
+
+def new_api_tests(contract: TaskContract) -> set[str]:
+    """새 API 에만 걸린 공개 테스트 id — 시작 코드로 통과하면 새 기능이 들어 있다 (수리 ②', 2026-11-15 손 시범 coupons).
+    이미 있는 API(existing)가 하나도 없으면 공개 테스트 전부. 있으면 그 공개 수용 기준(ac_id)을 refs 에 둔 엔드포인트가 모두 새 API 인 것만
+    (엔드포인트 refs 가 r* 만이면 어느 API 의 테스트인지 몰라 세지 않는다 — 지금처럼 표시)."""
+    if not any(e.existing for e in contract.endpoints):
+        return {t.test_id for t in contract.public_tests}
+    out: set[str] = set()
+    for t in contract.public_tests:
+        eps = [e for e in contract.endpoints if t.ac_id in e.refs]
+        if eps and not any(e.existing for e in eps):
+            out.add(t.test_id)
+    return out
 
 
 def _pt_ac(b: BuildInputs) -> dict[str, str]:
@@ -1077,6 +1091,7 @@ async def build_and_repair(
                 feature_reasons=b.seed.reasons if b.seed is not None else (),
                 regen_log=out.regen_log,
                 passed_before=out.passed_before,
+                new_tests=new_api_tests(b.contract),
             )
             for (
                 flag

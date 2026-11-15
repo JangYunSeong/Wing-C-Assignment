@@ -1265,3 +1265,37 @@ def test_timed_hints_show_the_lines_the_check_accepts() -> None:
     hits = timed_matches("request_timeout_s", 1, texts)  # 700 ms → 1 초 (올림)
     assert hits and all(h in timed_hints("request_timeout_s", texts) for h in hits)
     assert len(timed_hints("request_timeout_s", texts)) == 7 <= TIMED_CANDIDATES
+
+
+def test_an_api_the_spec_adds_must_not_be_marked_existing() -> None:
+    """2026-11-15 손 시범: coupons 는 r1 '…API를 추가한다' 인데 계약이 그 API 를 existing 으로 적어 시작 코드가 차감을 다 구현했고,
+    retry 는 r1 'POST /api/v1/charges 엔드포인트를 구현한다' 의 언급 때문에 두 API 가 '이미 있는 API' 로 셈해졌다."""
+    from task_spec.starter.contract import _added_marked_existing, added_apis, existing_endpoints
+
+    c = TaskContract.model_validate(_contract())
+    e = c.endpoints[0]
+    api = f"{e.method} {e.path}"
+    add = f"{api} 엔드포인트를 구현한다"
+    spec = _spec(req_texts={"r1": add}, public_texts=(add,))
+    marked = c.model_copy(
+        update={
+            "endpoints": [
+                e.model_copy(update={"existing": True, "refs": ["r1", *e.refs]}),
+                *c.endpoints[1:],
+            ]
+        }
+    )
+    assert any("existing(이미 있는 API)" in p for p in _added_marked_existing(marked, spec))
+    assert not _added_marked_existing(c, spec)  # existing 이 아니면 그대로
+    # 새로 만든다는 문장의 언급은 '이미 있는 API' 근거가 아니다 — 고치는 문장의 언급은 그대로 근거
+    assert added_apis([add]) and e.path not in [x.path for x in existing_endpoints(c, spec)]
+    keep = f"기존 {api} 응답에 칸을 더한다"
+    kept = _spec(req_texts={"r1": keep}, public_texts=(keep,))
+    assert e.path in [x.path for x in existing_endpoints(c, kept)]
+    # 같은 요구를 가리키는 새 API 가 있으면 추가되는 것은 그쪽 (2026-11-15 N+1: 단건 조회는 정말 이미 있는 API)
+    other = e.model_copy(
+        update={"endpoint_id": "e9", "path": e.path + "/list", "existing": False, "refs": ["r1"]}
+    )
+    both = marked.model_copy(update={"endpoints": [*marked.endpoints, other]})
+    add2 = "목록을 돌려주는 GET 엔드포인트를 추가한다"
+    assert not _added_marked_existing(both, _spec(req_texts={"r1": add2}, public_texts=(add2,)))
