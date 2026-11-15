@@ -27,7 +27,18 @@ OUT = Path(os.environ.get("GRADE_OUT", "/out"))
 WORK = Path(os.environ.get("GRADE_WORK", "/tmp/grade-work"))
 REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
 ASSERTION = {"AssertionError", "AssertionFailedError", "MultipleFailuresError"}
+# 건너뛴 테스트 — 판정하지 않은 것이라 통과로 세지 않는다 (#173: 조건부 건너뛰기가 검증을 지나 채점에서 통과로 기록될 수 있었다)
+SKIPPED = "테스트를 건너뜀 — 판정하지 않았으므로 통과가 아니다"
 BOOT = ("Failed to load ApplicationContext", "ApplicationContext failure threshold")
+# 실행 정의 — 과제 생성 검증(starter/verify/gradle.py)도 이것을 쓴다 (#174: 검증은 `sh ./gradlew`, 채점은 실행 비트에
+# 기대는 `./gradlew` 로 갈려 있었다). 테스트 도구는 비대화·색 없이 — 로그에서 판정 문구를 읽는다.
+TEST_ENV = {"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"}
+GRADLE_ARGS = ("--offline", "--console=plain", "--no-daemon", "--continue")
+
+
+def gradle_command(task: str = "test") -> list[str]:
+    """`sh ./gradlew` — 실행 비트 없이 (제출물·조립 폴더의 gradlew 권한에 기대지 않는다)."""
+    return ["sh", "./gradlew", task, *GRADLE_ARGS]
 
 
 def prepare(cfg: dict) -> None:
@@ -47,7 +58,6 @@ def prepare(cfg: dict) -> None:
             (WORK / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, WORK / rel)
     shutil.copytree(OVERLAY, WORK, dirs_exist_ok=True)  # 숨은·공개 테스트·하네스·조절값
-    (WORK / "gradlew").chmod(0o755)
 
 
 def run_tests(cfg: dict, log: Path) -> tuple[int | None, float]:
@@ -57,6 +67,7 @@ def run_tests(cfg: dict, log: Path) -> tuple[int | None, float]:
             proc = subprocess.run(
                 cfg["test_command"],
                 cwd=WORK,
+                env=os.environ | TEST_ENV,
                 stdout=fh,
                 stderr=subprocess.STDOUT,
                 timeout=cfg["timeout_s"],
@@ -68,33 +79,98 @@ def run_tests(cfg: dict, log: Path) -> tuple[int | None, float]:
     return code, round(time.monotonic() - t0, 1)
 
 
-def junit(results: Path, classes: dict[str, str]) -> list[dict]:
-    """클래스마다 결과 하나 (첫 실패를 대표로) — gradle_verify.junit_results 와 같은 판정."""
-    out: list[dict[str, str | None]] = []
+def failed_line(trace: str, simple: str, sources: Path | None = None) -> str:
+    """실패 스택에서 그 테스트 클래스 파일의 첫 프레임 → 'Pt3Test.java:27 `assertThat(found).isTrue();`' (코드는 sources 가 있을 때)."""
+    m = re.search(rf"\(({re.escape(simple)}\.java):(\d+)\)", trace)
+    if m is None:
+        return ""
+    where = f"{m.group(1)}:{m.group(2)}"
+    if sources is not None:
+        for f in sources.rglob(m.group(1)):
+            lines = f.read_text("utf-8", errors="ignore").splitlines()
+            n = int(m.group(2))
+            if 0 < n <= len(lines):
+                where += f" `{lines[n - 1].strip()}`"
+            break
+    return where[:300]
+
+
+def junit_suites(results: Path) -> list[tuple[str, list[dict[str, str]]]]:
+    """Gradle JUnit XML → 보고서(테스트 클래스)마다 (클래스 이름, 메서드 결과들). 메서드 결과 = {name, outcome, type, message, trace},
+    outcome: pass · failure(<failure>·<error> — type 으로 단언 실패인지 가린다) · skipped(@Disabled·assume — 판정하지 않았으므로 통과가
+    아니다, #173). 채점(`junit` — 클래스마다 하나로)과 손 시범 채점(eval/pilot/grade.py — 메서드마다)이 같은 판독을 쓴다."""
+    out: list[tuple[str, list[dict[str, str]]]] = []
     for xml in sorted(results.glob("TEST-*.xml")):
-        root = ET.parse(xml).getroot()
-        classname = root.get("name", xml.stem)
-        first = None
+        root = ET.parse(xml).getroot()  # Gradle 이 쓴 보고서 (값은 이스케이프됨)
+        suite = root.get("name", xml.stem)
+        by_class: dict[
+            str, list[dict[str, str]]
+        ] = {}  # Gradle 은 클래스마다 보고서 하나 — 여럿이 섞여도 클래스별로
         for tc in root.iter("testcase"):
-            classname = tc.get("classname", classname)
+            row = {
+                "name": tc.get("name", ""),
+                "outcome": "pass",
+                "type": "",
+                "message": "",
+                "trace": "",
+            }
             bad = tc.find("failure")
             if bad is None:
                 bad = tc.find("error")
-            if bad is not None and first is None:
-                first = (bad.get("type", ""), bad.get("message", "") or (bad.text or ""))
+            if bad is not None:
+                row.update(
+                    outcome="failure",
+                    type=bad.get("type", ""),
+                    message=bad.get("message", "") or (bad.text or ""),
+                    trace=bad.text or "",
+                )
+            elif (sk := tc.find("skipped")) is not None:
+                row.update(outcome="skipped", type="skipped", message=sk.get("message", "") or "")
+            by_class.setdefault(tc.get("classname", suite), []).append(row)
+        out += list(by_class.items()) or [(suite, [])]
+    return out
+
+
+def group_of(classname: str) -> str:
+    """테스트 클래스의 자리 — hidden(채점 케이스) · public(공개 테스트) · selftest(하네스 자체 점검) · existing(그 밖 — 시작 코드의 기존 테스트)."""
+    if ".grading.cases." in classname:
+        return "hidden"
+    if ".publictests." in classname:
+        return "public"
+    if ".grading." in classname:
+        return "selftest"
+    return "existing"
+
+
+def junit(
+    results: Path, classes: dict[str, str], locate: bool = False, sources: Path | None = None
+) -> list[dict]:
+    """Gradle JUnit XML → 클래스마다 결과 하나 (첫 실패를 대표로, 실패가 없고 건너뛴 것이 있으면 그것을): {group, name, result, reason, message[, at]}.
+    과제 생성 검증(verify/gradle.junit_results)과 채점이 같은 판정을 쓴다 (#174). classes: 클래스 이름 → 결과 이름 — 채점은 숨은·공개
+    모두 케이스 id(hc1·pt1)로, 검증은 숨은 것만 (공개는 클래스 이름 — 수리·관문이 공개 테스트 파일의 클래스 이름과 대조한다).
+    locate: 실패한 줄(테스트 파일:줄, sources 가 있으면 그 줄의 코드까지)을 at 에 — 과제 생성 검증의 수리 안내용, 채점은 끈다."""
+    out: list[dict[str, str | None]] = []
+    for classname, cases in junit_suites(results):
+        first: tuple[str, str, str] | None = next(
+            ((c["type"], c["message"], c["trace"]) for c in cases if c["outcome"] == "failure"),
+            None,
+        )
+        if first is None:
+            first = next(
+                (
+                    ("skipped", f"{SKIPPED}: {c['name']} {c['message']}".strip(), "")
+                    for c in cases
+                    if c["outcome"] == "skipped"
+                ),
+                None,
+            )
         simple = classname.rsplit(".", 1)[-1]
-        if ".grading.cases." in classname:
-            group, name = "hidden", classes.get(simple, simple)
-        elif ".publictests." in classname:
-            group, name = "public", classes.get(simple, simple)
-        elif ".grading." in classname:
-            group, name = "selftest", simple
-        else:
-            group, name = "existing", simple
+        group = group_of(classname)
+        name = classes.get(simple, simple) if group in ("hidden", "public") else simple
         if first is None:
             out.append({"group": group, "name": name, "result": "PASS"})
             continue
-        kind, message = first
+        kind, message, trace = first
         reason = REASON.search(message)
         row: dict[str, str | None] = {
             "group": group,
@@ -103,6 +179,8 @@ def junit(results: Path, classes: dict[str, str]) -> list[dict]:
             "reason": reason.group(1) if reason else None,
             "message": " ".join(message.split())[:400],
         }
+        if locate:
+            row["at"] = failed_line(trace, simple, sources)
         out.append(row)
     return out
 

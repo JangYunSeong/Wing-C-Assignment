@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -21,29 +22,76 @@ from task_spec.llm import LLMClient
 from task_spec.nodes.starter.generate import (
     BuildInputs,
     GenResult,
+    TrapGen,
     case_owner,
     gen_accepted,
     gen_hidden,
     gen_naive,
     gen_public,
     gen_starter,
+    gen_traps,
+    gen_variants,
 )
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import AcceptedDesign, CompileError, Provenance, VerifyReport
+from task_spec.schemas import (
+    AcceptedDesign,
+    CompileError,
+    GeneratedFile,
+    Provenance,
+    VerifyReport,
+)
 from task_spec.schemas.build import HiddenPlan, RepairRecord
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
-from task_spec.starter.hidden_helpers import render_persistence_check
-from task_spec.starter.render import render_params
-from task_spec.starter.repair import STARTER, RepairAction, RepairPlan, assign
+from task_spec.starter.hidden_helpers import code_written_paths
+from task_spec.starter.repair import (
+    COMPILE_RETRIES,
+    STARTER,
+    RegenNote,
+    RepairAction,
+    RepairPlan,
+    assign,
+    gates_of,
+)
+from task_spec.starter.repair import TRAP_GATE as TRAP_POOL
+from task_spec.starter.repair import VARIANT as VARIANT_POOL
 from task_spec.starter.static_check import HARNESS_OVERRIDE, Overlay, static_check
+from task_spec.starter.traps import (
+    GATE as TRAP_GATE,
+)
+from task_spec.starter.traps import (
+    TrapGate,
+    TrapResult,
+    TrapSpec,
+    dropped_note,
+    invalid_note,
+    judge_traps,
+    trap_note,
+    trap_targets,
+    unread_traps,
+    untested_designs,
+)
+from task_spec.starter.traps import (
+    survivors as trap_survivors,
+)
+from task_spec.starter.variants import (
+    OP_NAME,
+    VariantGate,
+    VariantResult,
+    judge,
+    pts_by_test,
+    repair_note,
+    survivors,
+    targets,
+)
 
 MAX_ROUNDS = 3  # 빌드 전체 재생성 상한
-PER_ARTIFACT = 1  # 산출물마다 재생성 상한
-COMPILE_BUDGET = 2  # 컴파일 오류만 고칠 때는 2회까지 — 고치기 싸고, 2026-11-07 루프에서 1회 수리가 틀린 방법으로 고쳐 예산이 끝났다
-COMPILE_TEST_ATTEMPTS = 2  # 채점 코드 컴파일 오류 재요청 상한 (구현 만들기 전, compile_and_fix)
+# 재생성 예산은 산출물·풀마다 (starter/repair.py POOLS — 상한은 Pool.limit). 컴파일 재요청 상한은 그 표의 COMPILE_RETRIES 하나에서.
+COMPILE_TEST_ATTEMPTS = (
+    COMPILE_RETRIES  # 채점 코드 컴파일 오류 재요청 상한 (구현 만들기 전, compile_and_fix)
+)
 COMPILE_IMPL_ATTEMPTS = (
-    2  # 구현(시작 코드·참조 구현) 컴파일 오류 재요청 상한 (무거운 검증 전, compile_impl_and_fix)
+    COMPILE_RETRIES  # 구현 컴파일 오류 재요청 상한 (무거운 검증 전, compile_impl_and_fix)
 )
 HIDDEN = "hidden"
 PUBLIC = "public"  # 공개 테스트 오버레이 키 (gen_public — 테스트 먼저, 2026-11-08)
@@ -90,12 +138,8 @@ class CompileFix:
 
 
 def _code_written(b: BuildInputs) -> set[str]:
-    """코드가 쓴 테스트 파일 — 생성기를 다시 불러도 바뀌지 않는다 (조절값 파일·도우미·저장 확인)."""
-    m = b.template.manifest
-    paths = {render_params(b.plan, m).path}
-    paths |= {h.path for h in (m.hidden_helper, m.public_helper) if h is not None}
-    check = render_persistence_check(b.contract, m)
-    return paths | ({check.path} if check is not None else set())
+    """코드가 쓴 파일 — 생성기를 다시 불러도 바뀌지 않는다 (조절값 파일·도우미·저장 확인·시드). 크기 상한과 같은 집합 (#178)."""
+    return code_written_paths(b.template.manifest)
 
 
 TESTS_NOTE = (
@@ -315,8 +359,36 @@ async def _compile_refs(
         )
         absorb(fix)
         out.overlays[label] = fix.overlay
+        stale = out.compile_flags.pop(
+            label, None
+        )  # 같은 구현을 다시 컴파일했다 — 앞 표시는 옛 판의 것
+        if stale in out.review_flags:
+            out.review_flags.remove(stale)
         if fix.errors:
-            out.review_flags.append(_compile_flag(label, fix))
+            flag = _compile_flag(label, fix)
+            out.compile_flags[label] = flag
+            out.review_flags.append(flag)
+
+
+def _note_passed(out: BuildOutcome, report: VerifyReport) -> None:
+    """참조 구현마다 지금 숨은 테스트로 통과한 케이스를 모은다 — 다시 만든 판이 그 케이스에서 떨어지면 테스트가 아니라 퇴행 (#183)."""
+    for run in report.runs:
+        if run.kind in ("ref_naive", "ref_accepted") and run.setup == "ok":
+            out.passed_before.setdefault(run.target, set()).update(
+                t.name for t in run.results("hidden") if t.result == "PASS"
+            )
+
+
+def _withdraw_compile_flags(out: BuildOutcome, report: VerifyReport) -> None:
+    """참조 구현의 컴파일 실패 표시는 그 구현의 그때 상태다 — 뒤 검증에서 그 구현이 컴파일·기동되면(setup ok) 거둔다.
+    2026-11-14 kakaobank003: d3 컴파일 수리가 끝까지 안 되어 표시가 붙었고, 같은 회차의 기동 수리로 다시 만든 d3 가 검증을 모두
+    통과했는데도 '컴파일 실패' 표시가 승인자 화면에 남았다."""
+    for run in report.runs:
+        flag = out.compile_flags.get(run.target)
+        if flag is not None and run.setup == "ok":
+            del out.compile_flags[run.target]
+            if flag in out.review_flags:
+                out.review_flags.remove(flag)
 
 
 @dataclass
@@ -326,6 +398,12 @@ class BuildOutcome:
     reports: list[VerifyReport] = field(default_factory=list)  # 검증 회차마다
     repairs: list[RepairRecord] = field(default_factory=list)
     review_flags: list[str] = field(default_factory=list)
+    # 참조 구현 라벨 → 그 구현의 컴파일 실패 표시 (review_flags 에도 있음) — 뒤 검증에서 기동되면 거둔다 (_withdraw_compile_flags)
+    compile_flags: dict[str, str] = field(default_factory=dict)
+    # 산출물 키 → 마지막으로 다시 만든 이유 (#183 — 수리 배정이 퇴행과 '이 케이스 때문에 다시 만들었는데 또 떨어짐'을 가른다)
+    regen_log: dict[str, RegenNote] = field(default_factory=dict)
+    # 참조 구현 라벨 → 그 설계의 어느 판이든 지금 숨은 테스트로 통과한 케이스 — 숨은 테스트·시작 코드를 다시 만들면 비운다
+    passed_before: dict[str, set[str]] = field(default_factory=dict)
     adjustments: list[str] = field(
         default_factory=list
     )  # 생성기 출력에서 코드가 고친 것 — 승인 화면에
@@ -345,10 +423,443 @@ class BuildOutcome:
     # 저장·이미지는 hidden_plan 을 쓴다 (없으면 입력의 계획 그대로).
     dropped_cases: list[str] = field(default_factory=list)
     hidden_plan: HiddenPlan | None = None
+    # 공개 테스트 변별 관문 (#164) — 마지막으로 돌린 변형 결과·버린 변형·변형 실행 보고서 (검증 회차 보고서와 따로)
+    variants: list[VariantResult] = field(default_factory=list)
+    variant_dropped: list[str] = field(default_factory=list)
+    variant_reports: list[VerifyReport] = field(default_factory=list)
+    # 숨은 테스트 함정 관문 (#171) — 허용 설계의 함정에 빠진 변형 결과·버린 변형·실행 보고서
+    traps: list[TrapResult] = field(default_factory=list)
+    trap_dropped: list[str] = field(default_factory=list)
+    trap_reports: list[VerifyReport] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
         return round(sum(p.cost_usd or 0.0 for p in self.provenance), 4)
+
+
+VARIANT_GATE = "⑩"  # 공개 테스트 변별 (#164)
+
+
+def _pt_ac(b: BuildInputs) -> dict[str, str]:
+    return {t.test_id: t.ac_id for t in b.contract.public_tests}
+
+
+def _overlay_digest(*overlays: Overlay) -> str:
+    h = hashlib.sha256()
+    for o in overlays:
+        for f in sorted(o.files, key=lambda x: x.path):
+            h.update(f.path.encode("utf-8") + b"\0" + f.content.encode("utf-8") + b"\0")
+    return h.hexdigest()
+
+
+async def _variant_gate(
+    out: BuildOutcome,
+    b: BuildInputs,
+    kw: dict[str, object],
+    verifier: Verifier,
+    gate: VariantGate,
+) -> RepairPlan:
+    """공개 테스트 변별 관문 (#164) — 다른 게이트를 다 통과한 회차에서. 공개 수용 기준마다 정답 구현(공개 테스트를 모두 통과한
+    허용 구현)에서 그 기준 하나만 어긴 변형을 만들어(gen_variant — 공개 테스트를 보지 않음) 공개 테스트로 돌린다.
+    살아남은 변형이 있으면 공개 테스트 수리 행동 하나. 변형은 허용 구현이 바뀔 때만 다시 만든다."""
+    plan = RepairPlan()
+    run = getattr(verifier, "verify_variants", None)
+    public = out.overlays.get(PUBLIC)
+    if public is None or not out.reports:
+        return plan  # 공개 테스트가 없는 템플릿
+    if run is None:
+        plan.flags.append(
+            f"공개 테스트 변별 관문({VARIANT_GATE}) 건너뜀 — 검증기가 변형 실행(verify_variants)을 지원하지 않음"
+        )
+        return plan
+    last = {r.target: r for r in out.reports[-1].runs}
+    base_label = next(
+        (
+            k
+            for k, o in out.overlays.items()
+            if o.kind == "ref_accepted"
+            and (r := last.get(k)) is not None
+            and r.setup == "ok"
+            and r.results("public")
+            and all(t.result == "PASS" for t in r.results("public"))
+        ),
+        None,
+    )
+    if base_label is None:
+        plan.flags.append(
+            f"공개 테스트 변별 관문({VARIANT_GATE}) 건너뜀 — 공개 테스트를 모두 통과한 허용 구현이 없음"
+        )
+        return plan
+    starter, base = out.overlays[STARTER], out.overlays[base_label]
+    digest = _overlay_digest(starter, base)
+    if gate.base_digest != digest:
+        made = await gen_variants(b.task, b.contract, b.template, starter, base, **kw)  # type: ignore[arg-type]
+        out.provenance += made.provenance
+        gate.base_digest, gate.variants = digest, made.variants
+        gate.dropped = [*made.dropped, *made.fail_reasons]
+        gate.missing_boundary = list(made.missing_boundary)
+        out.variant_dropped = list(gate.dropped)
+    if not gate.variants:
+        plan.flags.append(
+            f"공개 테스트 변별 관문({VARIANT_GATE}): 쓸 수 있는 변형이 없음 — 공개 테스트가 규칙을 어긴 구현을 가르는지 사람 확인"
+            + (f" ({'; '.join(gate.dropped[:3])})" if gate.dropped else "")
+        )
+        return plan
+    report = await run(starter, [o for o, _ in gate.variants], public)
+    out.variant_reports.append(report)
+    gate.results = judge(report, [s for _, s in gate.variants], pts_by_test(public), _pt_ac(b))
+    judged = {r.rule_id for r in gate.results if r.verdict in ("caught", "survived")}
+    plan.flags += [
+        f"공개 테스트 변별 관문({VARIANT_GATE}): 요구 {t.rule_id} 는 쓸 수 있는 변형이 없어 변별 검사 못 함 — 사람 확인"
+        for t in targets(b.task, b.contract)
+        if t.rule_id not in judged
+    ]
+    plan.flags += [
+        f"공개 테스트 변별 관문({VARIANT_GATE}): 요구 {r} 에 비교 규칙이 있는데 경계 변형을 만들지 못함 — 경계를 가르는지 사람 확인"
+        for r in gate.missing_boundary
+    ]
+    gate.rounds += 1
+    out.variants = list(gate.results)
+    alive = survivors(gate.results)
+    logger.info(
+        "variant gate round=%d variants=%d caught=%d survived=%d invalid=%d",
+        gate.rounds,
+        len(gate.results),
+        sum(r.verdict == "caught" for r in gate.results),
+        len(alive),
+        sum(r.verdict == "invalid" for r in gate.results),
+    )
+    if alive:
+        test_ids: dict[str, list[str]] = {}
+        for pt in b.contract.public_tests:
+            test_ids.setdefault(pt.ac_id, []).append(pt.test_id)
+        rule_acs = {t.rule_id: t.acs for t in targets(b.task, b.contract)}
+        plan.actions.append(
+            RepairAction(
+                generator="gen_public",
+                label="",
+                gate=VARIANT_GATE,
+                reason="규칙을 어긴 변형이 공개 테스트 통과: "
+                + ", ".join(f"{r.rule_id} {OP_NAME[r.op]}" for r in alive),
+                note=repair_note(alive, test_ids, rule_acs),
+                pool=VARIANT_POOL,
+            )
+        )
+    return plan
+
+
+async def _trap_gate(
+    out: BuildOutcome,
+    b: BuildInputs,
+    kw: dict[str, object],
+    verifier: Verifier,
+    gate: TrapGate,
+    weak: Sequence[str] = (),
+) -> RepairPlan:
+    """숨은 테스트 함정 관문 (⑪, #171) — 다른 게이트를 다 통과한 회차에서. 허용 설계마다(함정이 적힌 것만) 그 설계 구현에서 함정에
+    빠진 변형을 만들어(gen_trap — 숨은 테스트를 보지 않음) 공개·숨은 테스트로 돌린다. 숨은 케이스가 하나도 안 떨어지면 그 함정을 붙여
+    그 숨은 요구의 케이스를 다시 만드는 행동 하나. 변형은 그 설계 구현이 바뀔 때만 다시 만든다."""
+    plan = RepairPlan()
+    run = getattr(verifier, "verify_variants", None)
+    public, hidden = out.overlays.get(PUBLIC), out.overlays.get(HIDDEN)
+    if hidden is None or not out.reports:
+        return plan
+    designs = list(b.task.accepted_designs)
+    targets = {t.design_id: t for t in trap_targets(designs, b.plan)}
+    plan.flags += [
+        f"숨은 테스트 함정 관문({TRAP_GATE}): 허용 설계 {d} 조건에 '함정'이 있는데 함정 문장을 읽지 못함 — 사람 확인"
+        for d in unread_traps(designs)
+    ]
+    built = {k: o for k, o in out.overlays.items() if o.kind == "ref_accepted" and k in targets}
+    if not built:
+        return plan
+    if run is None or public is None:
+        plan.flags.append(
+            f"숨은 테스트 함정 관문({TRAP_GATE}) 건너뜀 — 검증기가 변형 실행(verify_variants)을 지원하지 않음"
+        )
+        return plan
+    starter = out.overlays[STARTER]
+    taken = {s.label for vs in gate.variants.values() for _, s in vs}
+
+    async def make(label: str, note: str | None) -> TrapGen:
+        for _, s in gate.variants.get(label, []):
+            taken.discard(s.label)
+        made = await gen_traps(
+            b.task,
+            b.contract,
+            b.template,
+            starter,
+            built[label],
+            targets[label],
+            taken=taken,
+            note=note,
+            **kw,  # type: ignore[arg-type]
+        )
+        out.provenance += made.provenance
+        return made
+
+    for label, design in built.items():
+        digest = _overlay_digest(starter, design)
+        if gate.digests.get(label) == digest:
+            continue
+        gate.retried.discard(label)
+        made = await make(label, None)
+        dropped = [*made.dropped, *made.fail_reasons]
+        if not made.variants and made.dropped and not made.fail_reasons:
+            # 쓸 변형이 하나도 없으면 버린 이유(줄 상한·시드 파일 등)를 붙여 한 번 더 — 상한은 그대로 (traps.dropped_note)
+            made = await make(label, dropped_note(made.dropped))
+            dropped += [*made.dropped, *made.fail_reasons]
+        gate.variants[label] = made.variants
+        if not made.fail_reasons:  # 호출이 실패했으면 다음 회차에 다시 (리뷰 2026-11-13: 일시 오류 한 번에 끝까지 시험 못 함)
+            gate.digests[label] = digest
+        gate.dropped = [x for x in gate.dropped if not x.startswith(f"{label} ")] + dropped
+    plan.flags += [
+        f"숨은 테스트 함정 관문({TRAP_GATE}): 허용 설계 {d} 의 함정 '{targets[d].trap}' 에 빠진 변형을 만들지 못함 — 숨은 테스트가 그 함정을 가르는지 사람 확인"
+        for d in built
+        if not gate.variants.get(d)
+    ]
+    pairs = [x for vs in gate.variants.values() for x in vs]
+    if not pairs:
+        out.trap_dropped = list(gate.dropped)
+        return plan
+
+    async def judged(ps: list[tuple[Overlay, TrapSpec]]) -> list[TrapResult]:
+        report = await run(starter, [o for o, _ in ps], public, hidden)
+        out.trap_reports.append(report)
+        results = judge_traps(report, [s for _, s in ps], weak)
+        # 경합형 함정(조회 뒤 저장·읽은 뒤 갱신)은 한 번에 안 드러날 수 있다 — 살아남은 변형은 한 번 더 돌려 두 번 다 살아남아야 살아남음
+        # (리뷰 2026-11-13: 한 번 돌리면 멀쩡한 숨은 테스트를 더 엄격하게 고쳐 다른 허용 설계를 떨어뜨리기 쉽다)
+        first_alive = {r.label for r in trap_survivors(results)}
+        if not first_alive:
+            return results
+        again = await run(starter, [o for o, s in ps if s.label in first_alive], public, hidden)
+        out.trap_reports.append(again)
+        rerun = {
+            r.label: r
+            for r in judge_traps(again, [s for _, s in ps if s.label in first_alive], weak)
+        }
+        return [
+            rerun[r.label] if r.label in rerun and rerun[r.label].verdict == "caught" else r
+            for r in results
+        ]
+
+    results = await judged(pairs)
+    # 변형이 모두 무효인 설계(공개 테스트까지 깸 등)는 무효 이유를 붙여 한 번 다시 만들어 돌린다 — 그 구현이 바뀔 때까지 한 번 (traps.invalid_note)
+    fresh: list[tuple[Overlay, TrapSpec]] = []
+    for d in untested_designs(results, [d for d in built if gate.variants.get(d)]):
+        if d in gate.retried:
+            continue
+        gate.retried.add(d)
+        made = await make(d, invalid_note([r for r in results if r.design_id == d]))
+        gate.dropped += [*made.dropped, *made.fail_reasons]
+        if made.variants:
+            gate.variants[d] = made.variants
+            fresh += made.variants
+    if fresh:
+        redone = {s.design_id for _, s in fresh}
+        results = [r for r in results if r.design_id not in redone] + await judged(fresh)
+        pairs = [x for vs in gate.variants.values() for x in vs]
+    out.trap_dropped = list(gate.dropped)
+    gate.results = results
+    gate.rounds += 1
+    out.traps = list(gate.results)
+    plan.flags += [
+        f"숨은 테스트 함정 관문({TRAP_GATE}): 허용 설계 {d} 의 함정 변형이 모두 무효라 시험하지 못함 — 숨은 테스트가 그 함정을 가르는지 사람 확인 "
+        f"({'; '.join(r.detail for r in results if r.design_id == d)[:200]})"
+        for d in untested_designs(results, [d for d in built if gate.variants.get(d)])
+    ]
+    specs = {s.label: s for _, s in pairs}
+    alive_all = trap_survivors(gate.results)
+    # 그 숨은 요구의 케이스를 찾지 못한 설계는 고치지 않는다 — 케이스 id 가 없으면 숨은 테스트 전체를 다시 만든다 (리뷰 2026-11-13)
+    alive = [r for r in alive_all if specs[r.label].cases]
+    plan.flags += _trap_flags(
+        [r for r in alive_all if not specs[r.label].cases],
+        "그 숨은 요구의 케이스를 찾지 못해 고치지 않음",
+    )
+    logger.info(
+        "trap gate round=%d variants=%d caught=%d survived=%d invalid=%d",
+        gate.rounds,
+        len(gate.results),
+        sum(r.verdict == "caught" for r in gate.results),
+        len(alive),
+        sum(r.verdict == "invalid" for r in gate.results),
+    )
+    if alive:
+        plan.actions.append(
+            RepairAction(
+                generator="gen_hidden",
+                label="",
+                gate=TRAP_GATE,
+                reason="허용 설계의 함정에 빠진 변형이 숨은 테스트 통과: "
+                + ", ".join(f"{r.design_id}" for r in alive),
+                note=trap_note(alive, [s for _, s in pairs]),
+                pool=TRAP_POOL,
+            )
+        )
+    return plan
+
+
+def _trap_flags(alive: Sequence[TrapResult], why: str) -> list[str]:
+    return [
+        f"숨은 테스트가 허용 설계의 함정을 가르지 못함 ({why}) — {r.line()} — 행동 기준의 그 함정을 숨은 테스트로 재지 못함. "
+        "변형이 함정에 실제로 빠지지 않았을 수도 있다 — 사람 확인"
+        for r in alive
+    ]
+
+
+@dataclass(frozen=True)
+class _Passed:
+    """함정 관문(⑪)이 숨은 테스트를 다시 만들기 직전 — 모든 게이트를 통과한 오버레이·뺄 숨은 케이스·그때의 함정 결과.
+    숨은 테스트는 공개 테스트처럼 '더하기만'으로 고칠 수 없어(케이스 파일을 바꾼다) 수리가 실패하면 이 상태로 되돌린다 — 관문은 막지 않는다."""
+
+    overlays: dict[str, Overlay]
+    weak: tuple[str, ...]
+    traps: list[TrapResult]
+
+
+def _restore_passed(out: BuildOutcome, b: BuildInputs, p: _Passed, why: str) -> None:
+    out.overlays = dict(p.overlays)
+    out.traps = list(p.traps)
+    out.snapshots.append(dict(out.overlays))  # 마지막 스냅샷이 끝난 상태와 같게 (리뷰 2026-11-13)
+    if p.weak:
+        _drop_cases(out, b, p.weak)
+    out.review_flags.append(
+        f"숨은 테스트 함정 관문({TRAP_GATE}) 수리 실패 — {why}. 관문 전(모든 게이트 통과) 숨은 테스트로 되돌림"
+    )
+    out.review_flags += _trap_flags(trap_survivors(p.traps), "숨은 테스트 수리 실패")
+
+
+async def _finish_restored(
+    out: BuildOutcome,
+    b: BuildInputs,
+    kw: dict[str, object],
+    verifier: Verifier,
+    gate: VariantGate,
+    passed: _Passed,
+    why: str,
+    compiler: TestCompiler | None,
+) -> BuildOutcome:
+    """함정 관문 전 통과 상태로 되돌리고 공개 테스트 관문(⑩)까지 마쳐 review 로 끝낸다."""
+    _restore_passed(out, b, passed, why)
+    vplan = await _variant_gate(out, b, kw, verifier, gate)
+    out.review_flags += [f for f in vplan.flags if f not in out.review_flags]
+    if vplan.actions:
+        out.review_flags += await _add_public_cases(
+            out, b, kw, verifier, gate, vplan.actions[0], compiler
+        )
+    out.status = "review"
+    return out
+
+
+def _survivor_flags(alive: Sequence[VariantResult], why: str) -> list[str]:
+    return [
+        f"공개 테스트가 규칙을 어긴 구현을 가르지 못함 ({why}) — {r.line()} — 그 기준은 공개 테스트로 재지 못함. "
+        "변형이 규칙을 실제로 어기지 않았을(동치) 수도 있고, 시드에 가를 행이 없으면 계약 rows 부터 — 사람 확인"
+        for r in alive
+    ]
+
+
+def _class_names(f: GeneratedFile) -> set[str]:
+    return {PurePosixPath(f.path).stem, *re.findall(r"\bclass\s+(\w+)", f.content)}
+
+
+async def _add_public_cases(
+    out: BuildOutcome,
+    b: BuildInputs,
+    kw: dict[str, object],
+    verifier: Verifier,
+    gate: VariantGate,
+    action: RepairAction,
+    compiler: TestCompiler | None,
+) -> list[str]:
+    """관문(⑩) 수리 — 기존 공개 테스트는 그대로 두고, 살아남은 변형이 있는 요구마다 **새 테스트 클래스만** 더한다 [2026-11-13 사용자].
+    공개 테스트 전체를 다시 만들면 맞던 테스트가 깨질 수 있었다 (N+1 알파: 정답 구현도 떨어지는 테스트). 더한 클래스는
+    (1) 기존 파일을 고친 답은 버리고 새 파일만, (2) 채점 코드와 함께 컴파일, (3) 참조 구현(흔한·허용)이 모두 통과하는 클래스만 남기고,
+    (4) 변형을 다시 돌려 판정한다. 못 더하면 그대로 두고 표시 — 이미 통과한 빌드를 깨지 않는다. 돌려주는 값 = 승인자 표시."""
+    run = getattr(verifier, "verify_variants", None)
+    if run is None:  # _variant_gate 가 있음을 확인한 뒤에만 불린다
+        return []
+    starter, old = out.overlays[STARTER], out.overlays[PUBLIC]
+    have = {f.path: f.content for f in old.files}
+    alive = survivors(gate.results)
+    test_compile = getattr(compiler, "compile_tests", None) if compiler is not None else None
+    note = f"검증 실패 (게이트 {VARIANT_GATE}) — {action.note}"
+    previous = old
+    for attempt in range(COMPILE_TEST_ATTEMPTS + 1):
+        r = await gen_public(
+            b,
+            note=note,
+            previous=previous,
+            **kw,  # type: ignore[arg-type]
+        )
+        out.provenance += r.provenance
+        added = (
+            [f for f in r.overlay.files if f.path not in have and f.content.strip()]
+            if r.overlay is not None
+            else []
+        )
+        touched = (
+            [f.path for f in r.overlay.files if f.path in have and f.content != have[f.path]]
+            if r.overlay is not None
+            else []
+        )
+        if touched:
+            out.adjustments.append(
+                f"gen_public({VARIANT_GATE}): 기존 공개 테스트 {len(touched)}개를 고친 답은 버림 — 새 클래스만 더함"
+            )
+        if not added:
+            out.repairs.append(_record(action, "failed"))
+            return _survivor_flags(alive, "추가할 테스트를 만들지 못함")
+        candidate = replace(old, files=(*old.files, *added))
+        errors = await test_compile(out.overlays[HIDDEN], candidate) if test_compile else []
+        if not errors:
+            break
+        if attempt == COMPILE_TEST_ATTEMPTS:
+            out.repairs.append(_record(action, "failed"))
+            e = errors[0]
+            return [
+                f"공개 테스트 변별 관문({VARIANT_GATE}): 더한 테스트가 컴파일되지 않아 버림 — {e.path}:{e.line} {e.message}"[
+                    :300
+                ],
+                *_survivor_flags(alive, "더한 테스트가 컴파일되지 않음"),
+            ]
+        # 더한 테스트의 컴파일 오류를 붙여 다시 — 채점 코드 컴파일 수리(compile_and_fix)와 같은 횟수.
+        # 2026-11-13 재시도 중복 알파(naver_2026#002): 경계 변형(0 이하 → 0 미만)을 가를 테스트가 `cannot find symbol` 하나로 버려졌다
+        note = (
+            compile_note(errors, candidate)
+            + f"\n\n더하려던 이유 (게이트 {VARIANT_GATE}) — {action.note}"
+        )
+        previous = candidate
+    refs = [o for o in out.overlays.values() if o.kind in ("ref_naive", "ref_accepted")]
+    check = await run(starter, refs, candidate)
+    out.variant_reports.append(check)
+    if any(x.setup != "ok" for x in check.runs):
+        out.repairs.append(_record(action, "failed"))
+        return _survivor_flags(alive, "더한 테스트로 참조 구현이 기동하지 못함")
+    failing = {t.name for x in check.runs for t in x.results("public") if t.result != "PASS"}
+    keep = [f for f in added if not (_class_names(f) & failing)]
+    flags: list[str] = []
+    if len(keep) < len(added) or (failing - {n for f in added for n in _class_names(f)}):
+        dropped = [f.path for f in added if f not in keep]
+        flags.append(
+            f"공개 테스트 변별 관문({VARIANT_GATE}): 더한 테스트 중 참조 구현이 떨어지는 것은 버림 — {', '.join(dropped) or '(기존 테스트가 떨어짐 — 더한 것 모두 버림)'}"
+        )
+        if failing - {n for f in added for n in _class_names(f)}:
+            keep = []  # 더한 파일로 기존 테스트가 깨짐 (도우미 공유 등) — 모두 버린다
+    if not keep:
+        out.repairs.append(_record(action, "failed"))
+        return [*flags, *_survivor_flags(alive, "더한 테스트를 쓸 수 없음")]
+    final = replace(old, files=(*old.files, *keep))
+    again = await run(starter, [o for o, _ in gate.variants], final)
+    out.variant_reports.append(again)
+    gate.results = judge(again, [s for _, s in gate.variants], pts_by_test(final), _pt_ac(b))
+    out.variants = list(gate.results)
+    out.overlays[PUBLIC] = final
+    out.repairs.append(_record(action, "regenerated"))
+    out.adjustments.append(
+        f"gen_public({VARIANT_GATE}): 공개 테스트 {len(keep)}개 클래스 더함 — {', '.join(f.path.rsplit('/', 1)[-1] for f in keep)}"
+    )
+    return [*flags, *_survivor_flags(survivors(gate.results), "테스트를 더한 뒤에도")]
 
 
 def _record(
@@ -411,6 +922,9 @@ async def build_and_repair(
     out = BuildOutcome(status="failed")
     by_id = {d.design_id: d for d in designs}
     missed = {"naive-all": {t.trap_id for t in b.task.traps}}
+    gate = VariantGate()  # 공개 테스트 변별 관문 상태 (#164)
+    tgate = TrapGate()  # 숨은 테스트 함정 관문 상태 (#171)
+    passed: _Passed | None = None  # 함정 관문이 숨은 테스트를 다시 만들기 직전의 통과 상태
 
     def note_static(r: GenResult) -> None:
         if r.first_problems:
@@ -545,6 +1059,8 @@ async def build_and_repair(
                 **({"conform": conform} if conform is not None else {}),
             )
             out.reports.append(report)
+            _withdraw_compile_flags(out, report)
+            _note_passed(out, report)
             out.snapshots.append(dict(out.overlays))
             shared = set(b.template.files("project")) | {
                 f.path for f in out.overlays[STARTER].files
@@ -559,6 +1075,8 @@ async def build_and_repair(
                 terms=b.template.manifest.repair_terms,
                 fix_markers=b.seed.fix_markers if b.seed is not None else (),
                 feature_reasons=b.seed.reasons if b.seed is not None else (),
+                regen_log=out.regen_log,
+                passed_before=out.passed_before,
             )
             for (
                 flag
@@ -572,17 +1090,55 @@ async def build_and_repair(
             len(plan.unresolved),
         )
         if plan.passed:
+            tplan = await _trap_gate(out, b, kw, verifier, tgate)
+            out.review_flags += [f for f in tplan.flags if f not in out.review_flags]
+            if tplan.actions:
+                a = tplan.actions[0]
+                tried = out.regen_counts.get(a.budget_key, 0) >= a.pool.limit
+                if not tried and round_no < max_rounds:
+                    passed = _Passed(dict(out.overlays), tuple(plan.weak), list(out.traps))
+                    if not await _regenerate(
+                        tplan.actions, out, b, by_id, kw, took, drop, compiler, absorb
+                    ):
+                        _restore_passed(out, b, passed, "숨은 테스트를 다시 만들지 못함")
+                        passed = None
+                    else:
+                        continue
+                else:
+                    out.repairs.append(_record(a, "skipped"))
+                    out.review_flags += _trap_flags(
+                        trap_survivors(out.traps),
+                        "숨은 테스트를 다시 만든 뒤에도"
+                        if tried
+                        else "빌드 회차 상한으로 숨은 테스트를 다시 만들지 못함",
+                    )
+            passed = None
+            vplan = await _variant_gate(out, b, kw, verifier, gate)
+            out.review_flags += [f for f in vplan.flags if f not in out.review_flags]
+            if vplan.actions:  # 살아남은 변형 — 기존 공개 테스트는 두고 새 테스트 클래스만 더한다 (회차를 쓰지 않음)
+                out.review_flags += await _add_public_cases(
+                    out, b, kw, verifier, gate, vplan.actions[0], compiler
+                )
             if plan.weak:
                 _drop_cases(out, b, plan.weak)
             out.status = "review"
             return out
-        blocked = [
-            a
-            for a in plan.actions
-            if out.regen_counts.get(a.budget_key, 0)
-            >= (COMPILE_BUDGET if a.compile else PER_ARTIFACT)
-        ]
+        blocked = [a for a in plan.actions if out.regen_counts.get(a.budget_key, 0) >= a.pool.limit]
         if plan.unresolved or blocked or round_no == max_rounds:
+            if (
+                passed is not None
+            ):  # 함정 관문 수리 뒤 고치지 못하고 끝남 — 관문 전 통과 상태로 (관문은 막지 않는다)
+                out.repairs += [_record(a, "skipped") for a in plan.actions]
+                return await _finish_restored(
+                    out,
+                    b,
+                    kw,
+                    verifier,
+                    gate,
+                    passed,
+                    "다시 만든 숨은 테스트로 다른 게이트가 깨져 고치지 못함",
+                    compiler,
+                )
             out.review_flags += plan.unresolved
             out.review_flags += [f"재생성 예산을 다 씀 — {a.key}: {a.reason}" for a in blocked]
             if round_no == max_rounds and not (plan.unresolved or blocked):
@@ -592,6 +1148,17 @@ async def build_and_repair(
             out.repairs += [_record(a, "skipped") for a in plan.actions]
             return out
         if not await _regenerate(plan.actions, out, b, by_id, kw, took, drop, compiler, absorb):
+            if passed is not None:
+                return await _finish_restored(
+                    out,
+                    b,
+                    kw,
+                    verifier,
+                    gate,
+                    passed,
+                    "함정 관문 수리 뒤 다른 게이트 수리가 실패",
+                    compiler,
+                )
             return out
     return out
 
@@ -613,9 +1180,9 @@ def _drop_cases(out: BuildOutcome, b: BuildInputs, ids: Sequence[str]) -> None:
     logger.info("build dropped weak cases=%s", ",".join(sorted(drop)))
 
 
-KEEP_GATES = frozenset(
-    "③'"
-)  # 숨은 테스트 수리 중 이전 파일이 올바른 구현에 맞는 사유 게이트 (흔한 구현을 못 가름)
+# 숨은 테스트 수리 중 이전 파일이 올바른 구현에 맞는 사유 게이트 (흔한 구현을 못 가름) — 게이트 문자열 집합. 예전에는 글자 집합
+# frozenset("③'") 이라 글자 단위 비교로 우연히 맞았다 (#183). 합친 수리의 이어 붙은 게이트는 gates_of 로 나눠 비교한다.
+KEEP_GATES = frozenset({"③", "③'"})
 
 
 def _keepable_cases(actions: Sequence[RepairAction], out: BuildOutcome) -> frozenset[str]:
@@ -625,7 +1192,7 @@ def _keepable_cases(actions: Sequence[RepairAction], out: BuildOutcome) -> froze
     허용 구현을 떨어뜨린 케이스(④)·setup·static·컴파일 수리·테스트 예외는 남기지 않는다 — 2026-11-11 재검증 오프라인: 허용 구현이 모두
     실패하는 hc1 을 남겨 4회차에 같은 실패가 되풀이됐다."""
     gates = [a.gate for a in actions if a.generator == "gen_hidden"]
-    if not gates or not all(set(g) <= KEEP_GATES for g in gates) or not out.reports:
+    if not gates or not all(set(gates_of(g)) <= KEEP_GATES for g in gates) or not out.reports:
         return frozenset()
     accepted = [r for r in out.reports[-1].runs if r.kind == "ref_accepted"]
     ids = {t.name for r in accepted for t in r.tests if t.group == "hidden"}
@@ -650,8 +1217,11 @@ async def _regenerate(
     """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
     시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
     notes = {a.key: f"검증 실패 (게이트 {a.gate}) — {a.note}" for a in actions}
-    for a in actions:  # 컴파일 수리는 따로 센다 (RepairAction.budget_key)
+    for a in actions:  # 산출물·풀마다 센다 (RepairAction.budget_key — repair.POOLS)
         out.regen_counts[a.budget_key] = out.regen_counts.get(a.budget_key, 0) + 1
+        out.regen_log[a.key] = RegenNote(a.gate, a.cases, a.reason)
+    if any(a.generator in ("gen_hidden", "gen_starter") for a in actions):
+        out.passed_before.clear()  # 테스트·시작 코드가 바뀌면 이전 판의 통과는 근거가 아니다
 
     async def tests_compile() -> bool:
         """다시 만든 채점 코드(숨은·공개 테스트)도 구현에 쓰기 전에 컴파일 — 처음 만들 때(compile_and_fix)와 같은 루프.

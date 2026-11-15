@@ -33,7 +33,7 @@ SCALARS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("number", ("number", "decimal", "bigdecimal", "double", "float", "numeric", "real")),
     ("boolean", ("boolean", "bool")),
     ("string", ("string", "str", "varchar", "text", "char", "uuid", "email", "url")),
-    ("object", ("object", "map", "json", "record")),
+    ("object", ("object", "map", "json", "record", "dict")),
 )
 _BY_NAME = {n: kind for kind, names in SCALARS for n in names}
 _NULLS = frozenset(("null", "undefined", "none"))
@@ -111,7 +111,9 @@ def parse(t: str) -> FieldType:
         return FieldType("enum", values=vals)
     if s.lower() in ("array", "list"):
         return FieldType("list", items=(UNKNOWN,))
-    kind = _BY_NAME.get(s.lower())
+    # 크기가 붙은 SQL 형식 — varchar(255)·decimal(10,2) 는 이름의 형식 (#172: 시드 SQL 은 앞머리로 숫자를 알아봤다)
+    sized = re.fullmatch(r"([A-Za-z]+)\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\)", s)
+    kind = _BY_NAME.get((sized.group(1) if sized else s).lower())
     if kind is not None:
         return FieldType(kind)
     if re.fullmatch(r"[A-Za-z_$][\w$.]*", s):
@@ -124,3 +126,10 @@ def non_null(ft: FieldType) -> FieldType:
     if ft.kind == "union" and ft.items:
         return ft.items[0]
     return ft
+
+
+def enum_values(t: str) -> tuple[str, ...] | None:
+    """값 목록을 정하는 형식이면 그 값들 (따옴표 없이) — `enum(A|B)`·`enum('A','B')`·`'A' | 'B'`·`'A' | null`. 아니면 None.
+    시드 SQL·시드 행 검사·권한 규칙이 같은 해석을 쓴다 (#172: 권한 규칙은 `enum('A'|'B')` 의 따옴표를 값에 남겼다)."""
+    ft = parse(t)
+    return ft.values if ft.kind == "enum" else None

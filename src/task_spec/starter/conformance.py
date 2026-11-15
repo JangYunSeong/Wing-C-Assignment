@@ -102,7 +102,7 @@ class _Examples:
 
 
 def ok_response(e: Endpoint) -> ContractResponse | None:
-    return next((r for r in e.responses if 200 <= r.status < 300), None)
+    return e.success()
 
 
 def _route(route: str) -> str:
@@ -154,22 +154,37 @@ def render_conformance(contract: TaskContract, manifest: TemplateManifest) -> li
         "// [메서드, 경로, 상태, 계약 모양 예시 본문]",
         f"const ROUTES: [Method, string, number, unknown][] = {json.dumps(routes, ensure_ascii=False)};",
         "const errors: string[] = [];",
+        "const message = (x: unknown) => String(x instanceof Error ? x.message : x).slice(0, 200);",
+        "// 앱 오류 = 잡히지 않은 예외(window error) · 처리되지 않은 Promise 거부 · console.error 에 남긴 Error 객체나 '…Error' 로 시작하는 글",
+        "// (TypeError: …) · React 오류 경계 안내. 개발 경고(Warning: …)는 세지 않는다",
+        "const APP_ERROR = /^(?:Uncaught )?[A-Za-z]*Error\\b|The above error occurred/;",
         "const onError = (e: ErrorEvent) => {",
-        "  errors.push(String(e.error instanceof Error ? e.error.message : e.message).slice(0, 200));",
+        "  errors.push(message(e.error ?? e.message));",
         "};",
+        "const onRejection = (reason: unknown) => {",
+        "  errors.push(`처리되지 않은 Promise 거부: ${message(reason)}`);",
+        "};",
+        "const onWindowRejection = (e: PromiseRejectionEvent) => onRejection(e.reason);",
+        "type Proc = { on(e: string, f: (r: unknown) => void): void; off(e: string, f: (r: unknown) => void): void };",
+        "const proc = (globalThis as unknown as { process?: Proc }).process; // vitest(Node) 는 거부를 여기로 알린다",
         "let restore = () => {};",
         "beforeEach(() => {",
         "  errors.length = 0;",
         "  window.addEventListener('error', onError);",
+        "  window.addEventListener('unhandledrejection', onWindowRejection);",
+        "  proc?.on('unhandledRejection', onRejection);",
         "  const original = console.error;",
         "  console.error = (...args: unknown[]) => {",
-        "    const text = args.map((a) => (a instanceof Error ? a.message : String(a))).join(' ');",
-        "    if (/The above error occurred|Uncaught|is not a function|Cannot read propert/.test(text)) errors.push(text.slice(0, 200));",
+        "    if (args.some((a) => a instanceof Error || (typeof a === 'string' && APP_ERROR.test(a)))) {",
+        "      errors.push(args.map(message).join(' ').slice(0, 200));",
+        "    }",
         "    original(...args);",
         "  };",
         "  restore = () => {",
         "    console.error = original;",
         "    window.removeEventListener('error', onError);",
+        "    window.removeEventListener('unhandledrejection', onWindowRejection);",
+        "    proc?.off('unhandledRejection', onRejection);",
         "  };",
         "  for (const [method, path, status, json] of ROUTES) api.always(method, path, { status, json });",
         "});",

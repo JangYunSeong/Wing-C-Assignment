@@ -105,7 +105,7 @@ async def backfill(
             f"{_sha(rendered)[:12]} ({len(rendered)}자). 넣지 않음"
         )
     if write:
-        await store.put_readme(StarterFile.of(bid, "readme", README_PATH, shown))
+        await store.backfill_readme(StarterFile.of(bid, "readme", README_PATH, shown))
     return f"{note} {_sha(shown)[:12]} ({len(shown)}자){' — 저장' if write else ''}"
 
 

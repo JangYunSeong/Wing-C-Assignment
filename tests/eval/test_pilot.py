@@ -31,6 +31,7 @@ from task_spec.starter.answer_rule import NO_INFO as NO
 from task_spec.starter.answer_rule import ONE_AT_A_TIME, Reply
 from task_spec.starter.facilitator import Answer
 from task_spec.starter.facilitator import Material as Doc
+from task_spec.starter.grade.image_grade import SKIPPED
 
 T = "2026-11-13T10:00:00+09:00"
 F1 = Answer(
@@ -139,6 +140,27 @@ def test_junit_methods_are_grouped_by_package(tmp_path: Path) -> None:
         ("hidden", "hc1", True),
     ]
     assert ms[1].method == "최신순정렬"  # Gradle 이 붙인 괄호를 뗀다 — method_req 키와 맞게
+
+
+def test_skipped_junit_methods_are_not_passes(tmp_path: Path) -> None:
+    """@Disabled·assume 로 건너뛴 메서드는 판정하지 않았으므로 통과가 아니다 (#173, #151 시범 전에 고칠 것 2)."""
+    (tmp_path / "TEST-x.xml").write_text(
+        """<testsuite name="s">
+<testcase classname="com.example.service.publictests.Pt1ListTest" name="a"><skipped/></testcase>
+<testcase classname="com.example.service.grading.cases.Hc1Test" name="h"><skipped message="Assumption failed: no output"/></testcase>
+<testcase classname="com.example.service.grading.cases.Hc1Test" name="k"/>
+</testsuite>""",
+        "utf-8",
+    )
+    ms = methods(tmp_path, {"Pt1ListTest": "pt1"}, {"Hc1Test": "hc1"})
+    assert [(m.group, m.case, m.method, m.ok) for m in ms] == [
+        ("public", "pt1", "a", False),
+        ("hidden", "hc1", "h", False),
+        ("hidden", "hc1", "k", True),
+    ]
+    assert ms[0].message == SKIPPED
+    assert ms[1].message == f"{SKIPPED}: Assumption failed: no output"
+    assert ms[2].message == ""
 
 
 # ── 판정 ──
@@ -439,6 +461,41 @@ def test_validity_needs_every_mutant_of_a_requirement_caught() -> None:
     assert not out["usable"]
 
 
+def test_validity_leaves_invalid_mutants_out_like_the_gate() -> None:
+    """컴파일·기동 실패·다른 요구만 떨어진 돌연변이는 무효 — 셈에서 빼고, 유효한 것이 없으면 측정에서 뺀다 (관문 ⑩ 과 같은 판정, #151)."""
+    m = _with_methods(_material())
+    meta = {
+        "skip": {"req": "r1", "note": "빼먹기"},
+        "broken": {"req": "r1", "note": "뒤집기"},
+        "asc": {"req": "r3", "note": "뒤집기"},
+        "wide": {"req": "r3", "note": "지나침"},
+        "r2off": {"req": "r2", "note": "빼먹기"},
+    }
+    runs = {
+        "skip": _suite(("Pt1A.records",)),
+        "broken": SuiteRun(setup="compile_error"),  # 무효 — r1 은 남은 하나로 잰다
+        "asc": _suite(("Pt2B.newestFirst",)),
+        "wide": _suite(("Pt1A.records",)),  # r3 를 겨냥했는데 r1 메서드만 떨어짐 → 무효
+        "r2off": _suite(("Pt1A.records",)),  # r2 의 돌연변이는 이것뿐이고 무효 → r2 는 측정 밖
+    }
+    out = judge(m, _suite(), runs, meta)
+    verdicts = {k: v["verdict"] for k, v in out["mutants"].items()}
+    assert verdicts == {
+        "skip": "caught",
+        "broken": "invalid",
+        "asc": "caught",
+        "wide": "invalid",
+        "r2off": "invalid",
+    }
+    assert out["mutants"]["broken"]["detail"] == "compile_error"
+    assert out["measured"] == ["r1", "r3"]
+    assert out["excluded_why"] == {"r2": "유효한 돌연변이 없음 (모두 무효)"}
+    runs["wide"] = _suite()  # 살아남으면 그 요구는 측정 밖 (무효와 다름)
+    out = judge(m, _suite(), runs, meta)
+    assert out["measured"] == ["r1"]
+    assert out["excluded_why"]["r3"] == "살아남은 돌연변이 있음"
+
+
 def test_made_by_requirement_per_method(monkeypatch: pytest.MonkeyPatch) -> None:
     m = _with_methods(_material())
     monkeypatch.setattr(Material, "measured", lambda self: ["r2", "r3"])
@@ -703,3 +760,25 @@ def test_official_judgment_is_declared_once_with_enough_questions(
     )
     assert any("2번 선언" in x for x in freeze._official_problems(qdir, 2, once=True))
     assert not any("선언" in x for x in freeze._official_problems(qdir, 2, once=False))
+
+
+def test_generated_mutants_target_each_measured_requirement() -> None:
+    """손 시범 돌연변이는 재료를 쓴 사람이 아니라 gen_variant 가 요구(r*)마다 만든다 — 요구 문장과 그 공개 수용 기준을 함께 준다."""
+    from types import SimpleNamespace
+
+    from eval.pilot.mutants import requirement_targets
+
+    m = _with_methods(_material())
+    ns = SimpleNamespace
+    task = ns(
+        requirements=[ns(req_id="r1", text="회원당 한 번"), ns(req_id="r2", text="수량만큼")],
+        acceptance_public=[
+            ns(ac_id="p1", text="두 번째는 거절"),
+            ns(ac_id="p2", text="수량 넘으면 거절"),
+        ],
+    )
+    got = {t.rule_id: t.text for t in requirement_targets(m, task)}  # type: ignore[arg-type]
+    assert set(got) == {r for rs in m.method_req.values() for r in rs}
+    for r, text in got.items():
+        acs = [p for p, rs in m.req_ids.items() if r in rs]
+        assert all(p in text for p in acs) and ("회원당" in text or "수량만큼" in text or r in text)

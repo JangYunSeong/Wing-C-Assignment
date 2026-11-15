@@ -14,11 +14,13 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import Endpoint, Entity
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import requester_rows
+from task_spec.starter.field_types import enum_values
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.seed_sql import _insert_fields, default_value, time_kind
 
@@ -26,7 +28,6 @@ PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 
 RESERVED_ROWS = 10  # 작은 id 쪽 — 숨은 케이스에 나눠 주지 않는다 (지원자 테스트·공개 테스트·시작 코드 테스트 몫)
 _ID_FIELDS = {"id"}
 _QUOTED = re.compile(r"""["'`]([^"'`]+)["'`]""")
-_ENUM_TYPE = re.compile(r"^enum\(([^)]*)\)$", re.I)
 
 
 @dataclass(frozen=True)
@@ -57,9 +58,8 @@ class RowAllocation:
 
 def _enum_values(type_: str, constraints: str | None) -> set[str] | None:
     """필드가 값 목록을 정하면 그 목록 — `enum(A|B)` 형식, 또는 제약 문장의 따옴표 낱말 2개 이상."""
-    m = _ENUM_TYPE.match(type_.strip())
-    if m:
-        return {v.strip() for v in re.split(r"[|,]", m.group(1)) if v.strip()}
+    if (values := enum_values(type_)) is not None:  # 계약 형식 해석 한 곳 (#172)
+        return set(values)
     quoted = _QUOTED.findall(constraints or "")
     return set(quoted) if len(quoted) >= 2 else None
 
@@ -147,92 +147,181 @@ def _scope_gap_problems(contract: TaskContract) -> list[str]:
     return out
 
 
-def _returns_any_list(e: Endpoint) -> bool:
-    """성공 응답에 목록이 있는가 (무엇의 목록이든) — returns X[] 이거나 본문에 목록 칸."""
-    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
+ListTarget = tuple[Literal["entity", "shape", "other"], str]
+
+
+def response_list_target(e: Endpoint, contract: TaskContract) -> ListTarget | None:
+    """성공 응답이 무엇의 목록인가 — ("entity", 엔티티 id) · ("shape", 응답 모양 id) · ("other", 원소 형식), 목록이 아니면 None.
+    returns `X[]` 를 먼저, 없으면 본문의 목록 칸(`{items: X[]}`). 엔티티·모양은 id 또는 이름으로 적어도 된다.
+    한 질문을 세 함수(무엇이든 목록·그 엔티티의 목록·모양의 목록)가 따로 답하던 것을 하나로 (#179).
+    2026-11-11 N+1: 엔티티 목록 API(`GET /projects/{projectId}/board/posts` → m1[])를 '한 행을 찾는 API' 로 짚었다.
+    2026-11-13 송금 내역: 응답 모양의 목록(`… → v1[]`)도 목록 API 다 — 모양에는 어느 엔티티의 모양인지 칸이 없다."""
+    ok = e.success()
     if ok is None:
-        return False
+        return None
+    entities = {k: m.entity_id for m in contract.entities for k in (m.entity_id, m.name)}
+    shapes = {k: sh.shape_id for sh in contract.response_shapes for k in (sh.shape_id, sh.name)}
+    names: list[str] = []
     if ok.returns and ok.returns.endswith("[]"):
-        return True
-    return any(parse_field(f.type).kind == "list" for f in ok.body)
-
-
-def _lists_entity(e: Endpoint, m: Entity) -> bool:
-    """성공 응답이 그 엔티티의 목록인가 — returns 가 `m1[]`·`이름[]` 이거나, 본문에 그 엔티티의 목록 칸(`{items: m1[]}`)이 있다.
-    다른 것의 목록(멤버 한 행을 찾아 그 감사 기록을 돌려주는 API)은 아니다 — 경로 변수로 그 엔티티 한 행을 찾는다."""
-    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
-    if ok is None:
-        return False
-    keys = {m.entity_id, m.name}
-    if ok.returns and ok.returns.endswith("[]") and ok.returns[:-2] in keys:
-        return True
+        names.append(ok.returns[:-2])
     for f in ok.body:
         ft = parse_field(f.type)
-        if ft.kind == "list" and ft.items[0].kind == "ref" and ft.items[0].name in keys:
-            return True
-    return False
+        if ft.kind == "list":
+            elem = ft.items[0] if ft.items else None
+            names.append(elem.name if elem is not None and elem.kind == "ref" else f.type)
+    for name in names:
+        if name in entities:
+            return ("entity", entities[name])
+        if name in shapes:
+            return ("shape", shapes[name])
+    return ("other", names[0]) if names else None
 
 
-def _lists_shape(e: Endpoint, contract: TaskContract) -> bool:
-    """성공 응답이 응답 모양(response_shapes)의 목록인가 — 조인한 칸이 붙은 목록 항목(`v1[]`·`{items: v1[]}`)도 목록 API 다.
-    2026-11-13 송금 내역(ct-4fb4cffa89b4-b1): plan_contract v24 대로 고객별 목록을 `GET /customers/{customerId}/remittances` → `v1[]` 로
-    적으면 '한 행을 찾는 API' 로 짚고 '값에서 customerId 를 빼라'(목록이면 틀린 지시)를 줘, 다시 요청해도 못 고쳐 계약이 실패했다.
-    모양에는 어느 엔티티의 모양인지 칸이 없어 모양의 목록이면 모두 목록 API 로 본다."""
-    ok = next((r for r in e.responses if 200 <= r.status < 300), None)
-    if ok is None:
-        return False
-    keys = {k for s in contract.response_shapes for k in (s.shape_id, s.name)}
-    if ok.returns and ok.returns.endswith("[]") and ok.returns[:-2] in keys:
-        return True
-    for f in ok.body:
-        ft = parse_field(f.type)
-        if ft.kind == "list" and ft.items[0].kind == "ref" and ft.items[0].name in keys:
+def returned_entities(contract: TaskContract) -> set[str]:
+    """계약 API 의 성공 응답이 행을 돌려주는 엔티티 — returns 의 엔티티(한 건·목록), 응답 모양의 row_of, 본문 칸의 엔티티(목록)."""
+    by_key = {k: m.entity_id for m in contract.entities for k in (m.entity_id, m.name)}
+    row_of = {
+        k: s.row_of
+        for s in contract.response_shapes
+        if s.row_of in {m.entity_id for m in contract.entities}
+        for k in (s.shape_id, s.name)
+    }
+    out: set[str] = set()
+    for e in contract.endpoints:
+        ok = e.success()
+        if ok is None:
+            continue
+        names = [ok.returns.removesuffix("[]")] if ok.returns else []
+        for f in ok.body:
+            ft = parse_field(f.type)
+            ref = ft.items[0] if ft.kind == "list" and ft.items else ft
+            if ref.kind == "ref":
+                names.append(ref.name)
+        out |= {by_key[n] for n in names if n in by_key}
+        out |= {row_of[n] for n in names if n in row_of and row_of[n] is not None}  # type: ignore[misc]
+    return out
+
+
+def _fk_links(contract: TaskContract) -> dict[str, set[str]]:
+    """엔티티 id → 외래 키로 이어진 엔티티 id (양쪽 방향)."""
+    by_name = {m.name: m.entity_id for m in contract.entities}
+    out: dict[str, set[str]] = {}
+    for m in contract.entities:
+        for _, target in m.fk_pairs():
+            t = by_name.get(target, target)
+            if t != m.entity_id:
+                out.setdefault(m.entity_id, set()).add(t)
+                out.setdefault(t, set()).add(m.entity_id)
+    return out
+
+
+def _joined_only(contract: TaskContract, entity_id: str, returned: set[str]) -> bool:
+    """API 가 행을 돌려주지 않고, 돌려주는 엔티티와 외래 키로 이어진 엔티티 — 그 행은 목록 항목의 칸(조인)으로만 보인다."""
+    return entity_id not in returned and bool(_fk_links(contract).get(entity_id, set()) & returned)
+
+
+def fit_row_targets(contract: TaskContract) -> tuple[TaskContract, list[str]]:
+    """공개 테스트 rows 는 API 가 돌려주는 엔티티의 행으로 — 그 행에 조인돼 보이는 딸린 정보의 원천 행은 뺀다.
+    테스트는 그 행을 공개 몫 상수로 가리킬 수 없고, 공개 몫 행은 목록 행과 외래 키로 이어지지도 않는다 (외래 키 값은 대상 행 안에서 돈다).
+    2026-11-14 #185 알파(g185-nplus1-hana006): pt1 rows 에 송금 대기 행과 함께 고객(BR001)·서류(IDENTITY) 행을 적어, 정적 검사가 그 상수를
+    요구했고(재요청에도 고칠 수 없음) 빌드가 실패했다 — 그 고객 공개 몫 행(211~213)을 가리키는 송금은 BR002 라 목록에 나오지도 않았다.
+    돌려주는 엔티티를 알 수 없으면(응답 모양 row_of 없음) 그대로 둔다 — row_target_problems 가 묻는다."""
+    returned = returned_entities(contract)
+    if not returned:
+        return contract, []
+    names = {m.entity_id: m.name for m in contract.entities}
+    tests, notes = [], []
+    for t in contract.public_tests:
+        drop = [u for u in t.rows if _joined_only(contract, u.entity_id, returned)]
+        if not drop:
+            tests.append(t)
+            continue
+        tests.append(t.model_copy(update={"rows": [u for u in t.rows if u not in drop]}))
+        shown = "; ".join(
+            f"{names.get(u.entity_id, u.entity_id)}({', '.join(f'{k}={v}' for k, v in u.values.items())})"
+            for u in drop
+        )
+        notes.append(
+            f"공개 테스트 {t.test_id} rows 에서 {shown} 뺌 — API 가 그 행을 돌려주지 않고 목록 행에 조인돼 보이는 딸린 정보라 "
+            "테스트가 공개 몫 상수로 가리킬 수 없다"
+        )
+    return contract.model_copy(update={"public_tests": tests}), notes
+
+
+def row_target_problems(contract: TaskContract) -> list[str]:
+    """공개 테스트 rows 가 외래 키로 이어진 여러 엔티티의 행인데 그중 API 가 돌려주는 것을 계약에서 알 수 없음 — 응답 모양에 row_of 가 없다."""
+    returned = returned_entities(contract)
+    links = _fk_links(contract)
+    unknown = [
+        s.shape_id
+        for s in contract.response_shapes
+        if s.row_of is None and _shape_returned(contract, s.shape_id)
+    ]
+    if not unknown:
+        return []
+    out: list[str] = []
+    names = {m.entity_id: m.name for m in contract.entities}
+    for t in contract.public_tests:
+        ents = {u.entity_id for u in t.rows}
+        if len(ents) < 2 or ents & returned or not any(links.get(e, set()) & ents for e in ents):
+            continue
+        out.append(
+            f"공개 테스트 {t.test_id} rows 의 {', '.join(sorted(names.get(e, e) for e in ents))} 중 어느 것이 API 가 돌려주는 행인지 계약에 없음 — "
+            f"응답 모양 {', '.join(unknown)} 의 row_of 에 한 건(목록 항목 하나)이 어느 엔티티 행인지 적는다. rows 에는 그 행만 적고, 조인돼 보이는 "
+            "딸린 정보(고객 이름·서류 수의 원천)의 행은 적지 않는다"
+        )
+    return out
+
+
+def _shape_returned(contract: TaskContract, shape_id: str) -> bool:
+    shape = next((s for s in contract.response_shapes if s.shape_id == shape_id), None)
+    keys = {shape_id, shape.name} if shape is not None else {shape_id}
+    for e in contract.endpoints:
+        ok = e.success()
+        if ok is None:
+            continue
+        if ok.returns and ok.returns.removesuffix("[]") in keys:
             return True
+        for f in ok.body:
+            ft = parse_field(f.type)
+            ref = ft.items[0] if ft.kind == "list" and ft.items else ft
+            if ref.kind == "ref" and ref.name in keys:
+                return True
     return False
 
 
 def _lookup_key_problems(contract: TaskContract) -> list[str]:
-    """경로 변수로 한 행을 찾는데 여러 행 그룹이 그 필드를 모두 같은 값으로 고정 — 조회가 여러 건이 된다.
+    """경로 변수로 그 엔티티의 한 행을 가리키는 API 에서, 그 변수가 여러 행 그룹 전체에 같은 값이면 문제 — 조회가 여러 건이 된다.
 
-    2026-11-09 알파(cap1): 시드 규칙 글은 "memberId 는 id 와 같다"인데 groups 가 254행 모두 memberId=1 로 고정해
-    `findByGuildIdAndMemberId` 가 여러 건 오류 — 시작 코드·흔한 구현·허용 구현이 모두 같은 500 으로 떨어졌다.
-    """
+    '한 행을 가리킨다' = 경로 변수가 모두 그 엔티티의 칸이고(id 처럼 행마다 다른 칸이 끼면 한 행이 정해진다), 성공 응답이 그 엔티티나
+    응답 모양의 목록이 아니다 (목록이면 같은 값이 여러 행에 있는 것이 정상 — 판별은 response_list_target 한 곳).
+    2026-11-09 alpha-cap1: 시드 규칙 글은 "memberId 는 id 와 같다"인데 groups 가 254행 모두 memberId=1 로 고정해 여러 건 오류로
+    시작 코드·흔한 구현·허용 구현이 모두 같은 500 으로 떨어졌다. 목록 API 를 한 건 응답으로 잘못 적은 계약(2026-11-11 N+1)도 같은 꼴로
+    걸리므로 안내는 두 고침(목록으로 적기·값 빼기)을 함께 준다 (#180: 사례마다 갈래를 두던 것을 하나로)."""
     entities = {m.entity_id: m for m in contract.entities}
     out: list[str] = []
     for e in contract.endpoints:
         params = _PATH_PARAM.findall(e.path)
-        if any(p in _ID_FIELDS for p in params):
-            continue  # id 로 찾으면 행마다 다르다
-        if _lists_shape(e, contract):
-            continue  # 응답 모양의 목록 — 같은 경로 변수 값이 여러 행에 있는 것이 정상
+        if not params or any(p in _ID_FIELDS for p in params):
+            continue
+        target = response_list_target(e, contract)
         for s in contract.seed:
             m = entities.get(s.entity_id)
-            if m is None:
+            if (
+                m is None
+                or (target is not None and target[0] == "shape")
+                or target == ("entity", m.entity_id)
+            ):
                 continue
-            if _lists_entity(e, m):
-                # 그 엔티티의 목록 API — 같은 경로 변수 값(프로젝트의 게시글들)이 여러 행에 있는 것이 정상. 2026-11-11 N+1 알파:
-                # GET /projects/{projectId}/board/posts(m1[]) 를 '한 행을 찾는 API' 로 짚어 계약을 다시 요청했다.
-                # 길드 감사(GET …/members/{memberId}/audit — 감사 기록 목록)는 멤버 한 행을 찾으므로 계속 본다
-                continue
-            keys = params if set(params) <= {f.name for f in m.fields} else []
-            for (
-                g
-            ) in s.groups:  # 필드가 아닌 경로 변수({memberId} → id 등)가 있으면 그게 행마다 다르다
-                if keys and g.last > g.first and all(k in g.values for k in keys):
-                    # 갈래 둘 — 2026-11-11 N+1 알파: 목록 API 응답을 한 건의 칸으로 적은 계약에 '값을 뺀다' 만 줘서 다시 요청해도
-                    # 응답 모양을 고치지 않았다 (진짜 원인은 목록 표시가 없는 응답)
+            if not set(params) <= {f.name for f in m.fields}:
+                continue  # 칸이 아닌 경로 변수({memberId} → id 등)가 끼면 그게 행마다 다르다
+            for g in s.groups:
+                if g.last > g.first and all(k in g.values for k in params):
                     msg = (
-                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.method or ''} {e.path} 를 {', '.join(keys)} 로 한 행을 찾는 "
-                        f"API 로 적었는데 {', '.join(keys)} 가 모든 행에서 같음 — 여러 건 조회 오류. "
-                        + (
-                            f'목록을 돌려주는 API 면 성공 응답을 returns "{s.entity_id}[]" ({m.name} 목록)으로 적는다. '
-                            f"한 행을 찾는 API 면 {keys[-1]} 는 values 에서 뺀다"
-                            # 목록 표시가 없는 GET 만 — 변경 요청(PATCH 등)은 목록 API 가 아니고, 이미 다른 것의 목록을 돌려주는 GET
-                            # (길드 감사 …/members/{memberId}/audit — 감사 기록)은 경로로 멤버 한 행을 찾는다
-                            if e.method == "GET" and not _returns_any_list(e)
-                            else f"{keys[-1]} 는 values 에서 뺀다"
-                        )
-                        + " (코드가 행마다 다른 값을 넣는다)"
+                        f"시드 {s.entity_id} 범위 {g.first}~{g.last}: {e.method or ''} {e.path} 가 {', '.join(params)} 로 {m.name} 한 행을 "
+                        f"가리키는데 {', '.join(params)} 가 모든 행에서 같음 — 여러 건 조회 오류. 이 API 가 목록을 돌려주면 성공 응답을 "
+                        f'returns "{s.entity_id}[]" ({m.name} 목록)이나 응답 모양 목록으로 적고, 한 행을 찾는 API 면 {params[-1]} 는 '
+                        "values 에서 뺀다 (코드가 행마다 다른 값을 넣는다)"
                     )
                     if msg not in out:
                         out.append(msg)
@@ -339,20 +428,24 @@ def public_free(
         for i in range(r.first, r.last + 1)
     }
     asked = requester_rows(contract)
-    out: dict[tuple[str, tuple[tuple[str, SeedScalar], ...]], list[int]] = {}
+    # 처음 값이 같으면 칸 순서가 달라도 같은 그룹 — 2026-11-13 #164 좌석 알파: LLM 그룹({remainingSeats, totalSeats, status})과
+    # 공통 값을 앞에 두는 덧붙임 그룹({status, …})을 따로 세어 같은 그룹을 거듭 덧붙이고 다른 처음 값의 몫은 비었다.
+    # 상수 이름(hidden_helpers.public_rows)은 처음 본 그룹의 칸 순서를 따른다.
+    out: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[dict[str, SeedScalar], list[int]]] = {}
     for s in contract.seed:
         if s.rows <= 0:
             continue
         for g in sorted(s.groups, key=lambda x: x.first):
             if set(range(g.first, g.last + 1)) <= asked.get(s.entity_id, set()):
                 continue  # 요청자 행만 있는 그룹
-            ids = out.setdefault((s.entity_id, tuple(g.values.items())), [])
+            key = (s.entity_id, tuple(sorted((k, str(v)) for k, v in g.values.items())))
+            _, ids = out.setdefault(key, (dict(g.values), []))
             for i in range(max(g.first, reserved + 1), g.last + 1):
                 if len(ids) >= PUBLIC_PER_GROUP:
                     break
                 if i not in used and i not in asked.get(s.entity_id, set()):
                     ids.append(i)
-    return [(eid, dict(vals), ids) for (eid, vals), ids in out.items()]
+    return [(eid, vals, ids) for (eid, _), (vals, ids) in out.items()]
 
 
 def _cond(initial: Mapping[str, SeedScalar]) -> str:
@@ -452,11 +545,80 @@ def fit_seed(
         seeds[d.entity_id] = grown
         contract = contract.model_copy(update={"seed": [seeds[s.entity_id] for s in contract.seed]})
     if manifest.public_helper is not None:
+        contract = _fit_row_uses(contract, seeds, names, reserved, notes)
         contract = _fit_public(contract, plan, seeds, names, reserved, notes)
     if notes:  # 고친 결과도 스키마(행 상한 등)를 지키는지
         contract = TaskContract.model_validate(contract.model_dump())
         plan = HiddenPlan.model_validate(plan.model_dump())
     return contract, plan, notes
+
+
+def matches(values: Mapping[str, SeedScalar], want: Mapping[str, SeedScalar]) -> bool:
+    """처음 값 values 가 want 를 모두 담는가 (칸 순서·값 형식 무관 — 시드 값은 글자로 비교)."""
+    return all(k in values and str(values[k]) == str(v) for k, v in want.items())
+
+
+def _fit_row_uses(
+    contract: TaskContract,
+    seeds: dict[str, SeedRule],
+    names: Mapping[str, str],
+    reserved: int,
+    notes: list[str],
+) -> TaskContract:
+    """공개 테스트가 쓰겠다고 한 행(PublicTest.rows)의 처음 값마다 시드 그룹이 있게 — 없으면 시드 끝에 덧붙인다.
+    그 뒤 _fit_public 이 그룹마다 공개 몫 상수를 채운다 (#164: 경계 행·걸러질 행이 시드에 없어 공개 테스트가 규칙을 가르지 못했다).
+    처음에 비어 있는 엔티티·시드 규칙이 없는 엔티티는 고치지 않는다 (row_use_problems 가 잡음)."""
+    for t in contract.public_tests:
+        for use in t.rows:
+            seed = seeds.get(use.entity_id)
+            if seed is None or seed.rows == 0:
+                continue
+            if any(matches(g.values, use.values) for g in seed.groups):
+                continue
+            values = {**common_values(seed), **use.values}
+            first = seed.rows + 1
+            last = max(seed.rows, reserved) + PUBLIC_PER_GROUP
+            seeds[use.entity_id] = seed.model_copy(
+                update={
+                    "rows": last,
+                    "groups": [*seed.groups, SeedGroup(first=first, last=last, values=values)],
+                }
+            )
+            notes.append(
+                f"{names.get(use.entity_id, use.entity_id)} 시드 {seed.rows} → {last}행: id {first}~{last} ({_cond(values)}) 덧붙임 "
+                f"— 공개 테스트 {t.test_id} 가 쓰는 행"
+            )
+            contract = contract.model_copy(
+                update={"seed": [seeds[x.entity_id] for x in contract.seed]}
+            )
+    return contract
+
+
+def row_use_problems(contract: TaskContract) -> list[str]:
+    """공개 테스트 rows 가 가리키는 행을 시드로 만들 수 있는가 — 엔티티·칸이 있고, 처음부터 행이 있는 엔티티 (요청으로 만드는 데이터는 rows 에 적지 않음)."""
+    out: list[str] = []
+    entities = {m.entity_id: m for m in contract.entities}
+    seeds = {x.entity_id: x for x in contract.seed}
+    for t in contract.public_tests:
+        for use in t.rows:
+            m = entities.get(use.entity_id)
+            if m is None:
+                out.append(f"공개 테스트 {t.test_id} rows: 계약에 없는 엔티티 {use.entity_id}")
+                continue
+            seed = seeds.get(use.entity_id)
+            if seed is None or seed.rows == 0:
+                out.append(
+                    f"공개 테스트 {t.test_id} rows: {m.name} 은 처음에 비어 있어 시드 행이 없음 — "
+                    "요청으로 만드는 데이터는 rows 에 적지 않고 checks 에 만드는 요청을 쓴다"
+                )
+                continue
+            fields = {f.name for f in m.fields}
+            bad = [k for k in use.values if k not in fields or k == "id"]
+            if bad:
+                out.append(
+                    f"공개 테스트 {t.test_id} rows: {m.name} 에 없는 칸(또는 id) {', '.join(bad)} — 시드 groups 의 values 와 같은 칸으로"
+                )
+    return out
 
 
 def _fit_public(

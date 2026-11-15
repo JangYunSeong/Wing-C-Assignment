@@ -81,7 +81,12 @@ async def main() -> None:
     )
     ap.add_argument("--openai-key-env", default=None)
     ap.add_argument("--budget-usd", type=float, default=0.5)
-    ap.add_argument("--designs", type=int, default=1, help="참조 구현을 만들 허용 설계 수")
+    ap.add_argument(
+        "--designs",
+        type=int,
+        default=None,
+        help="참조 구현을 만들 허용 설계 수 (기본: 명세의 허용 설계 전부 — #171)",
+    )
     ap.add_argument(
         "--task-json",
         default=None,
@@ -172,8 +177,10 @@ async def main() -> None:
         for name in ("spec.md",):  # 같은 명세의 사람 검토용 본문도 옆에 둔다
             if (reuse.parent / name).exists():
                 shutil.copy2(reuse.parent / name, out / name)
-        report["spec"] = {"reused": str(reuse.relative_to(ROOT)), "cost_usd": 0.0}
-        print(f"① 명세 재사용 — {task.title} ({reuse.relative_to(ROOT)})")
+        # worktree 의 data/ 는 본 체크아웃으로 가는 링크라 resolve 하면 레포 밖일 수 있다 — 그때는 절대 경로로 적는다
+        shown = str(reuse.relative_to(ROOT)) if reuse.is_relative_to(ROOT) else str(reuse)
+        report["spec"] = {"reused": shown, "cost_usd": 0.0}
+        print(f"① 명세 재사용 — {task.title} ({shown})")
     else:
         row = await run_one(llm, prompts, a.posting, built, asyncio.Semaphore(1))
         spent = row["cost_usd"]
@@ -205,6 +212,8 @@ async def main() -> None:
     ):  # 템플릿 판 고정 (CURRENT 는 그대로) — 예: 코드 뼈대 v10 을 v9 와 비교
         template = load_template(template.manifest.template_id, a.template_version)
         report["template_pinned"] = template.manifest.ref
+    # 어느 판의 검사·수리 칸으로 돌렸는지 (같은 vN 에서 고칠 수 있는 칸 — #176)
+    report["template"] = {"ref": template.manifest.ref, "manifest_sha256": template.manifest_sha256}
     res = await plan_contract(
         task,
         template,
@@ -312,6 +321,18 @@ async def main() -> None:
         "rejected": write_rejected(built_out.rejected, out / "rejected"),
         "verify": [[_run_row(r) for r in rep.runs] for rep in built_out.reports],
         "dropped_cases": built_out.dropped_cases,  # 변별하지 못해 채점에서 뺀 숨은 케이스
+        # 공개 테스트 변별 관문 (#164) — 변형마다 잡힘·살아남음·무효, 버린 변형, 변형 실행 결과
+        "variants": [r.line() for r in built_out.variants],
+        "variant_dropped": built_out.variant_dropped,
+        "variant_verify": [
+            [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.variant_reports
+        ],
+        # 숨은 테스트 함정 관문 (#171) — 허용 설계의 함정에 빠진 변형마다 잡힘·살아남음·무효
+        "traps": [r.line() for r in built_out.traps],
+        "trap_dropped": built_out.trap_dropped,
+        "trap_verify": [
+            [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.trap_reports
+        ],
     }
     report["cost_usd"] = round(spent, 4)
     report["candidate_files"] = tree(out / "candidate") if starter is not None else []

@@ -33,6 +33,17 @@ OUT = Path(os.environ.get("GRADE_OUT", "/out"))
 WORK = Path(os.environ.get("GRADE_WORK", "/tmp/grade-work"))
 
 _REASON = re.compile(r"\[reason:([a-z0-9_]+)\]")
+# 건너뛴 테스트 — 판정하지 않은 것이라 통과로 세지 않는다 (#173: 조건부 건너뛰기가 검증을 지나 채점에서 통과로 기록될 수 있었다)
+SKIPPED = "테스트를 건너뜀 — 판정하지 않았으므로 통과가 아니다"
+# 실행 환경 — 과제 생성 검증(starter/verify/python.py)도 이것을 쓴다 (#174: 검증은 시간대·바이트코드 설정이 없고 채점은 CI 가 없어
+# pytest 가 긴 단언 diff 를 잘랐다). 작업 하위 프로세스의 시간대는 하네스가 따로 고정한다.
+TEST_ENV = {
+    "CI": "1",
+    "NO_COLOR": "1",
+    "FORCE_COLOR": "0",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "TZ": "Asia/Seoul",
+}
 _PT = re.compile(r"\bpt\d{1,2}\b")
 # 제출물에서 가져오지 않는 것 — 가상 환경·캐시는 이미지의 것을 쓴다
 SKIP = (".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".git")
@@ -101,16 +112,16 @@ def junit_results(
         rel = (
             posixpath.normpath(posixpath.join(rootdir, raw)) if rootdir else posixpath.normpath(raw)
         )
-        entry = files.setdefault(rel, {"titles": [], "first": None})
+        entry = files.setdefault(rel, {"titles": [], "first": None, "skipped": None})
         entry["titles"].append(tc.get("name", ""))
         bad = tc.find("failure")
         if bad is None:
             bad = tc.find("error")
         if bad is not None and entry["first"] is None:
             entry["first"] = (bad.tag, bad.get("message") or "", bad.text or "", tc.get("name", ""))
-        skipped = tc.find("skipped")
-        if skipped is not None and not entry["titles"]:
-            continue
+        # pytest.skip·skipif·xfail — 건너뜀은 통과가 아니다 (#173: 건너뜀을 빼려던 분기가 늘 거짓이라 통과로 셌다)
+        if entry["skipped"] is None and (sk := tc.find("skipped")) is not None:
+            entry["skipped"] = (sk.get("message") or "", tc.get("name", ""))
     out: list[dict[str, Any]] = []
     for rel in sorted(files):
         group = group_of(rel, layout)
@@ -119,6 +130,18 @@ def junit_results(
             text = (work / rel).read_text("utf-8", errors="ignore")
         name = _name(group, rel, files[rel]["titles"], case_rx, text)
         first = files[rel]["first"]
+        if first is None and files[rel]["skipped"] is not None:
+            why, title = files[rel]["skipped"]
+            out.append(
+                {
+                    "group": group,
+                    "name": name,
+                    "result": "HARNESS_ERR",
+                    "reason": None,
+                    "message": clean_message(f"{title} — {SKIPPED} {why}".strip()),
+                }
+            )
+            continue
         if first is None:
             out.append(
                 {"group": group, "name": name, "result": "PASS", "reason": None, "message": ""}
@@ -230,7 +253,7 @@ def run(cmd: Sequence[str], log: Path, timeout: int) -> int | None:
     with log.open("a", encoding="utf-8") as fh:
         fh.write(f"$ {' '.join(cmd)}\n")
         fh.flush()
-        env = os.environ | {"PYTHONDONTWRITEBYTECODE": "1", "TZ": "Asia/Seoul"}
+        env = os.environ | TEST_ENV
         try:
             return subprocess.run(
                 list(cmd),
@@ -259,7 +282,9 @@ def run_all(
     start = log.stat().st_size if log.exists() else 0
     codes = [run([py, "-m", "compileall", "-q", *existing(cfg["compile_paths"])], log, timeout)]
     targets = existing(cfg["grading_paths"])
-    collect = [t for t in targets if not t.endswith("selftest")]
+    collect = existing(
+        cfg["collect_paths"]
+    )  # 템플릿 commands.test_compile 의 대상 (검증과 같은 정의, #174)
     if collect:
         codes.append(
             run(

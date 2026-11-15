@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from task_spec.schemas.base import Schema
 
@@ -37,6 +37,24 @@ class ContractNeed(Schema):
 
     kind: NeedKind
     note: str = ""  # 프롬프트·재요청에 붙는 설명 (재료의 말로)
+
+
+class HarnessRule(Schema):
+    """조절값을 근거 인용에서 만드는 규칙 — 계약 검사(starter/contract.rule_check)가 계약이 인용한 자료 문장에서 이 규칙으로 값을
+    다시 계산해 계약의 값과 대조한다. 규칙이 없는 조절값은 일반 검사 (인용 속 값 후보가 하나여야 받는다).
+    2026-11-13 목록 재료: '평균: 21.3 p50: 19.8' 을 인용하고 p50 을 반올림한 20 을 맞게 썼는데, 일반 검사는 숫자가 둘이라
+    어느 값이 근거인지 몰라 세 번 다 거절했다 — 어느 값을 어떻게 맞추는지는 숨은 요구(재료)가 안다."""
+
+    # 값 바로 앞 이름표, 앞이 우선 (예: ["p50", "중앙값", "평균"]) — 인용에 이 중 가장 앞의 이름표가 붙은 수만 후보.
+    # 어느 이름표도 없으면 이름표(백분위·평균·최대 등)가 붙지 않은 수가 후보. 비면 이름표를 보지 않는다.
+    labels: list[str] = Field(default_factory=list)
+    # 값 바로 뒤 단위 (예: ["건"]) — 이 단위가 붙은 수만 후보. 시간 조절값(이름 끝 _ms·_s)은 비워 두면 시간 단위가 붙었거나
+    # 단위 없는 수가 후보이고 조절값 단위로 환산한다.
+    units: list[str] = Field(default_factory=list)
+    # 후보가 여럿일 때 — only: 여럿이면 거절(인용을 좁힌다), max·min: 가장 큰·작은 값
+    pick: Literal["only", "max", "min"] = "only"
+    # 조절값 단위로 바꾼 뒤 맞추는 방식 — exact: 그대로, nearest: 반올림(.5 는 올림), up: 올림, down: 내림
+    round: Literal["exact", "nearest", "up", "down"] = "exact"
 
 
 class FeatureSeed(Schema):
@@ -98,10 +116,20 @@ class FeatureSeed(Schema):
     # 그 조절값을 자료의 어느 운영 조건에서 읽는지 (계약 입력의 조절값 설명에 붙는다) — 2026-11-10 목록 재료: 템플릿 설명
     # '채점 클라이언트의 요청 하나 시간 한도' 를 자료의 '응답 시간 목표' 와 잇지 못해 세 번 1초·2초·30초로 흔들렸다.
     harness_notes: dict[str, str] = Field(default_factory=dict)
+    # 그 조절값을 근거 인용에서 만드는 규칙 (HarnessRule) — harness_notes 가 말로 쓴 것을 계약 검사가 그대로 대조한다
+    harness_rules: dict[str, HarnessRule] = Field(default_factory=dict)
     # 숨은 케이스가 실패를 고르는 방식 — "item" 이면 같은 경로로 여러 건을 보내는 흐름(대기열·일괄 전송)이라 실패를 순번("처음 2건")이
     # 아니라 항목 내용으로만 정한다 (HiddenCase.faults.when). 공개 글(trigger 의 '간헐적')은 그대로 둔다 — 정확한 실패 지정은 숨은 쪽에만.
     # 2026-11-11 재측정 오프라인: 순번 실패 지정이 하나씩 보내는 허용 설계와 한꺼번에 보내는 구현에서 다르게 소비됐다.
     fault_by: Literal["item"] | None = None
+
+    @model_validator(mode="after")
+    def _rules_named(self) -> FeatureSeed:
+        if self.harness is not None and (
+            extra := sorted(set(self.harness_rules) - set(self.harness))
+        ):
+            raise ValueError(f"harness_rules 의 조절값 {', '.join(extra)} 이 harness 에 없음")
+        return self
 
 
 class PublicIncident(Schema):

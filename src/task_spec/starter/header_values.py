@@ -23,21 +23,39 @@ NEUTRAL = "grader"
 
 
 PER_REQUEST = "요청마다"
-# 요청 하나를 가리키는 헤더 — 이름이나 제약으로 (요청 번호·멱등 키·추적 id)
-_REQUEST_KEY = re.compile(
-    r"request[-_]?id|idempot|correlation[-_]?id|trace[-_]?id|요청\s*번호|멱등", re.I
-)
 
 
 def per_request(contract: TaskContract, header: str) -> bool:
-    """요청마다 새 값이어야 하는 헤더 (권한 칸 밖). 2026-11-10 retrydup-c: 요청 번호 X-Request-Id 를 도우미가 상수 하나로 줘
-    모든 공개·숨은 테스트가 같은 번호를 공유 — 명세대로 번호로 중복을 막은 허용 구현 d2 가 서로 다른 충전을 재요청으로 보고
-    다른 회원의 처음 결과를 돌려줘 떨어졌고, (회원·번호·금액)으로 느슨하게 막은 d1 만 통과했다."""
-    decl = [h for e in contract.endpoints for h in e.headers if h.name == header]
-    texts = [header, *(h.constraints or "" for h in decl)]
-    return any(_REQUEST_KEY.search(x) for x in texts) or any(
-        re.search(r"\buuid\b", h.constraints or "", re.I) for h in decl
+    """요청마다 새 값이어야 하는 헤더 — 계약 헤더 칸 per_request (HeaderField). 2026-11-10 retrydup-c: 요청 번호 X-Request-Id 를
+    도우미가 상수 하나로 줘 모든 공개·숨은 테스트가 같은 번호를 공유 — 명세대로 번호로 중복을 막은 허용 구현 d2 가 서로 다른 충전을
+    재요청으로 보고 다른 회원의 처음 결과를 돌려줘 떨어졌다. #181: 이름·제약 글의 낱말 사전으로 짐작하던 것을 칸으로 — 사전 밖 이름
+    (X-Nonce·X-Dedup-Key)·제약 '고유·중복 불가'는 놓쳤다. 칸이 비면 False (계약 검사가 재요청한다 — unset_per_request)."""
+    return any(h.per_request for e in contract.endpoints for h in e.headers if h.name == header)
+
+
+def _auth_headers(contract: TaskContract) -> set[str]:
+    """권한 칸(auth)이 가리키는 헤더 — 값은 권한 규칙이 정한다 (요청자)."""
+    return {e.auth.header for e in contract.endpoints if e.auth is not None}
+
+
+def unset_per_request(contract: TaskContract) -> list[str]:
+    """per_request 를 적지 않은 헤더 (권한 칸의 헤더 밖) → 재요청 사유 하나."""
+    auth = _auth_headers(contract)
+    names = sorted(
+        {
+            h.name
+            for e in contract.endpoints
+            for h in e.headers
+            if h.per_request is None and h.name not in auth
+        }
     )
+    if not names:
+        return []
+    return [
+        f"헤더 {', '.join(names)} 에 per_request 가 없음 — 요청마다 새 값이어야 하는 헤더(요청 번호·멱등 키처럼 요청 하나를 가리키는 값)면 "
+        "true, 여러 요청이 같은 값을 써도 되면(요청자·클라이언트 이름 등) false 로 적는다. 테스트 도우미가 true 면 요청마다 새 값을, "
+        "false 면 정해진 값 하나를 준다"
+    ]
 
 
 @dataclass(frozen=True)
@@ -106,12 +124,24 @@ def header_values(contract: TaskContract) -> list[HeaderValues]:
     return out
 
 
+_VALUE = re.compile(r"[\"'`]?[A-Za-z0-9_.@-]+")
+_SHOWN = re.compile(r"<[^>]{1,60}>|\{[^}]{1,60}\}|\[[^\]]{1,60}\]|\([^)]{1,60}\)|[^\s,;]{1,40}")
+
+
 def _placeholders(contract: TaskContract, header: str) -> list[str]:
-    """값 자리에 실제 값 대신 쓴 자리표시자·설명 (`X-Requester-Id=<MASTER 등급 멤버의 id>`)."""
-    rx = re.compile(r"(?<![\w-])" + re.escape(header) + r"\s*[=:]\s*(<[^>]{1,60}>)", re.I)
-    return [
-        f"{t.test_id} 의 {m.group(1)}" for t in contract.public_tests for m in rx.finditer(t.checks)
-    ]
+    """값 자리에 실제 값 대신 쓴 것 — `헤더=`·`헤더:` 대입 중 값 글자(header_values 가 읽는 꼴)로 시작하지 않는 것 전부
+    (`<MASTER 등급 멤버의 id>`·`{값}`·`[통과 값]`·`(통과하는 값)`·`관리자`). #181: 예전엔 `<…>` 꼴만 찾아 다른 꼴은 진단에 없었다."""
+    rx = re.compile(r"(?<![\w-])" + re.escape(header) + r"\s*[=:]\s*", re.I)
+    out: list[str] = []
+    for t in contract.public_tests:
+        for m in rx.finditer(t.checks):
+            if _VALUE.match(t.checks, m.end()):
+                continue
+            shown = _SHOWN.match(t.checks, m.end())
+            out.append(
+                f"{t.test_id} 의 {shown.group(0) if shown else t.checks[m.end() : m.end() + 20]}"
+            )
+    return out
 
 
 def header_problems(contract: TaskContract) -> list[str]:
@@ -120,30 +150,23 @@ def header_problems(contract: TaskContract) -> list[str]:
 
     2026-11-09 알파(cap2): 재요청 문구가 `<통과하는 값>` 꼴이라 답이 `<MASTER 등급 멤버의 memberId>` 로 돌아왔고, 그 권한을
     통과하는 행이 시드에 없었다 — 문구는 실제 값 예시와 시드 행을 함께 말한다."""
-    out: list[str] = []
+    out = unset_per_request(contract)
     ruled = {
         e.auth.header for e in contract.endpoints if e.auth is not None and e.auth.kind != "other"
-    }
-    other = {
-        e.auth.header for e in contract.endpoints if e.auth is not None and e.auth.kind == "other"
     }
     for h in header_values(contract):
         if h.source == PER_REQUEST:
             continue
         if h.ok is not None or h.name in ruled or not _statuses(contract, h.name) & set(DENIED):
             continue  # 권한 칸(role·fixed)이 있으면 그쪽 검사가 말한다 (auth_rule.auth_problems)
+        # 여기 오는 헤더는 코드가 요청자 값을 정하지 않는다 (auth 칸 없음·other) — 문구 하나 (#181: other 일 때만 앞에 붙이던
+        # 갈래는 지웠다. 2026-11-09 fixmt-be2 의 지시 충돌은 plan_contract v15 부터 프롬프트가 같은 말을 한다)
         msg = (
             f"헤더 {h.name} 를 받는 엔드포인트가 권한 거절({'·'.join(map(str, DENIED))})을 내는데 통과하는 값의 예시가 없음 — "
+            "이 헤더는 코드가 요청자 값을 정하지 않으므로(auth 칸 없음·other) '통과하는 요청자로' 같은 말 대신 "
             f"공개 테스트 checks 에 `{h.name}=1 → 200`, `{h.name}=7 → 403` 처럼 실제 값과 결과를 함께 적는다. "
             "권한이 요청자의 데이터(등급·소유 등)에 달렸으면 조건을 만족하는 행과 만족하지 않는 행을 시드 groups 에 두고 그 행의 값을 쓴다"
         )
-        if h.name in other:
-            # 2026-11-09 fixmt-be2: auth=other 인데 '공개 테스트에 요청자 값을 쓰지 않는다'는 지시(role·fixed 용)를 따라 값 없이
-            # 3번 답해 계약이 거절됐다 — other 는 코드가 값을 정하지 않으니 이때만은 실제 값을 적어야 한다고 짚는다
-            msg = (
-                "auth 가 other 라 코드가 요청자 값을 정하지 않음 — 이때는 '통과하는 요청자로' 같은 말 대신 "
-                + msg
-            )
         if ph := _placeholders(contract, h.name):
             msg += f" (값 자리에 자리표시자를 씀: {'; '.join(ph[:3])} — 값으로 읽지 못함)"
         out.append(msg)

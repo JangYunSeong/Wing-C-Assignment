@@ -67,6 +67,8 @@ templates/<직군>/<스택>/CURRENT
 | `fill_slots` | LLM 이 쓸 수 있는 경로 패턴과 종류 (entity / service / controller / config / seed / existing_test / docs) |
 | `locked` | 건드리면 안 되는 파일 (빌드 설정, 래퍼, 하네스) |
 | `limits` | 파일 수·크기 상한, 금지 의존성 추가 |
+| `code_pitfalls` | 스택에서 되풀이되는 API 실수·채점 우회 — 항목마다 `pattern`·`fix`·`unless`·`when`(이 꼴이 있는 파일만)·`paths`·`overlays`(starter·public_test·hidden·ref)·`strip_comments`·`harness_bypass`. Java 의 TestRestTemplate PATCH·코드로 풀·스레드 바꾸기도 여기 (#176) |
+| `repair_terms` | 수리 문구의 스택 이름 + 수리 판정 꼴(`impl_crash`·`grading_env`·`test_defect`·`test_context`·`server_side` — 모든 구현이 같은 서버 쪽 예외면 시작 코드, #176) |
 | `network` | 항상 `none` (검증 컨테이너에 네트워크 없음) |
 
 ## 4. 생성 흐름
@@ -168,7 +170,7 @@ templates/<직군>/<스택>/CURRENT
 |---|---|
 | 응시 | 응시용 이미지로 지원자별 컨테이너. 작업 경로 `manifest.workspace`(기본 `/workspace`), 시작 명령, 권장 자원 |
 | 제출 | 응시 종료 시 작업 경로를 떠서 제출물로 둔다 (플랫폼 쪽 저장 — 지원자 데이터) |
-| 채점 | `podman run --rm --network none -v <제출물>:/submission:ro -v <결과>:/out <grader>@sha256:… grade` — 네트워크 없음 필수, 제한 시간은 라벨 `grade.timeout_s` |
+| 채점 | `podman run --rm --network none -v <제출물>:/submission:ro,Z -v <결과>:/out:Z <grader>@sha256:… grade` — 네트워크 없음 필수, 제한 시간은 라벨 `grade.timeout_s`. <제출물>·<결과>는 채점할 때마다 로컬 디스크에 새로 만든 사본 폴더(podman 을 돌리는 사용자 소유) — 원본 제출물을 붙이지 않는다 (SELinux 격리를 켠 채 그 사본에만 전용 라벨 `:Z`). 사본을 로컬 디스크에 둘 수 없을 때만 grader.json `grade_without_selinux_relabel`(SELinux 격리를 끈다). 마운트 정책: `starter/mounts.py` (#174) |
 | 결과 | `/out/result.json` — `{common_id, revision, cases:[{id, trap_id, kind, passed, reason}], report_path}` + JUnit 등 원본 보고서. 케이스 목록·선택자는 채점용 이미지 안에 있다 |
 
 - 우리 테스트케이스는 입력→기대 출력 쌍이 아니라 **실행 코드**다 (동시 요청·지연/오류 주입·커넥션 추적) — 그래서 형식(JSON)이 아니라 실행 환경째(이미지) 넘긴다.
@@ -274,7 +276,7 @@ templates/<직군>/<스택>/CURRENT
    이 재료에는 오프라인·서버 상태가 없어 v3 새 도우미(network·collection)는 쓰이지 않았다 (확인은 맞는 재료가 생길 때).
    재료 4건 추가(2026-11-10, 원문 확인 — 모두 reviewed=false·알파 전): 토큰 갱신 동시성(Auth0 문서 갱신 토큰 회전·재사용 감지) · 로그아웃 뒤 이전 사용자 데이터(Apollo Client 문서 'Reset store on logout') · 이어 붙인 목록 중복(Slack Engineering 2017 페이지 나누기) · 오프라인 재전송 일부 실패(TanStack Query Network Mode — '모아 두었다 다시 보냄'은 계약 background 에 드러나 숨은 요구를 '다시 보내는 중 일부 실패'로). 템플릿 v4(v3 그대로): 사유 코드 6개와 작성법, 하네스 api.once·call.headers, 자체 점검 23개. 재료가 7건이 되어 공고별 배정이 바뀐다 (예: kb_2026_2#007·samsung#006 → 토큰 갱신).
    재료 7건 공고 하나씩 알파(2026-11-10, gpt-4.1 — fe7·fe7b·fe7c, 합계 약 $4.8): 1회차 review 1(응답 순서). 실패마다 원인을 확인해 막고 실패분만 다시 — 2회차 review +1(이어 붙인 목록 중복). 막은 것: 재료(오프라인 운영 조건 낱말·로그인 상태 저장소 필요 요소) · 계약(화면 과제에 백엔드 권한·헤더 값 검사 안 함 · 없는 엔티티 외래 키 거절에 고치는 법) · LLM 재요청에 받은 값(허용 목록 밖, 영문 식별자만)·역할 별칭 · 템플릿 v5(textsByRole 범위·순서 무관, 숫자 입력란 빈 값 허용·라우터 안에서 그리기 stack_notes, 라우터 없이 화면 그리는 기존 테스트 code_pitfalls, 작성법: 되돌아갈 값·요청 수 세는 시점) · 수리(모든 구현이 기존 테스트를 라우터·Provider 밖 오류로 깨면 시작 코드 테스트) · 다시 만든 채점 코드 컴파일은 앞 회차에서 · 프롬프트 gen_hidden_react v4~v6·gen_public_react v4~v5(항목 글 통째 비교 금지 · 요청 모양 둘이면 둘 다 · 로그인 상태 · 기대 값 다시 계산 · 필수 입력 채우기 · 다시 방문은 앱 안 이동) · CURRENT 를 최신으로(plan_contract v20 등). 실패가 회차마다 다른 생성 실수로 바뀌어(허용 구현 상태 갱신·입력란·되돌림 버그 포함) 재료 자체의 결함은 아직 보이지 않는다.
-   main 기준 재실행(fe7d, $1.67): 낙관적 갱신 review → 재료 7건 중 review 3(응답 순서·목록 중복·낙관적 갱신). 실패 원인 다시 확인 뒤 조치(2026-11-10): 항목 글 배열에 toContain('글자')(프롬프트 v4 문구가 원인 — 흔한 구현의 '의도한 사유' 실패도 실은 이 단언) → 정적 검사 array_substring_contains + gen_hidden_react v7·gen_public_react v6 · 폼만 있고 입력란·버튼 요소가 없는 계약(저장된 폼 화면 13개 중 12개 — 테스트가 input[name] 으로 짐작) → 계약 검사 _ui_form_fields + 정적 검사 selector_guesses · 하네스 타입(once·always·calls 본문 unknown — 문서 예시가 컴파일 안 됨, serverState 결과 as 계약타입[] 이 TS2352) → 템플릿 v6(Body·CallWith·serverState<T>) · vitest 에서 waitFor import → 정적 검사 misplaced_test_imports.
+   main 기준 재실행(fe7d, $1.67): 낙관적 갱신 review → 재료 7건 중 review 3(응답 순서·목록 중복·낙관적 갱신). 실패 원인 다시 확인 뒤 조치(2026-11-10): 항목 글 배열에 toContain('글자')(프롬프트 v4 문구가 원인 — 흔한 구현의 '의도한 사유' 실패도 실은 이 단언) → 정적 검사 array_substring_contains + gen_hidden_react v7·gen_public_react v6 · 폼만 있고 입력란·버튼 요소가 없는 계약(저장된 폼 화면 13개 중 12개 — 테스트가 input[name] 으로 짐작) → 계약 검사 _ui_form_fields + 정적 검사 selector_guesses(2026-11-14 #177 에서 이름·글·레이블 쿼리와 함께 element_guesses 하나로) · 하네스 타입(once·always·calls 본문 unknown — 문서 예시가 컴파일 안 됨, serverState 결과 as 계약타입[] 이 TS2352) → 템플릿 v6(Body·CallWith·serverState<T>) · vitest 에서 waitFor import → 정적 검사 misplaced_test_imports.
    재료 조치(2026-11-10, 사용자 결정 — 4번 B·5번 A): '중복 제출'(진행 중 다시 누르기)을 '다시 보낼 때 같은 요청 번호'(Stripe idempotency 글, 2017-02-22 — 'If the client notices a failure, it retries the request with the same ID')로 바꿈 — 진행 중 버튼 막기는 허용 설계인데 흔한 구현 생성이 빌드 9개 중 5개에서 그렇게 해 변별력이 약했다. 사유 retry_new_key(v6). 로그아웃 재료: 계약 저장소에는 로그인 상태만(목록 캐시를 적어 정답 설계를 드러낸 계약 1/4) + 누설 낱말(사용자별·사용자마다·계정별).
    fe8 조치(2026-11-11, 사실 확인 뒤 사용자 결정): React 템플릿 **v8** — 하네스 `api.contract`(contract.ts 가 계약의 성공 상태·test id 를 알림: 상태를 주지 않은 응답은 계약의 성공 상태 — v7 은 200 이라 계약이 201 인 생성 API 에서 `res.status === 201` 을 보는 허용 구현만 떨어졌고 실패 메시지에 상태가 안 드러나 수리가 같은 테스트를 다시 만듦) · textsByRole 범위로 계약 test id(`TestId` 브랜드 — 글자 test id 두 개는 컴파일 안 됨) · collection 의 items·toItem 이 계약 타입 · 요청이 오지 않은 기다림에 응답 안 한 요청과 같은 경로의 맞지 않은 본문을 알림 · match 없는 기다림의 모호함은 서로 다른 요청이 둘 이상일 때만(v7 은 같은 요청 여럿도 오류라 흔한 구현의 동시 갱신 4번 — 함정 그 자체 — 이 테스트 결함이 됨) · 화면 이동은 라우터로(jsdom 은 `window.location` 이동을 하지 않음 — stack_notes·code_pitfalls). 계약: `fit_forms`(폼이 적은 제출 요청의 칸으로 입력란·제출 버튼) + plan_contract v22(폼 작성법) — 저장된 화면 계약 재생에서 폼 문제 11 → 4(남은 4건은 로그인 API 가 계약에 없음). 수리: 다시 만든 허용 구현만 숨은 케이스에서 판정까지 못 가면 숨은 테스트를 한 번 의심. 검증기: podman `--security-opt label=disable`(SELinux 서버에서 붙인 폴더를 못 읽어 npm ci 실패).
    재검(LLM 없음): fe8 오프라인 산출물을 v8 로 — 허용 구현이 공개 pt1~4 통과(201 기본값), 토큰 숨은 테스트 컴파일 통과. 알파 fe9(gpt-4.1, 3건 $1.23): 모두 failed 지만 fe8 의 막힘 (로그아웃 계약 답 3개 거절 · 토큰 컴파일 · 오프라인 200/201)은 모두 지나감 — 로그아웃 계약은 LLM 이 입력란을 직접 적어 통과. 새 실패는 생성 편차(허용 구현이 계약상 새 로그인을 구현 안 함 등)와 새로 드러난 넷: jsdom 의 window.location 이동 · 같은 요청 여럿 모호함 오판(두 건 v8 에 반영) · 토큰 계약이 저장소 키를 fixture·on_load 글로만 적어 숨은 테스트가 'auth' 키를 지어냄 · 공개 테스트가 같은 경로를 collection 과 waitFor 로 함께 씀(두 건은 다음 조치 후보).
@@ -307,7 +309,7 @@ templates/<직군>/<스택>/CURRENT
    다시 구현 탓으로 보지 않음(기존 규칙 — 테스트 의심 — 으로).
    6회차($0.28): 공개 테스트 정상, 흔한 구현은 공개 테스트 통과 + hc1~hc3 를 의도한 사유로 실패(hc4 통과). 허용 구현이 다시 만든 뒤에도
    DuckDB COPY 옵션을 `AUTO_DETECT=TRUE` 로 써 실패(2회차와 같은 실수), 실행 오류 수리가 흔한 구현의 일반 예산을 써 ③(hc4 통과)을 못 함 →
-   manifest `code_pitfalls`(스택에서 되풀이되는 API 실수를 실행 전에 — COPY 옵션의 `=`), 실행 오류 수리는 따로 센다(`#crash`).
+   manifest `code_pitfalls`(스택에서 되풀이되는 API 실수를 실행 전에 — COPY 옵션의 `=`), 실행 오류 수리는 따로 센다(예산 풀 `CRASH`).
    7회차($0.46, 수리 3회): 흔한 구현은 공개 테스트 통과 + hc1~hc3 의도한 사유(hc4 는 숨은 테스트에 사유 표시 없음). 허용 구현은 다시 만들 때마다
    다른 DuckDB·pyarrow API 실수(CSV 시각 열이 TIMESTAMP 로 추정되는데 substr · numpy 가 필요한 메서드 · 1.5 의 .arrow() 가 RecordBatchReader) →
    manifest `stack_notes`(모든 생성기의 기술 환경에 붙는 API 사실 — 1.5.6 에서 확인, 함정 힌트 없음)와 code_pitfalls 2개(numpy·pandas 메서드,

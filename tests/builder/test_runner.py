@@ -55,6 +55,7 @@ class FakeSteps:
             contract=_contract(),
             plan=_plan(),
             cost_usd=self.cost["contract"],
+            review_flags=("계약 단계 가상 표시",),
         )
 
     async def build(self, job: Job, c: ContractResult) -> BuildResult:
@@ -125,6 +126,7 @@ async def test_a_claimed_build_reaches_review_with_files_outcome_and_packages(
     assert done.cost_usd == pytest.approx(0.05)
     assert done.outcome is not None and done.outcome.review_flags == [
         "명세 가상 표시",
+        "계약 단계 가상 표시",  # 운영 경로도 계약 단계 승인자 표시를 저장한다 (예전에는 버렸다)
         "빌드 단계 가상 표시",
     ]
     kinds = {f.kind for f in await store.files(b.build_id)}

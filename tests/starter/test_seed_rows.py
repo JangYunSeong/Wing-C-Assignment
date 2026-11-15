@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -9,12 +10,14 @@ from pydantic import ValidationError
 
 from task_spec.schemas import HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.hidden_helpers import row_use_consts
 from task_spec.starter.seed_rows import (
     RESERVED_ROWS,
     allocate_rows,
     case_rows_problems,
     fit_seed,
     public_free,
+    row_use_problems,
     seed_markdown,
     seed_problems,
 )
@@ -319,6 +322,81 @@ def test_fit_seed_leaves_public_rows_per_initial_value() -> None:
     assert fit_seed(full, plan, java.model_copy(update={"public_helper": None}))[2] == []
 
 
+def test_fit_seed_public_rows_ignore_key_order_of_group_values() -> None:
+    """2026-11-13 #164 평가(좌석 알파 v26): 경계 그룹(남은 1·0·50)의 values 칸 순서가 공통 값(status)을 앞에 두는 덧붙임 그룹과 달라
+    같은 처음 값을 다른 그룹으로 세었다 — 같은 그룹을 5번 덧붙이고, 남은 0·50 그룹에는 공개 몫 상수가 하나도 생기지 않았다."""
+    java = load_template(JAVA).manifest
+    contract = _with_seed(
+        _seed(
+            61,
+            (1, 5, {"remainingSeats": 1, "totalSeats": 50, "status": "OPEN"}),
+            (6, 10, {"remainingSeats": 0, "totalSeats": 30, "status": "OPEN"}),
+            (11, 61, {"remainingSeats": 50, "totalSeats": 50, "status": "OPEN"}),
+        )
+    )
+    plan = _cases(("hc1", [_rows(51, burst=True, remainingSeats=50, totalSeats=50, status="OPEN")]))
+    fitted, fplan, notes = fit_seed(contract, plan, java)
+    free = public_free(fitted, fplan)
+    # 처음 값마다 한 번 — 칸 순서가 달라도 같은 처음 값이면 같은 그룹
+    assert sorted((v["remainingSeats"], len(ids)) for _, v, ids in free) == [
+        (0, 3),
+        (1, 3),
+        (50, 3),
+    ]
+    assert len([n for n in notes if "공개 테스트 몫" in n]) == 3
+    assert not allocate_rows(fitted, fplan).problems
+
+
+def test_fit_seed_adds_groups_for_rows_public_tests_use() -> None:
+    """#164: 공개 테스트가 쓰겠다고 한 행(PublicTest.rows — 경계 값·걸러질 행)의 처음 값이 시드에 없으면 시드 끝에 그룹을 덧붙이고,
+    그 그룹에도 공개 몫 상수가 생긴다. 이미 있는 처음 값(칸 일부만 적어도)은 그대로."""
+    java = load_template(JAVA).manifest
+    c = _with_seed(_seed(20, (1, 20, {"status": "READY"}))).model_dump()
+    c["public_tests"][0]["rows"] = [
+        {"entity_id": "m1", "values": {"status": "SHIPPING"}},
+        {"entity_id": "m1", "values": {"status": "READY"}},
+    ]
+    contract = TaskContract.model_validate(c)
+    plan = _cases(("hc1", [_rows(3, status="READY")]))
+    fitted, fplan, notes = fit_seed(contract, plan, java)
+    assert _has(notes, "공개 테스트 pt1 가 쓰는 행", "status=SHIPPING")
+    assert not _has(notes, "공개 테스트 pt1 가 쓰는 행", "status=READY")
+    free = {v["status"]: len(ids) for _, v, ids in public_free(fitted, fplan)}
+    assert free == {"READY": 3, "SHIPPING": 3}
+    assert not seed_problems(fitted) and not allocate_rows(fitted, fplan).problems
+    names = row_use_consts(fitted, fitted.public_tests[0].rows[0])
+    assert names == ["PUBLIC_ORDER_SHIPPING"]
+
+
+def test_fit_seed_row_uses_on_a_seed_smaller_than_reserved_rows() -> None:
+    """리뷰 2026-11-13: 시드가 작은 id 몫(1~10)보다 작으면 덧붙인 그룹은 그 위까지 덮고, 공개 몫은 작은 id 밖에서 나온다."""
+    java = load_template(JAVA).manifest
+    c = _with_seed(_seed(4, (1, 4, {"status": "READY"}))).model_dump()
+    c["public_tests"][0]["rows"] = [{"entity_id": "m1", "values": {"status": "SHIPPING"}}]
+    fitted, fplan, _ = fit_seed(
+        TaskContract.model_validate(c), _cases(("hc1", [_rows(2, status="READY")])), java
+    )
+    groups = [(g.first, g.last, g.values["status"]) for g in fitted.seed[0].groups]
+    assert [g[2] for g in groups].count("SHIPPING") == 1
+    assert all(a[1] + 1 == b[0] for a, b in pairwise(groups))  # 빈틈·겹침 없음
+    free = {v["status"]: ids for _, v, ids in public_free(fitted, fplan)}
+    assert len(free["SHIPPING"]) == 3 and min(free["SHIPPING"]) > RESERVED_ROWS
+    assert not seed_problems(fitted) and not allocate_rows(fitted, fplan).problems
+
+
+def test_row_use_problems_point_at_unseedable_rows() -> None:
+    c = _with_seed(_seed(20, (1, 20, {"status": "READY"}))).model_dump()
+    c["public_tests"][0]["rows"] = [
+        {"entity_id": "m9", "values": {"status": "READY"}},
+        {"entity_id": "m1", "values": {"color": "RED"}},
+    ]
+    c["public_tests"][1]["rows"] = [{"entity_id": "m2", "values": {"note": "x"}}]
+    problems = row_use_problems(TaskContract.model_validate(c))
+    assert _has(problems, "pt1", "없는 엔티티 m9")
+    assert _has(problems, "pt1", "없는 칸", "color")
+    assert _has(problems, "pt2", "처음에 비어", "요청으로 만드는 데이터")
+
+
 def test_fit_seed_leaves_good_answers_and_unseeded_entities_alone() -> None:
     java = load_template(JAVA).manifest
     contract = _with_seed(TWO_GROUPS)
@@ -382,11 +460,26 @@ def test_helpers_give_path_key_values_and_hand_built_keys_are_flagged() -> None:
     helper = render_contract_case(contract, plan, java)
     assert helper is not None and "protected static String orderNoOf(long row)" in helper.content
     assert '"orderNo-" + row' in helper.content  # seed_sql.default_value 와 같은 형식
-    built = GeneratedFile(path="src/test/java/X.java", content='String no = "order-" + HC1_FIRST;')
-    used = GeneratedFile(path="src/test/java/Y.java", content="String no = orderNoOf(HC1_FIRST);")
-    assert _hand_built_keys([built], contract, "숨은 테스트") and not _hand_built_keys(
-        [used], contract, "숨은 테스트"
-    )
+    from task_spec.starter.hidden_helpers import api_functions
+
+    fn = api_functions(contract)[0][1]
+
+    def flagged(body: str) -> bool:
+        return bool(
+            _hand_built_keys(
+                [GeneratedFile(path="src/test/java/X.java", content=body)], contract, "숨은 테스트"
+            )
+        )
+
+    # #178: 모양("order-" +)이 아니라 자리(경로 변수 orderNo 인자)로 본다 — 붙임표 없는 이름·String.format·변수 거쳐 넘김도 잡는다
+    assert flagged(f'String no = "order-" + HC1_FIRST;\n{fn}(7, no);')
+    assert flagged(f'{fn}(7, "order" + HC1_FIRST);')
+    assert flagged(f'{fn}(7, String.format("order-%d", HC1_FIRST));')
+    assert not flagged(f"{fn}(7, orderNoOf(HC1_FIRST));")
+    assert not flagged(f"String no = orderNoOf(HC1_FIRST);\n{fn}(7, no);")
+    # 숫자 경로 변수(shopId) 자리의 글자는 키 값 짐작이 아니다 · 호출에 넘기지 않은 글자는 보지 않는다
+    assert not flagged(f'{fn}("7", orderNoOf(HC1_FIRST));')
+    assert not flagged('String label = "order-" + HC1_FIRST;')
 
 
 def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
@@ -404,18 +497,16 @@ def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
     assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")  # 감싼 목록
     ok.update({"returns": "m1", "body": []})
     assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
-    # GET 인데 응답을 한 건으로 적었으면 — 목록이면 returns "m1[]" 로, 한 행 조회면 값을 뺀다 (갈래 둘)
-    assert _has(
-        seed_problems(TaskContract.model_validate(c)),
-        'returns "m1[]" (Order 목록)',
-        "shopId 는 values 에서 뺀다",
-    )
-    # 다른 것의 목록(멤버 한 행을 찾아 감사 기록을 돌려줌)은 계속 잡는다 — 이 검사가 생긴 경우 (alpha-cap1·trap2)
+    # GET 인데 응답을 한 건으로 적었으면 — 안내 하나에 두 고침 (목록이면 returns "m1[]" 로, 한 행 조회면 값을 뺀다)
+    one = seed_problems(TaskContract.model_validate(c))
+    assert _has(one, 'returns "m1[]" (Order 목록)', "shopId 는 values 에서 뺀다")
+    # 다른 것의 목록(멤버 한 행을 찾아 감사 기록을 돌려줌)도 경로로 한 행을 가리키므로 계속 잡는다 — 이 검사가 생긴 경우 (alpha-cap1·trap2).
+    # 판정·안내는 같다 (#180: 사례마다 안내 갈래를 두던 것을 하나로)
     ok.update({"returns": None, "body": [{"name": "content", "type": "array", "refs": ["r1"]}]})
     got = seed_problems(TaskContract.model_validate(c))
-    assert _has(got, "한 행을 찾는", "shopId") and not _has(
-        got, "목록을 돌려주는"
-    )  # 이미 다른 것의 목록
+    assert _has(got, "Order 한 행을 가리키는데", "shopId") and [
+        m for m in got if "한 행을 가리키는데" in m
+    ] == [m for m in one if "한 행을 가리키는데" in m]
 
 
 def test_list_of_response_shape_with_a_shared_path_key_is_fine() -> None:
@@ -443,3 +534,28 @@ def test_list_of_response_shape_with_a_shared_path_key_is_fine() -> None:
     assert not _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는")  # 감싼 목록
     ok.update({"returns": "v1", "body": []})  # 한 건 — 경로 변수로 한 행을 찾는다
     assert _has(seed_problems(TaskContract.model_validate(c)), "한 행을 찾는", "shopId")
+
+
+def test_one_answer_to_what_a_response_lists() -> None:
+    """#179: '성공 응답이 무엇의 목록인가'를 세 함수가 따로 답했다 — response_list_target 하나로."""
+    from task_spec.starter.seed_rows import response_list_target
+
+    c = _contract()
+    ent = c["entities"][0]
+    c["response_shapes"] = [{"shape_id": "v1", "name": "OrderRow", "fields": ent["fields"][:1]}]
+    e = c["endpoints"][1]
+    e["responses"][0] |= {"returns": f"{ent['entity_id']}[]", "body": []}
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) == ("entity", ent["entity_id"])
+    e["responses"][0] |= {"returns": "v1[]"}
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) == ("shape", "v1")
+    e["responses"][0] |= {
+        "returns": None,
+        "body": [{"name": "tags", "type": "string[]", "refs": ["r1"]}],
+    }
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) == ("other", "string[]")
+    e["responses"][0] |= {"body": [{"name": "id", "type": "integer", "refs": ["r1"]}]}
+    contract = TaskContract.model_validate(c)
+    assert response_list_target(contract.endpoints[1], contract) is None

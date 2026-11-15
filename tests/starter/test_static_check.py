@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any
 
 from task_spec.schemas import GeneratedFile, HiddenPlan
@@ -123,7 +124,9 @@ def test_paths_and_locked_harness_are_assigned_to_their_generator() -> None:
             ref_naive=[_f("src/test/java/com/example/service/order/OrderTest.java", "x")],
         )
     )
-    assert _has(res.for_target("gen_starter"), "build.gradle", "쓸 수 없는 경로")
+    assert _has(
+        res.for_target("gen_starter"), "build.gradle", "잠긴 파일"
+    )  # 막힌 까닭마다 안내 (#178)
     assert _has(res.for_target("gen_starter"), "Sneaky.java")
     assert _has(res.for_target("gen_hidden"), "GraderSupport.java", "잠긴 채점 하네스")
     assert _has(res.for_target("gen_naive"), "ref_naive(naive-all)", "OrderTest.java")
@@ -137,6 +140,32 @@ def test_limits() -> None:
     # 코드가 계약에서 쓰는 시드 파일(data.sql)은 크기 상한에서 뺀다 — 2026-11-11 N+1 백엔드: 시드 2천여 행으로 100000B 초과
     seed = [_f("src/main/resources/data.sql", "INSERT INTO t VALUES (1);\n" * 5000)]
     assert not _has(_run(_overlays(starter=seed)).for_target("gen_starter"), "크기 상한")
+    # 코드가 쓰는 다른 파일(조절값·계약 도우미)도 같다 — 생성기가 고칠 수 없다 (#178)
+    m = JAVA.manifest
+    assert m.hidden_layout is not None and m.hidden_helper is not None
+    coded = [
+        _f(m.hidden_layout.params, "x=1\n" * 30_000),
+        _f(m.hidden_helper.path, "// x\n" * 30_000),
+        _f(f"{CASES}/OrderStatusBurstTest.java", HC1),
+    ]
+    assert not _has(_run(_overlays(hidden=coded)).for_target("gen_hidden"), "크기 상한")
+
+
+def test_data_files_in_blocked_paths_get_the_same_hint() -> None:
+    """#178: 데이터 파일 안내가 `test/resources` 꼴에만 붙었다 — 막힌 경로면 까닭(잠김·채점 자리·쓸 수 있는 자리 밖)과 함께 모두 안내한다."""
+    hint = "테스트용 데이터·설정 파일을 따로 두지 않는다"
+    starter = _run(_overlays(starter=[_f("src/test/resources/seed-test.sql", "INSERT …;")]))
+    assert _has(starter.for_target("gen_starter"), "seed-test.sql", "fill_slots", hint)
+    hidden = _run(
+        _overlays(
+            hidden=[
+                _f(f"{CASES}/OrderStatusBurstTest.java", HC1),
+                render_params(PLAN, JAVA.manifest),
+                _f("src/main/resources/test-data.sql", "INSERT …;"),
+            ]
+        )
+    )
+    assert _has(hidden.for_target("gen_hidden"), "test-data.sql", hint)
 
 
 def test_hidden_terms_in_public_code_names_and_comments() -> None:
@@ -332,9 +361,15 @@ def test_numeric_fields_are_not_asserted_as_raw_json_values() -> None:
     msgs = [m for m in hidden(raw) if "JSON Map 값 그대로" in m]
     assert len(msgs) == 1 and 'assertThat(row.get("orderId"))' in msgs[0]
     assert '((Number) x.get("orderId")).longValue()' in msgs[0]
-    # 캐스트한 꼴·null 확인·Integer 로 맞춘 비교·문자열 필드만 있으면 통과
-    ok = raw.replace(
+    # 기대값만 Integer 로 맞춘 비교(.intValue())도 면제하지 않는다 — 큰 값(Long)에서 같은 오류 (#178)
+    only_int = raw.replace(
         '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isEqualTo(1L);\n',
+        "",
+    )
+    assert [m for m in hidden(only_int) if "JSON Map 값 그대로" in m]
+    # 캐스트한 꼴·null 확인·문자열 필드만 있으면 통과
+    ok = only_int.replace(
+        '        org.assertj.core.api.Assertions.assertThat(row.get("orderId")).isEqualTo(((Number) id).intValue());\n',
         "",
     )
     assert not [m for m in hidden(ok) if "JSON Map 값 그대로" in m]
@@ -439,6 +474,42 @@ def test_injection_regex_built_from_helper_table_constants() -> None:
     assert any("넓음" in m for m in hidden(bare))
 
 
+def test_reason_labels_go_on_the_assertions_each_reason_declares() -> None:
+    """#176 B: 2026-11-14 재시도 중복 재빌드 hc1 이 Burst.failures(시간 초과·5xx 수)에 duplicate_record 를 붙였다 — 사유마다 붙일 수 있는
+    단언을 매니페스트 failure_reasons 에 선언(assert_on·assert_not_on)하고 검사는 그 선언만 돈다."""
+
+    def hidden(text: str) -> list[str]:
+        return _run(
+            _overlays(
+                hidden=[
+                    _f(f"{CASES}/OrderStatusBurstTest.java", text),
+                    render_params(PLAN, JAVA.manifest),
+                ]
+            )
+        ).for_target("gen_hidden")
+
+    record_on_failures = HC1.replace(
+        'Reasons.as("pool_acquire_timeout"', 'Reasons.as("duplicate_record"'
+    )
+    assert record_on_failures != HC1
+    assert _has(
+        hidden(record_on_failures), "사유 duplicate_record 를 붙이면 안 되는 단언", "Burst.failures"
+    )
+    # 운영 사유를 운영 실패를 세지 않는 단언에 붙여도 묻는다 (사유의 how 로 안내)
+    op_elsewhere = HC1.replace(
+        "assertThat(Burst.failures(outcomes))", "assertThat(outcomes.size())", 1
+    )
+    assert op_elsewhere != HC1
+    assert _has(
+        hidden(op_elsewhere),
+        "pool_acquire_timeout 를 그 사유를 보는 단언이 아닌 곳",
+        "Burst.failures",
+    )
+    assert not _has(hidden(HC1), "붙이면 안 되는 단언") and not _has(
+        hidden(HC1), "보는 단언이 아닌 곳"
+    )
+
+
 def test_reason_on_counting_all_failures_is_regenerated() -> None:
     """2026-11-08 숨은 테스트 검토: 14개 케이스 모두 사유를 Burst.wrong(...) 에 붙였다 — 어떤 실패든 그 사유로 보인다."""
     on_wrong = HC1.replace("Burst.failures(outcomes)", "Burst.wrong(outcomes)")
@@ -450,7 +521,7 @@ def test_reason_on_counting_all_failures_is_regenerated() -> None:
             ]
         )
     )
-    assert _has(res.for_target("gen_hidden"), "모든 실패를 세는 단언에 사유", "Burst.failures")
+    assert _has(res.for_target("gen_hidden"), "붙이면 안 되는 단언에 붙임", "Burst.failures")
     # 사유 없는 Burst.wrong 단언은 괜찮다
     bare = HC1.replace(
         'assertThat(Burst.failures(outcomes))\n                .as(Reasons.as("pool_acquire_timeout", "버스트 %d", 1)).isZero();',
@@ -509,7 +580,9 @@ def test_reason_requires_what_causes_it() -> None:
         return _run(_overlays(hidden=files), plan=plan).for_target("gen_hidden")
 
     no_inject = gen_hidden(ROLLBACK.replace("INJECT", "// 거절되는 전이"))
-    assert _has(no_inject, "hc1", "rollback_left_success", "GraderJdbcHarness 주입")
+    assert _has(
+        no_inject, "hc1", "rollback_left_success", "저장 단계 실패를 주입"
+    )  # 안내는 사유의 how (#176)
     injected = gen_hidden(
         ROLLBACK.replace(
             "INJECT",
@@ -531,7 +604,7 @@ def test_reason_requires_what_causes_it() -> None:
             ]
         )
     )
-    assert _has(res.for_target("gen_hidden"), "hc1", "pool_acquire_timeout", "peak(...)")
+    assert _has(res.for_target("gen_hidden"), "hc1", "pool_acquire_timeout", "peak(…)")
     assert not _has(_run().for_target("gen_hidden"), "그 사유를 일으키는 것을 쓰지 않음")
 
 
@@ -624,6 +697,9 @@ def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
         ".isGreaterThanOrEqualTo(400)",
     ):
         assert _has(msgs(inject, on_status(pinned)), "주입한 요청의 응답 코드를 단정"), pinned
+    # #178: 원래 사례 꼴(비교식을 단언)도 응답 코드 단정 — 예전엔 `assertThat(r.statusCode())` 로 닫힌 꼴만 봐 지나갔다
+    compared = "        org.assertj.core.api.Assertions.assertThat(r.statusCode() < 500).isTrue();"
+    assert _has(msgs(inject, compared), "주입한 요청의 응답 코드를 단정")
     assert not _has(msgs(inject, by_record), "응답 코드를 단정")
     # 주입이 없는 케이스의 상태 단언은 그대로
     assert not _has(msgs("", on_status(".isEqualTo(200)")), "응답 코드를 단정")
@@ -638,7 +714,8 @@ def test_status_pinned_after_an_injected_failure_is_regenerated() -> None:
 def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:
     # 2026-11-09: 허용 구현 d1·d2·d3 가 DataSource 빈·BeanPostProcessor 로 풀을 80 으로 바꿔 하네스가 넣는 운영 값을 우회했다
     # ("so the grading harness's property override does not reduce it" 라는 주석까지) — 지원자도 같은 길로 함정을 피할 수 있다
-    from task_spec.starter.static_check import HARNESS_OVERRIDE, _code_overrides
+    # #176: 규칙은 Java 매니페스트 code_pitfalls (harness_bypass) — 공용 검사기는 항목만 돈다
+    from task_spec.starter.static_check import HARNESS_OVERRIDE, _code_pitfalls
 
     t = JAVA
     bean = (
@@ -657,15 +734,16 @@ def test_code_that_builds_or_resizes_the_pool_is_a_harness_bypass() -> None:
             files=(GeneratedFile(path="src/main/java/x/C.java", content=content),),
             label="d3",
         )
-        got = _code_overrides(o, t)
+        got = _code_pitfalls(o, t)
         assert bool(got) is bad, (content, got)
         # 허용 구현이 이것만으로 재요청에도 못 고치면 그 설계를 빼는 기존 장치(build._voided)가 알아보게 같은 말
         assert all(HARNESS_OVERRIDE in p.message for p in got)
 
 
 def test_datasource_settings_not_in_the_template_are_rejected() -> None:
-    # 2026-11-10 v19-be: 고정 H2 URL 로 테스트 컨텍스트끼리 DB 를 나눠 써 schema.sql 이 두 번 돌아 기동 실패
-    from task_spec.starter.static_check import _datasource_config
+    # 2026-11-10 v19-be: 고정 H2 URL 로 테스트 컨텍스트끼리 DB 를 나눠 써 schema.sql 이 두 번 돌아 기동 실패.
+    # #176: 막을 키와 이유는 매니페스트 config_pitfalls — 선언이 없는 템플릿·선언 밖 산출물에서는 걸지 않는다
+    from task_spec.starter.static_check import _config_pitfalls
 
     fixed = "spring:\n  datasource:\n    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1\n  sql:\n    init:\n      mode: always\n"
     plain = "spring:\n  jpa:\n    hibernate:\n      ddl-auto: none\n  sql:\n    init:\n      mode: always\n"
@@ -674,26 +752,44 @@ def test_datasource_settings_not_in_the_template_are_rejected() -> None:
             kind="starter",
             files=(GeneratedFile(path="src/main/resources/application.yml", content=content),),
         )
-        got = _datasource_config(o, JAVA)
+        got = _config_pitfalls(o, JAVA)
         assert bool(got) is bad, got
         assert not got or "spring.datasource.url" in got[0].message
+    o = Overlay(
+        kind="starter",
+        files=(GeneratedFile(path="src/main/resources/application.yml", content=fixed),),
+    )
+    bare = JAVA.manifest.model_copy(update={"config_pitfalls": []})
+    assert _config_pitfalls(o, replace(JAVA, manifest=bare)) == []
+    hidden = Overlay(kind="hidden", files=o.files)  # 기본 대상은 시작 코드·참조 구현
+    assert _config_pitfalls(hidden, JAVA) == []
 
 
 def test_java_runtime_only_pitfalls_in_starter_tests_and_schema() -> None:
     # 2026-11-10 stab3·v19-be: 시작 코드의 기존 기능 테스트가 실행 때만 깨져 재생성 예산을 다 씀 (작은 프로젝트로 재현)
-    from task_spec.starter.static_check import _java_test_pitfalls
+    from task_spec.starter.static_check import _code_pitfalls, _java_test_pitfalls
 
     seed = JAVA.manifest.seed_sql.path if JAVA.manifest.seed_sql else None
 
-    def probs(*files: tuple[str, str]) -> list[str]:
-        o = Overlay(kind="starter", files=tuple(GeneratedFile(path=p, content=c) for p, c in files))
-        return [p.message for p in _java_test_pitfalls(o, JAVA, seed)]
+    def probs(*files: tuple[str, str], kind: str = "starter") -> list[str]:
+        o = Overlay(kind=kind, files=tuple(GeneratedFile(path=p, content=c) for p, c in files))  # type: ignore[arg-type]
+        return [p.message for p in [*_java_test_pitfalls(o, JAVA, seed), *_code_pitfalls(o, JAVA)]]
 
     test = "src/test/java/x/RankTest.java"
     patch = 'class T { @Autowired TestRestTemplate rest; void t() { rest.exchange("/a", HttpMethod.PATCH, e, Map.class); } }'
     mvc = 'class T { @Autowired MockMvc mvc; void t() throws Exception { mvc.perform(patch("/a")); } }'
     assert any("Invalid HTTP method: PATCH" in p for p in probs((test, patch)))
     assert not probs((test, mvc))
+    # #176: 매니페스트 항목으로 옮기며 같은 이유로 깨지는 꼴까지 — RestTemplate 직접·RequestEntity.patch, 숨은·공개 테스트에서도
+    plain_rest = 'class T { RestTemplate rest = new RestTemplate(); void t() { rest.patchForObject("/a", b, Map.class); } }'
+    entity = "class T { @Autowired TestRestTemplate rest; void t() { rest.exchange(RequestEntity.patch(u).body(b), Map.class); } }"
+    assert probs((test, plain_rest)) and probs((test, entity), kind="hidden")
+    # MockMvc 의 request(HttpMethod.PATCH, …) 는 된다 (RestTemplate 을 쓰는 파일만), 주석 속 꼴도 아니다
+    mvc_method = 'class T { @Autowired MockMvc mvc; void t() throws Exception { mvc.perform(request(HttpMethod.PATCH, "/a")); } }'
+    commented = (
+        "class T { // TestRestTemplate 으로 HttpMethod.PATCH 를 보내지 않는다\n MockMvc mvc; }"
+    )
+    assert not probs((test, mvc_method)) and not probs((test, commented))
     schema = (
         "src/main/resources/schema.sql",
         'CREATE TABLE m (id BIGINT, "rank" VARCHAR(20), note VARCHAR(9) DEFAULT \'"x"\');',
@@ -757,3 +853,84 @@ def test_path_problem_names_the_allowed_slots_and_test_data_alternative() -> Non
     assert "시드의 테스트 몫 행" in p.message
     other = Overlay(kind="starter", files=(GeneratedFile(path="build.gradle", content="x"),))
     assert all("시드의 테스트 몫 행" not in x.message for x in _paths(other, JAVA))
+
+
+def test_hidden_reason_outside_material_list_is_reasked() -> None:
+    """재료가 사유를 적으면 빌드의 템플릿도 그 목록만 (BuildInputs — restrict_reasons) — 숨은 테스트가 목록 밖 사유를 붙이면 재요청.
+    2026-11-13 갱신 손실 알파: '시간 초과·5xx 수' 확인에 재료에 없는 pool_acquire_timeout 을 붙여 500 이 '풀 대기 초과'로 채점됐다."""
+    from task_spec.nodes.starter.generate import BuildInputs, hidden_input
+    from task_spec.starter.templates import restrict_reasons
+
+    seed = BACKEND_SEED.model_copy(update={"reasons": ["lost_update", "server_error"]})
+    b = BuildInputs(
+        task=_task(), contract=_contract_with_list(), plan=PLAN, template=JAVA, seed=seed
+    )
+    assert b.template.manifest.reason_codes == {"lost_update", "server_error"}
+    assert restrict_reasons(b.template, seed.reasons) is b.template  # 몇 번 불러도 같다
+    shown = hidden_input(b.task, b.contract, b.plan, b.template).failure_reasons
+    assert (
+        "server_error" in shown and "pool_acquire_timeout" not in shown
+    )  # 생성기 입력도 같은 목록
+    res = static_check(
+        _overlays(),
+        template=b.template,
+        plan=PLAN,
+        spec=SpecView.from_task(_task()),
+        seed=seed,
+        avoid_terms=("우아한형제들", "hibernate_sequence"),
+    )
+    assert _has(
+        res.for_target("gen_hidden"),
+        "쓸 수 있는 목록 밖: pool_acquire_timeout",
+        "lost_update, server_error",
+    )
+    assert not _has(
+        _run().for_target("gen_hidden"), "목록 밖"
+    )  # 재료가 사유를 적지 않으면 템플릿 목록 전체
+
+
+def test_generated_tests_may_not_skip() -> None:
+    """#173: 건너뛰기 API 를 쓴 숨은·공개 테스트는 재요청 — 스택 언어별 표 (skip_apis.SKIP_APIS)."""
+    from task_spec.starter.skip_apis import skip_hits
+
+    skip_case = HC1.replace("    @Test\n", "    @Test\n    @Disabled\n").replace(
+        "        int n =",
+        '        Assumptions.assumeTrue(ready(), "출력이 없음");\n        int n =',
+    )
+    overlays = _overlays(
+        hidden=[
+            _f(f"{CASES}/OrderStatusBurstTest.java", skip_case),
+            render_params(PLAN, JAVA.manifest),
+        ]
+    )
+    msgs = _run(overlays).for_target("gen_hidden")
+    assert _has(msgs, "테스트를 건너뜀", "@Disabled", "Assumptions"), msgs
+    assert not _has(_run().for_target("gen_hidden"), "테스트를 건너뜀")
+    fe = load_template("frontend/react-vite-ts").manifest
+    py = load_template("data/python-duckdb").manifest
+    assert (
+        skip_hits(
+            fe,
+            "a.test.tsx",
+            "it.skip('x', () => {})\ntest.skipIf(!ok)('y', fn)\nit('z', (ctx) => { ctx.skip() })",
+        )
+        and len(
+            skip_hits(
+                fe,
+                "a.test.tsx",
+                "it.skip('x', () => {})\ntest.skipIf(!ok)('y', fn)\nit('z', (ctx) => { ctx.skip() })",
+            )
+        )
+        == 3
+    )
+    assert not skip_hits(fe, "a.test.tsx", "it('x', () => { rows.slice(1) })")
+    assert (
+        len(
+            skip_hits(
+                py,
+                "t.py",
+                "@pytest.mark.skipif(True, reason='x')\ndef t():\n    pytest.skip('no')\n    pytest.xfail('x')",
+            )
+        )
+        == 3
+    )

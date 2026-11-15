@@ -67,7 +67,7 @@ class RealSteps:
         prompts: PromptRegistry,
         incidents_dir: Path,
         images_root: Path,
-        designs: int = 1,
+        designs: int | None = None,  # None = 허용 설계 전부 (#171)
     ) -> None:
         self.llm, self.prompts = llm, prompts
         self.incidents = load_incidents(incidents_dir)
@@ -107,6 +107,7 @@ class RealSteps:
             cost_usd=_cost(list(res.provenance)),
             seed=inc.feature,
             avoid_terms=tuple(inc.avoid_terms),
+            review_flags=tuple(res.flags),
         )
 
     # ② 빌드
@@ -232,6 +233,7 @@ class RealSteps:
             raise
         return ImagesResult(
             template_ref=t.manifest.ref,
+            manifest_sha256=t.manifest_sha256,
             tree_sha256=x.tree,
             grader_sha256=x.grader_sha256,
             verification=summaries(verification),

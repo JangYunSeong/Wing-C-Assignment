@@ -8,16 +8,19 @@ from typing import Any
 import pytest
 
 from task_spec.nodes.starter.plan_contract import fit_unevidenced
-from task_spec.schemas import FeatureSeed, HiddenPlan, TaskContract, TemplateManifest
+from task_spec.schemas import FeatureSeed, HarnessRule, HiddenPlan, TaskContract, TemplateManifest
 from task_spec.spec.incidents import load_incidents
 from task_spec.starter.contract import (
     SpecView,
     check_contract,
     contract_text,
+    describe_rule,
     evidence_check,
+    evidence_fragment,
     extract_values,
     fit_covers,
     hidden_terms,
+    rule_check,
     spec_missing_params,
 )
 
@@ -464,11 +467,18 @@ def test_table_columns_are_read() -> None:
 
 def test_headers_have_their_own_naming_rule() -> None:
     c = _contract()
-    c["endpoints"][0]["headers"] = [{"name": "X-Actor", "type": "string", "refs": ["r1"]}]
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Actor", "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
     assert _check(c).ok
-    c["endpoints"][0]["headers"] = [{"name": "actor", "type": "string", "refs": ["r1"]}]
+    c["endpoints"][0]["headers"] = [
+        {"name": "actor", "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
     res = _check(c)
     assert _has(res.problems, "헤더 이름", "actor")
+    # 요청마다 새 값인지(per_request)를 적지 않은 헤더는 재요청 (#181 — 이름 낱말로 짐작하지 않는다)
+    c["endpoints"][0]["headers"] = [{"name": "X-Actor", "type": "string", "refs": ["r1"]}]
+    assert _has(_check(c).problems, "X-Actor", "per_request 가 없음")
 
 
 def test_invented_optional_visible_value_is_a_problem_not_a_gap() -> None:
@@ -487,9 +497,15 @@ def test_invented_optional_visible_value_is_a_problem_not_a_gap() -> None:
     p["harness"]["server_threads"] = 64  # 자료 어디에도 없음
     res = _check(plan=p, manifest=_manifest(harness_params=params))
     assert not res.spec_gaps and _has(res.problems, "server_threads=64", "근거가 없음")
+    # 근거를 '없음'으로 쓴 선택 조절값은 보정(fit_unevidenced)이 뺀다 — 검사에는 같은 규칙의 가지를 두지 않는다 (#179)
+    from task_spec.nodes.starter.plan_contract import fit_unevidenced
+
     p["evidence"] = {"server_threads": "없음"}
-    res = _check(plan=p, manifest=_manifest(harness_params=params))
-    assert not res.spec_gaps and _has(res.problems, "server_threads", "선택 조절값")
+    manifest = _manifest(harness_params=params)
+    fixed, notes = fit_unevidenced(HiddenPlan.model_validate(p), manifest, _spec())
+    assert "server_threads" not in fixed.harness and any("server_threads" in n for n in notes)
+    res = _check(plan=fixed.model_dump(), manifest=manifest)
+    assert not res.spec_gaps and not _has(res.problems, "server_threads")
 
 
 # ── 스모크(v1)에서 드러난 빈틈 — 기존 API 누락·운영 값 누락·목록 응답 (2026-11-07) ──
@@ -596,6 +612,15 @@ def test_expect_naming_harness_params_is_reasked() -> None:
     assert not [p for p in _check().problems if "통과 조건" in p]
 
 
+def test_expect_may_name_only_params_the_manifest_declares_observable() -> None:
+    """#180: 이름 끝(_ms·_s)으로 면제하면 SQL 지연 같은 내부 조절값도 지나간다 — 밖에서 볼 수 있는 한도는 매니페스트가 선언한다."""
+    p = _plan()
+    p["cases"][0]["expect"] = "응답이 query_delay_ms(20) 보다 늦게 온다"
+    assert _has(_check(plan=p).problems, "hc1", "조절값(query_delay_ms)")  # 선언 없음 → 내부 동작
+    declared = _manifest(hidden_rules={"observable_params": ["query_delay_ms"]})
+    assert not [x for x in _check(plan=p, manifest=declared).problems if "통과 조건" in x]
+
+
 def test_seed_declared_contract_needs_are_checked() -> None:
     """2026-11-07~08 알파 평가: 지난 계약 10개 모두 상태 전이 규칙이 없었고, 대상 엔티티 대신 감사 기록에 시드를 둔 계약도 있었다."""
     assert BACKEND_SEED is not None and BACKEND_SEED.contract_needs
@@ -654,10 +679,29 @@ def test_fit_covers_connects_loose_elements_by_their_own_refs() -> None:
         TaskContract.model_validate(_contract()),
         [],
     )
-    # refs 가 공개 수용 기준뿐이면 그 id 에
+    # refs 가 공개 수용 기준뿐이면 잇지 않는다 — 어느 요구와 관련인지 계약에서 알 수 없다 (#180: 예전엔 covers[p2] 를 만들어 통과)
     only_ac = _spec(req_ids=("r1",))
     fitted, _ = fit_covers(contract, only_ac)
-    assert fitted.covers.get("p2") == ["e2"]
+    assert "p2" not in fitted.covers
+    assert _has(
+        check_contract(
+            fitted, HiddenPlan.model_validate(_plan()), only_ac, _manifest(), BACKEND_SEED
+        ).problems,
+        "연결되지 않은 계약 요소",
+        "e2",
+    )
+
+
+def test_acceptance_criterion_keys_are_dropped_from_covers() -> None:
+    """#180: covers 키는 공개 요구만 — 수용 기준(p…) 키는 공개 테스트가 대응하므로 코드가 빼고, 그 아래에만 있던 요소는 요소의 refs 로
+    다시 잇는다. 예전엔 p… 값까지 '연결됨'으로 세어 요소를 수용 기준에만 이어도 통과했다."""
+    c = _contract()
+    c["covers"] = {"r1": ["e1", "m1", "m2"], "p2": ["e2"]}  # e2 의 refs 는 r2·p2
+    fitted, notes = fit_covers(TaskContract.model_validate(c), _spec())
+    assert "p2" not in fitted.covers and fitted.covers["r2"] == ["e2"]
+    assert _has(notes, "공개 수용 기준 키 p2 를 뺌") and _has(notes, "e2", "covers r2")
+    # 맞추지 않은 계약을 그대로 검사하면 수용 기준 키는 문제
+    assert _has(_check(c).problems, "covers 의 키 p2", "공개 수용 기준은 covers 키가 아니다")
 
 
 def test_case_trap_id_is_fixed_from_the_hidden_acceptance_criterion() -> None:
@@ -776,6 +820,15 @@ def test_api_field_names_fixed_by_the_spec_are_accepted() -> None:
     ).problems
     assert not _has(probs, "member_id")  # API 필드는 명세 이름 인정
     assert _has(probs, "order_no")  # 엔티티 필드는 규칙대로
+    # #180: 거울 사례 — 명세가 camel 이름(rechargeId)을 정하고 템플릿 규칙이 snake 여도 명세가 우선
+    camel = replace(spec, public_texts=("응답에 rechargeId와 balance 를 돌려준다",))
+    assert spec_named_fields(camel) == {"rechargeId"}
+    c["endpoints"][0]["request"] = [{"name": "rechargeId", "type": "integer", "refs": ["r1"]}]
+    snake = m.model_copy(
+        update={"naming": m.naming.model_copy(update={"field": r"^[a-z][a-z0-9_]*$"})}
+    )
+    assert _has(_check(c, spec=spec, manifest=snake).problems, "rechargeId")
+    assert not _has(_check(c, spec=camel, manifest=snake).problems, "rechargeId")
 
 
 def test_rounded_quote_value_passes_with_flag() -> None:
@@ -850,3 +903,206 @@ def test_partial_quote_uses_longest_verbatim_fragment_with_flag() -> None:
         fixed,
         [],
     )  # 다시 돌려도 같다 (결정적)
+
+
+# ── 재료 규칙으로 근거 대조 (FeatureSeed.harness_rules) ─────────────────
+
+_P50 = HarnessRule(labels=["p50", "중앙값", "평균"], round="nearest")
+_LIMIT = HarnessRule(pick="max", round="up")
+_BURST = HarnessRule(units=["건"], pick="max")
+
+
+@pytest.mark.parametrize(
+    ("rule", "unit", "value", "quote", "verdict", "expected"),
+    [
+        # 2026-11-13 목록 재료 hana006: 숫자가 둘이라 일반 검사가 세 번 거절 — 규칙은 p50 을 골라 반올림
+        (_P50, "ms", 20, "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8", "ok", 20),
+        (_P50, "ms", 21, "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8", "mismatch", 20),
+        (
+            _P50,
+            "ms",
+            21,
+            "왕복 시간이 평균 21ms, p95 28ms입니다",
+            "ok",
+            21,
+        ),  # p50 이 없으면 다음 이름표
+        (_P50, "ms", 28, "p95 28ms 수준입니다", "missing", None),  # 규칙에 없는 백분위만
+        (_P50, "ms", 11, "쿼리 한 번에 11ms 가 걸립니다", "ok", 11),  # 이름표 없는 수
+        (_P50, "ms", 12, "p50 은 11.4ms 입니다", "mismatch", 11),  # 반올림이지 올림이 아니다
+        (_P50, "ms", 3, "p50: 2.5 p95: 4.0", "ok", 3),  # .5 는 올림 (은행가 반올림 아님)
+        (_LIMIT, "s", 2, "목록 화면 초기 로딩: 2초 이내", "ok", 2),
+        (_LIMIT, "s", 1, "응답 시간 목표 p95 ≤ 500 ms · p99 ≤ 800 ms (200건 기준)", "ok", 1),
+        (
+            _LIMIT,
+            "s",
+            2,
+            "SLA 기준(2000ms) 초과 비율: 전체 요청의 34%",
+            "ok",
+            2,
+        ),  # 백분율은 값이 아니다
+        (_BURST, None, 17, "개시 직후 3초 동안 EV-2024-011에 대한 신청이 17건 이상 기록", "ok", 17),
+        (
+            _BURST,
+            None,
+            3,
+            "개시 직후 3초 동안 EV-2024-011에 대한 신청이 17건 이상 기록",
+            "mismatch",
+            17,
+        ),
+        (_BURST, None, 47, "오픈 시각 14:00:00부터 14:00:02 구간에서 47건의 차감 요청", "ok", 47),
+        (_BURST, None, 42, "초당 최대 42건이 같은 대상 id에 몰립니다.", "ok", 42),
+        (
+            HarnessRule(units=["건"]),
+            None,
+            5,
+            "평소 3건, 피크 5건",
+            "ambiguous",
+            None,
+        ),  # only 인데 여럿
+    ],
+)
+def test_rule_check_derives_value_from_quote(
+    rule: HarnessRule,
+    unit: str | None,
+    value: int,
+    quote: str,
+    verdict: str,
+    expected: int | None,
+) -> None:
+    got = rule_check(value, quote, [quote], unit, rule)
+    assert got.verdict == verdict, got
+    assert got.expected == (None if expected is None else float(expected))
+
+
+def test_rule_check_bare_number_takes_header_unit() -> None:
+    """단위 없는 수는 머리 줄의 단위 표기('(초)')로, 없으면 조절값 단위로 본다."""
+    rule = HarnessRule(labels=["p99"], round="up")
+    assert (
+        rule_check(
+            1, "응답 시간 (초) p95: 0.6 p99: 0.9", ["응답 시간 (초) p95: 0.6 p99: 0.9"], "s", rule
+        ).verdict
+        == "ok"
+    )
+    assert (
+        rule_check(1, "응답 시간 (ms) p99: 900", ["응답 시간 (ms) p99: 900"], "s", rule).verdict
+        == "ok"
+    )
+    assert (
+        rule_check(900, "p99: 900 정도", ["p99: 900 정도"], "s", rule).verdict == "ok"
+    )  # 단위 없음 → 조절값 단위
+
+
+def test_rule_check_quote_must_be_in_material() -> None:
+    texts = ["p50: 19.8\np95: 28.4"]
+    assert rule_check(20, "p50: 19.8 p95: 28.4", texts, "ms", _P50).verdict == "ok"  # 공백 무시
+    assert rule_check(20, "p50 은 19.8 입니다", texts, "ms", _P50).verdict == "bad_quote"
+
+
+def test_material_rule_replaces_generic_evidence_check() -> None:
+    """재료 규칙이 있으면 계약 검사는 그 규칙으로 대조 — 숫자가 여럿인 인용도 규칙이 고른 값이면 통과, 아니면 규칙을 적어 재요청."""
+    block = "단일 SELECT 왕복 시간 (ms)\n  평균: 21.3\n  p50: 19.8\n  p95: 28.4"
+    quote = "단일 SELECT 왕복 시간 (ms) 평균: 21.3 p50: 19.8"
+    spec = _spec(visible_texts=("pool: 8\nthreads: 32", block))
+    m = _manifest().model_dump()
+    m["harness_params"][2] |= {"visible": True, "spec_patterns": [r"쿼리\s*지연\s*(\d+)\s*ms"]}
+    manifest = TemplateManifest.model_validate(m)
+    assert (
+        evidence_check(20, quote, spec.visible_texts, "ms") == "bad"
+    )  # 일반 검사로는 거절 (hana006)
+    seed = BACKEND_SEED.model_copy(
+        update={
+            "harness": ["pool_size", "concurrency", "query_delay_ms"],
+            "harness_rules": {"query_delay_ms": _P50},
+        }
+    )
+    plan = _plan(harness={"pool_size": 8, "concurrency": 32, "query_delay_ms": 20})
+    plan["evidence"] = {"query_delay_ms": quote}
+    res = _check(plan=plan, spec=spec, manifest=manifest, seed=seed)
+    assert not _has(res.problems, "query_delay_ms"), res.problems
+    assert not _has(res.review_flags, "query_delay_ms"), (
+        res.review_flags
+    )  # 규칙으로 확인 — 승인자 표시 없음
+    plan["harness"]["query_delay_ms"] = 21
+    res = _check(plan=plan, spec=spec, manifest=manifest, seed=seed)
+    assert _has(res.problems, "query_delay_ms=21", "재료 규칙", "p50", "20", "19.8"), res.problems
+    # 규칙이 없으면 예전 검사 그대로 (숫자가 여럿이면 거절)
+    res = _check(
+        plan=plan | {"harness": {**plan["harness"], "query_delay_ms": 20}},
+        spec=spec,
+        manifest=manifest,
+    )
+    assert _has(res.problems, "query_delay_ms=20")
+
+
+def test_fragment_fitting_uses_material_rule() -> None:
+    """근거 인용 글자를 바꾼 경우 자료 원문 조각을 고를 때도 규칙으로 — 규칙이 받는 조각만."""
+    texts = ["단일 SELECT 왕복 시간 (ms)\n  평균: 21.3\n  p50: 19.8\n  p95: 28.4"]
+    llm = "단일 SELECT 왕복시간 (ms) 평균: 21.3 p50: 19.8"
+    assert evidence_fragment(20, llm, texts, "ms") is None  # 일반 검사로는 받을 조각이 없다
+    frag = evidence_fragment(20, llm, texts, "ms", _P50)
+    assert frag is not None and "p50: 19.8" in frag
+    assert rule_check(20, frag, texts, "ms", _P50).verdict == "ok"
+
+
+def test_harness_rules_must_name_material_params() -> None:
+    with pytest.raises(ValueError, match="harness 에 없음"):
+        BACKEND_SEED.model_validate(
+            BACKEND_SEED.model_dump()
+            | {"harness": ["concurrency"], "harness_rules": {"pool_size": {}}}
+        )
+
+
+def test_describe_rule_reads_like_the_material_note() -> None:
+    assert (
+        describe_rule(_P50, "ms") == "이름표 p50(없으면 중앙값·평균) 의 값, ms 단위로 바꿔 반올림"
+    )
+    assert describe_rule(_LIMIT, "s") == "여럿이면 가장 큰 값, 초 단위로 바꿔 올림"
+    assert describe_rule(_BURST, None) == "건 단위가 붙은 수, 여럿이면 가장 큰 값"
+
+
+# ── #179 계약 검사·보정의 중복 정리 ─────────────────────────────
+
+
+def test_unknown_param_survives_fitting_and_the_check_asks_again() -> None:
+    """보정(fit_material_params)이 재료로 좁힌 목록 밖 키를 모두 지워 '템플릿에 없는 조절값' 검사가 운영에서 걸리지 않았다 —
+    재료가 고르지 않은 템플릿 조절값만 빼고, 템플릿에 없는 키는 검사가 다시 묻는다."""
+    from task_spec.nodes.starter.plan_contract import fit_output
+    from task_spec.schemas import PlanContractOutput
+
+    m = _manifest()
+    known = {p.name for p in m.harness_params}
+    plan = _plan(harness={"pool_size": 8, "concurrency": 32, "pool": 3})
+    raw = PlanContractOutput.model_validate({"contract": _contract(), "hidden_plan": plan})
+    fitted, _ = fit_output(raw, m, _spec(), None, known)
+    assert fitted.hidden_plan.harness.get("pool") == 3
+    res = check_contract(fitted.contract, fitted.hidden_plan, _spec(), m, BACKEND_SEED)
+    assert _has(res.problems, "템플릿에 없는 조절값", "pool")
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("기존 `PATCH /orders/{id}/status` 는 그대로", [("PATCH", "/orders/{id}/status")]),
+        ("제출하면 POST /x. 로 보낸다", [("POST", "/x")]),  # 끝 문장 부호는 경로가 아니다
+        ("GET /orders/:id 로 읽는다", [("GET", "/orders/:id")]),
+        ("GET / 로 확인", [("GET", "/")]),
+    ],
+)
+def test_one_api_mention_parser(text: str, want: list[tuple[str, str]]) -> None:
+    """#179: 'METHOD /path' 정규식이 둘이라 같은 글을 다르게 잘랐다 (`POST /x.` → '/x.' 와 '/x')."""
+    from task_spec.starter.contract import _api_key, api_mentions
+
+    assert api_mentions(text) == want
+    assert (
+        _api_key("get", "/orders/:id") == _api_key("GET", "/orders/{orderId}/") == "GET /orders/{}"
+    )
+
+
+def test_timed_hints_show_the_lines_the_check_accepts() -> None:
+    """#179: 근거 대조는 앞 20줄, 재질문 힌트는 앞 4줄을 봐 — 대조가 받는 줄을 힌트가 보여 주지 않을 수 있었다."""
+    from task_spec.starter.contract import TIMED_CANDIDATES, timed_hints, timed_matches
+
+    texts = ["\n".join(f"- 지표 {i}: {i * 100} ms" for i in range(1, 8))]
+    hits = timed_matches("request_timeout_s", 1, texts)  # 700 ms → 1 초 (올림)
+    assert hits and all(h in timed_hints("request_timeout_s", texts) for h in hits)
+    assert len(timed_hints("request_timeout_s", texts)) == 7 <= TIMED_CANDIDATES

@@ -22,12 +22,19 @@ from task_spec.schemas.template import InterfaceKind
 
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 # 오버레이 파일 종류 — public_test 는 공개 테스트를 지원자에게 주지 않을 때 (spec-to-code §4.3 [제안])
-FileKind = Literal["starter", "hidden", "public_test", "ref_naive", "ref_accepted"]
+# ref_variant — 공개 테스트 변별 관문의 변형(정답 구현에서 공개 수용 기준 하나를 어김, #164). 검증에만 쓰고 저장하지 않는다
+FileKind = Literal["starter", "hidden", "public_test", "ref_naive", "ref_accepted", "ref_variant"]
 BuildStatus = Literal[
     "pending", "generating", "verifying", "review", "failed", "approved", "published"
 ]
 GeneratorName = Literal[
-    "plan_contract", "gen_public", "gen_starter", "gen_hidden", "gen_naive", "gen_accepted"
+    "plan_contract",
+    "gen_public",
+    "gen_starter",
+    "gen_hidden",
+    "gen_naive",
+    "gen_accepted",
+    "gen_variant",
 ]
 
 _REF = r"^[rp]\d{1,2}$"  # 공개 요구(r*)·공개 수용 기준(p*) — 계약 요소가 나온 곳
@@ -61,6 +68,20 @@ class ContractField(Schema):
     @classmethod
     def _refs(cls, v: list[str]) -> list[str]:
         return _check_refs(v)
+
+
+class HeaderField(ContractField):
+    """요청 헤더 1개 — 필드에 '요청마다 새 값인가'를 더한다 (#181).
+
+    2026-11-10 retrydup-c: 요청 번호 X-Request-Id 를 도우미가 상수 하나로 줘 모든 테스트가 같은 번호를 공유 — 명세대로 번호로 중복을 막은
+    허용 구현이 떨어졌다. 예전엔 이름·제약 글의 낱말(request-id·멱등·uuid …)로 짐작해 X-Nonce·X-Dedup-Key·'고유·중복 불가'는 놓쳤다 —
+    계약이 칸으로 정한다. 비어 있으면 계약 검사가 재요청한다 (권한 칸 auth 의 헤더는 권한 규칙이 값을 정하므로 묻지 않는다)."""
+
+    per_request: bool | None = Field(
+        default=None,
+        description="요청마다 새 값이어야 하면 true (요청 번호·멱등 키·nonce 처럼 요청 하나를 가리키는 값 — 테스트가 요청마다 새로 만든다), "
+        "여러 요청이 같은 값을 써도 되면 false (요청자·클라이언트 이름 등)",
+    )
 
 
 class ContractResponse(Schema):
@@ -152,7 +173,7 @@ class Endpoint(Schema):
     method: HttpMethod | None = None  # http 에서만 (필수)
     path: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=200)
-    headers: list[ContractField] = Field(default_factory=list)  # 요청 헤더 (예: X-Actor)
+    headers: list[HeaderField] = Field(default_factory=list)  # 요청 헤더 (예: X-Actor)
     query: list[ContractField] = Field(default_factory=list)  # 쿼리 매개변수
     request: list[ContractField] = Field(default_factory=list)  # 요청 본문
     responses: list[ContractResponse] = Field(min_length=1)
@@ -170,6 +191,11 @@ class Endpoint(Schema):
     @classmethod
     def _refs(cls, v: list[str]) -> list[str]:
         return _check_refs(v)
+
+    def success(self) -> ContractResponse | None:
+        """성공 응답 — 처음 나오는 2xx (201 만 선언한 생성 API 도). 도우미·예시·시드 배정이 모두 이것으로 고른다 (#172:
+        Java 도우미만 200 을 봐서 201 만 선언한 엔드포인트에 본문 함수가 생기지 않았다)."""
+        return next((r for r in self.responses if 200 <= r.status < 300), None)
 
     @model_validator(mode="after")
     def _statuses(self) -> Endpoint:
@@ -191,6 +217,14 @@ class Fixture(Schema):
     content: str = Field(
         default="", max_length=2000
     )  # 모양·값 (예: 데이터베이스·테이블 목록, 파일 형식)
+    # 2026-11-15 #187 데이터 알파(woori001): 입력 위치가 자유 글뿐이라 검사가 날짜 폴더를 표기(`YYYY-MM-DD/` 꼴)로 짐작했고,
+    # `{YYYY-MM-DD}/` 로 바르게 적은 계약을 재요청했다 — 위치를 칸으로, 마디는 명령 옵션으로 잇는다
+    path: str | None = Field(
+        default=None,
+        max_length=200,
+        description="kind file 만: 위치 패턴 — 명령 옵션을 {옵션 이름} 으로 (예: {raw_dir}/{run_date}/*.jsonl). "
+        "받은 날짜별 폴더면 그 마디가 실행 날짜 옵션(type date)",
+    )
     refs: list[str] = Field(min_length=1)
 
     @field_validator("refs")
@@ -481,6 +515,13 @@ class ResponseShape(Schema):
         min_length=1,
         description="응답 칸 — 다른 엔티티에서 읽거나 계산하는 칸은 constraints 에 출처를 적는다 (예: 'Customer.name — 주문의 customerId 로')",
     )
+    # 2026-11-14 #185 알파: 모양에 '어느 엔티티 행인가' 칸이 없어 공개 테스트 rows 에 조인 원천(고객·서류) 행이 섞여도 코드가 가릴 수 없었다
+    row_of: str | None = Field(
+        default=None,
+        pattern=r"^m\d{1,2}$",
+        description="이 모양 한 건(목록이면 항목 하나)이 어느 테이블 엔티티의 한 행인가 — 그 엔티티 id (예: 주문 목록 항목이면 주문 m1). "
+        "엔티티 행에 대응하지 않는 집계(날짜별 합계 등)면 null",
+    )
 
     @property
     def entity_id(self) -> str:
@@ -488,10 +529,27 @@ class ResponseShape(Schema):
         return self.shape_id
 
 
+class RowUse(Schema):
+    """공개 테스트가 쓰는 시드 행 — 그 처음 값. 코드가 그 값의 시드 그룹과 공개 몫 상수(PUBLIC_<엔티티>_<처음 값>)를 보장한다
+    (2026-11-13 #164: 공개 몫 행이 테스트가 무엇을 가르는지 보지 않고 그룹마다 기계적으로 나와 경계 행·걸러질 행이 없었다)."""
+
+    entity_id: str = Field(pattern=r"^m\d{1,2}$")
+    values: dict[str, SeedScalar] = Field(
+        min_length=1,
+        description='그 행의 처음 값 (예: {"remainingSeats": 1}) — 시드 groups 의 values 와 같은 칸·값',
+    )
+
+
 class PublicTest(Schema):
     test_id: str = Field(pattern=r"^pt\d{1,2}$")
     ac_id: str = Field(pattern=r"^p\d{1,2}$")
     checks: str = Field(min_length=1, max_length=300)  # 무엇을 확인하나
+    rows: list[RowUse] = Field(
+        default_factory=list,
+        max_length=4,
+        description="이 테스트가 쓰는 시드 행의 처음 값 — 규칙을 지킨 구현과 어긴 구현이 다른 결과를 내는 행 "
+        "(경계 값과 바로 바깥 값, 걸러질 행과 남을 행 등). 요청으로 만드는 데이터만 쓰면 비움",
+    )
 
 
 class TaskContract(Schema):
@@ -799,6 +857,58 @@ class GeneratedFiles(Schema):
         if len(set(paths)) != len(paths):
             raise ValueError("같은 경로가 두 번 나옴")
         return v
+
+
+VariantOp = Literal["omit", "invert", "boundary"]  # 빼먹기 · 뒤집기 · 경계 한 칸 어긋남
+
+
+class GenVariantInput(Schema):
+    """gen_variant 프롬프트 변수 — 공개 테스트 변별 관문 (#164). 공개 테스트·계약의 확인 방법(checks)은 주지 않는다:
+    테스트를 쓴 쪽의 맹점을 모르는 독립 검사여야 한다 (2026-11-13 사용자 — 새 에이전트가 검사)."""
+
+    stack: str = Field(min_length=1)
+    contract: str = Field(min_length=1)  # 확인 방법(public_tests)을 뺀 계약
+    requirements: str = Field(min_length=1)
+    acceptance_public: str = Field(min_length=1)
+    target: str = Field(min_length=1)  # 어길 공개 수용 기준 1건
+    operators: str = Field(min_length=1)  # 만들 갈래와 뜻
+    impl_files: str = Field(
+        min_length=1
+    )  # 정답 구현 (시작 코드 + 허용 구현을 합친 앱 파일 — 테스트 파일 없음)
+    revision_note: str
+
+
+class ViolationVariant(Schema):
+    op: VariantOp
+    note: str = Field(min_length=1, max_length=200)  # 무엇을 어떻게 어겼나 한 줄
+    files: list[GeneratedFile] = Field(min_length=1, max_length=3)  # 바꾼 파일 — 내용 전체
+
+
+class GenVariantOutput(Schema):
+    # 갈래마다 곳마다 하나 — 같은 규칙이 여러 곳(두 쿼리·여러 칸)에 있으면 곳마다 따로 (1차 변이, 2026-11-13)
+    variants: list[ViolationVariant] = Field(default_factory=list, max_length=6)
+
+
+class GenTrapInput(Schema):
+    """gen_trap 프롬프트 변수 — 숨은 테스트 검증 (#171). 허용 설계 구현을 그 설계에 적힌 함정에 빠진 구현으로 바꾼다.
+    숨은 테스트는 주지 않는다 (테스트를 쓴 쪽의 맹점을 모르는 독립 검사). 숨은 요구·설계는 준다 — 빌드 안쪽이라 새는 곳이 없다."""
+
+    stack: str = Field(min_length=1)
+    contract: str = Field(min_length=1)
+    hidden_requirements: str = Field(min_length=1)  # 그 설계가 푸는 숨은 요구
+    design: str = Field(min_length=1)  # 허용 설계 요약·조건
+    trap: str = Field(min_length=1)  # 그 설계의 함정 문장
+    impl_files: str = Field(min_length=1)  # 그 허용 설계 구현 (시작 코드 + 구현을 합친 앱 파일)
+    revision_note: str
+
+
+class TrapVariant(Schema):
+    note: str = Field(min_length=1, max_length=200)  # 어떻게 함정에 빠졌나 한 줄
+    files: list[GeneratedFile] = Field(min_length=1, max_length=3)  # 바꾼 파일 — 내용 전체
+
+
+class GenTrapOutput(Schema):
+    variants: list[TrapVariant] = Field(default_factory=list, max_length=2)
 
 
 class FileRef(Schema):

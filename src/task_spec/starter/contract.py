@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Literal
@@ -32,19 +32,27 @@ from task_spec.schemas.build import (
     Entity,
     HarnessValue,
     HiddenPlan,
+    Screen,
     TaskContract,
     UiElement,
 )
 from task_spec.schemas.domain import HiddenFault, TaskItem
-from task_spec.schemas.incident import FeatureSeed
+from task_spec.schemas.incident import FeatureSeed, HarnessRule
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import ORDINAL_FAULT, find_terms
 from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
 from task_spec.starter.feasibility import feasibility_problems
+from task_spec.starter.field_types import non_null
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import header_problems
-from task_spec.starter.seed_rows import case_rows_problems, seed_problems
+from task_spec.starter.seed_rows import (
+    case_rows_problems,
+    row_target_problems,
+    row_use_problems,
+    seed_problems,
+)
 from task_spec.starter.state_rule import legacy_rule, state_problems
-from task_spec.starter.templates import glob_match, is_java
+from task_spec.starter.templates import glob_match, supports_settings
 
 
 @dataclass(frozen=True)
@@ -213,17 +221,19 @@ _UNIT_MS = {
 }
 
 
+def timed_matches(name: str, value: HarnessValue, texts: Iterable[str]) -> list[str]:
+    """시간 조절값 값과 단위를 환산해 맞는 자료 줄 — 근거를 '없음'으로 쓴 값이 자료에 있는지 볼 때 보정(unevidenced)과
+    검사(_harness)가 같은 후보(TIMED_CANDIDATES)로 본다 (#179: 같은 계산이 두 벌이었다)."""
+    unit = param_unit(name)
+    if unit is None or not isinstance(value, (int, float)) or isinstance(value, bool):
+        return []
+    return [h for h in timed_hints(name, texts) if float(value) in _converted(h, unit)]
+
+
 def unevidenced(param: HarnessParam, value: HarnessValue, texts: Iterable[str]) -> bool:
     """근거를 '없음'으로 쓴 조절값이 자료 어디에도 없는가 — 템플릿 표기로 뽑히는 값도, 단위를 환산해 맞는 시간 값도 없다."""
     texts = list(texts)
-    if extract_values(param, texts):
-        return False
-    unit = param_unit(param.name)
-    if unit is None or not isinstance(value, (int, float)) or isinstance(value, bool):
-        return True
-    return not any(
-        float(value) in _converted(h, unit) for h in timed_hints(param.name, texts, limit=20)
-    )
+    return not extract_values(param, texts) and not timed_matches(param.name, value, texts)
 
 
 EVIDENCE_FRAGMENT = "근거 인용 일부만 자료와 일치 — "
@@ -245,7 +255,11 @@ def _common_spans(a: str, b: str) -> list[str]:
 
 
 def evidence_fragment(
-    value: HarnessValue, quote: str, texts: Iterable[str], unit: str | None = None
+    value: HarnessValue,
+    quote: str,
+    texts: Iterable[str],
+    unit: str | None = None,
+    rule: HarnessRule | None = None,
 ) -> str | None:
     """인용이 자료에 그대로 없을 때, 자료에 그대로 있는 **가장 긴** 조각 중 값을 근거로 삼을 수 있는 것 (ok·ambiguous·rounded).
     가장 짧은 조각을 고르면 후보 숫자가 여럿인 인용을 걸러내는 장치(ambiguous)를 피해 가므로 가장 긴 것부터 본다.
@@ -257,9 +271,10 @@ def evidence_fragment(
     spans = sorted({s for t in texts for s in _common_spans(q, t)}, key=len, reverse=True)
     for span in spans:
         frag = span.strip()
-        if (
-            MIN_QUOTE <= len(frag) <= MAX_QUOTE
-            and evidence_check(value, frag, texts, unit) != "bad"
+        if MIN_QUOTE <= len(frag) <= MAX_QUOTE and (
+            rule_check(value, frag, texts, unit, rule).verdict == "ok"
+            if rule is not None
+            else evidence_check(value, frag, texts, unit) != "bad"
         ):
             return frag
     return None
@@ -284,7 +299,12 @@ def _converted(quote: str, unit: str) -> set[float]:
     return out
 
 
-def timed_hints(name: str, texts: Iterable[str], limit: int = 4) -> list[str]:
+# 시간 조절값의 근거 후보 줄 수 — 근거 대조(timed_matches)와 재질문 힌트(plan_contract)가 같은 후보를 본다 (#179: 20·20·4 로 갈려
+# 대조가 받는 줄을 힌트가 보여 주지 않을 수 있었다)
+TIMED_CANDIDATES = 20
+
+
+def timed_hints(name: str, texts: Iterable[str], limit: int = TIMED_CANDIDATES) -> list[str]:
     """시간 조절값의 근거 후보 — 명세 자료·답에서 그 단위로 환산할 수 있는 수가 든 줄 (근거를 '없음'으로 쓴 답을 다시 묻는다)."""
     if param_unit(name) is None:
         return []
@@ -327,6 +347,199 @@ def evidence_check(
     return "ok" if str(value).lower() in q.lower() else "bad"
 
 
+# ── 재료 규칙으로 근거 대조 (FeatureSeed.harness_rules) ─────────────────
+
+# 값 후보 수 — 앞이 글자·숫자·점·붙임표면 수가 아니다 (p50 의 50, EV-2024-011 의 011, 버전 1.2.3 의 뒤쪽)
+_RULE_NUM = re.compile(r"(?<![A-Za-z0-9.\-_/])(\d(?:[\d,]*\d)?(?:\.\d+)?)(?![\d])")
+# 값이 아닌 수 — 날짜·시각·백분율 (같은 길이 공백으로 지워 위치를 지킨다)
+_RULE_SKIP = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?|\d[\d,]*(?:\.\d+)?\s*%")
+# 수 바로 뒤 시간 단위 (공백 하나까지)
+_RULE_TIME = re.compile(r"\s?(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])", re.I)
+# 수 바로 뒤에 붙은 말 (공백 없이) — '17건이' 의 '건이'
+_RULE_WORD = re.compile(r"([^\s\d.,:;()\[\]{}/|=~<>≤≥·\-]+)")
+# 공백 하나 뒤에 와도 단위로 보는 말 — 그 밖의 말은 다음 항목이다 ('19.8 p95' · '35.1 최대')
+_COUNT_UNITS = ("건", "개", "명", "회", "번", "행", "배", "대", "곳", "줄")
+# 머리 줄의 단위 표기 — '왕복 시간 (ms)' · '단위: 초'. 단위 없는 수는 이 단위, 없으면 조절값 단위
+_RULE_HEAD = re.compile(
+    r"\(\s*(?:단위\s*[:：]?\s*)?(ms|밀리초|초|sec|s|분|min)\s*\)|단위\s*[:：]\s*(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])",
+    re.I,
+)
+# 값 앞 이름표 — 백분위·평균·최대 등 (재료 규칙의 이름표와 함께 찾는다)
+_RULE_STAT = r"[pP]\d{2,3}(?:\.\d)?|평균|중앙값|최댓값|최솟값|최대|최소|avg|mean|median|max|min"
+_RULE_LEAD = 16  # 이름표를 찾는 값 앞 글자 수 (앞 수가 끝난 뒤부터)
+
+
+@dataclass(frozen=True)
+class _Cited:
+    raw: str  # 인용 속 표기 (예: '19.8', '800 ms')
+    amount: float | None  # 조절값 단위로 환산한 값 — 시간 아닌 단위가 붙은 시간 조절값 후보는 None
+    label: str | None  # 바로 앞 이름표
+    unit: str  # 바로 뒤 단위 ('' = 없음)
+
+
+def _cited_numbers(quote: str, rule: HarnessRule, unit: str | None) -> list[_Cited]:
+    q = _RULE_SKIP.sub(lambda m: " " * len(m.group(0)), quote)
+    head = _RULE_HEAD.search(q)
+    head_unit = (head.group(1) or head.group(2)).lower() if head else None
+    if head:
+        q = q[: head.start()] + " " * (head.end() - head.start()) + q[head.end() :]
+    names = sorted({*rule.labels}, key=len, reverse=True)
+    label_rx = re.compile("|".join([*(re.escape(n) for n in names), _RULE_STAT]), re.I)
+    out: list[_Cited] = []
+    prev_end = 0
+    for m in _RULE_NUM.finditer(q):
+        n = _number(m.group(1))
+        if n is None:
+            continue
+        lead = q[max(prev_end, m.start() - _RULE_LEAD) : m.start()]
+        labels = list(label_rx.finditer(lead))
+        label = labels[-1].group(0) if labels else None
+        rest = q[m.end() :]
+        timed = _RULE_TIME.match(rest)
+        word = _RULE_WORD.match(rest)
+        spaced = rest[:1].isspace() and _RULE_WORD.match(rest[1:])
+        if timed:
+            u, end = timed.group(1).lower(), m.end() + timed.end()
+        elif word:
+            u, end = word.group(1), m.end() + word.end()
+        elif spaced and spaced.group(1).startswith((*_COUNT_UNITS, *rule.units)):
+            u, end = spaced.group(1), m.end() + 1 + spaced.end()
+        else:
+            u, end = "", m.end()
+        amount: float | None = n
+        if unit is not None:
+            src = u if u in _UNIT_MS else head_unit if not u else None
+            amount = (
+                n * _UNIT_MS[src] / (1.0 if unit == "ms" else 1000.0)
+                if src is not None
+                else n
+                if not u
+                else None
+            )
+        out.append(_Cited(quote[m.start() : end].strip(), amount, label, u))
+        prev_end = end
+    return out
+
+
+def _rule_candidates(quote: str, rule: HarnessRule, unit: str | None) -> list[_Cited]:
+    cited = _cited_numbers(quote, rule, unit)
+    if rule.units:
+        cited = [c for c in cited if c.unit.startswith(tuple(rule.units))]
+    elif unit is not None:
+        cited = [
+            c for c in cited if c.amount is not None
+        ]  # 시간 아닌 단위('200건')는 시간 조절값 후보가 아니다
+    else:
+        cited = [c for c in cited if c.unit.lower() not in _UNIT_MS]
+    if not rule.labels:
+        return cited
+    for name in rule.labels:
+        hit = [c for c in cited if c.label is not None and c.label.casefold() == name.casefold()]
+        if hit:
+            return hit
+    return [c for c in cited if c.label is None]
+
+
+def _fit(x: float, how: str) -> float:
+    eps = 1e-9
+    if how == "nearest":
+        return float(math.floor(x + 0.5 + eps))
+    if how == "up":
+        return float(math.ceil(x - eps))
+    if how == "down":
+        return float(math.floor(x + eps))
+    return x
+
+
+@dataclass(frozen=True)
+class RuleCheck:
+    verdict: Literal["ok", "mismatch", "missing", "ambiguous", "bad_quote"]
+    expected: float | None = None
+    source: tuple[str, ...] = ()  # 규칙이 고른 인용 속 표기
+
+
+def quoted(quote: str, texts: Iterable[str]) -> str | None:
+    """인용을 공백 정리해 돌려준다 — 길이가 맞고 자료(1단계 자료·구체 답)에 그대로 있을 때만."""
+    q = _norm(quote).strip(" \"'“”‘’…")
+    if not MIN_QUOTE <= len(q) <= MAX_QUOTE or not any(q in _norm(t) for t in texts):
+        return None
+    return q
+
+
+def rule_check(
+    value: HarnessValue,
+    quote: str,
+    texts: Iterable[str],
+    unit: str | None,
+    rule: HarnessRule,
+) -> RuleCheck:
+    """재료 규칙으로 근거 인용에서 값을 다시 계산해 대조한다 — 이름표·단위로 후보를 고르고(labels·units), 여럿이면 pick,
+    조절값 단위로 환산해 round 로 맞춘 값이 계약의 값과 같아야 ok. 인용 속 수가 여럿이어도 규칙이 하나를 고르면 받는다
+    (일반 검사 evidence_check 는 후보가 여럿이면 어느 것이 근거인지 몰라 ambiguous)."""
+    q = quoted(quote, texts)
+    if q is None:
+        return RuleCheck("bad_quote")
+    cands = _rule_candidates(q, rule, unit)
+    amounts = sorted({c.amount for c in cands if c.amount is not None})
+    if not amounts:
+        return RuleCheck("missing")
+    if rule.pick == "only" and len(amounts) > 1:
+        return RuleCheck("ambiguous", source=tuple(c.raw for c in cands))
+    x = amounts[-1] if rule.pick == "max" else amounts[0]
+    src = tuple(c.raw for c in cands if c.amount == x)
+    expected = _fit(x, rule.round)
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and abs(float(value) - expected) < 1e-9
+    ):
+        return RuleCheck("ok", expected, src)
+    return RuleCheck("mismatch", expected, src)
+
+
+def describe_rule(rule: HarnessRule, unit: str | None) -> str:
+    """규칙을 사람 말로 — 재요청 사유·계약 입력의 조절값 설명에 쓴다."""
+    parts: list[str] = []
+    if rule.labels:
+        head, *rest = rule.labels
+        parts.append(f"이름표 {head}" + (f"(없으면 {'·'.join(rest)})" if rest else "") + " 의 값")
+    if rule.units:
+        parts.append(f"{'·'.join(rule.units)} 단위가 붙은 수")
+    if rule.pick != "only":
+        parts.append("여럿이면 가장 " + ("큰" if rule.pick == "max" else "작은") + " 값")
+    fit = {"exact": "", "nearest": " 반올림", "up": " 올림", "down": " 내림"}[rule.round]
+    if unit:
+        parts.append(f"{'초' if unit == 's' else unit} 단위로 바꿔" + (fit or " 그대로"))
+    elif fit:
+        parts.append(f"정수로{fit}")
+    return ", ".join(parts) or "인용 속 값 그대로"
+
+
+def rule_problem(
+    name: str, value: HarnessValue, quote: str, rule: HarnessRule, got: RuleCheck, unit: str | None
+) -> str:
+    how = describe_rule(rule, unit)
+    if got.verdict == "mismatch" and got.expected is not None:
+        return (
+            f"HiddenPlan {name}={value} 이 근거 인용 {quote[:120]!r} 에서 재료 규칙({how})으로 만든 값 "
+            f"{got.expected:g} 과 다름 (인용의 {', '.join(got.source)}) — 규칙대로 쓰거나, 다른 줄이 근거면 그 줄을 인용"
+        )
+    if got.verdict == "ambiguous":
+        return (
+            f"HiddenPlan {name} 의 근거 인용 {quote[:120]!r} 에 재료 규칙({how})의 값 후보가 여럿({', '.join(got.source)}) — "
+            "그 값이 적힌 부분만 인용"
+        )
+    if got.verdict == "missing":
+        return (
+            f"HiddenPlan {name} 의 근거 인용 {quote[:120]!r} 에 재료 규칙({how})의 값이 없음 — "
+            "그 값이 적힌 자료·답 줄을 그대로 인용"
+        )
+    return (
+        f"HiddenPlan {name}={value} 의 근거 {quote[:120]!r} 가 자료에 그대로 없음 — 자료·답의 문장을 그대로 인용 "
+        f"({MAX_QUOTE}자 이내, 값이 적힌 부분만)"
+    )
+
+
 def spec_missing_params(visible_texts: Sequence[str], manifest: TemplateManifest) -> list[str]:
     """명세 글에서 표기 패턴으로 값이 안 뽑히는 필수·visible 조절값 이름.
 
@@ -359,7 +572,10 @@ def _type_problem(param: HarnessParam, value: HarnessValue) -> str | None:
 
 
 def _harness(
-    plan: HiddenPlan, spec: SpecView, manifest: TemplateManifest
+    plan: HiddenPlan,
+    spec: SpecView,
+    manifest: TemplateManifest,
+    rules: Mapping[str, HarnessRule] | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     problems: list[str] = []
     gaps: list[str] = []
@@ -388,8 +604,15 @@ def _harness(
             continue
         if not p.visible:
             continue
-        seen = extract_values(p, spec.visible_texts)
         quote = plan.evidence.get(p.name)
+        rule = (rules or {}).get(p.name)
+        if rule is not None and quote and quote.strip() != NO_EVIDENCE:
+            # 재료가 값 만드는 규칙을 적었으면 그 규칙으로만 대조 — 템플릿 표기 패턴·일반 검사보다 숨은 요구가 정한 규칙이 정확하다
+            got = rule_check(value, quote, spec.visible_texts, param_unit(p.name), rule)
+            if got.verdict != "ok":
+                problems.append(rule_problem(p.name, value, quote, rule, got, param_unit(p.name)))
+            continue
+        seen = extract_values(p, spec.visible_texts)
         cited = (
             evidence_check(value, quote, spec.visible_texts, param_unit(p.name))
             if quote and quote.strip() != NO_EVIDENCE
@@ -428,17 +651,7 @@ def _harness(
         if quote and quote.strip() == NO_EVIDENCE:
             # 시간 조절값인데 자료에 단위를 환산해 그 값이 되는 줄이 있으면 막지 않고 승인자에게 — 2026-11-10 nplus1-i: 자료의
             # '응답 p99 ≤ 800 ms' 로 request_timeout_s=1 을 맞게 정하고도 '시간 초과 값' 이 따로 없다며 근거를 세 번 다 '없음'으로 썼다
-            matched = (
-                [
-                    h
-                    for h in timed_hints(p.name, spec.visible_texts, limit=20)
-                    if isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and float(value) in _converted(h, param_unit(p.name) or "")
-                ]
-                if param_unit(p.name)
-                else []
-            )
+            matched = timed_matches(p.name, value, spec.visible_texts)
             if matched:
                 flags.append(
                     f"운영 값 {p.name}={value} 의 근거를 계약이 '없음'으로 썼지만 자료의 시간 값과 환산해 맞음: "
@@ -450,10 +663,7 @@ def _harness(
                     f"명세 1단계 자료·추가 요구 구체 답에 운영 수치 {p.name} 이 없음 — "
                     "지원자가 발견할 수 없는 조건으로 채점하게 되므로 명세 수정 필요"
                 )
-            else:
-                problems.append(
-                    f"HiddenPlan {p.name} 은 자료에 없다고 했으니 harness 에서 뺀다 (선택 조절값)"
-                )
+            # 선택 조절값의 '없음'은 보정(plan_contract.fit_unevidenced)이 먼저 뺀다 — 검사 가지를 두지 않는다 (#179: 닿지 않던 검사)
         elif quote:
             problems.append(
                 f"HiddenPlan {p.name}={value} 의 근거 {quote[:120]!r} 가 자료에 그대로 없거나 값이 그 안에 없음 — "
@@ -588,19 +798,27 @@ def fit_traps(plan: HiddenPlan, spec: SpecView) -> tuple[HiddenPlan, list[str]]:
 
 
 def fit_covers(contract: TaskContract, spec: SpecView) -> tuple[TaskContract, list[str]]:
-    """covers 에 빠진 계약 요소를 그 요소가 스스로 적은 refs 의 공개 요구에 잇는다 — 역색인은 코드가 (기계적 출력).
+    """covers 키는 공개 요구(req_ids)만 — 공개 수용 기준(p…) 키는 빼고, 어느 공개 요구에도 이어지지 않은 계약 요소는 그 요소가 스스로 적은
+    refs 의 공개 요구에 잇는다 (역색인은 코드가, 기계적 출력).
 
     2026-11-08 상류 평가: 200 응답 모양으로 만든 엔티티(필드 refs r1·p1)를 covers 에 잇지도 빼지도 않아 재요청 2회 모두 실패.
-    refs 는 공개 id 만 허용되므로 잇는다고 숨은 요구가 계약에 들어오지는 않는다. refs 가 없는 요소는 그대로 문제로 남긴다."""
-    covered = {i for ids in contract.covers.values() for i in ids}
-    covers = {k: list(v) for k, v in contract.covers.items()}
+    refs 는 공개 id 만 허용되므로 잇는다고 숨은 요구가 계약에 들어오지는 않는다.
+    #180: 수용 기준 키는 공개 테스트가 대응하는 것이라 covers 에 두지 않는다 — 저장된 알파 계약 207개 중 100개가 p… 키를 썼고(재요청하면
+    되풀이), 예전엔 그 값까지 '연결됨'으로 세어 요소를 수용 기준에만 이어도 통과했다. refs 가 수용 기준뿐인 요소는 어느 요구와 관련인지
+    계약에서 알 수 없어 잇지 않는다 — '연결되지 않은 요소'로 재요청."""
+    req = set(spec.req_ids)
+    dropped = [k for k in contract.covers if k not in req and k in spec.public_ac_ids]
+    covers = {k: list(v) for k, v in contract.covers.items() if k not in dropped}
     notes: list[str] = []
+    if dropped:
+        notes.append(
+            f"covers 의 공개 수용 기준 키 {', '.join(dropped)} 를 뺌 — covers 키는 공개 요구만 (수용 기준은 공개 테스트가 대응)"
+        )
+    covered = {i for ids in covers.values() for i in ids}
     for eid, refs in element_refs(contract).items():
         if eid in covered:
             continue
-        keys = [r for r in refs if r in spec.req_ids] or [
-            r for r in refs if r in spec.public_ac_ids
-        ]
+        keys = [r for r in refs if r in req]
         if not keys:
             continue
         for k in keys:
@@ -685,16 +903,22 @@ def _coverage(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
         )
 
     # 명세 → 계약. covers 값에는 입력 환경 id(f*)도 된다 (요구를 입력 환경에 잇는 것은 자연스럽다 — 덮였는지 따지지는 않음).
-    # 공개 수용 기준 id(p*)를 키로 쓴 것은 무시한다 (2026-11-07 종이 단계: 재요청해도 되풀이, 해는 없음 — p* 는 공개 테스트로 대응)
-    # 응답 모양(v*)도 된다 — 응답의 일부라 덮였는지 따지지는 않는다 (2026-11-13)
+    # 응답 모양(v*)도 된다 — 응답의 일부라 덮였는지 따지지는 않는다 (2026-11-13). 키는 공개 요구만 — 수용 기준 키는 fit_covers 가 뺀다 (#180)
     targets = (
         element_ids
         | {fx.fixture_id for fx in contract.fixtures}
         | {s.shape_id for s in contract.response_shapes}
     )
     for key, ids in contract.covers.items():
-        if key not in spec.req_ids and key not in spec.public_ac_ids:
-            problems.append(f"covers 의 키 {key} 가 명세의 공개 요구 id 가 아님")
+        if key not in spec.req_ids:
+            problems.append(
+                f"covers 의 키 {key} 가 명세의 공개 요구 id 가 아님"
+                + (
+                    " (공개 수용 기준은 covers 키가 아니다 — 공개 테스트가 대응)"
+                    if key in spec.public_ac_ids
+                    else ""
+                )
+            )
         bad = [i for i in ids if i not in targets]
         if bad:
             problems.append(f"covers[{key}] 에 계약에 없는 id: {', '.join(bad)}")
@@ -775,17 +999,24 @@ def _command_paths(contract: TaskContract, manifest: TemplateManifest) -> list[s
     return out
 
 
+_IDENT_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9_]*[A-Za-z0-9](?![A-Za-z0-9_])")
+_CAMEL_JOIN = re.compile(r"[a-z0-9][A-Z]")
+
+
 def spec_named_fields(spec: SpecView | None) -> set[str]:
-    """명세에서 지원자에게 보이는 글(제목·상황·공개 요구·공개 수용 기준·자료·추가 요구 답)에 글자 그대로 나온 snake 꼴 이름 —
-    API 요청·응답 필드는 그 이름을 인정한다. 2026-11-10 확장 알파 C #062: 공개 요구가 '요청 본문에 member_id 와 amount, 응답에
-    recharge_id' 로 필드 이름을 정했는데 템플릿 규칙(camelCase)과 달라 재요청 3번에도 실패 — 승인된 명세가 우선이다 (사용자 결정 A).
-    경계는 영문자·숫자·밑줄로만 본다 ('recharge_id와' 처럼 조사가 붙어도)."""
+    """명세에서 지원자에게 보이는 글(제목·상황·공개 요구·공개 수용 기준·자료·추가 요구 답)에 글자 그대로 나온 식별자 이름 — 밑줄로 잇거나
+    (snake) 대문자로 낱말을 이은(camel) 것. API 요청·응답 필드는 그 이름을 인정한다. 2026-11-10 확장 알파 C #062: 공개 요구가 '요청 본문에
+    member_id 와 amount, 응답에 recharge_id' 로 필드 이름을 정했는데 템플릿 규칙(camelCase)과 달라 재요청 3번에도 실패 — 승인된 명세가
+    우선이다 (사용자 결정 A). #180: snake 만 봐 거울 사례(명세 `rechargeId` ↔ snake 규칙 템플릿)는 같은 실패였다.
+    경계는 영문자·숫자·밑줄로만 본다 ('recharge_id와' 처럼 조사가 붙어도). 낱말 하나(amount)는 어느 규칙에도 맞아 볼 필요가 없다."""
     if spec is None:
         return set()
-    rx = re.compile(
-        r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*[A-Za-z0-9](?![A-Za-z0-9_])"
-    )
-    return {w for t in (*spec.public_texts, *spec.visible_texts) for w in rx.findall(t)}
+    return {
+        w
+        for t in (*spec.public_texts, *spec.visible_texts)
+        for w in _IDENT_TOKEN.findall(t)
+        if "_" in w or _CAMEL_JOIN.search(w)
+    }
 
 
 def _naming(
@@ -797,7 +1028,7 @@ def _naming(
             f"인터페이스 {contract.interface_kind} 를 템플릿 {manifest.ref} 이 지원하지 않음 "
             f"(지원: {', '.join(manifest.interfaces)})"
         )
-    if contract.settings and not is_java(manifest):  # 설정 덮어쓰기는 스프링 속성 — 2026-11-13 #161
+    if contract.settings and not supports_settings(manifest):  # 설정 덮어쓰기 — 2026-11-13 #161
         problems.append(
             f"settings 는 스프링 템플릿에서만 쓴다 (템플릿 {manifest.ref}) — 설정 대신 명령 옵션·상수로 적는다"
         )
@@ -904,16 +1135,25 @@ def _reasons(
     ]
 
 
-_API = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+`?(/[A-Za-z0-9_\-/{}.]*)")
+# 글에 나온 'METHOD /path' — 백틱으로 감싸도, 경로 변수는 {id}·:id 둘 다, 끝 문장 부호는 빼고 (`POST /x.` → /x).
+# 계약 검사·화면 폼 대조가 같은 파서를 쓴다 (#179: 두 정규식이 같은 글을 다르게 잘랐다)
+_API = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+`?(/(?:[A-Za-z0-9_\-./:{}]*[A-Za-z0-9_\-/}])?)")
+
+
+def api_mentions(text: str) -> list[tuple[str, str]]:
+    """글의 (메서드, 경로) 들."""
+    return _API.findall(text)
 
 
 def _api_key(method: str, path: str) -> str:
-    return f"{method.upper()} {re.sub(r'{[^}]*}', '{}', path.rstrip('/') or '/')}"
+    """같은 API 인지 견줄 키 — 경로 변수({id}·:id)는 {} 로."""
+    shape = re.sub(r"\{[^}]*\}|:[A-Za-z_]\w*", "{}", path.rstrip("/") or "/")
+    return f"{method.upper()} {shape}"
 
 
 def mentioned_apis(texts: Iterable[str]) -> list[str]:
     """글에 나온 'METHOD /path' (경로 변수는 {} 로) — 예: 'PATCH /deliveries/{}/status'."""
-    return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in _API.findall(t)))
+    return list(dict.fromkeys(_api_key(m, p) for t in texts for m, p in api_mentions(t)))
 
 
 def existing_endpoints(contract: TaskContract, spec: SpecView) -> list[Endpoint]:
@@ -964,7 +1204,7 @@ def _api_refs(contract: TaskContract, plan: HiddenPlan, spec: SpecView) -> list[
     sources += [(c.case_id, f"{c.scenario} {c.expect}") for c in plan.cases]
     stray: dict[str, list[str]] = {}
     for where, text in sources:
-        for m, p in _API.findall(text):
+        for m, p in api_mentions(text):
             if not _in_contract(_api_key(m, p), rx):
                 stray.setdefault(f"{m.upper()} {p}", []).append(where)
     if stray:
@@ -1009,6 +1249,12 @@ def _shape_problems(contract: TaskContract) -> list[str]:
     used = {
         r.returns.removesuffix("[]") for e in contract.endpoints for r in e.responses if r.returns
     } | {token for _, f in _fields(contract) for token in re.findall(r"\b(v\d{1,2})\b", f.type)}
+    ids = {m.entity_id for m in contract.entities}
+    out += [
+        f"응답 모양 {s.shape_id} {s.name} 의 row_of {s.row_of} 가 계약의 테이블 엔티티가 아님 — 한 건이 대응하는 엔티티 id(m…)나 null"
+        for s in contract.response_shapes
+        if s.row_of is not None and s.row_of not in ids
+    ]
     unused = [f"{s.shape_id} {s.name}" for s in contract.response_shapes if s.shape_id not in used]
     if unused:
         out.append(
@@ -1095,26 +1341,41 @@ def _entity_existing(contract: TaskContract, plan: HiddenPlan) -> tuple[list[str
 _MUTATING = ("POST", "PUT", "PATCH", "DELETE")
 ROW_NEEDS = ("stateful_target", "transition_rules", "empty_record_entity", "related_entities")
 _NAME_WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+# 개수·합계를 뜻하는 낱말 — 다른 엔티티 행을 세거나 더한 칸 (itemCount·item_count·numItems·totalItems)
+AGGREGATE_WORDS = frozenset({"count", "cnt", "num", "number", "total", "sum"})
+
+
+def _name_words(name: str) -> tuple[str, ...]:
+    """이름 → 소문자 낱말열 (camel·snake 모두): customerName·customer_name → (customer, name)."""
+    return tuple(w.lower() for w in _NAME_WORDS.findall(name))
+
+
+def _singular(words: tuple[str, ...]) -> tuple[str, ...]:
+    return (*words[:-1], words[-1].removesuffix("s")) if words else words
 
 
 def _copied_fields(t: Entity, r: Entity) -> list[str]:
-    """t 의 칸 중 r 에서 읽어야 할 딸린 정보를 복사한 것 — `<r 이름><r 의 칸>` (customerName ← Customer.name) 이나
-    `<r 이름 또는 그 끝 낱말>Count` (itemCount ← OrderItem). 외래 키 칸·id 칸은 뺀다."""
+    """t 의 칸 중 r 에서 읽어야 할 딸린 정보를 복사한 것 — 낱말열로 견준다 (#180: camel 결합·`…Count` 꼴만 봐 `customer_name`·
+    `item_count`·`numItems` 는 지나갔다). `<r 이름 또는 그 끝 낱말><r 의 칸>` (customerName ← Customer.name) 이나
+    `<r 이름 또는 그 끝 낱말>` 앞뒤의 개수·합계 낱말 (itemCount·numItems ← OrderItem). 외래 키 칸·id 칸은 뺀다."""
     fks = {f for f, _ in t.fk_pairs()}
-    base = r.name[:1].lower() + r.name[1:]
-    words = [w.lower() for w in _NAME_WORDS.findall(r.name)]
-    heads = {base.lower(), *(words[-1:] if words else [])}
+    words = _name_words(r.name)
+    heads = {words, words[-1:]} - {()}
     copies = {
-        (base + g.name[:1].upper() + g.name[1:]).lower()
+        h + _name_words(g.name)
+        for h in heads
         for g in r.fields
-        if not g.name.lower().endswith("id")
+        if _name_words(g.name)[-1:] != ("id",)
     }
     out: list[str] = []
     for f in t.fields:
-        name = f.name.lower()
-        if f.name in fks or name.endswith("id"):
+        fw = _name_words(f.name)
+        if f.name in fks or not fw or fw[-1] in ("id", "ids"):
             continue
-        if name in copies or (name.endswith("count") and name.removesuffix("count") in heads):
+        counted = (len(fw) > 1 and fw[0] in AGGREGATE_WORDS and _singular(fw[1:]) in heads) or (
+            len(fw) > 1 and fw[-1] in AGGREGATE_WORDS and _singular(fw[:-1]) in heads
+        )
+        if fw in copies or counted:
             out.append(f.name)
     return out
 
@@ -1195,26 +1456,7 @@ def _needs(
             "endpoints 에 POST·PUT·PATCH·DELETE 중 하나로 (요청 본문·성공 응답 본문 포함) 적는다"
         )
     if "dated_input_folders" in need:
-        dated = [
-            fx
-            for fx in contract.fixtures
-            # 날짜가 폴더 이름 자체 (출력 파티션 date=YYYY-MM-DD 는 입력 구조가 아니다)
-            if fx.kind == "file"
-            and re.search(
-                r"(?<![=\w])(?:YYYY-MM-DD|\{date\}|<date>)/", f"{fx.summary} {fx.content}"
-            )
-        ]
-        date_opt = any(
-            "date" in fl.name.lower() or "date" in fl.type.lower()
-            for e in contract.endpoints
-            if not e.method
-            for fl in [*e.request, *e.query]
-        )
-        if not dated or not date_opt:
-            out.append(
-                f"숨은 요구에 필요한 것이 계약에 없음 — 날짜별 입력 폴더: {need['dated_input_folders']}. fixtures(kind file)에 "
-                "입력 폴더 규칙(예: <raw>/YYYY-MM-DD/*.jsonl — 받은 날짜별 폴더)을, 명령 옵션에 그 상위 폴더와 실행 날짜를 둔다"
-            )
+        out += _dated_folder_problems(contract, need["dated_input_folders"])
     if "result_screen" in need and not any(sc.elements for sc in contract.screens):
         out.append(
             f"숨은 요구에 필요한 것이 계약에 없음 — 결과를 보여 주는 화면 요소: {need['result_screen']}. "
@@ -1236,9 +1478,10 @@ def _internal_expect(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
     """숨은 케이스 통과 조건(expect)이 조절값 이름을 말하면 재요청 — 조절값 이름(식별자)을 정확히 맞추는 판정이라 오탐이 드물다.
     2026-11-07 알파 5회차: "모든 요청이 pool_size(30) 내에서 연결을 점유" 처럼 HTTP 로 관찰할 수 없는 조건이라, 숨은 테스트가 단언으로
     옮기다 '시간 초과가 일어나야 한다'로 거꾸로 써 올바른 구현까지 떨어뜨렸다. 2026-11-08 상류 기준선: 9회 중 3회 — 표시만으로는 줄지 않아 재요청으로."""
-    # 시간 한도·지연(…_ms·…_s)은 '응답이 한도 안에 온다' 처럼 HTTP 로 관찰할 수 있다 — 2026-11-10 nplus1-h: '응답이
-    # request_timeout_s(1초) 내에 도착' 을 세 번 다 막아 목록 재료 계약이 실패했다
-    names = [p.name for p in manifest.harness_params if param_unit(p.name) is None]
+    # 밖에서 관찰할 수 있는 한도는 매니페스트가 선언한다(hidden_rules.observable_params) — 2026-11-10 nplus1-h: '응답이
+    # request_timeout_s(1초) 내에 도착' 을 세 번 다 막아 목록 재료 계약이 실패했다. 이름 끝(_ms·_s)으로 면제하던 것은 #180
+    observable = set(manifest.hidden_rules.observable_params)
+    names = [p.name for p in manifest.harness_params if p.name not in observable]
     out: list[str] = []
     for c in plan.cases:
         hit = [
@@ -1294,14 +1537,70 @@ INTERACTIVE_ROLES = frozenset(
 _FORMATS = ("jsonl", "csv", "parquet")
 
 
+def command_options(contract: TaskContract) -> dict[str, ContractField]:
+    """명령(메서드 없는 엔드포인트)의 옵션 — 이름 → 칸 (요청·쿼리)."""
+    return {f.name: f for e in contract.endpoints if not e.method for f in [*e.request, *e.query]}
+
+
+_PATH_SLOT = re.compile(r"\{([^{}/]*)\}")
+
+
+def path_slots(path: str) -> list[str]:
+    """위치 패턴의 자리표시자 이름 (`{raw_dir}/{run_date}/*.csv` → raw_dir, run_date)."""
+    return _PATH_SLOT.findall(path)
+
+
+def _dated_folder_problems(contract: TaskContract, note: str) -> list[str]:
+    """받은 날짜별 입력 폴더 — 파일 입력 환경의 위치 패턴(Fixture.path)에 마디 하나가 통째로 날짜 형식 명령 옵션(`{run_date}`)인 것.
+    #187 woori001: 위치가 자유 글뿐이라 `YYYY-MM-DD/` 표기만 받던 검사가 `{YYYY-MM-DD}/` 로 바르게 적은 계약을 재요청했고, 실행 날짜 옵션도
+    이름의 'date' 글자로 짐작했다 — 둘 다 칸으로 (마디 = 옵션, 옵션 형식 = date)."""
+    options = command_options(contract)
+    dates = {
+        n for n, f in options.items() if non_null(parse_field(f.type)).kind in ("date", "datetime")
+    }
+    segments = [
+        seg
+        for fx in contract.fixtures
+        if fx.kind == "file" and fx.path
+        for seg in fx.path.split("/")
+    ]
+    if any(seg in {f"{{{d}}}" for d in dates} for seg in segments):
+        return []
+    untyped = sorted(
+        {s[1:-1] for s in segments if s.startswith("{") and s.endswith("}") and s[1:-1] in options}
+        - dates
+    )
+    hint = (
+        f" (경로 마디로 쓴 옵션 {', '.join(untyped)} 의 type 이 날짜가 아님 — 실행 날짜면 type 을 date 로)"
+        if untyped
+        else ""
+    )
+    return [
+        f"숨은 요구에 필요한 것이 계약에 없음 — 날짜별 입력 폴더: {note}. 입력 파일 환경(fixtures kind file)의 path 에 받은 날짜 폴더 마디를 "
+        f"실행 날짜 옵션으로 적고(예: {{raw_dir}}/{{run_date}}/*.jsonl), 그 옵션은 명령의 type date 칸으로 둔다{hint}"
+    ]
+
+
 def _file_fixtures(contract: TaskContract) -> list[str]:
     """파일을 다루는 템플릿(interfaces 에 file): 파일 fixture 마다 형식 하나·행 모양 엔티티 이름. 2026-11-09 데이터 알파:
     입력 형식이 'csv 또는 parquet', 입력 레코드 필드가 엔티티 없이 글로만('결제번호·매장ID 등') — 테스트와 구현이 필드 이름을 서로 짐작해 모든 구현이 실패."""
     out: list[str] = []
     names = [m.name for m in contract.entities]
+    options = command_options(contract)
     for fx in contract.fixtures:
         if fx.kind != "file":
             continue
+        if not fx.path:
+            out.append(
+                f"파일 {fx.fixture_id} 에 위치(path)가 없음 — 명령 옵션을 {{옵션 이름}} 으로 쓴 위치 패턴을 적는다 (예: {{raw_dir}}/{{run_date}}/*.jsonl)"
+            )
+        else:
+            unknown = [s for s in path_slots(fx.path) if s not in options]
+            if unknown:
+                out.append(
+                    f"파일 {fx.fixture_id} 의 path {fx.path} 자리표시자 {', '.join(unknown)} 가 명령 옵션이 아님 — {{…}} 에는 명령 옵션 이름만 "
+                    f"(옵션: {', '.join(options) or '없음'})"
+                )
         text = f"{fx.summary} {fx.content}"
         formats = {f for f in _FORMATS if re.search(rf"\b{f}\b", text.lower())}
         if len(formats) > 1:
@@ -1442,26 +1741,47 @@ def _ui_load_and_background(contract: TaskContract) -> list[str]:
 LIST_ROLES = frozenset({"list", "item", "listbox", "option", "row", "table", "grid", "listitem"})
 
 
+def _path_named(path: str, text: str) -> bool:
+    """글이 이 API 경로를 말하나 — 메서드·쿼리 문자열은 없어도 되고 경로 변수({id}·:id) 자리는 아무 마디 (`/api/notifications?size=20`)."""
+    parts = [
+        r"[^/\s?]+" if re.fullmatch(r"\{[^}]*\}|:[A-Za-z_]\w*", seg) else re.escape(seg)
+        for seg in path.rstrip("/").split("/")
+    ]
+    return bool(re.search(r"(?<![\w/])" + "/".join(parts) + r"(?![\w/-])", text))
+
+
 def _ui_data_source(contract: TaskContract) -> list[str]:
     """ui 계약: 목록을 보여 주는 화면인데 처음 항목이 어디서 오는지 없음 — 읽는 API(GET)·만드는 API(POST)·브라우저 저장소·브라우저 입력 환경
     중 아무것도 없으면 테스트는 처음 항목을 줄 방법이 없어 하네스에 없는 인자를 지어내고(renderApp(경로, 초기 데이터)), 구현은 샘플 항목을
     코드에 박는다. 2026-11-10 프론트 알파 fe-v3-opt(plan_contract v20): 장바구니 화면 on_load '서버 요청 없음'·API 는 PATCH 하나."""
     if contract.interface_kind != "ui":
         return []
-    if any(e.method in ("GET", "POST") for e in contract.endpoints) or any(
-        f.kind == "browser" for f in contract.fixtures
-    ):
-        return []
+    # 화면마다 본다 (#180: 계약에 GET·POST 가 하나라도 있으면 통째로 건너뛰어, 목록과 무관한 결제 POST 만 있어도 지나갔다).
+    # 화면↔API·화면↔입력 환경을 잇는 칸이 없어 두 가지로 잇는다 — 화면 글(on_load·요소 action)이 그 API 경로를 말함(메서드는 없어도),
+    # 또는 화면과 같은 공개 요구를 refs 로 적음. 읽는 API(GET)만 출처다 — 만드는 API(POST)만으로는 처음 항목이 없다
+    reads = [e for e in contract.endpoints if e.method == "GET"]
+    browser = [f for f in contract.fixtures if f.kind == "browser"]
+
+    def fed(sc: Screen) -> bool:
+        text = " ".join([sc.on_load or "", *(el.action or "" for el in sc.elements)])
+        refs = {*sc.refs, *(r for el in sc.elements for r in el.refs)}
+        return (
+            bool(sc.storage)
+            or any(_path_named(e.path, text) or refs & set(e.refs) for e in reads)
+            or any(refs & set(f.refs) for f in browser)
+        )
+
     empty = [
         sc.route
         for sc in contract.screens
-        if not sc.storage and any(el.role in LIST_ROLES for el in sc.elements)
+        if any(el.role in LIST_ROLES for el in sc.elements) and not fed(sc)
     ]
     if not empty:
         return []
     return [
-        f"목록을 보여 주는 화면 {', '.join(empty)} 의 처음 항목이 어디서 오는지 계약에 없음 (읽는 API·브라우저 저장소·입력 환경이 없음) — "
-        "화면에 들어올 때 목록을 읽는 서버 API(GET, 이미 있는 API 면 existing)를 endpoints 와 on_load 에 적거나, 브라우저 저장소(storage)와 "
+        f"목록을 보여 주는 화면 {', '.join(empty)} 의 처음 항목이 어디서 오는지 계약에 없음 (그 화면이 부르는 읽기 API — 화면 글에 경로가 "
+        "나오거나 같은 공개 요구를 refs 로 적은 GET — ·브라우저 저장소·입력 환경이 없음) — 화면에 들어올 때 목록을 읽는 서버 API(GET, 이미 있는 "
+        "API 면 existing)를 endpoints 와 그 화면 on_load 에 'GET /경로' 로 적거나, 브라우저 저장소(storage)와 "
         "그 처음 내용(fixtures kind=browser)을 적는다. 테스트는 그 API 응답·저장소로만 처음 항목을 줄 수 있다"
     ]
 
@@ -1472,14 +1792,12 @@ _FIELD_ROLES = frozenset(
 
 
 # 경로는 경로 글자만 — 'POST /api/auth/login으로'·'… login.' 의 조사·마침표를 먹지 않게 (리뷰 2026-11-11)
-_MENTION = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_\-./:{}]*[A-Za-z0-9_\-/}])")
 # 사용자가 입력하지 않는 요청 칸 — 앱이 만드는 번호·토큰·시각 (폼 입력란으로 만들지 않는다). 화면·API 경로 변수도 앱이 채운다.
 # 'userId' 처럼 이름이 …Id 여도 로그인 폼에선 사용자가 입력하므로 …Id 전체를 빼지 않는다 (2026-11-11 fe7d-user 재생).
 _SYSTEM_FIELD = re.compile(
     r"^(?:id|token|.+Token|.+At|.+_at|(?:request|idempotency|client|trace|correlation)(?:Id|Key|_id|_key))$"
 )
 _PATH_VAR = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}|:([A-Za-z_][A-Za-z0-9_]*)")
-_NUMBER_TYPES = frozenset({"integer", "int", "long", "number", "float", "double", "decimal"})
 _MAX_ELEMENTS = 30  # UiScreen.elements 상한
 
 
@@ -1491,17 +1809,17 @@ def _form_endpoint(contract: TaskContract, form: UiElement) -> Endpoint | None:
     """폼의 조작·설명에 적힌 제출 요청(메서드·경로)과 같은 계약 API. 적혀 있지 않으면, 본문을 받는 변경 API(POST·PUT·PATCH)가
     계약에 하나뿐이고 다른 요소의 조작이 그 API 를 말하지 않을 때만 그것 (2026-11-10 fe7c-user: 조작 '제출하면 로그인 요청을 보내고…')."""
     for text in (form.action or "", form.description):
-        for method, path in _MENTION.findall(text):
+        for method, path in api_mentions(text):
             for e in contract.endpoints:
                 if e.method == method and _route_shape(e.path) == _route_shape(path):
                     return e
-    if _MENTION.search(form.action or ""):
+    if api_mentions(form.action or ""):
         return None  # 다른 요청을 적었다 — 짐작하지 않는다
     writes = [e for e in contract.endpoints if e.method in ("POST", "PUT", "PATCH") and e.request]
     if len(writes) != 1:
         return None
     mentioned = any(
-        (m := _MENTION.search(el.action or "")) is not None
+        (m := _API.search(el.action or "")) is not None
         and m.group(1) == writes[0].method
         and _route_shape(m.group(2)) == _route_shape(writes[0].path)
         for sc in contract.screens
@@ -1527,20 +1845,20 @@ def _input_fields(e: Endpoint, route: str) -> list[ContractField]:
         if not _SYSTEM_FIELD.match(f.name)
         and f.name not in path_vars
         and _kebab(f.name)
-        and not f.type.strip().endswith("[]")
-        and f.type.strip().lower() not in ("array", "list", "object", "map", "json")
+        and non_null(parse_field(f.type)).kind not in ("list", "object")
     ]
 
 
 def _field_element(form: UiElement, f: ContractField) -> UiElement:
-    t = f.type.strip()
-    enum = re.fullmatch(r"enum\s*\((.+)\)", t, re.I)
-    values = [v.strip() for v in re.split(r"[|,]", enum.group(1)) if v.strip()] if enum else []
+    ft = non_null(
+        parse_field(f.type)
+    )  # 계약 형식 해석 한 곳 (#172 — 선택지가 따옴표째 나오고 bigint·smallint 는 글자 칸이었다)
+    values = list(ft.values) if ft.kind == "enum" else []
     if values and len(values) <= 20 and all(len(v) <= 60 for v in values):
         role, options = "combobox", values
-    elif t.lower() in ("boolean", "bool"):
+    elif ft.kind == "boolean":
         role, options = "checkbox", []
-    elif t.lower() in _NUMBER_TYPES or "password" in f.name.lower():
+    elif ft.kind in ("integer", "number") or "password" in f.name.lower():
         role, options = "input", []  # 숫자(spinbutton)·비밀번호 입력란 — 역할이 textbox 가 아니다
     else:
         role, options = "textbox", []
@@ -1761,13 +2079,17 @@ def check_contract(
     problems += _ui_form_fields(contract)
     if "file" in manifest.interfaces:
         problems += _file_fixtures(contract)
-    harness_problems, gaps, flags = _harness(plan, spec, manifest)
+    harness_problems, gaps, flags = _harness(
+        plan, spec, manifest, seed.harness_rules if seed is not None else None
+    )
     problems += harness_problems
     problems += _reasons(plan, manifest, seed)
     problems += _faults(contract, plan, spec)
     problems += feasibility_problems(plan, manifest)
     if manifest.seed_rows:
         problems += seed_problems(contract)
+        problems += row_use_problems(contract)
+        problems += row_target_problems(contract)
         problems += case_rows_problems(contract, plan, manifest)
         problems += _target_rows(contract, plan)
     else:

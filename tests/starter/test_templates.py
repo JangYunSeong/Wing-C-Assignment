@@ -201,6 +201,26 @@ def test_check_template_catches_layer_rule_violations(tmp_path: Path) -> None:
     assert any("grader_only 에 manifest.yaml" in p for p in problems)
 
 
+def test_check_template_catches_unknown_observable_param(tmp_path: Path) -> None:
+    """#180: expect 에 써도 되는 조절값 선언은 실제 조절값 이름이어야 한다 — 오타면 아무것도 면제하지 못한 채 조용히 지나간다."""
+    root = tmp_path / "templates"
+    shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
+    manifest = root / JAVA / "v2" / "manifest.yaml"
+    text = manifest.read_text("utf-8")
+    assert "observable_params: [request_timeout_s, await_timeout_ms]" in text
+    manifest.write_text(
+        text.replace(
+            "observable_params: [request_timeout_s, await_timeout_ms]",
+            "observable_params: [request_timeout, await_timeout_ms]",
+        ),
+        "utf-8",
+    )
+    problems = check_template(load_template(JAVA, root=root))
+    assert problems == [
+        "hidden_rules.observable_params 의 request_timeout 가 harness_params 에 없음"
+    ]
+
+
 def test_check_template_catches_missing_harness_and_locked(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)

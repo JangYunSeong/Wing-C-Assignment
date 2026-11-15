@@ -17,7 +17,7 @@ from task_spec.nodes.starter.plan_contract import (
     plan_input,
 )
 from task_spec.prompting import PromptRegistry, assemble
-from task_spec.schemas import TaskItem
+from task_spec.schemas import HarnessRule, TaskItem
 from task_spec.starter.templates import Template
 from tests.spec.test_feature import _client, _skeleton
 from tests.starter.test_contract import BACKEND_SEED, _contract, _manifest, _plan
@@ -100,7 +100,7 @@ async def test_first_answer_ok() -> None:
     fake = FakeBackend().push(_out())
     res = await _run(fake)
     assert res.ok and len(fake.calls) == 1 and res.flags == []
-    assert res.provenance[0].prompt == "plan_contract@25"
+    assert res.provenance[0].prompt == "plan_contract@30"
     assert res.contract is not None and [e.endpoint_id for e in res.contract.endpoints] == [
         "e1",
         "e2",
@@ -114,7 +114,7 @@ async def test_failed_calls_are_counted_in_provenance() -> None:
     res = await _run(fake)
     assert not res.ok and res.contract is None
     assert len(fake.calls) == 6
-    assert len(res.provenance) == 3 and all(p.prompt == "plan_contract@25" for p in res.provenance)
+    assert len(res.provenance) == 3 and all(p.prompt == "plan_contract@30" for p in res.provenance)
     assert sum(p.tokens.out for p in res.provenance) == 6 * 500
 
 
@@ -324,9 +324,17 @@ def test_material_decides_required_harness_params_and_fk_targets_use_names() -> 
     seed = FeatureSeed.model_validate(raw["feature"])
     assert seed.harness == []
     assert not [p for p in for_material(t, seed).manifest.harness_params if p.required]
+    unlisted = for_material(t, seed.model_copy(update={"harness": None}))
     assert (
-        for_material(t, seed.model_copy(update={"harness": None})) is t
-    )  # 적지 않으면 템플릿 그대로
+        unlisted.manifest.harness_params == t.manifest.harness_params
+    )  # 조절값을 적지 않으면 템플릿 그대로
+    # 사유는 재료가 적은 것만 — 빌드(BuildInputs)와 같은 목록 (2026-11-13 숨은 테스트가 재료에 없는 pool_acquire_timeout 을 붙임)
+    assert (
+        unlisted.manifest.reason_codes
+        == set(seed.reasons)
+        == {"duplicate_record", "record_mismatch"}
+    )
+    assert for_material(t, seed.model_copy(update={"harness": None, "reasons": []})) is t
     timed = for_material(t, seed.model_copy(update={"harness": ["query_delay_ms"]}))
     param = timed.manifest.param("query_delay_ms")
     assert (
@@ -337,7 +345,33 @@ def test_material_decides_required_harness_params_and_fk_targets_use_names() -> 
     )
     noted = for_material(t, noted_seed).manifest.param("query_delay_ms")
     assert noted is not None and noted.description.endswith("— 이 과제: DB 왕복 p50")
+    ruled = for_material(
+        t,
+        noted_seed.model_copy(
+            update={
+                "harness_rules": {"query_delay_ms": HarnessRule(labels=["p50"], round="nearest")}
+            }
+        ),
+    ).manifest.param("query_delay_ms")
+    assert ruled is not None and ruled.description.endswith(
+        "— 이 과제: DB 왕복 p50 (근거에서 값을 만드는 규칙: 이름표 p50 의 값, ms 단위로 바꿔 반올림)"
+    )  # 계약 검사가 대조하는 규칙을 계약 입력에도 같은 말로
     c = _contract()
     c["entities"][1]["foreign_keys"] = [f"orderId → {c['entities'][0]['entity_id']}"]
     fixed, notes = fit_fk_targets(TaskContract.model_validate(c))
     assert fixed.entities[1].foreign_keys == [f"orderId → {c['entities'][0]['name']}"] and notes
+
+
+def test_settings_line_comes_from_code() -> None:
+    """#185: '설정 칸을 쓸 수 있는지·키 형식·그 조건의 시드 행 수'는 프롬프트 글이 아니라 템플릿 정보 줄로 — 코드의 판정·상수에서."""
+    from task_spec.nodes.starter.plan_contract import settings_text
+    from task_spec.starter.hidden_helpers import SETTING_MIN_ROWS, SETTING_PROBE, setting_probe
+    from task_spec.starter.templates import load_template
+
+    java = settings_text(load_template("backend/java-spring-boot3-jpa").manifest)
+    assert "쓸 수 있다" in java and f"{SETTING_MIN_ROWS}행 이상" in java
+    assert SETTING_MIN_ROWS > max(
+        setting_probe(d) for d in (1, SETTING_PROBE, 50)
+    )  # 덮는 값보다 많게
+    for other in ("frontend/react-vite-ts", "data/python-duckdb"):
+        assert "쓰지 않는다" in settings_text(load_template(other).manifest)

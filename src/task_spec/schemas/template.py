@@ -118,6 +118,11 @@ class FailureReason(Schema):
     # 이 사유를 의도한 숨은 케이스 파일에 반드시 있어야 할 것 (정규식 하나라도) — 예: 저장 실패 사유면 오류 주입.
     # 2026-11-08 숨은 테스트 검토: rollback_left_success 5건 중 4건이 주입 없이 거절되는 전이를 보내 롤백될 변경이 없었다.
     requires: list[str] = Field(default_factory=list)
+    # 이 사유를 붙여도 되는 단언 / 붙이면 안 되는 단언 (그 단언 문장에 맞는 정규식 — 정적 검사만 읽는다, 생성기 입력 아님).
+    # #176 B: 2026-11-14 재시도 중복 재빌드 hc1 이 Burst.failures(시간 초과·5xx 수)에 duplicate_record 를 붙였다 — 사유마다 어느 단언에 붙는지가
+    # 어디에도 없어 검사는 모든 사유 공통의 hidden_rules.reason_not_on(Burst.wrong)만 봤다. 비면 그 쪽은 묻지 않는다.
+    assert_on: list[str] = Field(default_factory=list)
+    assert_not_on: list[str] = Field(default_factory=list)
     # 이 사유를 하네스로 일으키는 법 한 줄 — 코드가 계약·숨은 테스트 생성기 입력과 케이스 줄에 싣는다.
     # 2026-11-08 상류 평가: 롤백 사유 케이스 9개 중 8개가 계획 단계부터 "허용되지 않은 전이"로 적혀 숨은 테스트 첫 답에 주입이 빠짐 (2/9).
     how: str | None = Field(default=None, max_length=300)
@@ -125,7 +130,7 @@ class FailureReason(Schema):
     # 2026-11-10 변별 실패 분석: N+1 계획 23개 중 5개가 200행 × 20ms = 4초 < 요청 한도 30~65초라 흔한 구현이 떨어질 수 없었다.
     feasible: list[Feasibility] = Field(default_factory=list)
 
-    @field_validator("log_patterns", "requires")
+    @field_validator("log_patterns", "requires", "assert_on", "assert_not_on")
     @classmethod
     def _patterns(cls, v: list[str]) -> list[str]:
         return _compiles(v)
@@ -311,6 +316,10 @@ class HiddenRules(Schema):
     # 케이스가 HTTP API 를 부르는 곳 (정규식, 매치 끝 = 경로 인자 시작, 그룹 method — 없으면 GET).
     # 경로 인자를 `{}` 자리로 정규화해 공개 계약의 API 와 대조한다 (2026-11-07 스모크: 계약에 없는 GET 을 불러 항상 404)
     http_calls: list[str] = Field(default_factory=list)
+    # 숨은 케이스 통과 조건(expect)에 이름을 써도 되는 조절값 — 채점이 밖에서 관찰할 수 있는 한도(요청 시간 한도 등).
+    # 그 밖의 조절값(풀 크기·SQL 지연·연결 대기)은 내부 동작이라 expect 에 나오면 재요청 (contract._internal_expect). #180:
+    # 이름 끝(_ms·_s)으로 면제해 query_delay_ms·connection_timeout_ms 같은 내부 조절값까지 지나갔다
+    observable_params: list[str] = Field(default_factory=list)
     # 응답 JSON 의 Map 값을 단언에 그대로 넣는 곳 (그룹 1 = 필드 이름) — 계약에서 정수 형식인 필드면 다시 쓰게 한다.
     # 2026-11-07 알파 테스트: assertThat(log.get("transactionId")).isEqualTo(txId) — Integer 105 ≠ 105L 로 모든 구현이 실패.
     # HARNESS.md 에 규칙이 있었는데도 어겨서 문서 대신 검사로.
@@ -367,13 +376,20 @@ class RepairTerms(Schema):
     # 계약 모호가 아니라 시작 코드 테스트를 다시 만든다. 빈 값이면 쓰지 않는다.
     # 2026-11-10 프론트 알파 fe7b-user: 참조 구현 두 개가 기존 테스트를 'useNavigate() may be used only in the context of a <Router>' 로 깼는데 계약 모호로 짚었다.
     test_context: str = ""
+    # 모든 구현이 같은 메시지로 공개 테스트에 실패할 때, 그 메시지가 '서버 쪽(공유 코드) 예외'를 보이는 꼴 — 맞으면 시작 코드를 다시 만든다
+    # (테스트 의심이 아니라). 빈 값이면 쓰지 않는다. #176: Spring 예외 이름·패키지 정규식이 공용 수리 코드에 박혀 있었다
+    server_side: str = ""
 
-    @field_validator("impl_crash", "grading_env", "test_context")
+    @field_validator("impl_crash", "grading_env", "test_context", "server_side")
     @classmethod
     def _rx(cls, v: str) -> str:
         if v:
             re.compile(v)
         return v
+
+
+def _code_overlays() -> list[SlotKind]:
+    return ["starter", "ref"]
 
 
 class CodePitfall(Schema):
@@ -385,12 +401,32 @@ class CodePitfall(Schema):
     # 이 정규식이 같은 파일에 있으면 걸지 않는다 — 바르게 쓴 꼴 (예: .arrow() 뒤 .read_all()). 2026-11-09 재검증: 7회차 흔한 구현이
     # .arrow().read_all() 로 바르게 썼는데 걸렸다.
     unless: str = ""
+    # 이 정규식이 같은 파일에 있을 때만 건다 — 실수가 되는 조건 (예: RestTemplate 을 쓰는 파일의 PATCH). #176
+    when: str = ""
+    # 이 경로 글롭에 맞는 파일만 (비면 모든 파일) — 예: 테스트 파일만 src/test/**. #176
+    paths: list[str] = Field(default_factory=list)
+    # 어느 산출물에서 보나 — 기본은 시작 코드·참조 구현. 테스트 쪽 실수면 public_test·hidden 도 (#176·#177)
+    overlays: list[SlotKind] = Field(default_factory=lambda: _code_overlays())
+    # C 계열 주석(// · /* */)을 빼고 찾는다 — 주석 속 꼴은 실수가 아니다 (Python 파일에는 켜지 않는다 — `//` 는 나눗셈)
+    strip_comments: bool = False
+    # 채점 하네스가 넣는 운영 값(풀·스레드)을 코드로 우회 — 걸리면 그 허용 설계가 하네스에 기댄 것으로 빌드가 본다 (build.py)
+    harness_bypass: bool = False
 
-    @field_validator("pattern", "unless")
+    @field_validator("pattern", "unless", "when")
     @classmethod
     def _rx(cls, v: str) -> str:
         re.compile(v)
         return v
+
+
+class ConfigPitfall(Schema):
+    """템플릿이 정하지 않은 값을 쓰면 안 되는 설정 키 — 산출물의 설정 파일(.yml·.yaml·.properties)이 이 키를 쓰는데 템플릿 project/
+    설정에는 없으면 실행 전에 이유와 함께 재요청. 키는 설정을 펼친 이름(properties 의 a.b.c, yaml 은 중첩을 점으로).
+    #176: Java 전용 검사(spring.datasource.* 키 목록)가 코드에 박혀 있었다 — 설정 읽기는 코드, 어느 키를 왜 막는지는 템플릿 지식."""
+
+    keys: list[str] = Field(min_length=1)
+    fix: str = Field(min_length=1)  # 재요청 문구 — 왜 쓰면 안 되는지
+    overlays: list[SlotKind] = Field(default_factory=lambda: _code_overlays())
 
 
 class TemplateManifest(Schema):
@@ -414,6 +450,7 @@ class TemplateManifest(Schema):
     hidden_rules: HiddenRules = Field(default_factory=HiddenRules)
     naming: NamingRules = Field(default_factory=NamingRules)
     harness_params: list[HarnessParam] = Field(default_factory=list)
+    config_pitfalls: list[ConfigPitfall] = Field(default_factory=list)  # 검사 전용 (#176)
     failure_reasons: list[FailureReason] = Field(default_factory=list)
     stack_conditions: list[str] = Field(
         default_factory=list

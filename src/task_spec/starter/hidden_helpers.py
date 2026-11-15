@@ -16,13 +16,21 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Literal
 
-from task_spec.schemas.build import Endpoint, GeneratedFile, HiddenPlan, TaskContract
+from task_spec.schemas.build import (
+    Endpoint,
+    GeneratedFile,
+    HiddenPlan,
+    RowUse,
+    SeedScalar,
+    TaskContract,
+)
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.header_values import PER_REQUEST, header_values
-from task_spec.starter.seed_rows import allocate_rows, public_free
-from task_spec.starter.seed_sql import default_value
+from task_spec.starter.seed_rows import allocate_rows, matches, public_free
+from task_spec.starter.seed_sql import default_value, time_kind
 from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
 from task_spec.starter.templates import is_java, is_python
@@ -62,7 +70,7 @@ def _const(name: str) -> str:
 
 
 def _body_kind(e: Endpoint) -> str | None:
-    ok = next((r for r in e.responses if r.status == 200), None)
+    ok = e.success()
     if ok is None:
         return None
     if ok.returns:
@@ -77,10 +85,41 @@ def public_rows(contract: TaskContract, plan: HiddenPlan) -> dict[str, list[int]
     for eid, values, ids in public_free(contract, plan):
         if eid not in names or not ids:
             continue
-        vals = "_".join(
-            re.sub(r"[^A-Za-z0-9]+", "_", str(v)).strip("_").upper() for v in values.values()
-        )
-        out[f"PUBLIC_{_const(names[eid])}" + (f"_{vals}" if vals else "")] = ids
+        out[public_const(names[eid], values)] = ids
+    return out
+
+
+def public_const(entity_name: str, values: Mapping[str, SeedScalar]) -> str:
+    """공개 몫 상수 이름 — PUBLIC_<엔티티>_<처음 값…> (처음 값은 그룹에 적힌 칸 순서대로)."""
+    vals = "_".join(
+        re.sub(r"[^A-Za-z0-9]+", "_", str(v)).strip("_").upper() for v in values.values()
+    )
+    return f"PUBLIC_{_const(entity_name)}" + (f"_{vals}" if vals else "")
+
+
+def row_use_consts(
+    contract: TaskContract, use: RowUse, plan: HiddenPlan | None = None
+) -> list[str]:
+    """공개 테스트 rows 한 항목 → 그 처음 값을 담는 그룹의 공개 몫 상수 이름들 (public_free 와 같이 같은 처음 값은 처음 본 그룹 이름).
+    fit_seed 가 그룹을 보장하므로 보통 하나 이상 — 공개 테스트 입력의 '쓸 행'과 정적 검사가 같은 이름을 본다."""
+    names = {m.entity_id: m.name for m in contract.entities}
+    if use.entity_id not in names:
+        return []
+    out: list[str] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for s in contract.seed:
+        if s.entity_id != use.entity_id:
+            continue
+        for g in sorted(s.groups, key=lambda x: x.first):
+            key = tuple(sorted((k, str(v)) for k, v in g.values.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            if matches(g.values, use.values):
+                out.append(public_const(names[use.entity_id], g.values))
+    if plan is not None:  # 공개 몫 id 가 비면 도우미에 상수가 없다 (public_rows 와 같은 이름만)
+        have = set(public_rows(contract, plan))
+        out = [n for n in out if n in have]
     return out
 
 
@@ -114,10 +153,16 @@ def setting_const(key: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", key).strip("_").upper()
 
 
+SETTING_PROBE = 3  # 테스트가 설정을 덮을 값 — 기본값과 다르고 작은 값
+SETTING_PROBE_ALT = 2  # 기본값이 SETTING_PROBE 와 같을 때
+# 설정을 따르는 조건의 시드 행 수 하한 — 덮은 값보다 많아야 '정확히 그만큼'을 가른다 (계약 생성 입력이 이 값을 그대로 싣는다, #185)
+SETTING_MIN_ROWS = max(SETTING_PROBE, SETTING_PROBE_ALT) + 1
+
+
 def setting_probe(default: int) -> int:
     """테스트가 설정을 덮을 값 — 기본값과 다르고 작은 값 (시드에 그 조건의 행이 이보다 많으면 '정확히 이만큼'을 가른다, #161).
     값을 코드에 박은 구현·제한이 없는 구현이 둘 다 다른 개수를 돌려준다."""
-    return 3 if default != 3 else 2
+    return SETTING_PROBE if default != SETTING_PROBE else SETTING_PROBE_ALT
 
 
 def _setting_lines(contract: TaskContract) -> list[str]:
@@ -166,6 +211,55 @@ def key_fields(contract: TaskContract) -> list[tuple[str, str, bool]]:
             elif a == f"{f.name}-7"[:20] and b == f"{f.name}-8"[:20]:
                 out.append((f.name, f"{f.name}-", False))
     return list(dict.fromkeys(out))
+
+
+def time_values(contract: TaskContract, plan: HiddenPlan) -> dict[str, dict[int, str]]:
+    """공개 몫 행의 날짜·시각 칸 실제 값 — 함수 이름(<엔티티><칸>Of) → 행 → 시드에 들어간 값 (그룹 값, 없으면 seed_sql 기본값).
+    2026-11-13 #164 N+1 알파: 공개 테스트가 시각을 그룹 값으로 짐작해 '최신순 100건 안에 05-09 행이 있다'(나올 수 없음)·
+    '같은 시각 행 중 이 행이 앞'(정해지지 않음)을 단언했다 — 기준 시각·순서를 실제 값으로 정하게 도우미가 값을 준다."""
+    names = {m.entity_id: m for m in contract.entities}
+    seeds = {x.entity_id: x for x in contract.seed if x.rows > 0}
+    rows_by_entity: dict[str, list[int]] = {}
+    for eid, _, ids in public_free(contract, plan):
+        rows_by_entity.setdefault(eid, []).extend(ids)
+    out: dict[str, dict[int, str]] = {}
+    for eid, ids in rows_by_entity.items():
+        m, seed = names.get(eid), seeds.get(eid)
+        if m is None or seed is None or not ids:
+            continue
+        for f in m.fields:
+            if time_kind(f) is None:
+                continue
+            fn = f"{m.name[:1].lower()}{m.name[1:]}{f.name[:1].upper()}{f.name[1:]}Of"
+            values: dict[int, str] = {}
+            for row in sorted(set(ids)):
+                g = next((g for g in seed.groups if g.first <= row <= g.last), None)
+                v = (
+                    g.values[f.name]
+                    if g is not None and f.name in g.values
+                    else default_value(f, row)
+                )
+                values[row] = str(v)
+            out[fn] = values
+    return out
+
+
+def _time_lines(contract: TaskContract, plan: HiddenPlan) -> list[str]:
+    vals = time_values(contract, plan)
+    if not vals:
+        return []
+    lines = [
+        "",
+        "    // ── 공개 몫 행의 날짜·시각 실제 값 (시드에 들어간 그대로): 기준 시각·순서·포함 여부는 이 값으로 정한다 — 지어 쓰거나 그룹 값으로 짐작하지 않는다 ──",
+    ]
+    for fn, values in vals.items():
+        entries = ", ".join(f'java.util.Map.entry({row}L, "{v}")' for row, v in values.items())
+        lines += [
+            f"    protected static String {fn}(long row) {{",
+            f"        return java.util.Map.ofEntries({entries}).get(row);",
+            "    }",
+        ]
+    return lines
 
 
 def _key_lines(contract: TaskContract) -> list[str]:
@@ -460,6 +554,8 @@ def render_contract_case(
     lines += _setting_lines(contract)
     lines += _header_lines(contract)
     lines += _key_lines(contract)
+    if audience == "public":
+        lines += _time_lines(contract, plan)
     tables = contract_tables(contract, manifest.naming.table) if audience == "hidden" else {}
     if tables:
         lines += ["", "    // ── 계약 테이블 이름 (오류 주입 정규식에는 이 이름을 그대로) ──"]
@@ -522,6 +618,26 @@ def render_contract_case(
     return GeneratedFile(path=rule.path, content="\n".join(lines))
 
 
+def persistence_check_path(public_helper_path: str) -> str:
+    """저장 확인 테스트 경로 — 공개 도우미 옆 (Java)."""
+    return public_helper_path.rsplit("/", 1)[0] + "/PersistenceCheckTest.java"
+
+
+def code_written_paths(m: TemplateManifest) -> set[str]:
+    """코드가 계약·계획에서 결정적으로 쓰는 파일 — 시드 SQL·조절값 파일·계약 도우미·저장 확인. 생성기가 고칠 수 없으므로 LLM 출력
+    크기 상한(static_check)·생성기 컴파일 오류 배정(build)에서 뺀다 (#178: 크기 상한이 시드 파일 하나만 빼, 코드가 렌더한 조절값·도우미·
+    저장 확인 파일이 커지면 생성기가 고칠 수 없는 문제로 걸렸다). 매니페스트로 정해진다 — 계약에 따라 없는 파일도 있다."""
+    paths: set[str] = set()
+    if m.seed_sql is not None:
+        paths.add(m.seed_sql.path)
+    if m.hidden_layout is not None:
+        paths.add(m.hidden_layout.params)
+    paths |= {h.path for h in (m.hidden_helper, m.public_helper) if h is not None}
+    if m.public_helper is not None and is_java(m):
+        paths.add(persistence_check_path(m.public_helper.path))
+    return paths
+
+
 def render_persistence_check(
     contract: TaskContract, manifest: TemplateManifest
 ) -> GeneratedFile | None:
@@ -530,21 +646,19 @@ def render_persistence_check(
     2026-11-08 알파 4케이스: 시작 코드의 새 감사 기록 엔티티에 id 생성 전략이 없어(`@Id` 만) 참조 구현 둘 다 기록을 저장하는 순간
     'must be manually assigned before persist()' 로 실패했다. 시작 코드는 기록을 쓰지 않으니 자기 테스트로는 드러나지 않는다.
     JPA 메타모델에서 계약 엔티티 이름으로 클래스를 찾아(클래스 이름을 미리 몰라도 됨) 필수 필드를 채워 저장해 본다.
-    대상: 새로 만드는 엔티티(existing 아님) 중 처음 0행 — 표시가 하나도 없으면(옛 계약) 처음 0행인 엔티티.
+    대상: 새로 만드는 엔티티(existing 아님) 중 처음 0행 — 옛 계약은 existing 이 모두 기본값 false 라 처음 0행 전부 (#184: 따로 두던
+    옛 계약 갈래는 같은 결과라 지웠다).
     """
     rule = manifest.public_helper
     if rule is None or not is_java(manifest):  # JPA 메타모델로 저장해 보는 Java 전용 확인
         return None
     rows = {s.entity_id: s.rows for s in contract.seed}
-    flagged = any(m.existing for m in contract.entities)
     targets = [
-        m.name
-        for m in contract.entities
-        if rows.get(m.entity_id, 0) == 0 and (not m.existing if flagged else True)
+        m.name for m in contract.entities if rows.get(m.entity_id, 0) == 0 and not m.existing
     ]
     if not targets:
         return None
-    path = rule.path.rsplit("/", 1)[0] + "/PersistenceCheckTest.java"
+    path = persistence_check_path(rule.path)
     names = ", ".join(f'"{t}"' for t in targets)
     src = f"""package {rule.package};
 

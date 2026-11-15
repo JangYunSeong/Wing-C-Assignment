@@ -132,6 +132,8 @@ CORS: 다른 origin 의 프론트가 브라우저에서 직접 부를 때만. �
 - rootless podman 에서 API 컨테이너의 app(uid 10001)은 기본 매핑이면 호스트 하위 uid(예: 110000)가 되어 이 파일을 못 읽는다.
   `run.sh` 는 rootless 면 `--userns=keep-id:uid=10001,gid=10001` 로 app 을 호스트 사용자로 맞춘다 (런타임 runc 라 keep-groups 는 못 쓰고,
   SELinux 가 꺼져 있어 라벨 옵션은 필요 없다 — 2026-11-12 운영 서버 확인).
+- 과제 생성 검증·채점 컨테이너의 마운트 정책(`starter/mounts.py`, #174)은 SELinux 가 켜진 서버 기준이다 — 격리를 켠 채 실행 사본은 전용 라벨 `:Z`,
+  함께 쓰는 캐시(Node 검증 node_modules)는 공유 라벨 `:z`. 운영 서버는 SELinux 가 꺼져 있어 동작 변화가 없다.
 - keep-id 로 바꾸면 `task_data` 볼륨(지원자 데이터)의 기존 파일 주인(호스트 하위 uid)이 컨테이너 안에서 app 이 아니게 된다 →
   **한 번** 볼륨 주인을 호스트 사용자로 옮긴다. 주인이 맞지 않으면 `run.sh` 가 기동을 거부한다.
 
@@ -192,6 +194,10 @@ builder(#129)가 다른 호스트 사용자로 쓰게 되면 소유자 전용 �
 - **builder 전용 호스트 사용자**(예: `task-builder`)의 rootless podman — 그 사용자로는 task-api·task-db 컨테이너와 `task_data` 볼륨이 보이지 않는다.
 - **builder 전용 DB 역할**(`task_builder`, `docker/builder/db-role.sql`) — 공통 과제 읽기, 빌드 표 쓰기만. 체크포인트(지원자 파생물)에는 권한이 없다.
   builder 는 표를 만들거나 바꾸지 않는다 (표·칸은 API 가 기동할 때) → **API 를 새 버전으로 먼저** 띄운다.
+  builder 는 기동할 때 자기가 읽는 빌드 표 칸 전체(`store.BUILD_COLUMNS`)가 있는지 보고, 하나라도 없으면 기동에서 멈춘다 (#175 —
+  예전에는 일부 칸만 봐서 기동은 통과하고 첫 생성 요청에서 죽었다. 자동 업그레이드는 기동 로그만 보고 성공으로 처리했다).
+  빌드 출처 칸 `origin`(#175)은 API 기동 때 생기고, 있던 빌드는 요청 시각이 있으면 `request`, 없으면 `eval` 로 채워진다.
+  매니페스트 해시 칸 `manifest_sha256`(#176 — 같은 vN 에서 고칠 수 있는 검사·수리 칸의 판)도 API 기동 때 생긴다 (있던 빌드는 NULL). 이 칸이 생긴 뒤의 builder 는 칸이 없으면 기동에서 멈추므로 **API 를 먼저** 올린다.
 - LLM 이 만든 코드는 builder 사용자의 podman 에서 `--network none` 자식 컨테이너로만 돈다 (#127). 이미지에는 JDK·Gradle·Node 가 없다.
 - 묶음은 builder 가 쓰고(권한 0640/0750) API(배포 사용자, keep-id)가 기본 ACL 로 읽는다. 0600 이면 ACL 마스크가 비어 못 읽는다.
 

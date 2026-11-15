@@ -162,6 +162,14 @@ class ResultContract(Schema):
     )
 
 
+# 받는 쪽 안내 — grader.json 칸 설명·플랫폼 계약 문서에 같은 문장 (마운트 정책: starter/mounts.py, #174)
+COPY_NOTE = (
+    "<제출물>·<결과>는 채점할 때마다 로컬 디스크에 새로 만든 사본 폴더 (podman 을 돌리는 사용자 소유) — 원본 제출물을 붙이지 "
+    "않는다. 전용 라벨(:Z)이 그 사본에만 붙고, 로컬이라 NFS 처럼 라벨을 못 바꾸는 저장소 문제도 피한다"
+)
+NO_RELABEL_NOTE = "SELinux 격리를 끈다 — 사본을 로컬 디스크에 둘 수 없을 때만"
+
+
 class GraderDescriptor(PackageHeader):
     """grader.json — 채점 서버. 함정 id·의도한 사유는 넣지 않는다 (이미지 안 config·result.json 에만)."""
 
@@ -171,8 +179,10 @@ class GraderDescriptor(PackageHeader):
     grader_sha256: str = Field(
         pattern=SHA256
     )  # 채점용 내용(숨은 overlay + config) — tree_sha256 은 숨은 테스트를 가리지 못한다
-    grade: str = Field(min_length=1)  # 기본 — SELinux 마운트 레이블 `:z` 포함
-    grade_without_selinux_relabel: str = Field(min_length=1)  # 레이블을 못 바꾸는 저장소(NFS 등)용
+    # 기본 — SELinux 격리를 켠 채 사본 폴더에 전용 라벨 `:Z` (starter/mounts.py)
+    grade: str = Field(min_length=1, description=COPY_NOTE)
+    # 라벨을 못 바꾸는 저장소(NFS 등)용
+    grade_without_selinux_relabel: str = Field(min_length=1, description=NO_RELABEL_NOTE)
     network: Literal["none"] = "none"
     timeout_s: int = Field(ge=1)
     result: ResultContract

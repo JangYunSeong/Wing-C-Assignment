@@ -18,6 +18,7 @@ from collections import Counter
 
 from task_spec.schemas import AuthRule, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import ContractField, Endpoint, Entity
+from task_spec.starter.field_types import enum_values
 from task_spec.starter.seed_sql import default_value
 from task_spec.starter.state_rule import seed_values
 
@@ -25,7 +26,6 @@ DENIED = (401, 403)
 _REASON = re.compile(r"\b(PERMISSION_DENIED|UNAUTHORIZED|FORBIDDEN|ACCESS_DENIED)\b")
 _PATH_PARAM = re.compile(r"\{(\w+)\}")
 _QUOTED = re.compile(r"""["']([A-Za-z0-9_-]+)["']""")
-_ENUM_TYPE = re.compile(r"^enum\(([^)]*)\)$", re.I)
 _FIXED_DENIED = ("guest", "denied-user", "anonymous")
 FLAG_OTHER = "권한 규칙 자동 보장 안 됨 (kind=other — 사람 확인): "
 
@@ -58,8 +58,7 @@ def _choices(contract: TaskContract, m: Entity, attribute: str) -> list[str]:
     out = seed_values(contract, m.entity_id, attribute)
     f = _field(m, attribute)
     if f is not None:
-        if em := _ENUM_TYPE.match(f.type.strip()):
-            out += [v.strip() for v in re.split(r"[|,]", em.group(1)) if v.strip()]
+        out += enum_values(f.type) or ()  # 형식이 정한 값 목록 — 계약 형식 해석 한 곳 (#172)
         out += _QUOTED.findall(f.constraints or "")
     return list(dict.fromkeys(out))
 
@@ -159,6 +158,23 @@ def fit_auth(contract: TaskContract, seed_rows: bool = True) -> tuple[TaskContra
     return (contract, notes) if out == contract else (out, notes)
 
 
+def requester_levels(contract: TaskContract, rule: AuthRule) -> tuple[str | None, str | None]:
+    """role 규칙의 (통과용 요청자 attribute 값, 거절용 값) — 요청자 행 두 개가 갖는 값. 정할 수 없으면 None.
+    등급 비교(above)면 맨 위 등급(allowed 가 있으면 그 안에서)이 어떤 대상·요청보다 높아 통과하고, 맨 아래가 거절.
+    그 밖은 allowed 첫 값이 통과, allowed 밖 값이 거절."""
+    if rule.above:
+        if not rule.order:
+            return None, None
+        tops = [v for v in rule.order if not rule.allowed or v in rule.allowed]
+        good = tops[-1] if tops else None
+        return good, (rule.order[0] if tops and rule.order[0] != good else None)
+    m = _entity(contract, rule.entity)
+    if not rule.allowed or m is None or not rule.attribute:
+        return None, None
+    bad = next((v for v in _choices(contract, m, rule.attribute) if v not in rule.allowed), None)
+    return rule.allowed[0], bad
+
+
 def _add_requesters(
     contract: TaskContract, rule: AuthRule, seeds: dict[str, SeedRule], notes: list[str]
 ) -> AuthRule:
@@ -167,20 +183,7 @@ def _add_requesters(
     seed = seeds.get(rule.entity or "")
     if m is None or seed is None or not rule.attribute or not rule.identifies:
         return rule
-    if rule.above:
-        # 등급 비교: 맨 위 등급은 어떤 대상·요청보다 높고(통과), 맨 아래는 어떤 것보다도 높지 않다(거절). allowed 가 있으면 그 안에서
-        if not rule.order:
-            return rule
-        tops = [v for v in rule.order if not rule.allowed or v in rule.allowed]
-        good = tops[-1] if tops else None
-        bad = rule.order[0] if tops and rule.order[0] != good else None
-    else:
-        if not rule.allowed:
-            return rule
-        good = rule.allowed[0]
-        bad = next(
-            (v for v in _choices(contract, m, rule.attribute) if v not in rule.allowed), None
-        )
+    good, bad = requester_levels(contract, rule)
     if good is None:
         return rule
     scope: dict[str, SeedScalar] = {}
@@ -314,30 +317,37 @@ def _order_problems(contract: TaskContract, m: Entity, rule: AuthRule, label: st
 
 
 def unreachable_targets(contract: TaskContract, plan: HiddenPlan) -> list[str]:
-    """숨은 케이스의 대상 행이 등급 비교 권한에서 아무 요청자도 바꿀 수 없는 값 (above=target 인데 order 의 맨 위, or_equal 아님).
+    """숨은 케이스의 대상 행을 통과용 요청자도 바꿀 수 없음 — 등급 비교 권한(above=target)에서 요청자 행의 실제 등급(requester_levels)과
+    대상 행의 처음 값(data initial)을 규칙과 같은 비교(order·or_equal)로 견준다.
     2026-11-10 v19-be2: hc1 버스트 대상 240행을 MASTER 로 두어 어떤 요청자도 통과 못 했다 — 허용 구현이 모두 403 으로 hc1 을
-    떨어지자 숨은 테스트를 '403 기대'로 다시 만들었고, 요청이 권한에서 끝나 기능 없는 시작 코드도 hc1 을 통과했다."""
+    떨어지자 숨은 테스트를 '403 기대'로 다시 만들었고, 요청이 권한에서 끝나 기능 없는 시작 코드도 hc1 을 통과했다.
+    #181: 예전엔 '대상이 order 의 맨 위'만 봐 allowed 로 요청자 상한이 내려가면 그 위 대상도 닿지 않는 것을 놓쳤다.
+    above=requested 는 요청한 새 값이 계획에 칸으로 없어(scenario·expect 는 글) 보지 않는다."""
     out: list[str] = []
     for e in contract.endpoints:
         r = e.auth
-        if (
-            r is None
-            or r.kind != "role"
-            or r.above != "target"
-            or r.or_equal
-            or not r.order
-            or not r.attribute
-        ):
+        if r is None or r.kind != "role" or r.above != "target" or not r.attribute:
             continue
-        top = r.order[-1]
+        good, _ = requester_levels(contract, r)
+        if good is None or good not in r.order:
+            continue
+        level = r.order.index(good)
+        reach = [v for i, v in enumerate(r.order) if i < level or (r.or_equal and i == level)]
         for c in plan.cases:
             for d in c.data:
-                if d.entity_id == r.entity and str(d.initial.get(r.attribute)) == top:
-                    out.append(
-                        f"숨은 케이스 {c.case_id} 의 {d.entity_id} 대상 행 {r.attribute}={top} 은 {e.method} {e.path} 의 권한 규칙"
-                        f"(요청자 {r.attribute} 가 대상보다 높아야)에서 어떤 요청자도 바꿀 수 없다 — 요청이 권한에서 끝나 숨은 요구를 재지 못한다. "
-                        f"대상 행은 {top} 보다 낮은 값({', '.join(r.order[:-1])} 중)으로 둔다"
+                target = str(d.initial.get(r.attribute))
+                if d.entity_id != r.entity or target not in r.order or target in reach:
+                    continue
+                out.append(
+                    f"숨은 케이스 {c.case_id} 의 {d.entity_id} 대상 행 {r.attribute}={target} 은 {e.method} {e.path} 의 권한 규칙"
+                    f"(요청자 {r.attribute} 가 대상보다 높아야{' — 같아도 됨' if r.or_equal else ''})에서 통과용 요청자({r.attribute}={good})도 "
+                    "바꿀 수 없다 — 요청이 권한에서 끝나 숨은 요구를 재지 못한다. 대상 행은 "
+                    + (
+                        f"{', '.join(reach)} 중 하나로 둔다"
+                        if reach
+                        else "다른 값으로 둔다 (닿는 등급이 없음 — 권한 규칙을 다시 본다)"
                     )
+                )
     return out
 
 

@@ -62,6 +62,7 @@ from task_spec.spec.draft import (
     incident_copied,
     repair,
 )
+from task_spec.spec.request_note import request_note
 
 TASK = "draft_feature_task"
 SEED_TRAP = "t1"  # v2: 재료의 숨은 요구 하나
@@ -283,16 +284,8 @@ def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeat
     deliv2 = list(out.debug_stage.deliverables)
     if not any("이미 대응" in d for d in deliv2):
         deliv2.append(STAGE2_ALREADY)
-    scenario = _with_note(
-        out.scenario,
-        f"\n\n아래 자료 중 최대 {lim1}개를 요청해 볼 수 있고, 질문은 최대 {max_q}개까지 할 수 있습니다.",
-        SCENARIO_MAX,
-    )
-    debug_scenario = _with_note(
-        out.debug_stage.scenario,
-        f"\n\n아래 자료 중 최대 {lim2}개를 요청해 볼 수 있습니다.",
-        DEBUG_SCENARIO_MAX,
-    )
+    scenario = _with_note(out.scenario, request_note(lim1, max_q), SCENARIO_MAX)
+    debug_scenario = _with_note(out.debug_stage.scenario, request_note(lim2), DEBUG_SCENARIO_MAX)
     data = {
         **out.model_dump(exclude={"concepts", "debug_stage", "clarifications", "artifacts"}),
         "scenario": scenario,

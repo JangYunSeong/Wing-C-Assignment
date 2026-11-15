@@ -142,3 +142,43 @@ def test_failed_line_is_a_separate_field_only_for_build_verification() -> None:
     assert got.at == f"{path}:66" and "66" not in got.message
     grade = judge.vitest_results(report, WORK, {"cases": "src/__grading__/cases"}, r"\bhc\d{1,2}\b")
     assert "at" not in grade[0]
+
+
+def test_skipped_todo_and_conditional_skips_are_not_a_pass() -> None:
+    """#173: status 가 failed 인 것만 실패로 봐 it.skip·skipIf·ctx.skip()·todo 가 통과였다 — 모두 건너뛴 파일도 파일 상태는 passed."""
+    from task_spec.starter.grade.image_grade_node import SKIPPED
+
+    skipped = {**_t("hc1 늦은 응답", "출력이 있으면"), "status": "skipped"}
+    todo = {**_t("hc2 지움", "나중에"), "status": "todo"}
+    report = {
+        "testResults": [
+            _file("src/__grading__/cases/hc1.test.tsx", [_t("hc1 늦은 응답", "준비"), skipped]),
+            _file("src/__grading__/cases/hc2.test.tsx", [todo], status="passed"),
+            _file("src/__public__/pt1.test.tsx", [_t("pt1 추천이 보인다", "순서대로")]),
+        ]
+    }
+    got = {r.name: r for r in vitest_results(report, WORK, FE, None)}
+    assert got["hc1"].result == "HARNESS_ERR" and SKIPPED in got["hc1"].message
+    assert got["hc2"].result == "HARNESS_ERR"
+    assert got["pt1"].result == "PASS"
+
+
+def test_node_runs_with_the_grade_env_and_host_only_by_isolation(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """#174: 호스트 Node 탈출구가 둘(NODE_VERIFY_IMAGE=host·VERIFY_ISOLATION=host)이었다 — VERIFY_ISOLATION 하나, 환경은 채점과 같게."""
+    import pytest
+
+    from task_spec.starter.grade import image_grade_node as judge
+    from task_spec.starter.verify import node as nv
+
+    monkeypatch.setenv("NODE_VERIFY_IMAGE", "host")
+    with pytest.raises(RuntimeError, match="VERIFY_ISOLATION=host"):
+        nv.node_image()
+    monkeypatch.delenv("NODE_VERIFY_IMAGE")
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        nv, "run_in_container", lambda *a, **k: (seen.update(env=a[7]), (0, 0.1))[1]
+    )
+    nv.run_node(["node", "-v"], tmp_path, tmp_path / "log", 10)
+    assert seen["env"] == judge.TEST_ENV

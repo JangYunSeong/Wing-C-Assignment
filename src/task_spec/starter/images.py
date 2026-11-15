@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
+from task_spec.starter.grade import image_grade
 from task_spec.starter.layers import (  # 런타임 층 정의 — 검증기(#127)와 같이 쓴다
     PY_VENV,
     Podman,
@@ -36,6 +37,7 @@ from task_spec.starter.layers import (  # 런타임 층 정의 — 검증기(#12
     labels,
     stack_for,
 )
+from task_spec.starter.mounts import grade_argv
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import (
     Template,
@@ -58,7 +60,7 @@ def _quiet(_: str) -> None:
 
 PUBLIC_ID = r"\bpt\d{1,2}\b"  # 공개 테스트 클래스의 @DisplayName 에 적힌 공개 테스트 id
 TIMEOUT_S = 1200
-TEST_COMMAND = ["./gradlew", "--offline", "--no-daemon", "--console=plain", "--continue", "test"]
+TEST_COMMAND = image_grade.gradle_command("test")  # 과제 생성 검증과 같은 정의 (#174)
 
 
 @dataclass(frozen=True)
@@ -227,6 +229,7 @@ def py_config(t: Template, item: TaskMaterial) -> dict[str, Any]:
         "python": f"{PY_VENV}/bin/python",
         "compile_paths": list(python_verify.COMPILE_PATHS),
         "grading_paths": python_verify.grading_paths(t),
+        "collect_paths": python_verify.collect_paths(t),
         "grading_ini": python_verify.GRADING_INI,
         "grading_rootdir": python_verify.GRADING_ROOTDIR,
         "layout": python_verify.layout_of(t),
@@ -454,15 +457,9 @@ def verify_task_images(
         res_dir.mkdir(parents=True)
         g0 = time.monotonic()
         proc = pm.run(
-            "--rm",
-            "--network",
-            "none",
-            "-v",
-            f"{sub}:/submission:ro,z",
-            "-v",
-            f"{res_dir}:/out:z",
-            x.grader,
-            "grade",
+            *grade_argv(x.grader, str(sub), str(res_dir))[
+                1:
+            ],  # 채점 마운트 정책 (starter/mounts.py) — 'run' 은 pm.run 이 붙인다
             timeout=TIMEOUT_S + 300,
         )
         result = (
@@ -527,7 +524,9 @@ def manifest_entry(x: TaskImages, pm: Podman, leaks: dict[str, list[str]]) -> di
         },
         "grader": {
             **info["grader"],
-            "grade": f"podman run --rm --network none -v <제출물>:/submission:ro -v <결과>:/out {x.grader} grade",
+            "grade": " ".join(
+                ["podman", *grade_argv(x.grader, "<제출물>", "<결과>")]
+            ),  # 전달 묶음과 같은 명령
             "timeout_s": TIMEOUT_S,
             "cases": x.config["cases"],
             "grader_sha256": x.grader_sha256,

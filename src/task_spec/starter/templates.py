@@ -11,11 +11,14 @@ LLM·네트워크 없음. 하는 일
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -75,12 +78,35 @@ class Template:
     def hidden(self) -> Path:
         return self.root / "hidden"
 
+    @property
+    def manifest_sha256(self) -> str:
+        """manifest.yaml 의 해시 — 같은 vN 에서 검사·수리 칸을 고칠 수 있으므로(templates/README) 빌드가 어느 판의 검사·수리로
+        만들어졌는지 남긴다 (#176 댓글). 템플릿 해시(project/)와 따로."""
+        return hashlib.sha256((self.root / "manifest.yaml").read_bytes()).hexdigest()
+
     def files(self, sub: str) -> list[str]:
         """sub(project · hidden/harness · hidden/selftest …) 아래 파일 — sub 기준 상대 경로, 정렬."""
         base = self.root / sub
         if not base.is_dir():
             return []
         return sorted(p.relative_to(base).as_posix() for p in base.rglob("*") if p.is_file())
+
+
+def restrict_reasons(template: Template, codes: Collection[str]) -> Template:
+    """실패 사유 목록을 codes 로 좁힌 템플릿 (codes 가 비면 그대로). 몇 번 불러도 같다.
+
+    재료가 숨은 요구의 사유(FeatureSeed.reasons)를 적으면 계약 입력·검사만 그 목록을 보고, 숨은 테스트 생성기 입력과 정적 검사는
+    템플릿 목록 전체를 봤다 — 2026-11-13 갱신 손실 알파(kakaobank_2026#003): 숨은 테스트가 '시간 초과·5xx 수' 확인에 재료에 없는
+    pool_acquire_timeout 을 붙여, 충돌을 500 으로 돌려준 구현이 '풀 대기 초과'로 채점됐다 (재시도 중복 알파도 같은 표시)."""
+    if not codes:
+        return template
+    allowed = set(codes)
+    kept = [r for r in template.manifest.failure_reasons if r.code in allowed]
+    if len(kept) == len(template.manifest.failure_reasons):
+        return template
+    return replace(
+        template, manifest=template.manifest.model_copy(update={"failure_reasons": kept})
+    )
 
 
 def current_version(template_id: str, root: Path = TEMPLATES_ROOT) -> int:
@@ -113,6 +139,13 @@ def select_template(sub: str, root: Path = TEMPLATES_ROOT) -> Template | None:
 def is_java(m: TemplateManifest) -> bool:
     """Java 전용 산출물·검사(JPA 저장 확인, 클래스 상속 검사 등)를 쓸 템플릿인가."""
     return m.stack is not None and m.stack.language.lower() == "java"
+
+
+def supports_settings(m: TemplateManifest) -> bool:
+    """계약 settings(구현이 읽는 설정 키 — 채점 테스트가 덮어 결과가 따르는지 본다)를 쓸 수 있는 템플릿. 지금은 스프링(Java)만 —
+    테스트가 @DynamicPropertySource 로 키를 덮는다 (#161). 계약 검사와 계약 생성 입력(plan_contract 의 템플릿 정보)이 이 판정 하나를 쓴다
+    (#185: 프롬프트에 박혀 있던 'Java 템플릿일 때만'을 코드 입력으로). 매니페스트가 선언하게 되면(#176) 여기만 바꾼다."""
+    return is_java(m)
 
 
 def is_python(m: TemplateManifest) -> bool:
@@ -164,6 +197,10 @@ def check_template(t: Template) -> list[str]:
         for path in t.files("project"):
             if glob_match(path, m.reserved):
                 problems.append(f"project/ 에 채점 자리 파일이 있음: {path}")
+    params = {hp.name for hp in m.harness_params}
+    for name in m.hidden_rules.observable_params:
+        if name not in params:
+            problems.append(f"hidden_rules.observable_params 의 {name} 가 harness_params 에 없음")
     # 이미지 층 규칙 (§6.1) — 템플릿·응시용 이미지에는 project/ 만, hidden/·manifest 는 채점용에서만
     if m.image.template_layer != ["project/"]:
         problems.append(f"image.template_layer 는 project/ 만이어야 함: {m.image.template_layer}")
@@ -188,13 +225,22 @@ def _example(pattern: str) -> str:
     return pattern.replace("**/", "").replace("**", "x").replace("*", "x").replace("?", "x")
 
 
+Blocked = Literal["locked", "reserved", "outside"]
+
+
+def blocked_reason(m: TemplateManifest, kind: SlotKind, path: str) -> Blocked | None:
+    """오버레이 kind 가 이 경로를 쓸 수 없는 까닭 — 잠긴 파일(locked) · 채점 자리(hidden 밖에서 reserved) · 쓸 수 있는 자리 밖
+    (fill_slots 밖). 쓸 수 있으면 None (#178: 정적 검사가 까닭마다 '왜 막혔고 어디에 둘지'를 알린다)."""
+    if path in m.locked or glob_match(path, m.locked):
+        return "locked"
+    if kind != "hidden" and glob_match(path, m.reserved):
+        return "reserved"
+    return None if glob_match(path, m.fill_slots.get(kind, [])) else "outside"
+
+
 def slot_allows(m: TemplateManifest, kind: SlotKind, path: str) -> bool:
     """오버레이 kind 가 이 경로를 쓸 수 있나 — fill_slots 안, locked 밖, hidden 이 아니면 reserved 밖."""
-    if path in m.locked or glob_match(path, m.locked):
-        return False
-    if kind != "hidden" and glob_match(path, m.reserved):
-        return False
-    return glob_match(path, m.fill_slots.get(kind, []))
+    return blocked_reason(m, kind, path) is None
 
 
 @dataclass(frozen=True)

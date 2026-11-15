@@ -14,7 +14,6 @@ import argparse
 import json
 import re
 import shutil
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from pydantic import Field
@@ -22,6 +21,7 @@ from pydantic import Field
 from eval.pilot.model import DATA, RUNS, load_material, parse_label
 from task_spec.schemas import GeneratedFile
 from task_spec.schemas.base import Schema
+from task_spec.starter.grade.image_grade import SKIPPED, group_of, junit_suites
 from task_spec.starter.images import PUBLIC_ID
 from task_spec.starter.layers import ensure_verify_layer
 from task_spec.starter.static_check import Overlay
@@ -90,38 +90,34 @@ def method_name(name: str) -> str:
 
 
 def methods(results: Path, public_ids: dict[str, str], hidden_ids: dict[str, str]) -> list[Method]:
-    """JUnit 보고서 → 메서드마다 결과. 공개 테스트 클래스 → pt id (@DisplayName), 숨은 테스트 클래스 → 케이스 id."""
+    """JUnit 보고서 → 메서드마다 결과. 공개 테스트 클래스 → pt id (@DisplayName), 숨은 테스트 클래스 → 케이스 id.
+    판독(통과·실패·건너뜀)과 자리는 채점과 같은 `image_grade.junit_suites`·`group_of` — 건너뛴 메서드는 통과가 아니다 (#173)."""
     out: list[Method] = []
-    for xml in sorted(results.glob("TEST-*.xml")):
-        for tc in ET.parse(xml).getroot().iter("testcase"):
-            cls = tc.get("classname", "")
-            simple = cls.rsplit(".", 1)[-1]
-            bad = tc.find("failure")
-            if bad is None:
-                bad = tc.find("error")
-            if ".publictests." in cls:
-                group, case = (
-                    ("persistence", simple)
-                    if simple == PERSISTENCE
-                    else ("public", public_ids.get(simple, simple))
-                )
-            elif ".grading.cases." in cls:
-                group, case = "hidden", hidden_ids.get(simple, simple)
-            else:
-                group, case = "other", simple
-            msg = (
-                ""
-                if bad is None
-                else " ".join((bad.get("message") or bad.text or "").split())[:300]
+    for cls, cases in junit_suites(results):
+        simple = cls.rsplit(".", 1)[-1]
+        group = group_of(cls)
+        if group == "public":
+            group, case = (
+                ("persistence", simple)
+                if simple == PERSISTENCE
+                else ("public", public_ids.get(simple, simple))
             )
+        elif group == "hidden":
+            case = hidden_ids.get(simple, simple)
+        else:
+            group, case = "other", simple
+        for c in cases:
+            why = " ".join(c["message"].split())
+            if c["outcome"] == "skipped":
+                why = f"{SKIPPED}: {why}" if why else SKIPPED
             out.append(
                 Method(
                     group=group,
                     case=case,
                     cls=simple,
-                    method=method_name(tc.get("name", "")),
-                    ok=bad is None,
-                    message=msg,
+                    method=method_name(c["name"]),
+                    ok=c["outcome"] == "pass",
+                    message=why[:300],
                 )
             )
     return out

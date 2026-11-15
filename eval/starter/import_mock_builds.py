@@ -153,7 +153,7 @@ async def import_one(
     elif build.status != "review":
         raise SystemExit(f"{build.build_id}: {build.status} — review 빌드에만 묶음을 붙인다")
     else:  # README 를 저장하기 전에 적재한 빌드 — 이미 있으면 같은 본문이어야 한다
-        await store.put_readme(StarterFile.of(build.build_id, "readme", README_PATH, readme))
+        await store.backfill_readme(StarterFile.of(build.build_id, "readme", README_PATH, readme))
 
     starter = summaries(t["verification"]).get("starter-only")
     if starter is None:

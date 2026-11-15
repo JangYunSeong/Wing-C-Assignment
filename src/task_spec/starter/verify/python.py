@@ -34,7 +34,6 @@ from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 from task_spec.starter.verify import tools
 from task_spec.starter.verify.workspace import (
-    CI_ENV,
     assemble,
     isolated,
     run_in_container,
@@ -85,6 +84,15 @@ def grading_paths(t: Template) -> list[str]:
     return [w for w in after if not w.startswith("-")]
 
 
+def collect_paths(t: Template) -> list[str]:
+    """채점 코드 컴파일 확인(`commands.test_compile`)의 대상 폴더 — 설정 파일 뒤의 인자들 (채점용 이미지 config 와 같이 쓴다, #174:
+    검증·채점이 채점 명령 대상에서 이름이 selftest 로 끝나는 폴더를 빼는 손 조립을 따로 했다)."""
+    cmds = t.manifest.commands
+    words = shlex.split(cmds.test_compile) if cmds is not None and cmds.test_compile else []
+    after = words[words.index(GRADING_INI) + 1 :] if GRADING_INI in words else []
+    return [w for w in after if not w.startswith("-")]
+
+
 def layout_of(t: Template) -> dict[str, str]:
     hl = t.manifest.hidden_layout
     public = t.manifest.public_helper
@@ -126,11 +134,13 @@ class PythonVerifier:
 
     def _run(self, cmd: Sequence[str], dest: Path, log: Path) -> int | None:
         if not isolated():
-            return run_logged(cmd, dest, log, self.timeout)[0]
+            return run_logged(cmd, dest, log, self.timeout, env=judge.TEST_ENV)[0]
         if self._image is None:  # 처음 한 번 — 템플릿 내용이 같으면 있는 층을 쓴다
             self._image = ensure_verify_layer(self.template, tools.tools_dir())
-        # 호스트 실행(run_logged)과 같은 CI 변수 — pytest 가 CI 에서 단언 diff 를 줄이지 않는다 (수리 근거 메시지가 같게)
-        return run_in_container(self._image, cmd, dest, log, self.timeout, env=dict(CI_ENV))[0]
+        # 채점과 같은 환경 — CI(pytest 가 단언 diff 를 줄이지 않음)·시간대·바이트코드 (#174)
+        return run_in_container(
+            self._image, cmd, dest, log, self.timeout, env=dict(judge.TEST_ENV)
+        )[0]
 
     def _grading_targets(self, dest: Path) -> list[str]:
         """채점 명령의 대상 폴더 중 이 조립에 있는 것 (설정 파일 뒤의 인자들)."""
@@ -141,7 +151,7 @@ class PythonVerifier:
         start = log.stat().st_size if log.exists() else 0
         code_paths = [p for p in COMPILE_PATHS if (dest / p).exists()]
         codes = [self._run([py, "-m", "compileall", "-q", *code_paths], dest, log)]
-        collect = [t for t in self._grading_targets(dest) if not t.endswith("selftest")]
+        collect = [w for w in collect_paths(self.template) if (dest / w).exists()]
         if collect:
             codes.append(
                 self._run(
@@ -300,4 +310,29 @@ class PythonVerifier:
                     self._target, r.label or r.kind, r.kind, (starter, r, *pub, hidden), hidden
                 )
             )
+        return VerifyReport(runs=runs)
+
+    async def verify_variants(
+        self,
+        starter: Overlay,
+        variants: Sequence[Overlay],
+        public: Overlay,
+        hidden: Overlay | None = None,
+    ) -> VerifyReport:
+        """공개 테스트 변별 관문 (#164) — 변형마다 시작 코드 + 변형 + 공개 테스트. hidden 을 주면 숨은 테스트도 (함정 관문 ⑪, #171). 마지막 verify 와 같은 회차 폴더에
+        라벨(var-…)로 따로 남는다."""
+        if self.keep_code:
+            code = self.work / f"r{self.rounds}-code"
+            for v in variants:
+                write_overlay(v, code / (v.label or v.kind))
+        runs = [
+            await asyncio.to_thread(
+                self._target,
+                v.label or v.kind,
+                v.kind,
+                (starter, v, public, *((hidden,) if hidden is not None else ())),
+                hidden,
+            )
+            for v in variants
+        ]
         return VerifyReport(runs=runs)

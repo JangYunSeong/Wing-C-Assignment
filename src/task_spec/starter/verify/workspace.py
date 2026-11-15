@@ -21,9 +21,10 @@ import signal
 import subprocess
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from task_spec.starter.mounts import volume
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template
 
@@ -56,9 +57,15 @@ def assemble(t: Template, work: Path, *overlays: Overlay) -> None:
         write_overlay(o, work)
 
 
-def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[int | None, float]:
+def run_logged(
+    cmd: Sequence[str],
+    cwd: Path,
+    log: Path,
+    timeout: int,
+    env: Mapping[str, str] | None = None,
+) -> tuple[int | None, float]:
     """명령 하나 — 출력은 log 에 덧붙인다. 시간 초과면 프로세스 묶음(vitest 일꾼 포함)을 끊고 None.
-    환경은 지금 프로세스 환경 + `CI_ENV`."""
+    환경은 지금 프로세스 환경 + env (주지 않으면 `CI_ENV`) — 테스트 실행은 스택의 채점 스크립트 TEST_ENV 를 준다 (#174)."""
     start = time.monotonic()
     with log.open("a", encoding="utf-8") as fh:
         fh.write(f"$ {shlex.join(cmd)}\n")
@@ -68,7 +75,7 @@ def run_logged(cmd: Sequence[str], cwd: Path, log: Path, timeout: int) -> tuple[
             cwd=cwd,
             stdout=fh,
             stderr=subprocess.STDOUT,
-            env=os.environ | CI_ENV,
+            env=os.environ | dict(env if env is not None else CI_ENV),
             start_new_session=True,
         )
         try:
@@ -104,16 +111,18 @@ def container_argv(
     mounts: Sequence[Path] = (),
     network: bool = False,
     env: dict[str, str] | None = None,
+    cwd_shared: bool = False,
 ) -> list[str]:
-    """`podman run` 명령줄 — cwd·mounts 를 같은 절대 경로로 붙이고 그 cwd 에서 cmd 를 돈다."""
+    """`podman run` 명령줄 — cwd·mounts 를 같은 절대 경로로 붙이고 그 cwd 에서 cmd 를 돈다.
+    마운트 정책(starter/mounts.py): cwd 는 이번 실행 전용 조립 폴더라 `:Z`, mounts 는 여러 실행이 함께 쓰는 캐시라 `:z`.
+    cwd_shared — cwd 자체가 함께 쓰는 캐시일 때 (Node 의존성 설치)."""
+    shared = {str(p.resolve()) for p in mounts} | ({str(cwd.resolve())} if cwd_shared else set())
     paths = sorted({str(p.resolve()) for p in (cwd, *mounts)})
     full = ["podman", "run", "--rm", "--name", name, "-w", str(cwd.resolve())]
-    # SELinux 가 켜진 서버에서 붙인 폴더를 컨테이너가 못 읽는다 (2026-11-11 이 서버: 라벨 unlabeled_t → npm ci 'Permission denied').
-    # `:z` 는 호스트 파일의 보안 라벨을 바꾸므로 쓰지 않고, 이 컨테이너만 라벨 분리를 끈다 (SELinux 가 없는 서버에서는 영향 없음).
-    full += ["--security-opt", "label=disable", *limits()]
+    full += limits()  # SELinux 격리는 켜 둔다 — 라벨은 마운트마다 (starter/mounts.py)
     full += [] if network else ["--network", "none"]
     full += [x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}")]
-    full += [x for p in paths for x in ("-v", f"{p}:{p}")]
+    full += [x for p in paths for x in ("-v", volume(p, p, "shared" if p in shared else "run"))]
     return [*full, image, *cmd]
 
 
@@ -126,11 +135,12 @@ def run_in_container(
     mounts: Sequence[Path] = (),
     network: bool = False,
     env: dict[str, str] | None = None,
+    cwd_shared: bool = False,
 ) -> tuple[int | None, float]:
     """명령 하나를 자식 컨테이너에서 (`run_logged` 와 같은 반환). 네트워크는 의존성 설치처럼 생성 코드가 없을 때만 켠다."""
     name = f"vf-{uuid.uuid4().hex[:12]}"
     code, seconds = run_logged(
-        container_argv(image, cmd, cwd, name, mounts, network, env), cwd, log, timeout
+        container_argv(image, cmd, cwd, name, mounts, network, env, cwd_shared), cwd, log, timeout
     )
     if code is None:  # 시간 초과 — 클라이언트만 끊겨 컨테이너가 남지 않게
         subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)

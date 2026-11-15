@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -110,3 +111,47 @@ def test_pytest_collection_syntax_error_is_located_relative_to_the_assembly() ->
             "detail": "",
         }
     ]
+
+
+SKIPS = """<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">
+<testcase classname="test_hc1_x" name="test_hc1_ok" file="../cases/test_hc1_x.py" line="3"/>
+<testcase classname="test_hc1_x" name="test_hc1_when_output" file="../cases/test_hc1_x.py" line="9">
+  <skipped type="pytest.skip" message="출력이 없으면 건너뜀">skip</skipped></testcase>
+<testcase classname="test_hc2_y" name="test_hc2" file="../cases/test_hc2_y.py" line="3">
+  <skipped type="pytest.xfail" message="xfail">xfail</skipped></testcase>
+</testsuite></testsuites>"""
+
+
+def test_skipped_and_xfail_are_not_a_pass(tmp_path: Path) -> None:
+    """#173: 건너뜀을 빼려던 분기가 늘 거짓이라 skip·xfail 이 통과였다 (verify·grade 공용 판정)."""
+    xml = tmp_path / "g.xml"
+    xml.write_text(SKIPS, "utf-8")
+    got = {r["name"]: r for r in g.junit_results(xml, "grading/harness", LAYOUT, r"\bhc\d{1,2}\b")}
+    assert got["hc1"]["result"] == "HARNESS_ERR" and g.SKIPPED in got["hc1"]["message"]
+    assert "출력이 없으면" in got["hc1"]["message"]
+    assert got["hc2"]["result"] == "HARNESS_ERR"
+
+
+def test_python_verify_uses_the_grade_env_and_compile_targets(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """#174: 검증은 시간대·바이트코드 설정이 없고 채점은 CI 가 없었다 — 채점 스크립트 TEST_ENV 하나. 수집 대상은 test_compile 에서."""
+    from task_spec.starter.templates import load_template
+    from task_spec.starter.verify import python as pv
+
+    t = load_template("data/python-duckdb", 1)
+    assert pv.collect_paths(t) == ["grading/cases", "public_tests"]
+    assert {"CI", "TZ", "PYTHONDONTWRITEBYTECODE"} <= set(g.TEST_ENV)
+    seen: dict[str, Any] = {}
+
+    def fake(
+        image: str, cmd: Any, dest: Path, log: Path, timeout: int, **kw: Any
+    ) -> tuple[int, float]:
+        seen["env"] = kw.get("env")
+        return 0, 0.1
+
+    monkeypatch.setattr(pv, "run_in_container", fake)
+    monkeypatch.setattr(pv, "ensure_verify_layer", lambda *a, **k: "img")
+    v = pv.PythonVerifier(t, tmp_path)
+    v._run(["python", "-V"], tmp_path, tmp_path / "log")
+    assert seen["env"] == g.TEST_ENV

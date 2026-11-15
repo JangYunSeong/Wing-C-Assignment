@@ -83,6 +83,8 @@ image:
   grader_only: [hidden/, manifest.yaml, README.tpl.md]
   grader_only_dependencies: []
 hidden_rules:
+  # 숨은 케이스 통과 조건(expect)에 이름을 써도 되는 조절값 — 채점이 밖에서 볼 수 있는 한도만 ('작업이 job_timeout_s 안에 끝난다') (#180)
+  observable_params: [job_timeout_s]
   # 숨은·공개 테스트는 하네스·계약 도우미·pytest 만 — 지원자 구현(pipeline/…)을 import 하지 않는다 (공개 계약인 명령·파일로만 판정)
   forbidden_imports:
     - '^\s*(?:from|import)\s+pipeline\b'

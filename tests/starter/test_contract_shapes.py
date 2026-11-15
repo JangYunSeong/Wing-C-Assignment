@@ -11,7 +11,7 @@ from task_spec.nodes.starter.generate import plan_text
 from task_spec.nodes.starter.plan_contract import seed_rules_text
 from task_spec.schemas import HiddenPlan, TaskContract
 from task_spec.starter.render import contract_markdown
-from tests.starter.test_contract import _check, _contract, _manifest, _plan
+from tests.starter.test_contract import _check, _contract, _manifest, _plan, _spec
 
 
 def _cli_contract(**over: Any) -> dict[str, Any]:
@@ -237,6 +237,12 @@ def test_lenient_rules_from_the_v7_paper_run() -> None:
     m = _no_rows_manifest()
     c = _cli_contract(fixtures=FIXTURES)
     c["covers"] = {"r1": ["e1", "m1", "m2", "f1"], "r2": ["e2", "m2"], "p1": ["e1"]}
+    # covers 키의 p* 는 재요청하지 않고 맞추는 단계(fit_covers)가 뺀다 (#180)
+    from task_spec.starter.contract import fit_covers
+
+    fitted, _ = fit_covers(TaskContract.model_validate(c), _spec())
+    assert "p1" not in fitted.covers
+    c["covers"] = fitted.covers
     res = _check(c, plan, manifest=m)
     assert not [p for p in res.problems if "covers" in p], res.problems
     c["covers"]["r2"] = ["e2", "m2", "f9"]

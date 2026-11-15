@@ -13,6 +13,7 @@ from collections.abc import Sequence
 
 from task_spec.schemas import ContractField, GeneratedFile, HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.template import TableNaming, TemplateManifest
+from task_spec.spec.request_note import request_note
 from task_spec.starter.code_map import code_map, code_map_markdown, code_map_problems, starter_view
 from task_spec.starter.seed_rows import seed_markdown
 from task_spec.starter.tables import contract_tables, table_label
@@ -31,10 +32,6 @@ SLOTS = (
 )
 
 _SLOT = re.compile(r"\{\{(\w+)\}\}")
-# 기능형 서술 채우기(fill_from_seed_v4)가 상황 끝에 붙이는 안내 — README 는 "진행 방식" 절에 따로 쓴다
-_GUIDE = re.compile(
-    r"\s*아래 자료 중 최대 \d+개를 요청해 볼 수 있(?:고, 질문은 최대 \d+개까지 할 수 있)?습니다\.\s*\Z"
-)
 
 
 class RenderError(ValueError):
@@ -42,8 +39,14 @@ class RenderError(ValueError):
 
 
 def public_scenario(task: TaskItem) -> str:
-    """상황 글 — 기능형 서술 채우기가 끝에 붙인 자료·질문 안내는 뺀다 (진행 방식은 따로 쓴다)."""
-    return _GUIDE.sub("", task.scenario or "").strip()
+    """상황 글 — 기능형 서술 채우기가 끝에 붙인 자료·질문 안내(request_note — 만드는 곳 하나)는 그대로 뗀다 (README 는 '진행 방식' 절에
+    따로 쓴다). #184: 정규식으로 다시 떼던 것을 붙인 문장 그대로 — 문장을 바꾸면 붙이는 쪽·떼는 쪽이 함께 바뀐다."""
+    text = (task.scenario or "").strip()
+    if task.max_requests is not None:
+        text = text.removesuffix(
+            request_note(task.max_requests, task.max_clarifications).strip()
+        ).strip()
+    return text
 
 
 def _field(f: ContractField) -> str:
@@ -165,6 +168,8 @@ def contract_markdown(
         out += ["### 입력 환경", ""]
         for fx in contract.fixtures:
             out.append(f"- `{fx.fixture_id}` ({fx.kind}) {fx.summary}")
+            if fx.path:
+                out.append(f"  - 위치: `{fx.path}`")
             out += [f"  {line}" for line in fx.content.splitlines() if line.strip()]
         out.append("")
     if contract.seed:

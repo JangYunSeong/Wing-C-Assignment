@@ -36,19 +36,24 @@ import yaml
 
 from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import Endpoint, FileKind
-from task_spec.schemas.template import TemplateManifest
+from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.spec.feature import find_terms
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
+from task_spec.starter.field_types import non_null
+from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
     api_functions,
+    code_written_paths,
     key_fields,
     render_contract_case,
     render_persistence_check,
+    row_use_consts,
     setting_const,
 )
+from task_spec.starter.py_helpers import command_name, py_ident
 from task_spec.starter.render import README, render_params
-from task_spec.starter.seed_sql import schema_problems
+from task_spec.starter.seed_sql import schema_problems, time_kind
 from task_spec.starter.skeleton import (
     APP,
     ENDPOINTS,
@@ -60,6 +65,8 @@ from task_spec.starter.skeleton import (
     page_names,
 )
 from task_spec.starter.skeleton import routes as skeleton_routes
+from task_spec.starter.skip_apis import NOTE as SKIP_NOTE
+from task_spec.starter.skip_apis import skip_hits
 from task_spec.starter.tables import (
     contract_tables,
     declared_tables,
@@ -67,10 +74,21 @@ from task_spec.starter.tables import (
     same_table,
     spring_snake,
 )
-from task_spec.starter.templates import Template, glob_match, is_java, is_python, slot_allows
-from task_spec.starter.ts_helpers import app_type_names, fault_fn, render_app_types
+from task_spec.starter.templates import (
+    Template,
+    blocked_reason,
+    glob_match,
+    is_java,
+    is_python,
+)
+from task_spec.starter.ts_helpers import (
+    TESTING_LIBRARY,
+    app_type_names,
+    fault_fn,
+    render_app_types,
+)
 
-KIND_SLOT = {
+KIND_SLOT: dict[str, SlotKind] = {
     "starter": "starter",
     "public_test": "public_test",
     "hidden": "hidden",
@@ -83,6 +101,7 @@ KIND_TARGET = {
     "hidden": "gen_hidden",
     "ref_naive": "gen_naive",
     "ref_accepted": "gen_accepted",
+    "ref_variant": "gen_variant",
 }
 
 _SECRETS = [
@@ -202,31 +221,40 @@ def _paths(o: Overlay, t: Template) -> list[StaticProblem]:
         if m.hidden_layout
         else []
     )
+    slot = KIND_SLOT[o.kind]
+    slots = m.fill_slots.get(slot, [])
     for f in o.files:
-        if slot_allows(m, KIND_SLOT[o.kind], f.path):  # type: ignore[arg-type]
+        why = blocked_reason(m, slot, f.path)
+        if why is None:
             continue
         if locked_harness and glob_match(f.path, locked_harness):
             msg = f"{o.name} 파일 {f.path} 는 잠긴 채점 하네스 자리 — 하네스는 고치지 않고 케이스 자리({m.hidden_layout.cases if m.hidden_layout else ''})에만 쓴다"
-        else:
-            # 쓸 수 있는 경로를 함께 — 2026-11-10 retrydupx #030: 시작 코드가 테스트 데이터를 src/test/resources/seed-test.sql 에
-            # 두 번 다 써 (문구에 갈 곳이 없었다) 시작 코드 생성이 실패하고 루프가 회차 0 에서 끝났다
-            slots = m.fill_slots.get(KIND_SLOT[o.kind], [])  # type: ignore[index]
+        elif why == "locked":
             msg = (
-                f"{o.name} 파일 {f.path} 는 쓸 수 없는 경로 (fill_slots 밖·잠긴 파일·채점 자리) — 쓸 수 있는 경로: "
+                f"{o.name} 파일 {f.path} 는 잠긴 파일(템플릿 그대로 두는 파일) — 고치거나 다시 쓰지 않는다. 바꿀 것은 쓸 수 있는 "
+                "자리의 파일에서: " + ", ".join(slots)
+            )
+        elif why == "reserved":
+            msg = (
+                f"{o.name} 파일 {f.path} 는 채점이 쓰는 자리 — 이 산출물은 두지 않는다. 쓸 수 있는 경로: "
                 + ", ".join(slots)
             )
-            if re.search(r"(^|/)(test|tests|__tests__)/resources?/", f.path):
-                msg += (
-                    ". 테스트용 데이터 파일을 따로 두지 않는다 — 시드의 테스트 몫 행(작은 id)을 쓰거나 테스트 코드 안에서 "
-                    "저장소·API 로 만든다 (테스트 리소스 폴더는 채점 설정 자리라 막혀 있다)"
-                )
+        else:
+            msg = (
+                f"{o.name} 파일 {f.path} 는 이 산출물이 쓸 수 있는 자리(fill_slots) 밖 — 쓸 수 있는 경로: "
+                + ", ".join(slots)
+            )
+        if why != "locked":
+            # 막힌 자리에 데이터를 두는 실수 — 2026-11-10 retrydupx #030: 시작 코드가 테스트 데이터를 src/test/resources/seed-test.sql 에
+            # 두 번 다 써 시작 코드 생성이 실패했다 (그 경로는 fill_slots 밖). 자리마다가 아니라 막힌 경로 모두에 같은 안내 (#178)
+            msg += ". 테스트용 데이터·설정 파일을 따로 두지 않는다 — 시드의 테스트 몫 행(작은 id)을 쓰거나 테스트 코드 안에서 저장소·API 로 만든다"
         out.append(StaticProblem(o.target, msg))
     lim = m.limits
     if lim is not None:
-        # 코드가 계약에서 결정적으로 쓰는 시드 파일(seed_sql)은 크기 상한에서 뺀다 — 상한은 LLM 이 쓴 파일을 막는 장치이고, 시드 행 수는
+        # 코드가 계약에서 결정적으로 쓰는 파일은 크기 상한에서 뺀다 — 상한은 LLM 이 쓴 파일을 막는 장치이고, 시드 행 수는
         # 계약이 막는다 (SeedRule.rows ≤ 5000). 2026-11-11 N+1 백엔드 알파: 숨은 케이스 댓글 1050행(코드가 2100행으로 나눔) 시드로
         # data.sql 이 100000B 를 넘어 시작 코드 생성 실패 — 생성기가 고칠 수 없는 파일이다.
-        coded = {m.seed_sql.path} if m.seed_sql is not None else set()
+        coded = code_written_paths(m)  # 코드가 쓰는 파일 전부 (시드·조절값·도우미·저장 확인 — #178)
         sized = [f for f in o.files if f.path not in coded]
         if len(o.files) > lim.max_files:
             out.append(
@@ -363,41 +391,14 @@ def _harness_overrides(
     return out
 
 
-# 코드로 연결 풀·데이터소스·요청 스레드를 만들거나 바꾸는 것 — 하네스가 넣는 운영 값(@DynamicPropertySource)을 우회한다.
-# 2026-11-09 v19-loop1·fixmt-be: 허용 설계 '풀 크기 산정'(d3)을 설정으로 못 하자 구현이 DataSource 빈을 새로 만들거나
-# BeanPostProcessor 로 만들어진 풀을 80 으로 바꿔 통과했다 (채점 조건 우회 — 지원자도 같은 길로 함정을 피할 수 있다).
-_CODE_OVERRIDES = (
-    ("DataSourceBuilder", re.compile(r"\bDataSourceBuilder\b")),
-    ("new HikariDataSource/HikariConfig", re.compile(r"\bnew\s+Hikari(?:DataSource|Config)\s*\(")),
-    (
-        "풀 크기·대기 시간 변경",
-        re.compile(r"\.set(?:MaximumPoolSize|MinimumIdle|ConnectionTimeout)\s*\("),
-    ),
-    ("DataSource 빈", re.compile(r"@Bean\b[^{;]*?\bDataSource\s+\w+\s*\(", re.S)),
-    ("요청 스레드 수 변경", re.compile(r"\.set(?:MaxThreads|MinSpareThreads)\s*\(")),
-)
-
-
-# 어느 DB 에 붙는지 정하는 키 — 풀 크기(hikari.*)는 운영 값 검사(_operating_values·_harness_overrides)가 본다
-_DATASOURCE_KEYS = frozenset(
-    f"spring.datasource.{k}"
-    for k in (
-        "url",
-        "jdbc-url",
-        "name",
-        "generate-unique-name",
-        "driver-class-name",
-        "username",
-        "password",
-    )
-)
-
-
-def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
-    """구현·시작 코드가 템플릿이 정하지 않은 데이터소스 설정(spring.datasource.*)을 씀 — 템플릿은 컨텍스트마다 새 메모리 DB.
-    2026-11-10 v19-be: 시작 코드가 url 을 jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1 로 고정해 하네스 자체 시험(다른 테스트 컨텍스트)이
-    같은 DB 에 schema.sql·data.sql 을 다시 돌려 Table already exists·PK 위반으로 기동 실패 (2026-11-09 d3 도 같은 설정)."""
-    if not is_java(t.manifest):
+def _config_pitfalls(o: Overlay, t: Template) -> list[StaticProblem]:
+    """산출물 설정이 템플릿이 정하지 않은 값을 매니페스트 `config_pitfalls` 의 키에 씀 — 키와 이유는 템플릿이 선언한다 (#176).
+    Java 판: 2026-11-10 v19-be 시작 코드가 spring.datasource.url 을 jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1 로 고정해 하네스 자체 시험
+    (다른 테스트 컨텍스트)이 같은 DB 에 schema.sql·data.sql 을 다시 돌려 Table already exists·PK 위반으로 기동 실패 (2026-11-09 d3 도 같은 설정)."""
+    slot = KIND_SLOT[o.kind]
+    rules = [r for r in t.manifest.config_pitfalls if slot in r.overlays]
+    configs = [f for f in o.files if f.path.endswith(_CONFIG_SUFFIX)]
+    if not rules or not configs:
         return []
     base = _config_map(
         (rel, (t.project / rel).read_text("utf-8", errors="ignore"))
@@ -405,34 +406,28 @@ def _datasource_config(o: Overlay, t: Template) -> list[StaticProblem]:
         if rel.endswith(_CONFIG_SUFFIX)
     )
     out: list[StaticProblem] = []
-    for f in o.files:
-        if not f.path.endswith(_CONFIG_SUFFIX):
-            continue
-        keys = sorted(
-            k for k in _config_map([(f.path, f.content)]) if k in _DATASOURCE_KEYS and k not in base
-        )
-        if keys:
-            out.append(
-                StaticProblem(
-                    o.target,
-                    f"{o.name} 설정 {f.path} 에 템플릿에 없는 데이터소스 설정 {', '.join(keys)} — 템플릿은 테스트 컨텍스트마다 새 메모리 DB 를 쓴다. "
-                    "고정 URL(예: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1)은 컨텍스트끼리 DB 를 나눠 써 schema.sql·data.sql 이 두 번 돌아 "
-                    "기동이 실패한다 — spring.datasource 설정은 쓰지 않는다",
+    for f in configs:
+        got = _config_map([(f.path, f.content)])
+        for r in rules:
+            keys = sorted(k for k in got if k in r.keys and k not in base)
+            if keys:
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"{o.name} 설정 {f.path} 에 템플릿에 없는 설정 {', '.join(keys)} — {r.fix}",
+                    )
                 )
-            )
     return out
 
 
-_PATCH_CALL = re.compile(r"HttpMethod\.PATCH|\.patchForObject\s*\(")
 _SQL_STRING = re.compile(r"'(?:''|[^'])*'")
 _QUOTED_NAME = re.compile(r'"([A-Za-z_]\w*)"')
 
 
 def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[StaticProblem]:
-    """이 템플릿에서 실행 때만 깨지는 두 가지 — 2026-11-10 stab3·v19-be 시작 코드의 기존 기능 테스트가 그대로 실패해 재생성 예산을 다 썼다
-    (재현: 작은 프로젝트에서 둘 다 확인).
-    - TestRestTemplate 로 PATCH: 템플릿에 Apache HttpClient 가 없어 JDK HttpURLConnection — 'Invalid HTTP method: PATCH'
-    - schema.sql 의 큰따옴표 이름("rank"): H2 에서 대소문자를 구분하는 이름이 되어 따옴표 없는 엔티티 매핑으로는 'Column … not found'"""
+    """schema.sql 의 큰따옴표 이름("rank"): H2 에서 대소문자를 구분하는 이름이 되어 따옴표 없는 엔티티 매핑으로는 'Column … not found'
+    — 2026-11-10 stab3·v19-be 시작 코드의 기존 기능 테스트가 그대로 실패해 재생성 예산을 다 썼다. 파일 간 조건(엔티티 표기·
+    globally_quoted_identifiers·시드 파일)이라 매니페스트 code_pitfalls(파일 하나)로 옮기지 않았다. PATCH 함정은 매니페스트로 옮김 (#176)."""
     if not is_java(t.manifest):
         return []
     out: list[StaticProblem] = []
@@ -450,17 +445,7 @@ def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[
     if "globally_quoted_identifiers" in config:
         escaped |= {"*"}
     for f in o.files:
-        if f.path.endswith(".java") and "/test/" in f.path:
-            body = _strip_comments(f.content)
-            if "TestRestTemplate" in body and _PATCH_CALL.search(body):
-                out.append(
-                    StaticProblem(
-                        o.target,
-                        f"{o.name} {f.path} 가 TestRestTemplate 로 PATCH 를 보냄 — 이 템플릿의 TestRestTemplate 은 JDK HttpURLConnection 이라 "
-                        "'Invalid HTTP method: PATCH' 로 실패한다. 테스트는 MockMvc 로 쓴다 (@AutoConfigureMockMvc 는 클래스에 한 번)",
-                    )
-                )
-        elif f.path.endswith(".sql") and f.path != seed_path:
+        if f.path.endswith(".sql") and f.path != seed_path:
             names = sorted(
                 n
                 for n in set(_QUOTED_NAME.findall(_SQL_STRING.sub("''", f.content)))
@@ -474,27 +459,6 @@ def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[
                         '구분해 \'Column … not found\' 가 난다. 엔티티도 같은 표기로 매핑하거나(@Column(name = "\\"rank\\"")) 스키마에서 따옴표를 뺀다',
                     )
                 )
-    return out
-
-
-def _code_overrides(o: Overlay, t: Template) -> list[StaticProblem]:
-    """구현이 코드로 운영 값(연결 풀·데이터소스·요청 스레드)을 만들거나 바꿈 — 설정 키를 바꾸는 것(_harness_overrides)과 같은 우회."""
-    if not is_java(t.manifest):
-        return []
-    out: list[StaticProblem] = []
-    for f in o.files:
-        if not f.path.endswith(".java"):
-            continue
-        body = _strip_comments(f.content)
-        hits = [name for name, rx in _CODE_OVERRIDES if rx.search(body)]
-        if hits:
-            out.append(
-                StaticProblem(
-                    o.target,
-                    f"{o.name} {f.path} 가 코드로 운영 값을 만들거나 바꿈 ({', '.join(hits)}) — {HARNESS_OVERRIDE}(연결 풀·대기 시간·"
-                    "요청 스레드)를 코드로 우회하는 것이다. 운영 값은 채점 환경이 정한다 — 숨은 요구는 연결을 쓰는 방식으로 푼다",
-                )
-            )
     return out
 
 
@@ -665,8 +629,29 @@ def _starter_options(o: Overlay, contract: TaskContract | None) -> list[StaticPr
 
 _JSON_INLINE = re.compile(
     r":\s*\{[^;=]*\}\s*(?:\[\])?\s*=\s*await\s+[\w.$]+\.json\(\)"  # const data: { items: X[] } = await res.json()
-    r"|(?<!request)(?<!req)\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … } — 요청 본문(request.json())은 빼고
+    r"|\.json\(\)\s*\)?\s*as\s+\{"  # (await res.json()) as { … }
 )
+_MSW_IMPORT = re.compile(r"""from\s+['"]msw(?:/[\w-]+)?['"]""")
+
+
+@functools.lru_cache(maxsize=8)
+def mock_dirs(project: Path) -> tuple[str, ...]:
+    """템플릿 프로젝트에서 개발용 가짜 서버(msw)를 두는 폴더 — msw 를 import 하는 파일들의 폴더 (React 템플릿 src/mocks/)."""
+    dirs = {
+        p.parent.relative_to(project).as_posix() + "/"
+        for p in project.rglob("*.ts*")
+        if "node_modules" not in p.parts
+        and _MSW_IMPORT.search(p.read_text("utf-8", errors="ignore"))
+    }
+    return tuple(sorted(dirs))
+
+
+def is_mock_server(f: GeneratedFile, t: Template) -> bool:
+    """개발용 가짜 서버 코드 — msw 를 import 하거나 템플릿의 가짜 서버 폴더 안 (응답을 만드는 쪽이라 요청 본문 request.json() 을 읽는다).
+    #177: 경로 글자(src/mocks/)와 변수 이름(request·req) 두 겹으로 면제해, 핸들러가 그 폴더 밖이고 변수가 r·input 이면 빗나갔다."""
+    return bool(_MSW_IMPORT.search(f.content)) or f.path.startswith(mock_dirs(t.project))
+
+
 _TYPES_IMPORT = re.compile(r"""from\s+['"](?:\.{1,2}/)+(?:[\w-]+/)*contract-types['"]""")
 
 
@@ -812,9 +797,7 @@ def _contract_types_usage(
             f.path == types.path
             or not f.path.endswith((".ts", ".tsx"))
             or ".test." in f.path
-            or f.path.startswith(
-                "src/mocks/"
-            )  # 개발용 가짜 서버 — 응답을 만드는 쪽 (요청 본문 request.json() 을 읽는다)
+            or is_mock_server(f, t)
         ):
             continue
         redefined = sorted(set(decl.findall(f.content)))
@@ -1121,9 +1104,9 @@ def _hidden_tables(
     return out
 
 
-_INTEGER_TYPE = re.compile(r"^\s*(?:long|int|integer|bigint|short|number)\b", re.I)
-# 그대로 두는 단언: null·형식 확인, 기대값을 Integer 로 맞춘 비교 (2026-11-07 배송 감사 숨은 테스트 `isEqualTo(((Number) id).intValue())` — 작은 id 라 동작)
-_NULL_CHECK = re.compile(r"\.is(?:Not)?Null\(\)|\.isInstanceOf\(|\.intValue\(\)")
+# 그대로 두는 단언: null·형식 확인. 기대값만 Integer 로 맞춘 비교(`.intValue()`)는 면제하지 않는다 — 큰 값(Long)에서 같은 오류이고 같은 문장의
+# 다른 필드 단언까지 면제됐다 (#178, 2026-11-07 배송 감사 '작은 id 라 동작'). 실제값을 캐스트한 꼴은 매니페스트 패턴에 맞지 않아 여기 오지 않는다
+_NULL_CHECK = re.compile(r"\.is(?:Not)?Null\(\)|\.isInstanceOf\(")
 
 
 def _raw_number_asserts(
@@ -1131,22 +1114,27 @@ def _raw_number_asserts(
 ) -> list[str]:
     """계약에서 정수 형식인 필드를 JSON Map 값 그대로 단언 — 크기에 따라 Integer·Long 이라 long 과 비교하면 모든 구현이 실패.
     null 확인(isNull·isNotNull)·형식 확인(isInstanceOf)·기대값을 Integer 로 맞춘 비교(intValue)는 그대로 둔다."""
-    numeric = {f.name for _, f in contract_fields(contract) if _INTEGER_TYPE.match(f.type)}
+    # 숫자 칸(정수·number) — JSON 의 정수 꼴 값은 선언 형식과 무관하게 Integer·Long 으로 읽힌다. 목록(long[])은 Map 값이 List 라 아니다.
+    # 형식 판정은 계약 형식 해석 한 곳 (#172 — smallint·int64 가 빠지고 long[] 이 들어갔다)
+    numeric = {
+        f.name
+        for _, f in contract_fields(contract)
+        if non_null(parse_field(f.type)).kind in ("integer", "number")
+    }
     if not numeric:
         return []
     out: list[str] = []
     for f in files:
-        hits: list[str] = []
+        hits: list[tuple[str, str]] = []  # (단언 앞부분, 필드 — 매니페스트 패턴의 그룹 1)
         for pat in patterns:
             for m in re.finditer(pat, f.content):
                 end = f.content.find(";", m.end())
                 tail = f.content[m.end() : end if end >= 0 else None]
                 if m.group(1) in numeric and not _NULL_CHECK.search(tail):
-                    hits.append(m.group(0))
+                    hits.append((m.group(0), m.group(1)))
         if hits:
-            shown = "; ".join(dict.fromkeys(hits))
-            field = re.search(r'"(\w+)"', hits[0])
-            name = field.group(1) if field else "id"
+            shown = "; ".join(dict.fromkeys(h for h, _ in hits))
+            name = hits[0][1]
             out.append(
                 f"숨은 테스트 {f.path} 가 숫자 필드를 JSON Map 값 그대로 단언함: {shown} — JSON 숫자는 크기에 따라 "
                 f'Integer·Long 으로 읽혀 long 과 비교하면 모든 구현이 실패한다. ((Number) x.get("{name}")).longValue() 로 바꿔 비교한다'
@@ -1189,39 +1177,43 @@ def _reason_rules(
     케이스가 쓰지 않음. 2026-11-08 숨은 테스트 검토: 사유를 Burst.wrong 에 붙임 14/14, 저장 실패 사유인데 주입 없음 4/5."""
     intended = {c.case_id: c.intended_reason for c in plan.cases}
     requires = {r.code: r.requires for r in m.failure_reasons if r.requires}
+    reasons = {r.code: r for r in m.failure_reasons}
     # 버스트 행이 없는 케이스 — 운영 피크(peak)를 쓰면 요청 하나의 조건이 아니라 동시 부하를 잰다
     single = {c.case_id for c in plan.cases if not any(d.burst for d in c.data)}
-    bad_on = [re.compile(p) for p in m.hidden_rules.reason_not_on]
+    # 사유를 붙여도 되는 단언 — 사유마다 선언(assert_on·assert_not_on) + 모든 사유 공통(hidden_rules.reason_not_on). 한 검사로 (#176 B)
+    common_not = [re.compile(p) for p in m.hidden_rules.reason_not_on]
     out: list[str] = []
     for f in cases:
-        if bad_on:
-            hits = [
-                " ".join(stmt.split())[:120]
-                for stmt in f.content.split(";")
-                if any(rx.search(stmt) for rx in reason_rx)
-                and any(rx.search(stmt) for rx in bad_on)
-            ]
-            if hits and m.hidden_rules.reason_not_on_note:
-                out.append(
-                    f"숨은 테스트 {f.path} 가 사유를 붙이면 안 되는 단언에 사유를 붙임: {hits[0]} — "
-                    + m.hidden_rules.reason_not_on_note
-                )
-            elif hits:
-                out.append(
-                    f"숨은 테스트 {f.path} 가 모든 실패를 세는 단언에 사유를 붙임: {hits[0]} — 어떤 실패든 그 사유로 보인다. "
-                    "운영 조건 사유는 Burst.failures(...) 에, 그 밖의 불일치는 Burst.mismatches(...) 로 따로 (사유 없이 또는 기록 사유)"
-                )
+        for stmt in f.content.split(";"):
+            codes = {mt.group(1) for rx in reason_rx for mt in rx.finditer(stmt) if mt.groups()}
+            for code in sorted(codes):
+                r = reasons.get(code)
+                not_on = common_not + [re.compile(p) for p in (r.assert_not_on if r else [])]
+                on = [re.compile(p) for p in (r.assert_on if r else [])]
+                shown = " ".join(stmt.split())[:120]
+                if any(rx.search(stmt) for rx in not_on):
+                    out.append(
+                        f"숨은 테스트 {f.path} 가 사유 {code} 를 붙이면 안 되는 단언에 붙임: {shown} — "
+                        + (
+                            m.hidden_rules.reason_not_on_note
+                            or "그 단언은 이 사유가 아닌 실패도 센다"
+                        )
+                        + (f". {code}: {r.how}" if r and r.how else "")
+                    )
+                elif on and not any(rx.search(stmt) for rx in on):
+                    out.append(
+                        f"숨은 테스트 {f.path} 가 사유 {code} 를 그 사유를 보는 단언이 아닌 곳에 붙임: {shown}"
+                        + (f" — {r.how}" if r and r.how else "")
+                    )
         for cid in sorted(set(case_rx.findall(f.content))):
             code = intended.get(cid)
             need = requires.get(code or "")
             if need and not any(re.search(p, f.content) for p in need):
+                # 일으키는 법은 사유의 how 한 곳 (#176: 하네스 클래스 이름으로 안내 둘 중 하나를 고르다 lost_update 에 엉뚱한 안내)
+                how = reasons[code].how if code in reasons else None
                 out.append(
-                    f"숨은 케이스 {cid} (의도한 사유 {code}) 가 그 사유를 일으키는 것을 쓰지 않음 — 필요한 것: {' 또는 '.join(need)}. "
-                    + (
-                        "저장 단계 실패는 규칙을 통과하는 요청에 GraderJdbcHarness 주입으로 일으킨다 (거절되는 전이는 롤백될 변경이 없다)"
-                        if "GraderJdbcHarness" in "".join(need)
-                        else "운영 피크는 peak(...) 로 재현한다"
-                    )
+                    f"숨은 케이스 {cid} (의도한 사유 {code}) 가 그 사유를 일으키는 것을 쓰지 않음 — 필요한 것: {' 또는 '.join(need)}"
+                    + (f". {how}" if how else "")
                 )
             if cid in single and _PEAK_CALL.search(f.content):
                 # 2026-11-10 nplus1-g: '목록 한 번 조회가 운영 지연에서 1초 안' 케이스를 peak(…) 로 동시 버스트해,
@@ -1238,13 +1230,11 @@ def _reason_rules(
 _MUTATING_VAR = re.compile(r"\b(\w+)\s*=\s*(?:patch|post|put|delete)[A-Z]\w*\s*\(")
 _MUTATING_INLINE = re.compile(r"assertThat\(\s*(?:patch|post|put|delete)[A-Z]\w*\s*\(")
 _RESET = re.compile(r"GraderJdbcHarness\.reset\(\)")
-# 응답이 그 값(들)이어야 한다는 단언 — '성공 아님'(isNotEqualTo·isGreaterThanOrEqualTo…)은 그대로 둔다
-_STATUS_UPPER = re.compile(r"\.(?:isLessThan|isLessThanOrEqualTo|isBetween|isStrictlyBetween)\(")
+# 응답 코드 단언의 매처 — 계약이 선언한 5xx 와 같다(isEqualTo·isIn·isOneOf)만 둔다. 그 밖의 매처는 모두 단정 (#178: 위로 막힘·'성공이
+# 아님' 매처를 목록 둘로 따로 세던 것을 '허용 매처 밖이면 단정' 하나로)
 _STATUS_IS = re.compile(r"\.(?:isEqualTo|isIn|isOneOf)\(([^()]*)\)")
-# 값과 같다(_STATUS_IS)·위로 막힘(_STATUS_UPPER) 밖의 응답 코드 단언 — '성공이 아님'(isNotEqualTo·아래로 막힘·isNotIn)
-_STATUS_OTHER = re.compile(
-    r"\.(?:isNotEqualTo|isNotIn|isGreaterThan|isGreaterThanOrEqualTo|isNotBetween)\("
-)
+_MATCHER = re.compile(r"\.(is[A-Z]\w*|has[A-Z]\w*|matches|satisfies|isTrue|isFalse)\(")
+_DECLARED_MATCHERS = frozenset({"isEqualTo", "isIn", "isOneOf"})
 
 
 def _injected_status_asserts(
@@ -1278,7 +1268,8 @@ def _injected_status_asserts(
             if "statusCode()" not in stmt or not (
                 _MUTATING_INLINE.search(stmt)
                 or any(
-                    re.search(rf"assertThat\(\s*{re.escape(v)}\.statusCode\(\)\s*\)", stmt)
+                    # 응답 코드로 시작하는 단언 전부 — `assertThat(r.statusCode() < 500).isTrue()` 도 (#178: 예전 사례 꼴이 빠져 있었다)
+                    re.search(rf"assertThat\(\s*{re.escape(v)}\.statusCode\(\)", stmt)
                     for v in injected
                 )
             ):
@@ -1288,10 +1279,10 @@ def _injected_status_asserts(
                 {int(v) for v in re.findall(r"\b\d{3}\b", mt.group(1))}
                 for mt in _STATUS_IS.finditer(stmt)
             ]
+            matchers = set(_MATCHER.findall(stmt))
             declared_only = (
                 bool(codes)
-                and not _STATUS_UPPER.search(stmt)
-                and not _STATUS_OTHER.search(stmt)
+                and matchers <= _DECLARED_MATCHERS
                 and all(c and c <= declared for c in codes)
             )
             if not declared_only:
@@ -1305,22 +1296,66 @@ def _injected_status_asserts(
     return out
 
 
+def _call_args(text: str, start: int) -> list[str]:
+    """`f(` 다음 위치에서 닫는 괄호까지 맨 바깥 쉼표로 나눈 인자들 (글자·괄호 안 쉼표는 나누지 않는다)."""
+    args, depth, cur, quote = [], 0, "", ""
+    for ch in text[start:]:
+        if quote:
+            cur += ch
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    return [*args, cur.strip()] if cur.strip() or args else []
+
+
 def _hand_built_keys(
     cases: Sequence[GeneratedFile], contract: TaskContract, label: str
 ) -> list[str]:
-    """도우미가 경로 키 값 함수(<필드>Of)를 주는데 테스트가 `"member-" + 행번호` 처럼 키 값을 직접 만듦 — 시드 값 형식을 짐작한다.
-    2026-11-09 v16-be2: 시드 'memberId-191', 테스트 "member-" + HC2_FIRST → 모든 구현에서 대상 없음."""
-    keys = [name for name, _, numeric in key_fields(contract) if not numeric]
+    """도우미가 경로 키 값 함수(<필드>Of)를 주는데 계약 API 호출의 그 경로 변수 인자를 글자로 직접 만듦 — 시드 값 형식을 짐작한다.
+    2026-11-09 v16-be2: 시드 'memberId-191', 테스트 "member-" + HC2_FIRST → 모든 구현에서 대상 없음.
+    #178: 예전에는 `"member-" +` 꼴만 잡아 `"member" + n`·`String.format("member-%d", n)` 은 지나갔다 — 모양 대신 자리로 본다
+    (키 필드 경로 변수 자리의 인자가 `<필드>Of(…)` 가 아니고 글자를 쓰면, 변수면 그 변수에 넣은 식을 한 번 따라가 본다)."""
+    keys = {name for name, _, numeric in key_fields(contract) if not numeric}
     if not keys:
         return []
-    rx = re.compile(r'"([A-Za-z][\w]*-)"\s*\+')
+    calls: list[tuple[str, list[tuple[int, str]]]] = []
+    for e, fn in api_functions(contract):
+        vars_ = re.findall(r"\{([A-Za-z_]\w*)\}", e.path)
+        slots = [(i, v) for i, v in enumerate(vars_) if v in keys]
+        if slots:
+            calls.append((fn, slots))
     out: list[str] = []
     for f in cases:
-        built = sorted({m.group(1) for m in rx.finditer(f.content)})
-        if built:
+        bad: list[str] = []
+        for fn, slots in calls:
+            for m in re.finditer(rf"(?<![\w.]){re.escape(fn)}\s*\(", f.content):
+                args = _call_args(f.content, m.end())
+                for i, v in slots:
+                    if i >= len(args):
+                        continue
+                    arg = args[i]
+                    if re.fullmatch(r"[A-Za-z_]\w*", arg):
+                        given = re.findall(rf"\b{re.escape(arg)}\s*=(?!=)\s*([^;]+);", f.content)
+                        arg = given[-1] if given else arg
+                    if f"{v}Of(" not in arg and ('"' in arg or "String.format" in arg):
+                        bad.append(f"{fn} 의 {v} 자리 `{' '.join(args[i].split())[:40]}`")
+        if bad:
             out.append(
-                f"{label} {f.path} 가 경로 키 값을 직접 만듦 ({', '.join(chr(34) + b + chr(34) + ' + …' for b in built)}) — "
-                f"도우미의 {', '.join(k + 'Of(행 번호)' for k in keys)} 를 쓴다 (시드 값 형식을 짐작하지 않는다)"
+                f"{label} {f.path} 가 경로 키 값을 직접 만듦 ({'; '.join(dict.fromkeys(bad))}) — "
+                f"도우미의 {', '.join(sorted(k + 'Of(행 번호)' for k in keys))} 를 쓴다 (시드 값 형식을 짐작하지 않는다)"
             )
     return out
 
@@ -1490,14 +1525,13 @@ def _hidden_cases(
     out += unknown_harness_members(cases, t.hidden / "harness", "숨은 테스트")
     out += unknown_py_harness_members(cases, t.hidden / "harness", "숨은 테스트")
     out += unknown_py_keywords(cases, t.hidden / "harness", helper, "숨은 테스트")
-    out += unrun_input_days(cases, "숨은 테스트")
-    out += future_input_days(cases, "숨은 테스트")
+    out += unrun_input_days(cases, contract, "숨은 테스트")
+    out += future_input_days(cases, contract, "숨은 테스트")
     out += unreadable_as_pass(cases, "숨은 테스트")
-    out += guessed_names(cases, contract, "숨은 테스트")
+    out += element_guesses(cases, contract, "숨은 테스트")
     out += type_escapes(cases, "숨은 테스트")
     out += array_substring_contains(cases, "숨은 테스트")
     out += misplaced_test_imports(cases, "숨은 테스트")
-    out += selector_guesses(cases, contract, "숨은 테스트")
     out += option_guesses(cases, contract, "숨은 테스트")
     out += _reason_rules(cases, m, plan, case_rx, reason_rx)
     if contract is not None and rules.http_calls:
@@ -1513,7 +1547,12 @@ def _hidden_cases(
         out += _raw_number_asserts(cases, rules.raw_number_asserts, contract)
     bad_codes = sorted(used_codes - m.reason_codes)
     if bad_codes:
-        out.append(f"숨은 테스트의 실패 사유 코드가 템플릿 목록 밖: {', '.join(bad_codes)}")
+        # 빌드의 템플릿은 재료가 적은 사유로 좁혀져 있다 (BuildInputs — templates.restrict_reasons)
+        out.append(
+            f"숨은 테스트의 실패 사유 코드가 쓸 수 있는 목록 밖: {', '.join(bad_codes)} "
+            f"(쓸 수 있는 것: {', '.join(sorted(m.reason_codes)) or '없음'} — 이 숨은 요구의 사유. "
+            "목록 밖의 실패(예: 이 요구와 무관한 5xx·시간 초과)를 확인하는 단언에는 사유를 붙이지 않는다)"
+        )
     planned = {i for i in plan_ids if only is None or i in only}
     missing = sorted(planned - set(seen_ids))
     extra = sorted(set(seen_ids) - plan_ids)
@@ -1529,9 +1568,18 @@ def _hidden_cases(
     return [StaticProblem("gen_hidden", msg) for msg in out]
 
 
-_HELPER_CONST = re.compile(
-    r"\b(HC\d+(?:_[A-Z0-9]+)*_(?:FIRST|LAST|ROWS)|PUBLIC_[A-Z0-9_]+|TABLE_[A-Z0-9_]+|NEXT_(?:OK|BAD)_[A-Z0-9_]+)\b"
-)
+# 도우미 상수 이름의 가족 — 도우미가 실제로 낸 상수의 머리(HC·PUBLIC·TABLE·NEXT·HEADER·SETTING …)에서 뽑는다 (#178: 머리 넷을 손으로
+# 적어 둬 도우미가 새로 낸 HEADER_…·SETTING_… 짐작은 javac 까지 갔다)
+_HELPER_CONST_NAME = re.compile(r"^([A-Z]+)\d*_[A-Z0-9_]+$")
+
+
+def _const_families(known: set[str]) -> re.Pattern[str] | None:
+    heads = sorted({m.group(1) for k in known if (m := _HELPER_CONST_NAME.match(k))})
+    if not heads:
+        return None
+    return re.compile(rf"\b((?:{'|'.join(heads)})\d*_[A-Z0-9_]+)\b")
+
+
 _VERB_CALL = re.compile(r"(?<![\w.])((?:get|post|put|patch|delete)[A-Z]\w*)\s*\(")
 _OWN_METHOD = re.compile(r"[\w>\]]\s+(\w+)\s*\([^;{}]*\)\s*(?:throws\s+[\w., ]+)?\s*\{")
 _OWN_FIELD = re.compile(r"\b([A-Z][A-Z0-9_]+)\s*=")
@@ -1543,9 +1591,6 @@ def helper_names(helper: GeneratedFile) -> set[str]:
     methods = re.findall(r"protected (?:static )?[\w<>, \[\]]+? (\w+)\(", helper.content)
     consts = re.findall(r"protected static final [\w\[\]]+ (\w+) =", helper.content)
     return set(methods) | set(consts)
-
-
-_ROLE_NAME = re.compile(r"""ByRole\(\s*['"]([a-z]+)['"]\s*,\s*\{[^}]*\bname\s*:\s*([^,}]+)""")
 
 
 _TYPE_ESCAPE = re.compile(
@@ -1574,21 +1619,9 @@ def type_escapes(cases: Iterable[GeneratedFile], label: str) -> list[str]:
 _ARRAY_OF_TEXTS = re.compile(
     r"\b(?:const|let)\s+(\w+)\s*(?::\s*string\[\]\s*)?=\s*(?:textsByRole\(|[^;]*?\.map\(\s*\(?\s*\w+\s*\)?\s*=>[^;]*?textContent)"
 )
-_TL_NAMES = frozenset(
-    {
-        "waitFor",
-        "screen",
-        "render",
-        "within",
-        "fireEvent",
-        "cleanup",
-        "act",
-        "renderHook",
-        "userEvent",
-    }
-)
+# 화면 도구 이름 — testing-library 내보내기 표(ts_helpers.TESTING_LIBRARY, 템플릿이 고정한 판) + userEvent (#177: 이름 9개를 따로 적었다)
+_TL_NAMES = frozenset({*TESTING_LIBRARY, "userEvent"})
 _VITEST_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]vitest['\"]")
-_QUERY_SELECTOR = re.compile(r"\.querySelector(?:All)?\(\s*['\"`]([^'\"`]+)")
 
 
 def array_substring_contains(cases: Iterable[GeneratedFile], label: str) -> list[str]:
@@ -1667,40 +1700,46 @@ def misplaced_test_imports(cases: Iterable[GeneratedFile], label: str) -> list[s
     return out
 
 
-def selector_guesses(
+# 계약 test id 밖에서 요소를 찾는 꼴 — Testing Library 의 이름·글·레이블 쿼리와 DOM 선택자 (#177: 사례마다 ByRole 이름·querySelector 를
+# 따로 잡아 getByText·getByLabelText·closest()·getElementById 는 지나갔다)
+_TL_QUERY = re.compile(
+    r"\b(?:get|query|find)(?:All)?By(Role|Text|LabelText|PlaceholderText|DisplayValue|Title|AltText)\(\s*([^)\n]{0,60})"
+)
+_DOM_SELECT = re.compile(
+    r"\.(querySelector(?:All)?|closest|getElementsBy\w+|getElementById)\(\s*([^)\n]{0,40})"
+)
+# 하네스 문서·생성기 프롬프트가 권하는 역할만 쿼리 — 앱 오류 표시(alert)가 없음을 보는 `screen.queryByRole('alert')`
+DOC_ROLE_QUERIES = frozenset({"alert"})
+
+
+def element_guesses(
     cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
 ) -> list[str]:
-    """화면 계약이 있는 과제에서 테스트가 querySelector 로 요소를 짐작(`input[name="userId"]`) — 계약에 없는 꼴이라 올바른 구현도 못 찾는다.
-    2026-11-10 알파 fe7d-user: 계약 로그인 폼에 입력란 test id 가 없어 테스트가 name 속성으로 찾다 모든 구현에서 예외."""
+    """화면 계약이 있는 과제에서 테스트가 계약 test id 밖으로 요소를 찾음 — 접근 가능한 이름·보이는 글·레이블·자리표시자·역할이나 DOM 선택자는
+    계약에 없는 꼴이라 짐작이고, 올바른 구현도 못 찾는다. 요소는 test id 로만 (`findByTestId`·`byTestId`, 목록 글은 `textsByRole`).
+    2026-11-09 React 알파: 하네스 문서 예시의 '상품 검색'(ByRole 이름)을 따라 써 모든 구현에서 예외. 2026-11-10 fe7d-user: 계약 로그인 폼에
+    입력란 test id 가 없어 name 속성(querySelector)으로 찾다 모든 구현에서 예외. 예외: 문서가 권하는 역할만 쿼리(DOC_ROLE_QUERIES)."""
     if contract is None or not contract.screens:
         return []
     out: list[str] = []
     for f in cases:
-        found = sorted({m.group(1) for m in _QUERY_SELECTOR.finditer(f.content)})
-        if found:
-            out.append(
-                f"{label} {f.path} 가 querySelector 로 요소를 짐작함 ({', '.join(found[:3])}) — 요소는 계약의 test id 로만 찾는다 "
-                "(`await screen.findByTestId(TID.X)`·`byTestId(범위, TID.X)`). 계약에 그 요소가 없으면 짐작하지 말고 화면 결과로 확인한다"
-            )
-    return out
-
-
-def guessed_names(
-    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
-) -> list[str]:
-    """화면 계약(screens)이 있는 과제에서 테스트가 요소를 접근 가능한 이름으로 찾음 — 계약에는 이름이 없어(test id·역할·설명만)
-    짐작한 이름이고, 올바른 구현도 못 찾는다. 2026-11-09 React 알파: 하네스 문서 예시의 '상품 검색'을 따라 써 모든 구현에서 예외."""
-    if contract is None or not contract.screens:
-        return []
-    out: list[str] = []
-    for f in cases:
-        hits = sorted(
-            {f"{role} {name.strip()[:30]}" for role, name in _ROLE_NAME.findall(f.content)}
-        )
+        hits: list[str] = []
+        for m in _TL_QUERY.finditer(f.content):
+            kind, args = m.group(1), m.group(2).strip()
+            only_role = re.fullmatch(r"""['"]([a-z]+)['"]""", args)
+            if kind == "Role" and only_role and only_role.group(1) in DOC_ROLE_QUERIES:
+                continue
+            hits.append(f"By{kind}({args[:30]})")
+        hits += [
+            f".{m.group(1)}({m.group(2).strip()[:30]})" for m in _DOM_SELECT.finditer(f.content)
+        ]
         if hits:
             out.append(
-                f"{label} {f.path} 가 요소를 접근 가능한 이름으로 찾음 ({'; '.join(hits[:3])}) — 계약에 이름이 없다. "
-                "계약의 test id 로 찾는다: await screen.findByTestId(TID.X) · byTestId(TID.X)"
+                f"{label} {f.path} 가 계약 test id 밖으로 요소를 찾음 ({'; '.join(dict.fromkeys(hits))}"[
+                    :260
+                ]
+                + ") — 요소는 계약의 test id 로만 찾는다 (`await screen.findByTestId(TID.X)`·`byTestId(범위, TID.X)`, 목록 글은 "
+                "`textsByRole(역할, TID.X)`). 이름·글·레이블·선택자는 계약에 없어 짐작이 된다 — 계약에 그 요소가 없으면 화면 결과로 확인한다"
             )
     return out
 
@@ -1976,143 +2015,138 @@ _DAY = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
 _WRITERS = frozenset({"write_jsonl", "write_csv", "write_parquet", "write_text", "write_json"})
 
 
-def unrun_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+def date_options(contract: TaskContract | None) -> dict[str, set[str]]:
+    """명령 도우미 함수(run_…) → 날짜·날짜-시각 옵션 키워드 이름. 계약 형식·제약으로 정한다 (#178: 옵션 이름에 'date' 가 든 것만 봐
+    `day=`·`as_of=`·`run_at=` 은 실행 날짜로 보지 못했다). 계약이 없으면 비어 있다 — 실행 날짜를 알 수 없어 판정하지 않는다."""
+    out: dict[str, set[str]] = {}
+    for e in contract.endpoints if contract is not None else []:
+        if e.method:
+            continue
+        opts = {
+            py_ident(f.name) for f in [*e.request, *e.query] if time_kind(f) in ("date", "datetime")
+        }
+        if opts:
+            out[command_name(e.path)] = opts
+    return out
+
+
+@dataclass(frozen=True)
+class DayFlow:
+    """Python 테스트 함수 하나가 날짜 폴더에 입력을 쓰고(write) 그 날짜로 명령을 실행(run)한 순서 — 줄 번호 순."""
+
+    test: str
+    events: tuple[tuple[int, str, str], ...]  # (줄, write|run, 날짜)
+    unknown: bool  # 날짜·경로를 변수로 넘김 — 글자 그대로가 아니라 판정하지 않는다
+    looped: bool  # 반복문 안 — 줄 순서가 실행 순서가 아니다
+
+    def days(self, kind: str) -> set[str]:
+        return {day for _, k, day in self.events if k == kind}
+
+
+def _imported_commands(tree: ast.Module) -> dict[str, str]:
+    """`from …contract import run_x as y` → {y: run_x}."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").rsplit(".", 1)[-1] == "contract"
+        ):
+            out |= {
+                al.asname or al.name: al.name for al in node.names if al.name.startswith("run_")
+            }
+    return out
+
+
+def day_flows(f: GeneratedFile, options: dict[str, set[str]]) -> list[DayFlow]:
+    """파일의 테스트 함수마다 날짜 폴더 쓰기·실행 흐름. 쓰기는 하네스 쓰기 함수의 경로 글자에 든 `YYYY-MM-DD/`, 실행은 계약의 날짜 옵션에
+    넘긴 글자 날짜 (날짜-시각이면 앞 10자리)."""
+    if not f.path.endswith(".py"):
+        return []
+    try:
+        tree = ast.parse(f.content)
+    except SyntaxError:
+        return []
+    commands = {alias: name for alias, name in _imported_commands(tree).items() if name in options}
+    if not commands:
+        return []
+    flows: list[DayFlow] = []
+    for fn in tree.body:
+        if not (
+            isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name.startswith("test")
+        ):
+            continue
+        events: list[tuple[int, str, str]] = []
+        unknown = False
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _WRITERS and node.args:
+                a0 = node.args[0]
+                if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                    events += [
+                        (node.lineno, "write", m.group(1))
+                        for m in _DAY.finditer(a0.value)
+                        if f"{m.group(1)}/" in a0.value
+                    ]
+                else:
+                    unknown = True
+            elif isinstance(node.func, ast.Name) and node.func.id in commands:
+                dated = options[commands[node.func.id]]
+                for kw in node.keywords:
+                    if kw.arg is None:  # **옵션 — 무엇을 넘겼는지 모른다
+                        unknown = True
+                    elif kw.arg in dated:
+                        v = kw.value
+                        day = (
+                            _DAY.match(v.value)
+                            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                            else None
+                        )
+                        if day is None:
+                            unknown = True
+                        else:
+                            events.append((node.lineno, "run", day.group(1)))
+        looped = any(isinstance(n, (ast.For, ast.AsyncFor, ast.While)) for n in ast.walk(fn))
+        flows.append(DayFlow(fn.name, tuple(sorted(events)), unknown, looped))
+    return flows
+
+
+def unrun_input_days(
+    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
+) -> list[str]:
     """Python 테스트 함수가 날짜 폴더(`raw/2026-09-01/…`)에 입력을 쓰고 그 날짜로는 명령을 실행하지 않음 — 마지막 날짜로 한 번만 실행해 앞 날짜
     출력까지 기대하는 꼴. 받은 날짜마다 실행하는 정상 운영에서만 맞는 허용 설계('이번 폴더에 나온 날짜만 다시 계산')가 떨어진다.
     2026-11-09 데이터 알파 2~8회차 재검증: 손으로 쓴 허용 구현 두 가지로 돌려 보니 이 꼴의 케이스(hc3·hc4)가 7회 중 6회 나왔다.
-    날짜·경로가 변수로 만들어지는 함수는 보지 않는다 (글자 그대로인 것만)."""
+    날짜·경로가 변수로 만들어지는 함수는 보지 않는다 (글자 그대로인 것만). 반복문 안이어도 날짜 집합은 같으므로 본다."""
+    options = date_options(contract)
     out: list[str] = []
     for f in cases:
-        if not f.path.endswith(".py"):
-            continue
-        try:
-            tree = ast.parse(f.content)
-        except SyntaxError:
-            continue
-        commands: set[str] = set()
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.ImportFrom)
-                and (node.module or "").rsplit(".", 1)[-1] == "contract"
-            ):
-                commands |= {
-                    al.asname or al.name for al in node.names if al.name.startswith("run_")
-                }
-        if not commands:
-            continue
-        for fn in tree.body:
-            if not (
-                isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and fn.name.startswith("test")
-            ):
-                continue
-            written: set[str] = set()
-            ran: set[str] = set()
-            unknown = False
-            for node in ast.walk(fn):
-                if not isinstance(node, ast.Call):
-                    continue
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _WRITERS
-                    and node.args
-                ):
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        written |= {
-                            m.group(1)
-                            for m in _DAY.finditer(a0.value)
-                            if f"{m.group(1)}/" in a0.value
-                        }
-                    else:
-                        unknown = True
-                elif isinstance(node.func, ast.Name) and node.func.id in commands:
-                    for kw in node.keywords:
-                        v = kw.value
-                        if (
-                            isinstance(v, ast.Constant)
-                            and isinstance(v.value, str)
-                            and _DAY.fullmatch(v.value)
-                        ):
-                            ran.add(v.value)
-                        elif kw.arg and "date" in kw.arg and not isinstance(v, ast.Constant):
-                            unknown = True
-            missing = sorted(written - ran)
-            if ran and missing and not unknown:
+        for flow in day_flows(f, options):
+            ran, missing = flow.days("run"), sorted(flow.days("write") - flow.days("run"))
+            if ran and missing and not flow.unknown:
                 out.append(
-                    f"{label} {f.path} 의 {fn.name} 가 날짜 폴더 {', '.join(missing)} 에 입력을 쓰고 그 날짜로 실행하지 않음 (실행한 날짜: "
+                    f"{label} {f.path} 의 {flow.test} 가 날짜 폴더 {', '.join(missing)} 에 입력을 쓰고 그 날짜로 실행하지 않음 (실행한 날짜: "
                     f"{', '.join(sorted(ran))}) — 받은 날짜 순서대로 하루씩 실행한다. 마지막 날짜로 한 번만 실행해 앞 날짜 출력까지 기대하면 "
                     "'이번 폴더에 나온 날짜만 다시 계산'하는 허용 설계가 떨어진다"
                 )
     return out
 
 
-def future_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
+def future_input_days(
+    cases: Iterable[GeneratedFile], contract: TaskContract | None, label: str
+) -> list[str]:
     """Python 테스트 함수가 실행 날짜보다 **뒤** 날짜 폴더를 그 실행 전에 미리 씀 — 실제로는 아직 받지 않은 입력이라, 공개 계약에 없는 요구
     ('실행 날짜보다 뒤 폴더는 읽지 않는다')를 시험하게 된다. 2026-11-10 데이터 알파 10회차: hc1·hc2 가 9/2 폴더를 9/1 실행 전에 써 두어,
-    받은 폴더를 모두 읽는 허용 구현(손 구현으로 재현)이 떨어졌다. 줄 순서로 본다 — 날짜·경로가 변수인 함수는 보지 않는다."""
+    받은 폴더를 모두 읽는 허용 구현(손 구현으로 재현)이 떨어졌다. 줄 순서로 본다 — 날짜·경로가 변수이거나 반복문이 있는 함수는 보지 않는다."""
+    options = date_options(contract)
     out: list[str] = []
     for f in cases:
-        if not f.path.endswith(".py"):
-            continue
-        try:
-            tree = ast.parse(f.content)
-        except SyntaxError:
-            continue
-        commands: set[str] = set()
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.ImportFrom)
-                and (node.module or "").rsplit(".", 1)[-1] == "contract"
-            ):
-                commands |= {
-                    al.asname or al.name for al in node.names if al.name.startswith("run_")
-                }
-        if not commands:
-            continue
-        for fn in tree.body:
-            if not (
-                isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and fn.name.startswith("test")
-            ):
+        for flow in day_flows(f, options):
+            if flow.unknown or flow.looped:
                 continue
-            events: list[tuple[int, str, str]] = []  # (줄, write|run, 날짜)
-            unknown = False
-            for node in ast.walk(fn):
-                if not isinstance(node, ast.Call):
-                    continue
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _WRITERS
-                    and node.args
-                ):
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        events += [
-                            (node.lineno, "write", m.group(1))
-                            for m in _DAY.finditer(a0.value)
-                            if f"{m.group(1)}/" in a0.value
-                        ]
-                    else:
-                        unknown = True
-                elif isinstance(node.func, ast.Name) and node.func.id in commands:
-                    for kw in node.keywords:
-                        v = kw.value
-                        if (
-                            isinstance(v, ast.Constant)
-                            and isinstance(v.value, str)
-                            and _DAY.fullmatch(v.value)
-                        ):
-                            events.append((node.lineno, "run", v.value))
-                        elif kw.arg and "date" in kw.arg and not isinstance(v, ast.Constant):
-                            unknown = True
-            if unknown:
-                continue
-            if any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(fn)):
-                continue  # 반복문 안은 줄 순서가 실행 순서가 아니다
             written: set[str] = set()
             early: set[tuple[str, str]] = set()
-            for _, kind, day in sorted(events):
+            for _, kind, day in flow.events:
                 if kind == "write":
                     written.add(day)
                 else:
@@ -2120,7 +2154,7 @@ def future_input_days(cases: Iterable[GeneratedFile], label: str) -> list[str]:
             if early:
                 pairs = ", ".join(f"{w}(실행 {r} 전)" for w, r in sorted(early)[:4])
                 out.append(
-                    f"{label} {f.path} 의 {fn.name} 가 실행 날짜보다 뒤 날짜 폴더를 그 실행 전에 씀: {pairs} — 입력은 받은 순서대로, "
+                    f"{label} {f.path} 의 {flow.test} 가 실행 날짜보다 뒤 날짜 폴더를 그 실행 전에 씀: {pairs} — 입력은 받은 순서대로, "
                     "날짜 폴더는 그 날짜를 실행하기 직전에 쓴다. 미리 두면 공개 계약에 없는 '뒤 폴더는 읽지 않는다'를 시험하게 되어 "
                     "받은 폴더를 모두 읽는 허용 구현이 떨어진다"
                 )
@@ -2210,10 +2244,12 @@ def unknown_helper_names(
     ):  # 이름 꼴이 Java 기준 — TypeScript 도우미(contract.ts)의 없는 이름은 tsc 가 잡는다
         return []
     known = helper_names(helper)
+    families = _const_families(known)
     out: list[str] = []
     for f in cases:
         own = set(_OWN_METHOD.findall(f.content)) | set(_OWN_FIELD.findall(f.content))
-        used = set(_HELPER_CONST.findall(f.content)) | set(_VERB_CALL.findall(f.content))
+        consts = set(families.findall(f.content)) if families is not None else set()
+        used = consts | set(_VERB_CALL.findall(f.content))
         bad = sorted(u for u in used if u not in known and u not in own and u not in _JDK_VERB)
         if not bad:
             continue
@@ -2318,6 +2354,37 @@ def _starter_settings(o: Overlay, contract: TaskContract | None) -> list[StaticP
     return out
 
 
+def _public_row_uses(
+    o: Overlay, contract: TaskContract | None, plan: HiddenPlan | None = None
+) -> list[StaticProblem]:
+    """계약이 공개 테스트(pt)마다 정한 쓸 행(rows)을 그 pt 의 테스트가 쓰는가 — 도우미의 공개 몫 상수(PUBLIC_…)로.
+    #164: 경계 행·걸러질 행을 계약에 두어도 테스트가 다른 행(남은 20·요청 30 만)을 쓰면 규칙을 가르지 못한다.
+    pt 의 테스트는 @DisplayName 이 pt id 로 시작하는 파일 (gen_public 규칙 1). 그 파일이 없으면 다른 검사(_public_cases)가 잡는다."""
+    if contract is None:
+        return []
+    out: list[StaticProblem] = []
+    for t in contract.public_tests:
+        if not t.rows:
+            continue
+        mark = re.compile(rf'@DisplayName\(\s*"{re.escape(t.test_id)}\b')
+        files = [f for f in o.files if mark.search(f.content)]
+        if not files:
+            continue
+        text = "\n".join(f.content for f in files)
+        for u in t.rows:
+            consts = row_use_consts(contract, u, plan)
+            if consts and not any(re.search(rf"\b{re.escape(c)}\b(?!_)", text) for c in consts):
+                vals = ", ".join(f"{k}={v}" for k, v in u.values.items())
+                out.append(
+                    StaticProblem(
+                        o.target,
+                        f"공개 테스트 {t.test_id} 가 계약이 정한 행({vals})을 쓰지 않음 — 도우미 상수 {consts[0]} 의 행으로 "
+                        "확인한다 (규칙을 지킨 구현과 어긴 구현이 다른 결과를 내는 행)",
+                    )
+                )
+    return out
+
+
 def _public_settings(o: Overlay, contract: TaskContract | None) -> list[StaticProblem]:
     """계약 settings 마다 그 키를 덮어 보는 공개 테스트가 있는가 — 도우미 SETTING_…_KEY 를 @DynamicPropertySource 에서 SETTING_…_PROBE 로
     덮고 PROBE 를 단언해야 값을 코드에 박은 구현·제한 없는 구현을 가른다 (기본값만 보면 둘 다 통과, 2026-11-13 #161)."""
@@ -2405,14 +2472,13 @@ def _public_cases(
     out += unknown_harness_members(cases, t.hidden / "harness", "공개 테스트")
     out += unknown_py_harness_members(cases, t.hidden / "harness", "공개 테스트")
     out += unknown_py_keywords(cases, t.hidden / "harness", helper, "공개 테스트")
-    out += unrun_input_days(cases, "공개 테스트")
-    out += future_input_days(cases, "공개 테스트")
+    out += unrun_input_days(cases, contract, "공개 테스트")
+    out += future_input_days(cases, contract, "공개 테스트")
     out += unreadable_as_pass(cases, "공개 테스트")
-    out += guessed_names(cases, contract, "공개 테스트")
+    out += element_guesses(cases, contract, "공개 테스트")
     out += type_escapes(cases, "공개 테스트")
     out += array_substring_contains(cases, "공개 테스트")
     out += misplaced_test_imports(cases, "공개 테스트")
-    out += selector_guesses(cases, contract, "공개 테스트")
     out += option_guesses(cases, contract, "공개 테스트")
     text = "\n".join(f.content for f in cases)
     missing = [
@@ -2483,13 +2549,12 @@ def static_check(
                         "— 코드·주석·이름에 쓰지 않는다 (미끼 코드 포함)",
                     )
                 )
+        res.problems += _code_pitfalls(o, template)  # 항목마다 overlays 로 거른다 (#176·#177)
+        res.problems += _config_pitfalls(o, template)  # 매니페스트 config_pitfalls (#176)
         if o.kind in ("starter", "ref_naive", "ref_accepted"):
             res.problems += _unavailable_imports(o, template)
             res.problems += _test_folder_imports(o, template)
-            res.problems += _code_overrides(o, template)
-            res.problems += _code_pitfalls(o, template)
             res.problems += _script_imports(o, template, contract)
-            res.problems += _datasource_config(o, template)
             res.problems += _contract_types_usage(o, template, contract)
             res.problems += _skeleton_kept(o, template, contract)
             res.problems += _java_test_pitfalls(
@@ -2507,8 +2572,11 @@ def static_check(
             else:
                 res.problems += _starter_settings(o, contract)
             res.review_flags += flags
+        if o.kind in ("hidden", "public_test"):
+            res.problems += _skipped_tests(o, template)
         if o.kind == "public_test":
             res.problems += _public_cases(o, template, plan, contract)
+            res.problems += _public_row_uses(o, contract, plan)
             if is_java(template.manifest):
                 res.problems += _public_settings(o, contract)
         if o.kind == "hidden":
@@ -2588,25 +2656,51 @@ def _script_imports(o: Overlay, t: Template, contract: TaskContract | None) -> l
     return out
 
 
+def _skipped_tests(o: Overlay, t: Template) -> list[StaticProblem]:
+    """숨은·공개 테스트의 건너뛰기 API (#173) — 조건부 건너뛰기는 구현에 따라 판정이 갈린다."""
+    hits = [h for f in o.files for h in skip_hits(t.manifest, f.path, f.content)]
+    if not hits:
+        return []
+    return [
+        StaticProblem(o.target, f"{o.name} 이 테스트를 건너뜀: {'; '.join(hits[:4])} — {SKIP_NOTE}")
+    ]
+
+
+def _keep_lines(src: str) -> str:
+    """C 계열 주석을 빼되 줄 수는 그대로 (찾은 곳의 줄 번호가 맞게)."""
+    return _JAVA_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n") or " ", src)
+
+
 def _code_pitfalls(o: Overlay, t: Template) -> list[StaticProblem]:
-    """manifest code_pitfalls — 이 스택에서 생성 모델이 되풀이하는 API 실수를 실행 전에 (파일·줄과 바른 쓰는 법)."""
+    """manifest code_pitfalls — 이 스택에서 생성 모델이 되풀이하는 API 실수·채점 우회를 실행 전에 (파일·줄과 바른 쓰는 법).
+    항목이 어느 산출물(overlays)·경로(paths)·조건(when — 이 꼴이 있는 파일만, unless — 이 꼴이 있으면 뺌)에서 거는지 정한다.
+    #176: Java 전용 규칙(TestRestTemplate PATCH·코드로 풀·스레드 바꾸기)이 공용 검사기에 박혀 있던 것을 매니페스트 항목으로."""
+    slot = KIND_SLOT[o.kind]
     out: list[StaticProblem] = []
     for pit in t.manifest.code_pitfalls:
+        if slot not in pit.overlays:
+            continue
         rx = re.compile(pit.pattern)
         ok = re.compile(pit.unless) if pit.unless else None
-        hits = [
-            f"{f.path}:{f.content.count(chr(10), 0, m.start()) + 1} `{' '.join(m.group(0).split())[:80]}`"
-            for f in o.files
-            if ok is None or not ok.search(f.content)
-            for m in rx.finditer(f.content)
-        ]
+        when = re.compile(pit.when) if pit.when else None
+        hits: list[str] = []
+        for f in o.files:
+            if pit.paths and not glob_match(f.path, pit.paths):
+                continue
+            body = _keep_lines(f.content) if pit.strip_comments else f.content
+            if (ok is not None and ok.search(body)) or (when is not None and not when.search(body)):
+                continue
+            hits += [
+                f"{f.path}:{body.count(chr(10), 0, m.start()) + 1} `{' '.join(m.group(0).split())[:80]}`"
+                for m in rx.finditer(body)
+            ]
         if hits:
-            out.append(
-                StaticProblem(
-                    o.target,
-                    f"{o.name} 에 이 스택에서 되풀이되는 실수: {'; '.join(hits[:4])} — {pit.fix}",
-                )
+            lead = (
+                f"{o.name} 가 {HARNESS_OVERRIDE}(연결 풀·대기 시간·요청 스레드)를 코드로 우회함"
+                if pit.harness_bypass
+                else f"{o.name} 에 이 스택에서 되풀이되는 실수"
             )
+            out.append(StaticProblem(o.target, f"{lead}: {'; '.join(hits[:4])} — {pit.fix}"))
     return out
 
 

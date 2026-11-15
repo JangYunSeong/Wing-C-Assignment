@@ -303,3 +303,36 @@ def test_previous_hidden_file_is_kept_only_when_every_accepted_impl_passed() -> 
     assert (
         _keepable_cases([RepairAction("gen_naive", "naive-all", "③", "r", "n")], out) == frozenset()
     )
+
+
+async def test_ref_compile_flag_is_withdrawn_once_the_ref_boots() -> None:
+    """2026-11-14 kakaobank003: 참조 구현 컴파일 수리가 끝까지 안 되어 '컴파일 실패' 표시가 붙었고, 같은 회차의 다른 수리로 다시 만든
+    구현이 검증을 모두 통과했는데도 표시가 승인자 화면에 남았다 — 뒤 검증에서 그 구현이 기동(setup ok)하면 거둔다."""
+    # 시작 코드·흔한 구현은 통과, d1 은 첫 컴파일 + 재요청 2회 모두 오류, 그 뒤 검증 회차에서는 기동한다 (D1_OK)
+    compiler = ImplCompiler(
+        [], [], [_err(SERVICE_JAVA)], [_err(SERVICE_JAVA)], [_err(SERVICE_JAVA)], []
+    )
+    out, _ = await _build(compiler)
+    assert out.status == "review"
+    assert ("compile", "gen_accepted") in [(r.gate, r.target) for r in out.repairs]
+    assert not any("컴파일 실패" in f for f in out.review_flags), out.review_flags
+    assert out.compile_flags == {}
+
+
+def test_compile_flag_stays_while_the_ref_still_fails_to_boot() -> None:
+    from task_spec.nodes.starter.build import BuildOutcome, _withdraw_compile_flags
+    from task_spec.schemas import TargetRun, VerifyReport
+
+    out = BuildOutcome(
+        status="review",
+        review_flags=["d1 컴파일 실패 (…)"],
+        compile_flags={"d1": "d1 컴파일 실패 (…)"},
+    )
+    broken = VerifyReport(
+        runs=[TargetRun(target="d1", kind="ref_accepted", setup="compile_error", tests=[])]
+    )
+    _withdraw_compile_flags(out, broken)
+    assert out.review_flags == ["d1 컴파일 실패 (…)"]  # 아직 기동하지 못한다 — 표시는 그대로
+    booted = VerifyReport(runs=[TargetRun(target="d1", kind="ref_accepted", setup="ok", tests=[])])
+    _withdraw_compile_flags(out, booted)
+    assert out.review_flags == [] and out.compile_flags == {}

@@ -162,9 +162,11 @@ def test_fixed_and_other_rules() -> None:
     assert (
         not auth_problems(other) and auth_flags(other) and "자동 보장 안 됨" in auth_flags(other)[0]
     )
-    # other 는 값을 정하지 않으므로 예시가 없으면 헤더 검사가 말하고, other 라서 값이 필요하다고 짚는다 (fixmt-be2)
+    # other 는 값을 정하지 않으므로 예시가 없으면 헤더 검사가 말하고, 코드가 값을 정하지 않으니 실제 값을 적으라고 짚는다 (fixmt-be2).
+    # #181: other 일 때만 붙이던 앞말 갈래 없이 문구 하나
     [msg] = header_problems(other)
-    assert msg.startswith("auth 가 other 라 코드가 요청자 값을 정하지 않음") and "=1 → 200" in msg
+    assert "코드가 요청자 값을 정하지 않으므로" in msg and "=1 → 200" in msg
+    assert "'통과하는 요청자로' 같은 말 대신" in msg
 
 
 def test_state_values_follow_the_materials() -> None:
@@ -255,3 +257,19 @@ def test_hidden_case_targets_no_requester_can_change_are_rejected() -> None:
     )
     plan["cases"][0]["data"][0]["initial"]["role"] = "ADMIN"
     assert not unreachable_targets(eq, HiddenPlan.model_validate(plan))
+    # #181: allowed 로 요청자 상한이 내려가면(MANAGER 까지) 그 위 대상도 닿지 않는다 — 맨 위만 보던 예전 판정은 놓쳤다
+    capped = _fit(
+        _shop(
+            {
+                **ROLE,
+                "allowed": ["CLERK", "MANAGER"],
+                "order": ["CLERK", "MANAGER", "ADMIN"],
+                "above": "target",
+            }
+        )
+    )
+    plan["cases"][0]["data"][0]["initial"]["role"] = "MANAGER"
+    [p] = unreachable_targets(capped, HiddenPlan.model_validate(plan))
+    assert "role=MANAGER" in p and "통과용 요청자(role=MANAGER)" in p and "CLERK 중 하나" in p
+    plan["cases"][0]["data"][0]["initial"]["role"] = "CLERK"
+    assert not unreachable_targets(capped, HiddenPlan.model_validate(plan))
