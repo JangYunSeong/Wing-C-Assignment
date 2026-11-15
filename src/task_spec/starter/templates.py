@@ -197,6 +197,10 @@ def check_template(t: Template) -> list[str]:
         for path in t.files("project"):
             if glob_match(path, m.reserved):
                 problems.append(f"project/ 에 채점 자리 파일이 있음: {path}")
+    params = {hp.name for hp in m.harness_params}
+    for name in m.hidden_rules.observable_params:
+        if name not in params:
+            problems.append(f"hidden_rules.observable_params 의 {name} 가 harness_params 에 없음")
     # 이미지 층 규칙 (§6.1) — 템플릿·응시용 이미지에는 project/ 만, hidden/·manifest 는 채점용에서만
     if m.image.template_layer != ["project/"]:
         problems.append(f"image.template_layer 는 project/ 만이어야 함: {m.image.template_layer}")

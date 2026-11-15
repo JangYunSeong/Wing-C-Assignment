@@ -21,7 +21,7 @@ templates/<직군>/<스택>/vN/
   |---|---|
   | `project/`·`hidden/`·`README.tpl.md` | `code_pitfalls` |
   | 이미지·채점 설정에 들어가는 칸 — commands·locked·reserved·hidden_layout·limits·image·harness_params·`hidden_rules.case_id_pattern` | `repair_terms` (`server_side` 포함) |
-  | 생성기 입력 — fill_slots·stack_conditions·`failure_reasons` 의 code·description·how | `hidden_rules` 의 검사 칸 — `reason_not_on`·`reason_labels`·`http_calls` |
+  | 생성기 입력 — fill_slots·stack_conditions·`failure_reasons` 의 code·description·how | `hidden_rules` 의 검사 칸 — `reason_not_on`·`reason_labels`·`http_calls`·`observable_params` |
   | 평가 키트가 다시 읽는 칸 — `failure_reasons` 의 description (묶음 확정이 template_ref 로 다시 읽는다) | `failure_reasons` 의 `requires`·`feasible`·`assert_on`·`assert_not_on` |
 
   빌드 기록(`common_task_build.manifest_sha256`)과 알파 `report.json`(`template.manifest_sha256`)에 매니페스트 해시를 남겨, 어느 판의 검사·수리로

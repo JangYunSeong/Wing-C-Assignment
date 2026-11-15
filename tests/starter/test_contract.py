@@ -612,6 +612,15 @@ def test_expect_naming_harness_params_is_reasked() -> None:
     assert not [p for p in _check().problems if "통과 조건" in p]
 
 
+def test_expect_may_name_only_params_the_manifest_declares_observable() -> None:
+    """#180: 이름 끝(_ms·_s)으로 면제하면 SQL 지연 같은 내부 조절값도 지나간다 — 밖에서 볼 수 있는 한도는 매니페스트가 선언한다."""
+    p = _plan()
+    p["cases"][0]["expect"] = "응답이 query_delay_ms(20) 보다 늦게 온다"
+    assert _has(_check(plan=p).problems, "hc1", "조절값(query_delay_ms)")  # 선언 없음 → 내부 동작
+    declared = _manifest(hidden_rules={"observable_params": ["query_delay_ms"]})
+    assert not [x for x in _check(plan=p, manifest=declared).problems if "통과 조건" in x]
+
+
 def test_seed_declared_contract_needs_are_checked() -> None:
     """2026-11-07~08 알파 평가: 지난 계약 10개 모두 상태 전이 규칙이 없었고, 대상 엔티티 대신 감사 기록에 시드를 둔 계약도 있었다."""
     assert BACKEND_SEED is not None and BACKEND_SEED.contract_needs

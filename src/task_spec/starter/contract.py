@@ -1478,9 +1478,10 @@ def _internal_expect(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
     """숨은 케이스 통과 조건(expect)이 조절값 이름을 말하면 재요청 — 조절값 이름(식별자)을 정확히 맞추는 판정이라 오탐이 드물다.
     2026-11-07 알파 5회차: "모든 요청이 pool_size(30) 내에서 연결을 점유" 처럼 HTTP 로 관찰할 수 없는 조건이라, 숨은 테스트가 단언으로
     옮기다 '시간 초과가 일어나야 한다'로 거꾸로 써 올바른 구현까지 떨어뜨렸다. 2026-11-08 상류 기준선: 9회 중 3회 — 표시만으로는 줄지 않아 재요청으로."""
-    # 시간 한도·지연(…_ms·…_s)은 '응답이 한도 안에 온다' 처럼 HTTP 로 관찰할 수 있다 — 2026-11-10 nplus1-h: '응답이
-    # request_timeout_s(1초) 내에 도착' 을 세 번 다 막아 목록 재료 계약이 실패했다
-    names = [p.name for p in manifest.harness_params if param_unit(p.name) is None]
+    # 밖에서 관찰할 수 있는 한도는 매니페스트가 선언한다(hidden_rules.observable_params) — 2026-11-10 nplus1-h: '응답이
+    # request_timeout_s(1초) 내에 도착' 을 세 번 다 막아 목록 재료 계약이 실패했다. 이름 끝(_ms·_s)으로 면제하던 것은 #180
+    observable = set(manifest.hidden_rules.observable_params)
+    names = [p.name for p in manifest.harness_params if p.name not in observable]
     out: list[str] = []
     for c in plan.cases:
         hit = [

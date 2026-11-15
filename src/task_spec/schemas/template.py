@@ -316,6 +316,10 @@ class HiddenRules(Schema):
     # 케이스가 HTTP API 를 부르는 곳 (정규식, 매치 끝 = 경로 인자 시작, 그룹 method — 없으면 GET).
     # 경로 인자를 `{}` 자리로 정규화해 공개 계약의 API 와 대조한다 (2026-11-07 스모크: 계약에 없는 GET 을 불러 항상 404)
     http_calls: list[str] = Field(default_factory=list)
+    # 숨은 케이스 통과 조건(expect)에 이름을 써도 되는 조절값 — 채점이 밖에서 관찰할 수 있는 한도(요청 시간 한도 등).
+    # 그 밖의 조절값(풀 크기·SQL 지연·연결 대기)은 내부 동작이라 expect 에 나오면 재요청 (contract._internal_expect). #180:
+    # 이름 끝(_ms·_s)으로 면제해 query_delay_ms·connection_timeout_ms 같은 내부 조절값까지 지나갔다
+    observable_params: list[str] = Field(default_factory=list)
     # 응답 JSON 의 Map 값을 단언에 그대로 넣는 곳 (그룹 1 = 필드 이름) — 계약에서 정수 형식인 필드면 다시 쓰게 한다.
     # 2026-11-07 알파 테스트: assertThat(log.get("transactionId")).isEqualTo(txId) — Integer 105 ≠ 105L 로 모든 구현이 실패.
     # HARNESS.md 에 규칙이 있었는데도 어겨서 문서 대신 검사로.
