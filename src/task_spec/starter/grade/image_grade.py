@@ -95,43 +95,78 @@ def failed_line(trace: str, simple: str, sources: Path | None = None) -> str:
     return where[:300]
 
 
+def junit_suites(results: Path) -> list[tuple[str, list[dict[str, str]]]]:
+    """Gradle JUnit XML → 보고서(테스트 클래스)마다 (클래스 이름, 메서드 결과들). 메서드 결과 = {name, outcome, type, message, trace},
+    outcome: pass · failure(<failure>·<error> — type 으로 단언 실패인지 가린다) · skipped(@Disabled·assume — 판정하지 않았으므로 통과가
+    아니다, #173). 채점(`junit` — 클래스마다 하나로)과 손 시범 채점(eval/pilot/grade.py — 메서드마다)이 같은 판독을 쓴다."""
+    out: list[tuple[str, list[dict[str, str]]]] = []
+    for xml in sorted(results.glob("TEST-*.xml")):
+        root = ET.parse(xml).getroot()  # Gradle 이 쓴 보고서 (값은 이스케이프됨)
+        suite = root.get("name", xml.stem)
+        by_class: dict[
+            str, list[dict[str, str]]
+        ] = {}  # Gradle 은 클래스마다 보고서 하나 — 여럿이 섞여도 클래스별로
+        for tc in root.iter("testcase"):
+            row = {
+                "name": tc.get("name", ""),
+                "outcome": "pass",
+                "type": "",
+                "message": "",
+                "trace": "",
+            }
+            bad = tc.find("failure")
+            if bad is None:
+                bad = tc.find("error")
+            if bad is not None:
+                row.update(
+                    outcome="failure",
+                    type=bad.get("type", ""),
+                    message=bad.get("message", "") or (bad.text or ""),
+                    trace=bad.text or "",
+                )
+            elif (sk := tc.find("skipped")) is not None:
+                row.update(outcome="skipped", type="skipped", message=sk.get("message", "") or "")
+            by_class.setdefault(tc.get("classname", suite), []).append(row)
+        out += list(by_class.items()) or [(suite, [])]
+    return out
+
+
+def group_of(classname: str) -> str:
+    """테스트 클래스의 자리 — hidden(채점 케이스) · public(공개 테스트) · selftest(하네스 자체 점검) · existing(그 밖 — 시작 코드의 기존 테스트)."""
+    if ".grading.cases." in classname:
+        return "hidden"
+    if ".publictests." in classname:
+        return "public"
+    if ".grading." in classname:
+        return "selftest"
+    return "existing"
+
+
 def junit(
     results: Path, classes: dict[str, str], locate: bool = False, sources: Path | None = None
 ) -> list[dict]:
-    """Gradle JUnit XML → 클래스마다 결과 하나 (첫 실패를 대표로): {group, name, result, reason, message[, at]}.
+    """Gradle JUnit XML → 클래스마다 결과 하나 (첫 실패를 대표로, 실패가 없고 건너뛴 것이 있으면 그것을): {group, name, result, reason, message[, at]}.
     과제 생성 검증(verify/gradle.junit_results)과 채점이 같은 판정을 쓴다 (#174). classes: 클래스 이름 → 결과 이름 — 채점은 숨은·공개
     모두 케이스 id(hc1·pt1)로, 검증은 숨은 것만 (공개는 클래스 이름 — 수리·관문이 공개 테스트 파일의 클래스 이름과 대조한다).
     locate: 실패한 줄(테스트 파일:줄, sources 가 있으면 그 줄의 코드까지)을 at 에 — 과제 생성 검증의 수리 안내용, 채점은 끈다."""
     out: list[dict[str, str | None]] = []
-    for xml in sorted(results.glob("TEST-*.xml")):
-        root = ET.parse(xml).getroot()  # Gradle 이 쓴 보고서 (값은 이스케이프됨)
-        classname = root.get("name", xml.stem)
-        first: tuple[str, str, str] | None = None
-        skipped = None
-        for tc in root.iter("testcase"):
-            classname = tc.get("classname", classname)
-            bad = tc.find("failure")
-            if bad is None:
-                bad = tc.find("error")
-            if bad is not None and first is None:
-                first = (
-                    bad.get("type", ""),
-                    bad.get("message", "") or (bad.text or ""),
-                    bad.text or "",
-                )
-            if skipped is None and (sk := tc.find("skipped")) is not None:  # @Disabled·assume…
-                skipped = f"{SKIPPED}: {tc.get('name', '')} {sk.get('message', '')}".strip()
-        if first is None and skipped is not None:
-            first = ("skipped", skipped, "")
+    for classname, cases in junit_suites(results):
+        first: tuple[str, str, str] | None = next(
+            ((c["type"], c["message"], c["trace"]) for c in cases if c["outcome"] == "failure"),
+            None,
+        )
+        if first is None:
+            first = next(
+                (
+                    ("skipped", f"{SKIPPED}: {c['name']} {c['message']}".strip(), "")
+                    for c in cases
+                    if c["outcome"] == "skipped"
+                ),
+                None,
+            )
         simple = classname.rsplit(".", 1)[-1]
-        if ".grading.cases." in classname:
-            group, name = "hidden", classes.get(simple, simple)
-        elif ".publictests." in classname:
-            group, name = "public", classes.get(simple, simple)
-        elif ".grading." in classname:
-            group, name = "selftest", simple
-        else:
-            group, name = "existing", simple
+        group = group_of(classname)
+        name = classes.get(simple, simple) if group in ("hidden", "public") else simple
         if first is None:
             out.append({"group": group, "name": name, "result": "PASS"})
             continue

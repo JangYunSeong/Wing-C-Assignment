@@ -140,3 +140,29 @@ def test_main_reports_setup_failure_for_every_case(
         ("hc1", False, "boot_error"),  # 사유 표시가 없는 실패는 기동 단계 사유로
         ("pt1", False, "boot_error"),
     ]
+
+
+def test_junit_suites_reads_every_method_once_for_grading_and_the_pilot(tmp_path: Path) -> None:
+    """채점(클래스마다 하나)과 손 시범 채점(메서드마다)이 같은 판독 — 시범이 따로 읽다 #173 의 건너뜀 판정을 놓쳤다."""
+    r = tmp_path / "r"
+    r.mkdir()
+    (r / "TEST-x.xml").write_text(
+        """<testsuite name="s">
+<testcase classname="com.example.service.grading.cases.Hc1Test" name="ok"/>
+<testcase classname="com.example.service.grading.cases.Hc1Test" name="skip"><skipped message="출력 없음"/></testcase>
+<testcase classname="com.example.service.publictests.Pt1Test" name="bad"><error type="java.lang.IllegalStateException">trace</error></testcase>
+</testsuite>""",
+        "utf-8",
+    )
+    suites = image_grade.junit_suites(r)
+    assert [(c, [(m["name"], m["outcome"]) for m in ms]) for c, ms in suites] == [
+        ("com.example.service.grading.cases.Hc1Test", [("ok", "pass"), ("skip", "skipped")]),
+        ("com.example.service.publictests.Pt1Test", [("bad", "failure")]),
+    ]
+    assert suites[1][1][0]["message"] == "trace"  # message 가 없으면 본문
+    assert [image_grade.group_of(c) for c, _ in suites] == ["hidden", "public"]
+    graded = {t["name"]: t for t in image_grade.junit(r, {"Hc1Test": "hc1", "Pt1Test": "pt1"})}
+    assert (
+        graded["hc1"]["result"] == "HARNESS_ERR" and image_grade.SKIPPED in graded["hc1"]["message"]
+    )
+    assert graded["pt1"]["result"] == "HARNESS_ERR"
