@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr
     opencode_api_key: SecretStr
     opencode_base_url: str
+    # 돌연변이 생성기(gen_variant — 빌드 관문 ⑩·손 시범 유효성)는 Gemini [2026-11-15 사용자]. 없으면 gemini: 모델 프롬프트 호출이 실패한다
+    gemini_api_key: SecretStr | None = None
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     # LLM 요청 1건 제한 시간(초). 공통 과제 생성처럼 출력이 긴 호출은 120초를 넘는다 (2026-11-03 운영)
     llm_timeout_seconds: float = Field(default=300.0, gt=0)
 

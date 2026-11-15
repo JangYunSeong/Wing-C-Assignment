@@ -323,7 +323,7 @@ def _llm(backend: _Capture):  # type: ignore[no-untyped-def]
     async def _no_sleep(_: float) -> None:
         return None
 
-    return LLMClient({"opencode": backend, "openai": backend}, sleep=_no_sleep)  # type: ignore[dict-item]
+    return LLMClient({"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep)  # type: ignore[dict-item]
 
 
 def test_merge_files_overwrites_keeps_and_deletes() -> None:

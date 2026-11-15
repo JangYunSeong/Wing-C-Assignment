@@ -79,7 +79,7 @@ def _llm(**over: list[Completion]) -> tuple[LLMClient, TrapBackend]:
         "gen_variant": [Completion(json.dumps({"variants": []}))],
     } | over
     backend = TrapBackend(**routes)
-    return LLMClient({"opencode": backend, "openai": backend}, sleep=_no_sleep), backend  # type: ignore[dict-item]
+    return LLMClient({"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep), backend  # type: ignore[dict-item]
 
 
 class TrapVerifier:
