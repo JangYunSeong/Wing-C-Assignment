@@ -75,7 +75,9 @@ class HeaderField(ContractField):
 
     2026-11-10 retrydup-c: 요청 번호 X-Request-Id 를 도우미가 상수 하나로 줘 모든 테스트가 같은 번호를 공유 — 명세대로 번호로 중복을 막은
     허용 구현이 떨어졌다. 예전엔 이름·제약 글의 낱말(request-id·멱등·uuid …)로 짐작해 X-Nonce·X-Dedup-Key·'고유·중복 불가'는 놓쳤다 —
-    계약이 칸으로 정한다. 비어 있으면 계약 검사가 재요청한다 (권한 칸 auth 의 헤더는 권한 규칙이 값을 정하므로 묻지 않는다)."""
+    계약이 칸으로 정한다. 비어 있으면 계약 검사가 재요청한다 (권한 칸 auth 의 헤더는 권한 규칙이 값을 정하므로 묻지 않는다).
+    이름·제약이 요청 하나를 가리키면(request-id·멱등·nonce …) 칸이 false 여도 코드가 true 로 맞춘다 (header_values.fit_per_request —
+    2026-11-15 알파: X-Request-Id 를 false 로 적어 허용 구현이 공개 테스트에서 떨어졌다)."""
 
     per_request: bool | None = Field(
         default=None,

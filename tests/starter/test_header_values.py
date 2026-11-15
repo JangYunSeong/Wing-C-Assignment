@@ -162,7 +162,52 @@ def test_request_key_header_gets_a_new_value_per_request() -> None:
     c["endpoints"][0]["headers"] = [
         {"name": "X-Request-Id", "type": "string", "per_request": False, "refs": ["r1"]}
     ]
+    # per_request 는 칸만 읽는다 — 이름이 요청 번호인데 false 인 칸은 그 앞의 계약 맞춤(fit_per_request)이 고친다
     assert not per_request(TaskContract.model_validate(c), "X-Request-Id")
+
+
+def test_request_key_name_or_constraint_overrides_a_false_field() -> None:
+    """2026-11-15 알파 pilot-retry-ae030: 계약이 X-Request-Id 에 false 를 적어 도우미가 상수 하나 — 세 번 충전이 같은 번호라
+    번호로 중복을 막은 허용 구현이 공개 테스트에서 떨어졌다. 이름·제약이 요청 하나를 가리키면 코드가 true 로 맞춘다."""
+    from task_spec.starter.header_values import PER_REQUEST, fit_per_request
+
+    def fitted(*headers: dict[str, Any]) -> tuple[TaskContract, list[str]]:
+        c = _contract()
+        c["endpoints"][0]["headers"] = [{"type": "string", "refs": ["r1"], **h} for h in headers]
+        return fit_per_request(TaskContract.model_validate(c))
+
+    contract, notes = fitted(
+        {
+            "name": "X-Request-Id",
+            "constraints": "UUID v4 형식의 요청 고유 식별자",
+            "per_request": False,
+        }
+    )
+    [h] = header_values(contract)
+    assert h.source == PER_REQUEST
+    assert notes == [
+        "헤더 X-Request-Id 의 per_request 를 true 로 (계약은 false) — 이름·제약이 요청 하나를 가리킴: "
+        "도우미가 요청마다 새 값을 준다"
+    ]
+    # 이름은 사전 밖이어도 제약이 요청 번호·멱등 키를 말하면 — 비어 있던 칸도 채운다 (재요청하지 않음)
+    contract, notes = fitted({"name": "X-Key", "constraints": "충전 멱등 키", "per_request": None})
+    assert header_values(contract)[0].source == PER_REQUEST and "비어 있음" in notes[0]
+    assert not header_problems(contract)
+    # 요청 하나를 가리키지 않는 헤더는 칸 그대로 — 요청자(X-Requester-Id 는 request-id 가 아님)·'고유 식별자'·uuid 인 회원 id
+    for h in (
+        {"name": "X-Requester-Id", "per_request": False},
+        {"name": "X-Member-Id", "constraints": "회원 고유 식별자 (UUID)", "per_request": False},
+    ):
+        contract, notes = fitted(h)
+        assert notes == [] and header_values(contract)[0].source != PER_REQUEST
+    # 권한 칸의 헤더는 권한 규칙이 값을 정한다
+    c = _contract()
+    c["endpoints"][0]["headers"] = [
+        {"name": "X-Request-Id", "type": "string", "per_request": False, "refs": ["r1"]}
+    ]
+    c["endpoints"][0]["responses"].append({"status": 403, "description": "권한 없음"})
+    c["endpoints"][0]["auth"] = {"header": "X-Request-Id", "kind": "other", "denied_status": 403}
+    assert fit_per_request(TaskContract.model_validate(c))[1] == []
 
 
 def test_helper_gives_fresh_request_key_and_a_retry_overload() -> None:
