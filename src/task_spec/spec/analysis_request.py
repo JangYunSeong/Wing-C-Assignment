@@ -10,6 +10,8 @@
 - CURRENT 가 없으면(평가 전) 명세 그래프가 부르지 않는다 — 평가·스모크는 판을 정해 부른다 (불변식 7).
 - v3 출력(DraftAnalysisOutputV2): 추가 요구 c# 마다 질문 문장(ask_when)도 쓴다 — 사실과 같은 단계가 써야 두 항목의 조건을 나눈다.
   공개 수용 기준 연결은 생성기(draft_feature_task v11)가 쓴 것이 있으면 그것을 쓴다 (2026-11-16 사용자).
+- v4 출력(DraftAnalysisOutputV3): 요청 글은 공식 요구(무엇)를 모두 말하고 사실은 규칙(어떻게)만 — request_mentions 는 코드가
+  모든 r# 로 채운다 (자기 보고 없음). 흐림 정도 표시(하나도·모두)는 끈다 — 모두 말하는 것이 설계 (2026-11-16 사용자).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from task_spec.schemas import (
     DraftAnalysisInput,
     DraftAnalysisOutput,
     DraftAnalysisOutputV2,
+    DraftAnalysisOutputV3,
     Fact,
     NodeError,
     Provenance,
@@ -135,6 +138,13 @@ def _hint_leak(answer: str, hint: str, context: str) -> list[str]:
     return leaked
 
 
+def _mentions(out: DraftAnalysisOutput, task: TaskItem) -> list[str]:
+    """v4 는 요청 글이 공식 요구를 모두 말하는 설계라 모든 r# — 예전 판은 모델이 적은 것."""
+    if isinstance(out, DraftAnalysisOutputV3):
+        return [r.req_id for r in task.requirements]
+    return list(out.request_mentions)
+
+
 def _asks(out: DraftAnalysisOutput) -> dict[str, str]:
     if not isinstance(out, DraftAnalysisOutputV2):
         return {}
@@ -150,7 +160,7 @@ def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
         update={
             "background": out.background,
             "request": out.request,
-            "request_mentions": list(out.request_mentions),
+            "request_mentions": _mentions(out, task),
             "facts": [Fact(**f.model_dump()) for f in out.facts],
             "acceptance_public": [
                 a if a.req_ids else a.model_copy(update={"req_ids": links.get(a.ac_id, [])})
@@ -315,7 +325,9 @@ def artifact_flags(task: TaskItem) -> list[str]:
 
 
 def blur_flags(out: DraftAnalysisOutput, task: TaskItem) -> list[str]:
-    """흐림 정도 — 기준값이 [미정]이라 끝값(하나도 / 모두)만 표시 (§5.1)."""
+    """흐림 정도 — 기준값이 [미정]이라 끝값(하나도 / 모두)만 표시 (§5.1). v4 는 모두 말하는 것이 설계라 표시하지 않는다."""
+    if isinstance(out, DraftAnalysisOutputV3):
+        return []
     n, total = len(set(out.request_mentions)), len(task.requirements)
     if total and n == 0:
         return [FLAG_NO_MENTION]
@@ -356,9 +368,12 @@ async def draft_analysis_request(
     note = f"승인자 수정 요청: {reviewer_note}" if reviewer_note else None
     best: tuple[DraftAnalysisOutput, list[str], str] | None = None
     for attempt in range(2):
-        prompt = assemble(
-            template, build_analysis_input(task, seed, note), ontology_version=ctx.ontology_version
+        full = build_analysis_input(task, seed, note)
+        # 판마다 입력 모델이 다르다 (v4 는 업무 필요를 받지 않는다) — 그 판의 칸만 넘긴다
+        inp = template.input_model.model_validate(
+            {k: getattr(full, k) for k in template.input_model.model_fields}
         )
+        prompt = assemble(template, inp, ontology_version=ctx.ontology_version)
         try:
             r = await llm.call(prompt, template.output_model)  # type: ignore[arg-type]
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:

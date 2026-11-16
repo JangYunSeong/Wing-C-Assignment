@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.domain import (
@@ -293,11 +294,29 @@ class DraftFeatureOutputV6(DraftFeatureOutputV5):
     acceptance_public: list[AcceptanceDraftV6] = Field(min_length=2, max_length=6)  # type: ignore[assignment]
 
 
+class DraftFeatureInputV3(DraftFeatureInputV2):
+    """기능형 v12 입력 — v2 + 재료의 만들 것(공식 요구 r# 가 같은 개수·순서로 나온다, analysis-stage.md §5.1 2026-11-16 사용자)."""
+
+    deliverables: str = Field(min_length=1)  # "- 만들 것" 줄 묶음 (없으면 "(없음)")
+
+
+class DraftFeatureOutputV7(DraftFeatureOutputV6):
+    """기능형 v7 출력 — v6 + 공식 요구는 재료의 만들 것과 같은 개수 (만들 것이 하나인 재료가 있어 1개부터)."""
+
+    requirements: list[Requirement] = Field(min_length=1, max_length=6)
+
+
 class DraftFeatureOutputLinked(DraftFeatureOutput):
     """내부 전용 — v6 출력을 재료로 채운 전체 모델 (공개 수용 기준이 req_ids 를 가짐). 프롬프트 출력 스키마로 쓰지 않는다
     (DraftFeatureOutput 은 v1 의 출력 스키마라 칸을 더하면 v1 프롬프트가 바뀐다). 칸 고쳐 쓰기(spec/patch.apply)가 type(out) 으로 다시 만든다."""
 
     acceptance_public: list[LinkedAcceptance] = Field(min_length=2, max_length=6)  # type: ignore[assignment]
+
+
+class DraftFeatureOutputByDeliverable(DraftFeatureOutputLinked):
+    """내부 전용 — v7 출력을 채운 전체 모델. 공식 요구가 재료의 만들 것과 같은 개수라 1개부터 (spec/feature.check_deliverables)."""
+
+    requirements: list[Requirement] = Field(min_length=1, max_length=6)
 
 
 class DraftFeatureOutputV3(DraftFeatureOutputV2):
@@ -484,6 +503,24 @@ class DraftAnalysisOutputV2(DraftAnalysisOutput):
     clarification_asks: list[ClarificationAsk] = Field(
         default_factory=list, max_length=6, description="입력 추가 요구 c# 마다 하나"
     )
+
+
+class DraftAnalysisInputV2(Schema):
+    """v4 입력 — v1~v3 에서 업무 필요(재료)를 뺀다. 요청 글은 공식 요구(무엇)를 모두 말하고, 업무 필요에 섞인 규칙을 옮길 자리를 없앤다."""
+
+    title: str = Field(min_length=1)
+    scenario: str = Field(min_length=1)
+    requirements: str = Field(min_length=1)
+    acceptance_public: str = Field(min_length=1)
+    clarifications: str
+    revision_note: str
+
+
+class DraftAnalysisOutputV3(DraftAnalysisOutputV2):
+    """v4 출력 — 요청 글이 공식 요구를 모두 말하므로 request_mentions 는 쓰지 않는다 (코드가 모든 r# 로 채움, 자기 보고 없음).
+    칸은 남기되 출력 스키마(프롬프트)에서 숨긴다 — 모델이 써 와도 무시한다."""
+
+    request_mentions: SkipJsonSchema[list[str]] = Field(default_factory=list)  # type: ignore[assignment]
 
 
 class JudgeLeakInput(Schema):

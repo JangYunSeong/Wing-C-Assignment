@@ -2,7 +2,8 @@
 
 스키마(schemas/domain.py)는 형식만 본다 — 재요청 뒤 고쳐 쓴 초안도 저장·승인 화면에 올라가야 하므로. id 사이 참조는 여기서 본다:
 - 사실(`facts`)의 `covers` 는 있는 공식 요구(r#)·공개 수용 기준(p#)만 가리킨다.
-- 공식 요구·공개 수용 기준마다 그것을 덮는 사실이 하나 이상 — 물어서 알 수 없는 요구로 채점하면 안 된다 (§4.2).
+- 공개 수용 기준마다 그것을 덮는 사실이 하나 이상, 공식 요구는 사실이 덮거나 보이는 글이 직접 말함(`request_mentions`) —
+  물어서도 보고도 알 수 없는 요구로 채점하면 안 된다 (§4.2·§5.1). 요청 글 v4 는 공식 요구(무엇)를 모두 말하고 사실은 규칙(어떻게)만 (2026-11-16 사용자).
 - `request_mentions`·`req_ids` 는 있는 r# 만. 공개 수용 기준마다 `req_ids` 하나 이상, 공식 요구마다 그것을 가리키는 p# 하나 이상 (§6·§5.1).
 - 요청 글과 사실은 함께 있거나 함께 없다 — 한쪽만 있으면 판이 섞인 것. 문제 분석 판은 배경 글(요구 없는 상황 글)도 있어야 한다.
 문제 분석 판이 아닌 명세(요청 글·사실이 모두 없음)는 검사할 것이 없다. 생성기 연결은 문제 분석 생성기(§12 4)에서.
@@ -37,7 +38,7 @@ def check_analysis(task: TaskItem) -> list[str]:
     for f in task.facts:
         if bad := [c for c in f.covers if c not in known]:
             problems.append(f"{f.fact_id} 의 covers 가 없는 요구·기준을 가리킴: {', '.join(bad)}")
-    covered = {c for f in task.facts for c in f.covers}
+    covered = {c for f in task.facts for c in f.covers} | set(task.request_mentions)
     if loose := [i for i in [*reqs, *acs] if i not in covered]:
         problems.append(f"덮는 사실이 없는 요구·기준 (물어서 알 수 없음): {', '.join(loose)}")
     if bad := [r for r in task.request_mentions if r not in reqs]:

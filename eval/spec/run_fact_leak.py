@@ -11,6 +11,7 @@
 입력: 문제 분석 칸이 붙은 명세 — 평가 기록(`{"task": {...}}`, analysis-request-eval outputs), TaskItem JSON,
      run_feature 의 drafts.jsonl. 공고로 만든 명세만.
 --protect spec: 문제 분석 전 명세(생성기 평가) — 공식 요구·공개 수용 기준 문장을 지킬 답으로 놓고 자료 범위만 잰다.
+--protect reqs: 문제 분석 판(요청 글 v4) — 공식 요구(무엇) 문장이 보이는 글에 **보이는지** 잰다 (보여야 하는 것 — 보인 비율이 높을수록 좋다).
 출력: data/eval/analysis-leak/<날짜>-<tag>/ (report.json, samples.md) — git 밖.
 사용: uv run python -m eval.spec.run_fact_leak --inputs data/eval/analysis-request-eval/2026-11-16/outputs/*.json \\
         --tag v1 [--version 2] [--scopes text artifact]
@@ -69,17 +70,18 @@ def load_tasks(path: Path) -> list[tuple[str, TaskItem]]:
     return out
 
 
-def spec_items(task: TaskItem) -> tuple[TaskItem, dict[str, str]]:
-    """공식 요구·공개 수용 기준 문장을 지킬 답(사실 자리)으로 — 문제 분석 전 명세의 자료 흘림을 잰다. 돌려주는 표: f# → r#·p#."""
+def spec_items(task: TaskItem, reqs_only: bool = False) -> tuple[TaskItem, dict[str, str]]:
+    """공식 요구·공개 수용 기준 문장을 지킬 답(사실 자리)으로 — 문제 분석 전 명세의 자료 흘림을 잰다. 돌려주는 표: f# → r#·p#.
+    reqs_only: 공식 요구만, 보이는 글은 그대로 (요청 글 v4 가 만들 것을 모두 말했는지)."""
     items = [(r.req_id, r.text) for r in task.requirements]
-    items += [(a.ac_id, a.text) for a in task.acceptance_public]
+    if not reqs_only:
+        items += [(a.ac_id, a.text) for a in task.acceptance_public]
     facts = [
         Fact(fact_id=f"f{i}", covers=[iid], topic=iid, ask_when="-", answer=text)
         for i, (iid, text) in enumerate(items, 1)
     ]
-    shown = task.model_copy(
-        update={"facts": facts, "request_mentions": [], "background": None, "request": None}
-    )
+    blank = {} if reqs_only else {"background": None, "request": None}
+    shown = task.model_copy(update={"facts": facts, "request_mentions": [], **blank})
     return shown, {f.fact_id: f.covers[0] for f in facts}
 
 
@@ -292,7 +294,7 @@ async def main() -> None:
     )
     ap.add_argument(
         "--protect",
-        choices=("facts", "spec"),
+        choices=("facts", "spec", "reqs"),
         default="facts",
         help="지킬 답 — facts: 사실(문제 분석 판) / spec: 공식 요구·공개 수용 기준 (생성기 평가, 자료 범위만)",
     )
@@ -300,11 +302,12 @@ async def main() -> None:
     a = ap.parse_args()
     tasks = [x for p in a.inputs for x in load_tasks(p)]
     items: dict[str, dict[str, str]] = {}
-    if a.protect == "spec":
-        a.scopes = ["artifact"]  # 보이는 글은 문제 분석 전이라 잴 것이 없다
+    if a.protect in ("spec", "reqs"):
+        # spec: 보이는 글은 문제 분석 전이라 잴 것이 없다 — 자료만 / reqs: 요청 글·배경 글에 만들 것이 보이는지 — 보이는 글만
+        a.scopes = ["artifact"] if a.protect == "spec" else ["text"]
         for i, (n, t) in enumerate(tasks):
-            tasks[i] = (n, spec_items(t)[0])
-            items[n] = spec_items(t)[1]
+            shown, table = spec_items(t, reqs_only=a.protect == "reqs")
+            tasks[i], items[n] = (n, shown), table
     tasks = [(n, t) for n, t in tasks if t.facts]
     llm = build_llm_client(Settings())
     prompts = PromptRegistry(ROOT / "prompts")
