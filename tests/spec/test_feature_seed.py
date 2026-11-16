@@ -790,3 +790,67 @@ def test_conclusion_targets_that_artifact_only_and_copied_values_are_not_patched
     assert [a for j, a in enumerate(fixed.artifacts) if j != i] == [
         a for j, a in enumerate(out.artifacts) if j != i
     ]
+
+
+# ── v6: 공개 수용 기준이 확인하는 공식 요구(req_ids)를 생성기가 쓴다 [2026-11-16 사용자] ──
+
+
+def _v6draft(links: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    d = _v5draft()
+    links = links or {"p1": ["r1"], "p2": ["r2"]}
+    d["acceptance_public"] = [
+        {**a, "req_ids": links.get(a["ac_id"], [])} for a in d["acceptance_public"]
+    ]
+    return d
+
+
+class _V11:
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return _REG.get(task, version or (11 if task == "draft_feature_task" else None))
+
+
+async def test_v6_links_reach_the_spec() -> None:
+    fake = FakeBackend().push(Completion(json.dumps(_v6draft(), ensure_ascii=False)))
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V11())  # type: ignore[arg-type]
+    assert res.flags == [] and res.provenance[0].prompt == "draft_feature_task@11"
+    task = apply_feature(_skeleton(), res)
+    assert [(a.ac_id, a.req_ids) for a in task.acceptance_public] == [
+        ("p1", ["r1"]),
+        ("p2", ["r2"]),
+    ]
+
+
+async def test_v6_requirement_without_acceptance_is_reasked() -> None:
+    """r2 를 확인하는 p# 가 없으면 재요청 — 요청 글 단계가 고칠 수 없는 결함 (v2 요청 글 평가 a-stargem r3)."""
+    bad = _v6draft({"p1": ["r1"], "p2": ["r1"]})
+    fake = (
+        FakeBackend()
+        .push(Completion(json.dumps(bad, ensure_ascii=False)))
+        .push(Completion(json.dumps(_v6draft(), ensure_ascii=False)))
+    )
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V11())  # type: ignore[arg-type]
+    assert len(fake.calls) == 2 and res.flags == []
+    assert [p for p in res.first_problems if "공식 요구 r2 를 확인하는 공개 수용 기준이 없음" in p]
+
+
+async def test_v6_link_to_unknown_requirement_is_dropped_by_code() -> None:
+    from task_spec.spec.draft import FLAG_DRAFT_REPAIRED
+
+    stuck = _v6draft({"p1": ["r1", "r9"], "p2": ["r2"]})
+    fake = (
+        FakeBackend()
+        .push(Completion(json.dumps(stuck, ensure_ascii=False)))
+        .push(Completion(json.dumps(stuck, ensure_ascii=False)))
+    )
+    res = await draft_feature_task(_seed_ctx(), llm=_client(fake), prompts=_V11())  # type: ignore[arg-type]
+    task = apply_feature(_skeleton(), res)
+    assert task.acceptance_public[0].req_ids == ["r1"]
+    assert any(f.startswith(FLAG_DRAFT_REPAIRED) and "r9" in f for f in task.review_flags)
+
+
+def test_links_are_only_checked_on_v6_output() -> None:
+    from task_spec.schemas import DraftFeatureOutputV5
+    from task_spec.spec.feature import check_links, fill_from_seed_v5
+
+    out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(_v5draft()), BACKEND.feature)  # type: ignore[arg-type]
+    assert check_links(out) == []  # 예전 판은 연결을 요청 글 단계가 쓴다

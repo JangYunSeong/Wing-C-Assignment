@@ -14,7 +14,12 @@ from task_spec.llm import Completion, FakeBackend, LLMClient
 from task_spec.nodes import spec as spec_mod
 from task_spec.nodes.spec import make_draft_spec
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import ApprovalDecision, DraftAnalysisOutput, TaskItem
+from task_spec.schemas import (
+    ApprovalDecision,
+    DraftAnalysisOutput,
+    DraftAnalysisOutputV2,
+    TaskItem,
+)
 from task_spec.spec.analysis_request import (
     FLAG_INVALID,
     FLAG_LEAK,
@@ -26,11 +31,13 @@ from task_spec.spec.analysis_request import (
     draft_analysis_request,
     leak_flags,
     overlap_flags,
+    repair_analysis,
 )
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.draft import DraftResult
 from task_spec.spec.feature import apply_feature
 from task_spec.spec.store import InMemoryCommonStore
+from task_spec.starter.facilitator import facilitator_view
 from tests.spec.test_draft import _ctx
 from tests.spec.test_feature import _fdraft, _out, _skeleton
 from tests.spec.test_task_kind_flow import _state
@@ -292,3 +299,77 @@ async def test_spec_node_runs_analysis_only_when_the_prompt_has_current(
     task = out["spec"].common_tasks[0]
     assert task.request is None and task.facts == [] and len(fake.calls) == 1
     assert out["spec"].common_refs[0].prompt_ref == "draft_feature_task@1"
+
+
+# ── v3: 추가 요구 질문 문장 · 생성기가 쓴 연결 우선 [2026-11-16 사용자] ──
+
+
+def _linked_task() -> TaskItem:
+    """생성기 v11 처럼 공개 수용 기준에 req_ids 가 이미 있는 명세."""
+    t = _task()
+    links = {"p1": ["r1"], "p2": ["r2"]}
+    return t.model_copy(
+        update={
+            "acceptance_public": [
+                a.model_copy(update={"req_ids": links[a.ac_id]}) for a in t.acceptance_public
+            ]
+        }
+    )
+
+
+def _v3(**over: Any) -> dict[str, Any]:
+    d = copy.deepcopy(_good())
+    d["acceptance_links"] = []
+    d["clarification_asks"] = [
+        {"clarification_id": "c1", "ask_when": "피크 시간 요청 규모를 콕 집어 물을 때"},
+        {"clarification_id": "c2", "ask_when": "이력을 얼마나 오래 보관하는지 물을 때"},
+    ]
+    d.update(over)
+    return d
+
+
+async def test_v3_writes_clarification_asks_and_keeps_generator_links() -> None:
+    task = _linked_task()
+    assert "- p1 [r1] " in build_analysis_input(task, None, None).acceptance_public
+    fake = FakeBackend().push(_reply(_v3()))
+    res = await draft_analysis_request(
+        task, _ctx(), llm=_client(fake), prompts=_REGISTRY, version=3
+    )
+    assert len(fake.calls) == 1 and not res.flags, res.flags
+    done = apply_analysis(task, res)
+    assert [(a.ac_id, a.req_ids) for a in done.acceptance_public] == [
+        ("p1", ["r1"]),
+        ("p2", ["r2"]),
+    ]
+    assert {c.clarification_id: c.ask_when for c in done.clarifications} == {
+        "c1": "피크 시간 요청 규모를 콕 집어 물을 때",
+        "c2": "이력을 얼마나 오래 보관하는지 물을 때",
+    }
+    view = facilitator_view("ct-x", done)  # 진행자 보기에 문장이 나간다
+    assert [a.ask_when for a in view.stage1.clarifications.items] == [
+        c.ask_when for c in done.clarifications
+    ]
+    assert res.provenance[0].prompt == "draft_analysis_request@3"
+
+
+def test_v3_missing_or_unknown_ask_is_a_problem_and_unknown_is_repaired() -> None:
+    task = _linked_task()
+    d = _v3()
+    d["clarification_asks"] = [
+        d["clarification_asks"][0],
+        {"clarification_id": "c9", "ask_when": "없는 항목"},
+    ]
+    out = DraftAnalysisOutputV2.model_validate(d)
+    problems = check_analysis_draft(out, task, _ctx())
+    assert any("추가 요구 c2 의 ask_when 이 없음" in p for p in problems)
+    assert any("clarification_asks 에 없는 추가 요구: c9" in p for p in problems)
+    fixed = repair_analysis(out, task)
+    assert [a.clarification_id for a in fixed.clarification_asks] == ["c1"]  # type: ignore[attr-defined]
+
+
+def test_v3_still_links_when_the_generator_did_not() -> None:
+    """예전 생성기 명세(연결 없음) — v3 도 acceptance_links 를 쓰면 그대로 붙는다."""
+    out = DraftAnalysisOutputV2.model_validate(_v3(acceptance_links=_good()["acceptance_links"]))
+    assert check_analysis_draft(out, _task(), _ctx()) == []
+    out = DraftAnalysisOutputV2.model_validate(_v3())
+    assert any("p1 에 req_ids 가 없음" in p for p in check_analysis_draft(out, _task(), _ctx()))

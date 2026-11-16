@@ -32,9 +32,11 @@ from task_spec.schemas import (
     ClarificationDraft,
     DebugStage,
     DraftFeatureOutput,
+    DraftFeatureOutputLinked,
     DraftFeatureOutputV2,
     DraftFeatureOutputV4,
     DraftFeatureOutputV5,
+    DraftFeatureOutputV6,
     FeatureSeed,
     HiddenAcceptance,
     LinkedAcceptance,
@@ -370,6 +372,53 @@ def fill_from_seed_v5(out: DraftFeatureOutputV5, seed: FeatureSeed) -> DraftFeat
     return fill_from_seed_v4(v4, seed)
 
 
+def fill_from_seed_v6(out: DraftFeatureOutputV6, seed: FeatureSeed) -> DraftFeatureOutputLinked:
+    """v6 출력 → v5 경로로 채운 뒤 공개 수용 기준에 생성기가 쓴 req_ids 를 붙인다 (analysis-stage.md §5.1, 2026-11-16 사용자)."""
+    links = {a.ac_id: list(a.req_ids) for a in out.acceptance_public}
+    v5 = DraftFeatureOutputV5.model_validate(
+        {
+            **out.model_dump(exclude={"acceptance_public"}),
+            "acceptance_public": [
+                {"ac_id": a.ac_id, "text": a.text} for a in out.acceptance_public
+            ],
+        }
+    )
+    full = fill_from_seed_v5(v5, seed)
+    return DraftFeatureOutputLinked.model_validate(
+        {
+            **full.model_dump(exclude={"acceptance_public"}),
+            "acceptance_public": [
+                {**a.model_dump(), "req_ids": links.get(a.ac_id, [])}
+                for a in full.acceptance_public
+            ],
+        }
+    )
+
+
+def check_links(out: DraftFeatureOutput) -> list[str]:
+    """공개 수용 기준 → 공식 요구 연결 (v6 출력만). 모든 r# 에 그것을 확인하는 p# 가 하나 이상 — 없으면 공개 테스트가 없어
+    "만들었나"를 정할 수 없다 (v2 요청 글 평가: r3 '요청 번호 헤더 저장'에 맞는 p# 가 없어 요청 글 단계가 고칠 수 없었다)."""
+    if not isinstance(out, DraftFeatureOutputLinked):
+        return []
+    reqs = [r.req_id for r in out.requirements]
+    problems = []
+    for a in out.acceptance_public:
+        if bad := [r for r in a.req_ids if r not in reqs]:
+            problems.append(
+                f"공개 수용 기준 {a.ac_id} 의 req_ids 에 없는 공식 요구: {', '.join(bad)}"
+            )
+        elif not a.req_ids:
+            problems.append(
+                f"공개 수용 기준 {a.ac_id} 에 req_ids 가 없음 — 확인하는 공식 요구 r# 를 적는다"
+            )
+    linked = {r for a in out.acceptance_public for r in a.req_ids}
+    if missing := [r for r in reqs if r not in linked]:
+        problems.append(
+            f"공식 요구 {', '.join(missing)} 를 확인하는 공개 수용 기준이 없음 — 요구마다 p# 를 하나 이상 둔다"
+        )
+    return problems
+
+
 def extra_input() -> dict[str, Any]:
     return {"build_min": FEATURE_BUILD_MIN, "debug_min": FEATURE_DEBUG_MIN}
 
@@ -663,6 +712,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     s2 = [a.artifact_id for a in dbg.artifacts]
     clar = [c.clarification_id for c in out.clarifications]
 
+    problems += check_links(out)
     problems += _dup("requirements(req_id)", [r.req_id for r in out.requirements])
     problems += _dup("acceptance_public(ac_id)", [a.ac_id for a in out.acceptance_public])
     problems += _dup("acceptance_hidden(ac_id)", [a.ac_id for a in out.acceptance_hidden])
@@ -880,6 +930,18 @@ def repair_feature(out: DraftFeatureOutput, ctx: DraftContext) -> tuple[DraftFea
                 ]
             }
         )
+    if isinstance(
+        fixed, DraftFeatureOutputLinked
+    ):  # 없는 공식 요구를 가리키는 연결은 지운다 (빠진 연결은 못 고침 — 남은 문제로)
+        reqs = {r.req_id for r in fixed.requirements}
+        fixed = fixed.model_copy(
+            update={
+                "acceptance_public": [
+                    a.model_copy(update={"req_ids": [r for r in a.req_ids if r in reqs]})
+                    for a in fixed.acceptance_public
+                ]
+            }
+        )
     traps = {t.trap_id for t in fixed.traps}
     clar = {c.clarification_id for c in fixed.clarifications}
     s1 = {a.artifact_id for a in fixed.artifacts}
@@ -1017,7 +1079,7 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
             "observables": list(out.observables),
             "behavioral_anchors": out.behavioral_anchors if res.anchors_ok else None,
             "requirements": list(out.requirements),
-            # 초안의 PublicAcceptance → 명세의 LinkedAcceptance (요구 연결 칸은 문제 분석 생성기가 채운다, 여기선 비어 있음)
+            # 초안의 공개 수용 기준 → 명세의 LinkedAcceptance. v6 출력이면 생성기가 쓴 req_ids 그대로, 예전 판은 비어 있음(문제 분석 생성기가 채운다)
             "acceptance_public": [
                 LinkedAcceptance.model_validate(a.model_dump()) for a in out.acceptance_public
             ],
@@ -1095,7 +1157,9 @@ async def draft_feature_task(
     seed = inc.feature
 
     def fill_then_shuffle(out: Any, key: str) -> DraftFeatureOutput:
-        if isinstance(out, DraftFeatureOutputV5):  # v4 의 하위 모델이라 먼저
+        if isinstance(out, DraftFeatureOutputV6):  # v5 의 하위 모델이라 먼저
+            full: DraftFeatureOutput = fill_from_seed_v6(out, seed)
+        elif isinstance(out, DraftFeatureOutputV5):  # v4 의 하위 모델이라 먼저
             full = fill_from_seed_v5(out, seed)
         elif isinstance(out, DraftFeatureOutputV4):
             full = fill_from_seed_v4(out, seed)

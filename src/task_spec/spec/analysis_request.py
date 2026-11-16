@@ -8,6 +8,8 @@
   말함은 고치지 않고 승인 화면에 표시만 한다 — 흘림은 뜻의 문제라 낱말로 재면 오탐과 놓침이 번갈아 나온다 (v1·v2 평가, 2026-11-16 사용자).
   흘림의 측정은 평가의 열림 측정과 흘림 판정(judge_fact_leak)이 맡는다.
 - CURRENT 가 없으면(평가 전) 명세 그래프가 부르지 않는다 — 평가·스모크는 판을 정해 부른다 (불변식 7).
+- v3 출력(DraftAnalysisOutputV2): 추가 요구 c# 마다 질문 문장(ask_when)도 쓴다 — 사실과 같은 단계가 써야 두 항목의 조건을 나눈다.
+  공개 수용 기준 연결은 생성기(draft_feature_task v11)가 쓴 것이 있으면 그것을 쓴다 (2026-11-16 사용자).
 """
 
 from __future__ import annotations
@@ -15,18 +17,23 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import cast
 
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
+    AcceptanceLink,
+    ClarificationAsk,
     DraftAnalysisInput,
     DraftAnalysisOutput,
+    DraftAnalysisOutputV2,
     Fact,
     NodeError,
     Provenance,
     TaskItem,
 )
+from task_spec.schemas.draft import FactDraft as FactDraftT
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.spec.analysis import check_analysis
 from task_spec.spec.draft import DraftContext
@@ -83,7 +90,11 @@ def build_analysis_input(
         title=task.title or NONE,
         scenario=task.scenario or NONE,
         requirements="\n".join(f"- {r.req_id} {r.text}" for r in task.requirements) or NONE,
-        acceptance_public="\n".join(f"- {a.ac_id} {a.text}" for a in task.acceptance_public)
+        # 생성기가 연결을 쓴 명세(v11)는 [r#] 를 보여 준다 — v3 는 그때 acceptance_links 를 비운다
+        acceptance_public="\n".join(
+            f"- {a.ac_id} {'[' + ', '.join(a.req_ids) + '] ' if a.req_ids else ''}{a.text}"
+            for a in task.acceptance_public
+        )
         or NONE,
         clarifications=clars or NONE,
         business_need=seed.business_need if seed is not None else NONE,
@@ -124,9 +135,17 @@ def _hint_leak(answer: str, hint: str, context: str) -> list[str]:
     return leaked
 
 
+def _asks(out: DraftAnalysisOutput) -> dict[str, str]:
+    if not isinstance(out, DraftAnalysisOutputV2):
+        return {}
+    return {a.clarification_id: a.ask_when for a in out.clarification_asks}
+
+
 def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
-    """초안을 명세에 붙인 모습 (표시 없이) — 참조 검사·반영이 같은 변환을 쓴다."""
+    """초안을 명세에 붙인 모습 (표시 없이) — 참조 검사·반영이 같은 변환을 쓴다.
+    공개 수용 기준 연결은 명세에 이미 있으면(생성기 v11) 그대로, 없으면 이 단계가 쓴 것. 추가 요구 질문 문장은 v3 출력만."""
     links = {a.ac_id: list(a.req_ids) for a in out.acceptance_links}
+    asks = _asks(out)
     return task.model_copy(
         update={
             "background": out.background,
@@ -134,8 +153,14 @@ def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
             "request_mentions": list(out.request_mentions),
             "facts": [Fact(**f.model_dump()) for f in out.facts],
             "acceptance_public": [
-                a.model_copy(update={"req_ids": links.get(a.ac_id, [])})
+                a if a.req_ids else a.model_copy(update={"req_ids": links.get(a.ac_id, [])})
                 for a in task.acceptance_public
+            ],
+            "clarifications": [
+                c.model_copy(update={"ask_when": asks[c.clarification_id]})
+                if c.clarification_id in asks
+                else c
+                for c in task.clarifications
             ],
         }
     )
@@ -160,6 +185,22 @@ def check_analysis_draft(out: DraftAnalysisOutput, task: TaskItem, ctx: DraftCon
             problems.append(f"{f.fact_id} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(bad)}")
         if f.answer_hint.strip() == f.answer.strip():
             problems.append(f"{f.fact_id} 의 모호한 답이 구체 답과 같음")
+    if isinstance(out, DraftAnalysisOutputV2):
+        problems += _ask_problems(out, task)
+    return problems
+
+
+def _ask_problems(out: DraftAnalysisOutputV2, task: TaskItem) -> list[str]:
+    """추가 요구 질문 문장 — c# 마다 하나, 있는 c# 만. 문장 안의 숨은 요구 말은 보지 않는다 (진행자만 보는 칸 — 사실 ask_when 과 같음)."""
+    have = [c.clarification_id for c in task.clarifications]
+    asked = [a.clarification_id for a in out.clarification_asks]
+    problems = []
+    if unknown := [c for c in asked if c not in have]:
+        problems.append(f"clarification_asks 에 없는 추가 요구: {', '.join(unknown)}")
+    if missing := [c for c in have if c not in asked]:
+        problems.append(
+            f"추가 요구 {', '.join(missing)} 의 ask_when 이 없음 — c# 마다 구체 답을 줄 질문 문장을 쓴다"
+        )
     return problems
 
 
@@ -198,24 +239,34 @@ def repair_analysis(out: DraftAnalysisOutput, task: TaskItem) -> DraftAnalysisOu
     """코드로 고칠 수 있는 것 — 없는 id 를 가리키는 연결·covers 를 지우고, 사실 id 를 f1 부터 다시 매긴다. 문장은 고치지 않는다."""
     reqs = {r.req_id for r in task.requirements}
     known = reqs | {a.ac_id for a in task.acceptance_public}
-    facts = []
+    facts: list[FactDraftT] = []
     for f in out.facts:
         covers = [c for c in dict.fromkeys(f.covers) if c in known]
         if covers:
             facts.append(f.model_copy(update={"fact_id": f"f{len(facts) + 1}", "covers": covers}))
     acs = {a.ac_id for a in task.acceptance_public}
-    links = []
+    links: list[AcceptanceLink] = []
     for a in out.acceptance_links:
         rs = [r for r in dict.fromkeys(a.req_ids) if r in reqs]
         if a.ac_id in acs and rs and a.ac_id not in {x.ac_id for x in links}:
             links.append(a.model_copy(update={"req_ids": rs}))
-    return out.model_copy(
-        update={
-            "request_mentions": [r for r in dict.fromkeys(out.request_mentions) if r in reqs],
-            "facts": facts or out.facts,
-            "acceptance_links": links or out.acceptance_links,
-        }
-    )
+    upd = {
+        "request_mentions": [r for r in dict.fromkeys(out.request_mentions) if r in reqs],
+        "facts": facts or out.facts,
+        "acceptance_links": links or out.acceptance_links,
+    }
+    if isinstance(
+        out, DraftAnalysisOutputV2
+    ):  # 없는 추가 요구를 가리키는 문장·같은 c# 두 번째는 지운다 (빠진 문장은 못 고침)
+        have = {c.clarification_id for c in task.clarifications}
+        asks: list[ClarificationAsk] = []
+        for ca in out.clarification_asks:
+            if ca.clarification_id in have and ca.clarification_id not in {
+                x.clarification_id for x in asks
+            }:
+                asks.append(ca)
+        upd["clarification_asks"] = asks
+    return out.model_copy(update=upd)
 
 
 def overlap_flags(out: DraftAnalysisOutput, task: TaskItem) -> list[str]:
@@ -309,14 +360,14 @@ async def draft_analysis_request(
             template, build_analysis_input(task, seed, note), ontology_version=ctx.ontology_version
         )
         try:
-            r = await llm.call(prompt, DraftAnalysisOutput)
+            r = await llm.call(prompt, template.output_model)  # type: ignore[arg-type]
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
             res.errors.append(
                 NodeError(node=TASK, code=type(exc).__name__, message="요청 글·사실 생성 실패")
             )
             continue
         res.provenance.append(r.provenance)
-        out = r.parsed
+        out = cast(DraftAnalysisOutput, r.parsed)
         problems = check_analysis_draft(out, task, ctx)
         logger.info("%s attempt=%d problems=%d", TASK, attempt + 1, len(problems))
         if best is None or len(problems) < len(best[1]):

@@ -109,6 +109,7 @@ def facilitator_view(common_id: str, task: TaskItem) -> FacilitatorView:
                         match_terms=list(c.match_terms),
                         answer=c.answer,
                         answer_hint=c.answer_hint,
+                        ask_when=c.ask_when,  # 문제 분석 생성기 v3 가 쓴 명세만 — 없으면 match_terms 를 예시 표현으로
                     )
                     for c in task.clarifications
                 ],

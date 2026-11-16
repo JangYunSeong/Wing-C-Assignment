@@ -414,6 +414,16 @@ class Clarification(Schema):
     match_terms: list[str] = Field(default_factory=list, max_length=8)  # 구체 답을 줄 질문 낱말
 
 
+class TaskClarification(Clarification):
+    """명세에 저장하는 추가 요구 — 구체 답을 줄 질문 문장(`ask_when`)을 더한다 (사실 `Fact.ask_when` 과 같은 방식, analysis-stage.md §4.2).
+    문제 분석 생성기가 사실과 함께 써 두 항목의 조건이 겹치지 않게 나눈다 (2026-11-16 사용자). 생성기 출력은 `Clarification` 그대로 둔다 —
+    출력 스키마가 프롬프트 본문에 들어가므로 칸을 더하면 예전 판 프롬프트가 바뀐다 (`LinkedAcceptance` 와 같은 이유)."""
+
+    ask_when: str | None = Field(
+        default=None, max_length=200
+    )  # 예전 판 명세는 없음 — 진행자가 match_terms 를 예시 표현으로 본다
+
+
 class AcceptedDesign(Schema):
     """숨은 요구를 만족하는 설계 1건 — 한 가지 정답으로 감점하지 않게 2개 이상 둔다."""
 
@@ -506,7 +516,7 @@ class TaskItem(Schema):
     requirements: list[Requirement] = Field(default_factory=list, max_length=6)
     acceptance_public: list[LinkedAcceptance] = Field(default_factory=list, max_length=6)
     acceptance_hidden: list[HiddenAcceptance] = Field(default_factory=list, max_length=8)
-    clarifications: list[Clarification] = Field(default_factory=list, max_length=6)
+    clarifications: list[TaskClarification] = Field(default_factory=list, max_length=6)
     max_clarifications: int | None = Field(
         default=None, ge=1, le=6
     )  # 새로 만드는 기능형은 None (한도 없음)
@@ -523,6 +533,19 @@ class TaskItem(Schema):
     facts: list[Fact] = Field(default_factory=list, max_length=12)  # 요청자 지식 — 물으면 주는 답
     review_flags: list[str] = Field(default_factory=list)  # 승인자가 꼭 볼 것
     provenance_id: str | None = None
+
+    @field_validator("clarifications", mode="before")
+    @classmethod
+    def _clarifications_as_stored(cls, v: object) -> object:
+        """생성기 출력의 `Clarification` 을 그대로 넘겨도 명세 모델(`TaskClarification`, 질문 문장 없음)로 읽는다."""
+        if not isinstance(v, list):
+            return v
+        return [
+            c.model_dump()
+            if isinstance(c, Clarification) and not isinstance(c, TaskClarification)
+            else c
+            for c in v
+        ]
 
     @model_validator(mode="after")
     def _feature_fields_only_for_feature(self) -> TaskItem:
