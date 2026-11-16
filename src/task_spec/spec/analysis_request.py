@@ -1,6 +1,7 @@
 """문제 분석 판 — 요청 글·요청자 지식 생성 (prompts/draft_analysis_request, docs/design/analysis-stage.md §4·§5·§5.1).
 
-승인 전 기능형 명세의 공개 요구·공개 수용 기준·추가 요구를 **요청 글 + 사실(물으면 주는 답) + 공개 수용 기준 → 요구 연결**로 바꾼다.
+승인 전 기능형 명세의 공개 요구·공개 수용 기준·추가 요구를 **배경 글 + 요청 글 + 사실(물으면 주는 답) + 공개 수용 기준 → 요구 연결**로 바꾼다.
+배경 글은 README 상황 절 자리 — 지금 상황 글은 요구를 나열하므로 요구 없는 글을 새로 쓴다 (§4.1, 2026-11-16 사용자 (나)).
 생성 → 검사(§5.1) → 문제를 알려 1회 재요청 → 코드로 고칠 수 있는 것 고치기 → 다시 검사 — 기능형 초안(spec/draft.draft_task)과 같은 루프.
 - 입력에 숨은 요구·허용 설계를 넣지 않는다 (§5). 지원자 문서는 없다 — 공고·재료로 만든 명세만.
 - 사실과 추가 요구가 겹치거나 자료가 요구를 그대로 말하면 고치지 않고 승인 화면에 표시만 한다 (2026-11-16 사용자).
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 TASK = "draft_analysis_request"
 NONE = "(없음)"
 REQUEST_MAX = 450  # 요청 글 300자 안팎 — 넘으면 재요청 (스키마 상한 600 은 여유)
+BACKGROUND_MAX = 600  # 배경 글 — 지금 상황 글(요구 목록 포함 ~550자)보다 짧게
 COPY_RATIO = 0.7  # 공개 수용 기준 문장의 낱말이 이만큼 요청 글에 있으면 베낀 것
 STATES_RATIO = 0.8  # 공식 요구 문장의 낱말이 이만큼 자료 본문에 있으면 자료가 요구를 그대로 말한 것
 
@@ -122,6 +124,7 @@ def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
     links = {a.ac_id: list(a.req_ids) for a in out.acceptance_links}
     return task.model_copy(
         update={
+            "background": out.background,
             "request": out.request,
             "request_mentions": list(out.request_mentions),
             "facts": [Fact(**f.model_dump()) for f in out.facts],
@@ -133,24 +136,48 @@ def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
     )
 
 
-def check_analysis_draft(out: DraftAnalysisOutput, task: TaskItem, ctx: DraftContext) -> list[str]:
-    """§5.1 명세 쪽 검사 — 재요청 사유. 참조(spec/analysis.check_analysis) + 요청 글 + 사실 답."""
-    problems = check_analysis(preview(task, out))
-    req = out.request
-    if len(req) > REQUEST_MAX:
-        problems.append(f"요청 글이 김 ({len(req)}자) — 300자 안팎으로 줄인다")
-    if re.search(r"\d", req):
-        problems.append("요청 글에 수치가 있음 — 수치는 사실의 구체 답에만")
-    hidden = _hidden_terms(task, ctx)
-    if bad := find_terms(hidden, req):
-        problems.append(f"요청 글에 숨은 요구·운영 조건을 드러내는 말: {', '.join(bad)}")
+def _visible_problems(
+    label: str, text: str, task: TaskItem, hidden: list[str], limit: int
+) -> list[str]:
+    """지원자가 처음부터 보는 글(배경 글·요청 글) 공통 검사 — 길이·수치·숨은 말·공개 수용 기준 베끼기."""
+    problems = []
+    if len(text) > limit:
+        problems.append(f"{label}이 김 ({len(text)}자) — {limit}자 안으로 줄인다")
+    if re.search(r"\d", text):
+        problems.append(f"{label}에 수치가 있음 — 수치는 사실의 구체 답에만")
+    if bad := find_terms(hidden, text):
+        problems.append(f"{label}에 숨은 요구·운영 조건을 드러내는 말: {', '.join(bad)}")
     for a in task.acceptance_public:
         ws = _words(a.text)
-        if ws and sum(bool(find_terms([w], req)) for w in ws) / len(ws) >= COPY_RATIO:
-            problems.append(f"요청 글이 공개 수용 기준 {a.ac_id} 문장을 거의 그대로 씀 — 흐리게")
-    # 지원자가 처음부터 보는 글 = 제목·요청 글. 기존 상황 글은 요구를 나열하는 일이 많아(제품팀 요청 첫째·둘째…) 넣지 않는다 —
+        if ws and sum(bool(find_terms([w], text)) for w in ws) / len(ws) >= COPY_RATIO:
+            problems.append(f"{label}이 공개 수용 기준 {a.ac_id} 문장을 거의 그대로 씀 — 흐리게")
+    return problems
+
+
+def check_analysis_draft(out: DraftAnalysisOutput, task: TaskItem, ctx: DraftContext) -> list[str]:
+    """§5.1 명세 쪽 검사 — 재요청 사유. 참조(spec/analysis.check_analysis) + 배경 글 + 요청 글 + 사실 답."""
+    problems = check_analysis(preview(task, out))
+    hidden = _hidden_terms(task, ctx)
+    bg, req = out.background, out.request
+    problems += _visible_problems("배경 글", bg, task, hidden, BACKGROUND_MAX)
+    problems += _visible_problems("요청 글", req, task, hidden, REQUEST_MAX)
+    # 배경 글에는 공식 요구가 없어야 한다 — 요구 문장을 거의 그대로 쓰거나 사실의 답에만 있는 말(값·순서·조건)을 쓰면 묻지 않고 안다
+    for r in task.requirements:
+        ws = [w for w in _words(r.text) if not find_terms([w], task.title or "")]
+        if ws and sum(bool(find_terms([w], bg)) for w in ws) / len(ws) >= COPY_RATIO:
+            problems.append(f"배경 글이 공식 요구 {r.req_id} 를 거의 그대로 말함 — 요구는 사실로만")
+    title = task.title or ""
+    for f in out.facts:
+        own = " ".join([title, req, f.topic, f.ask_when])
+        leaked = [w for w in _answer_only(f.answer, own) if find_terms([w], bg)]
+        # 두 글자 낱말 하나("요청")는 소재 말일 때가 많다 — 두 낱말 이상이거나 세 글자 이상 낱말일 때만 (2026-11-16 스모크)
+        if len(leaked) >= 2 or any(len(w) >= 3 for w in leaked):
+            problems.append(
+                f"배경 글이 {f.fact_id} 의 답을 흘림 ({', '.join(leaked[:3])}) — 배경(누가 무엇 때문에 곤란한가)만"
+            )
+    # 지원자가 처음부터 보는 글 = 제목·배경 글·요청 글. 예전 상황 글은 요구를 나열하는 일이 많아(제품팀 요청 첫째·둘째…) 넣지 않는다 —
     # 넣으면 상황 글에 있는 말은 다 "보인다"로 쳐 모호한 답의 누출을 놓친다 (2026-11-16 스모크)
-    context_base = " ".join([req, task.title or ""])
+    context_base = " ".join([title, bg, req])
     for f in out.facts:
         if bad := find_terms(hidden, " ".join([f.topic, f.ask_when, f.answer, f.answer_hint])):
             problems.append(f"{f.fact_id} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(bad)}")
@@ -197,7 +224,7 @@ def overlap_flags(out: DraftAnalysisOutput, task: TaskItem) -> list[str]:
     - 답 흘림: 추가 요구의 모호한 답에 그 사실의 구체 답에만 있는 낱말(다른 사실의 답·그 추가 요구 자신의 주제·답에 없는 말)이 있을 때."""
     fact_words = [set(_words(" ".join([f.topic, f.ask_when, f.answer]))) for f in out.facts]
     shared = {w for w in set().union(*fact_words) if sum(w in ws for ws in fact_words) >= 2}
-    domain = " ".join([task.title or "", out.request, *shared])
+    domain = " ".join([task.title or "", out.background, out.request, *shared])
     context_base = " ".join(
         [out.request, task.title or ""]
     )  # 상황 글은 넣지 않는다 (check_analysis_draft)

@@ -57,6 +57,7 @@ def _task() -> TaskItem:
 
 def _good() -> dict[str, Any]:
     return {
+        "background": "가상의 물류 회사가 주문 상태 변경 API 를 운영하고 있다. 운영팀은 주문 상태가 언제 왜 바뀌었는지 알 수 없어 고객 문의에 답하기 어렵다.",
         "request": "주문 상태가 언제 누구 요청으로 바뀌었는지 남겨 두고, 나중에 주문마다 확인할 수 있게 해 주세요.",
         "request_mentions": ["r1"],
         "facts": [
@@ -110,6 +111,16 @@ def test_good_draft_passes_the_checks() -> None:
         ),  # 먼저 말할 개념
         (lambda d: d.update(request="조회 결과는 최신순으로 해 주세요."), "p2 문장을 거의 그대로"),
         (lambda d: d.update(request="가" * 460), "요청 글이 김"),
+        (lambda d: d.update(background="가" * 610), "배경 글이 김"),
+        (lambda d: d.update(background=d["background"] + " 하루 3번 확인한다."), "배경 글에 수치"),
+        (
+            lambda d: d.update(background=d["background"] + " 이력은 최신순으로 보여야 한다."),
+            "배경 글이 f2 의 답을 흘림 (최신순",
+        ),
+        (
+            lambda d: d.update(background=d["background"] + " 상태 변경 요청마다 이력을 남긴다."),
+            "배경 글이 공식 요구 r1 를 거의 그대로",
+        ),
         (
             lambda d: d["facts"][1].update(answer_hint="이력은 최신순으로 보여야 해요."),
             "f2 의 모호한 답이 구체 답의 내용을 흘림",
@@ -137,6 +148,7 @@ async def test_generate_applies_request_facts_and_links() -> None:
     assert len(fake.calls) == 1 and res.output is not None and not res.flags
     task = apply_analysis(_task(), res)
     assert task.request is not None and task.request_mentions == ["r1"]
+    assert task.background is not None and "운영팀" in task.background
     assert [(f.fact_id, f.covers, f.match_terms) for f in task.facts] == [
         ("f1", ["r1", "p1"], []),
         ("f2", ["r2", "p2"], []),

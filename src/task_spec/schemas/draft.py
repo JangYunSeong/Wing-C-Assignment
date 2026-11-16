@@ -423,11 +423,16 @@ class AcceptanceLink(Schema):
 
 
 class DraftAnalysisOutput(Schema):
+    background: str = Field(
+        min_length=1,
+        max_length=800,
+        description="배경 글 — 회사·서비스·누가 무엇 때문에 곤란한가. 공식 요구·수치·운영 조건 없이",
+    )
     request: str = Field(
         min_length=1, max_length=600, description="요청 글 — 요청자 말투 300자 안팎, 업무 필요만"
     )
     request_mentions: list[Annotated[str, Field(pattern=r"^r\d{1,2}$")]] = Field(
-        default_factory=list, max_length=6, description="요청 글이 직접 말한 공식 요구 r#"
+        default_factory=list, max_length=6, description="배경 글·요청 글이 직접 말한 공식 요구 r#"
     )
     facts: list[FactDraft] = Field(min_length=1, max_length=12)
     acceptance_links: list[AcceptanceLink] = Field(min_length=1, max_length=6)

@@ -94,9 +94,11 @@ task:                                  # common_tasks·verification_tasks·slots
     {reveal_after: stage1_submitted, time_limit_min: 5~120, scenario, trap_ids, artifacts, max_requests(null — 한도 없음), deliverables, observables}
   # 문제 분석 판 (analysis-stage.md §4·§6) — 요청 글로 시작해 요구를 진행자에게 물어 확인한다. 예전 판은 비어 있다.
   # id 사이 참조는 spec/analysis.py 가 본다: covers 는 있는 r#·p# 만, 모든 r#·p# 는 사실 하나 이상이 덮는다, req_ids·request_mentions 는 있는 r# 만,
-  # p# 마다 req_ids 하나 이상, r# 마다 가리키는 p# 하나 이상, 요청 글과 사실은 함께
+  # p# 마다 req_ids 하나 이상, r# 마다 가리키는 p# 하나 이상, 요청 글과 사실은 함께, 배경 글 필수
+  background: "<배경 글>"                    # README 상황 절 자리 — 회사·서비스·누가 무엇 때문에 곤란한가만, 공식 요구 없이 (1500자 이하).
+                                             # 지금 상황 글(scenario)은 요구를 나열하므로 문제 분석 판은 이 글을 보인다 [확정: 2026-11-16 사용자]
   request: "<요청 글>"                       # README 요구 사항 절 자리 (1000자 이하)
-  request_mentions: [r#]                     # 요청 글이 이미 말한 공식 요구 → 채점에서 "보이는 것으로 앎"
+  request_mentions: [r#]                     # 배경 글·요청 글이 이미 말한 공식 요구 → 채점에서 "보이는 것으로 앎"
   facts:                                     # 요청자 지식 — 물으면 주는 답 (승인 대상), 최대 12
     - {fact_id: f#, covers: [r#|p#], topic, ask_when: "<구체 답 조건 문장>", answer, answer_hint, match_terms}
                                              # 진행자 보기로는 covers·match_terms 를 빼고 넘긴다 (match_terms 는 명세 안 비교용)
@@ -142,7 +144,7 @@ task:                                  # common_tasks·verification_tasks·slots
 | 자료 `role` 이 빠진 LLM 답은 support 로 받는다 — 답 전체를 버리지 않고, 핵심·방해 자료 수는 자료 목록 검사가 판정 | [제안] | 명세 알파: 자료 하나의 role 누락으로 답 전체가 스키마 위반, 하루 5번 재요청 기회를 날림 |
 | 연결 문구(`link_text`)에 숫자·가명화 토큰·원문 베끼기·정답 개념 없음                                        | [제안]                 | P1 생성 단계 검사 `spec/questions.py` (스키마 검증 아님), 실패 시 1회 재요청 후 기본 문구                         |
 | 기능형의 자료·질문 한도 없음 — 새로 만드는 기능형은 `max_requests`·`max_clarifications`·`debug_stage.max_requests` 가 null, 상황 글에 한도 안내를 붙이지 않고 README 는 "제한이 없다"고 적음. 생성기 출력의 한도 칸은 예전 판 출력 스키마라 남기되 명세에 넣지 않음 | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4.4 — 한도는 정보를 막지 못하고 묻는 형식만 벌함. 상한은 제한 시간 |
-| 문제 분석 판 칸 — `request`·`request_mentions`·`facts`(`ask_when` 포함)·`acceptance_public[].req_ids`. 기능형 전용, 예전 판은 비어 있음. 참조 검사는 `spec/analysis.py` | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4·§6 (스키마 PR, §12-3). 생성기는 다음 단계 |
+| 문제 분석 판 칸 — `background`·`request`·`request_mentions`·`facts`(`ask_when` 포함)·`acceptance_public[].req_ids`. 기능형 전용, 예전 판은 비어 있음. 참조 검사는 `spec/analysis.py` | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4·§6 (스키마 PR, §12-3). 생성기는 다음 단계 |
 
 
 ## 바꾸는 법

@@ -4,7 +4,7 @@
 - 사실(`facts`)의 `covers` 는 있는 공식 요구(r#)·공개 수용 기준(p#)만 가리킨다.
 - 공식 요구·공개 수용 기준마다 그것을 덮는 사실이 하나 이상 — 물어서 알 수 없는 요구로 채점하면 안 된다 (§4.2).
 - `request_mentions`·`req_ids` 는 있는 r# 만. 공개 수용 기준마다 `req_ids` 하나 이상, 공식 요구마다 그것을 가리키는 p# 하나 이상 (§6·§5.1).
-- 요청 글과 사실은 함께 있거나 함께 없다 — 한쪽만 있으면 판이 섞인 것.
+- 요청 글과 사실은 함께 있거나 함께 없다 — 한쪽만 있으면 판이 섞인 것. 문제 분석 판은 배경 글(요구 없는 상황 글)도 있어야 한다.
 문제 분석 판이 아닌 명세(요청 글·사실이 모두 없음)는 검사할 것이 없다. 생성기 연결은 문제 분석 생성기(§12 4)에서.
 """
 
@@ -27,6 +27,10 @@ def check_analysis(task: TaskItem) -> list[str]:
     acs = [a.ac_id for a in task.acceptance_public]
     known = set(reqs) | set(acs)
     problems: list[str] = []
+    if not task.background:
+        problems.append(
+            "배경 글이 없음 — 지금 상황 글은 요구를 나열하므로 요구 없는 배경 글을 둔다 (§4.1)"
+        )
     ids = [f.fact_id for f in task.facts]
     if dup := sorted({i for i in ids if ids.count(i) > 1}):
         problems.append(f"사실 id 가 겹침: {', '.join(dup)}")

@@ -450,6 +450,7 @@ FEATURE_FIELDS = (
     "accepted_designs",
     "debug_stage",
     "request",
+    "background",
     "request_mentions",
     "facts",
 )
@@ -514,7 +515,11 @@ class TaskItem(Schema):
     # 문제 분석(analysis-stage.md §4·§6) — 요청 글로 시작해 요구를 진행자에게 물어 확인하는 판. 예전 판·이슈형은 비어 있다.
     # id 사이 참조(covers·req_ids·request_mentions)는 spec/analysis.py 가 본다 — 스키마는 형식만
     request: str | None = Field(default=None, max_length=1000)  # 요청 글 — README 요구 사항 절 자리
-    request_mentions: list[ReqId] = Field(default_factory=list)  # 요청 글이 이미 말한 공식 요구
+    # 배경 글 — README 상황 절 자리. 회사·서비스·누가 무엇 때문에 곤란한가만, 공식 요구 없이 (지금 상황 글은 요구를 나열한다 — §4.1 [확정: 2026-11-16 사용자])
+    background: str | None = Field(default=None, max_length=1500)
+    request_mentions: list[ReqId] = Field(
+        default_factory=list
+    )  # 배경 글·요청 글이 이미 말한 공식 요구
     facts: list[Fact] = Field(default_factory=list, max_length=12)  # 요청자 지식 — 물으면 주는 답
     review_flags: list[str] = Field(default_factory=list)  # 승인자가 꼭 볼 것
     provenance_id: str | None = None
