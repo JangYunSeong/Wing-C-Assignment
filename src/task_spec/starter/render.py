@@ -188,14 +188,19 @@ def contract_markdown(
 
 
 def process_markdown(task: TaskItem) -> str:
-    """진행 방식 — 질문 한도·요청할 수 있는 자료 이름(본문·역할은 넣지 않음)."""
+    """진행 방식 — 질문 한도·요청할 수 있는 자료 이름(본문·역할은 넣지 않음).
+    한도가 없으면(None — 2026-11-16 부터 새로 만드는 기능형, analysis-stage.md §4.4) 없다고 적는다 — 지원자가 한도를 짐작해 묻기를 아끼지 않게."""
     out: list[str] = []
     if task.clarifications:
-        limit = f"**최대 {task.max_clarifications}번**" if task.max_clarifications else ""
-        out.append(f"- 요구사항에 대해 진행자에게 {limit} 질문할 수 있다.".replace("  ", " "))
+        if task.max_clarifications:
+            out.append(
+                f"- 요구사항에 대해 진행자에게 **최대 {task.max_clarifications}번** 질문할 수 있다."
+            )
+        else:
+            out.append("- 요구사항에 대해 진행자에게 질문할 수 있다. 질문 수에는 제한이 없다.")
     if task.artifacts:
-        limit = f" (최대 {task.max_requests}개)" if task.max_requests else ""
-        out.append(f"- 저장소에 없는 다음 자료는 진행자에게 요청하면 받을 수 있다{limit}.")
+        limit = f"최대 {task.max_requests}개" if task.max_requests else "개수 제한 없음"
+        out.append(f"- 저장소에 없는 다음 자료는 진행자에게 요청하면 받을 수 있다 ({limit}).")
         out += [f"  - {a.title}" for a in task.artifacts]
     out.append("- AI 도구를 써도 된다.")
     return "\n".join(out)

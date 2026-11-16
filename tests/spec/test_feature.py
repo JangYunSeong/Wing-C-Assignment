@@ -240,8 +240,16 @@ def test_apply_feature_fills_two_stages() -> None:
     assert task.debug_stage is not None
     assert task.debug_stage.time_limit_min == FEATURE_DEBUG_MIN
     assert task.debug_stage.reveal_after == "stage1_submitted"
-    assert task.max_clarifications == 2 and len(task.accepted_designs) == 2
-    assert task.provenance_id == "prov-1"
+    assert len(task.accepted_designs) == 2 and task.provenance_id == "prov-1"
+    # 한도 없음 (analysis-stage.md §4.4, 2026-11-16) — 초안의 한도 칸은 명세에 넣지 않는다
+    assert (task.max_requests, task.max_clarifications, task.debug_stage.max_requests) == (
+        None,
+        None,
+        None,
+    )
+    # 초안의 공개 수용 기준은 명세에서 요구 연결 칸이 있는 모델로 (아직 비어 있음)
+    assert all(a.req_ids == [] for a in task.acceptance_public)
+    assert [a.ac_id for a in task.acceptance_public] == [a.ac_id for a in _out().acceptance_public]
 
 
 async def _no_sleep(_: float) -> None:

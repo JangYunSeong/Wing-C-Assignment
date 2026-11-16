@@ -51,6 +51,20 @@ def test_readme_fills_every_slot_from_spec_and_contract() -> None:
     assert "  - 운영 설정" in readme  # 자료 이름만
 
 
+def test_readme_says_there_is_no_limit_when_none() -> None:
+    """한도 없음 (analysis-stage.md §4.4, 2026-11-16 부터 새로 만드는 기능형) — 진행 방식에 숫자 대신 제한이 없다고 적는다."""
+    task = _approved().model_copy(
+        update={
+            "max_requests": None,
+            "max_clarifications": None,
+            "scenario": "가상의 물류 회사가 주문 상태 변경마다 이력을 남기려 한다.",  # 한도 안내 없이 저장됨
+        }
+    )
+    readme = render_readme(task, _contract_with_list(), load_template(JAVA)).content
+    assert "질문할 수 있다. 질문 수에는 제한이 없다." in readme
+    assert "받을 수 있다 (개수 제한 없음)." in readme and "최대" not in readme
+
+
 def test_readme_has_no_hidden_or_material_content() -> None:
     task = _approved()
     readme = render_readme(task, _contract_with_list(), load_template(JAVA)).content

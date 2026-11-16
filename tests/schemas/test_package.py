@@ -283,6 +283,36 @@ def test_kit_process_questions_only_in_stage1() -> None:
         EvalKit.model_validate(_kit(stage2=_stage(max_clarifications=2)))
 
 
+def _analysis_stage(**over: Any) -> dict[str, Any]:
+    """문제 분석 칸 (analysis-stage.md §6·§8) — 사실 연결·요구 문장·공개 수용 기준 → 요구."""
+    return _stage(
+        **{
+            "requirements": [{"req_id": "r1", "text": "가상 요구"}],
+            "facts": [{"fact_id": "f1", "covers": ["r1", "p1"], "topic": "가상 주제"}],
+            "acceptance_public": [{"ac_id": "p1", "req_ids": ["r1"]}],
+            "request_mentions": ["r1"],
+            **over,
+        }
+    )
+
+
+def test_kit_analysis_fields_only_in_stage1_and_resolve() -> None:
+    kit = EvalKit.model_validate(_kit(stage1=_analysis_stage()))
+    assert kit.stage1 is not None and kit.stage1.facts[0].covers == ["r1", "p1"]
+    with pytest.raises(ValidationError, match="요청 글·사실은 1단계에만"):
+        EvalKit.model_validate(_kit(stage1=_stage(), stage2=_analysis_stage()))
+    with pytest.raises(ValidationError, match="facts 의 covers 가 키트에 없는"):
+        EvalKit.model_validate(
+            _kit(stage1=_analysis_stage(facts=[{"fact_id": "f1", "covers": ["r9"], "topic": "x"}]))
+        )
+    with pytest.raises(ValidationError, match="request_mentions·req_ids 가 키트에 없는 요구"):
+        EvalKit.model_validate(_kit(stage1=_analysis_stage(request_mentions=["r2"])))
+    with pytest.raises(ValidationError, match="request_mentions·req_ids 가 키트에 없는 요구"):
+        EvalKit.model_validate(
+            _kit(stage1=_analysis_stage(acceptance_public=[{"ac_id": "p1", "req_ids": ["r3"]}]))
+        )
+
+
 def test_kit_process_trap_references_must_resolve() -> None:
     with pytest.raises(ValidationError, match="없는 함정"):
         EvalKit.model_validate(_kit(stage2=_stage(trap_ids=["t9"])))

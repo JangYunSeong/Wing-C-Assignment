@@ -37,6 +37,7 @@ from task_spec.schemas import (
     DraftFeatureOutputV5,
     FeatureSeed,
     HiddenAcceptance,
+    LinkedAcceptance,
     Observable,
     PublicIncident,
     TaskItem,
@@ -62,7 +63,6 @@ from task_spec.spec.draft import (
     incident_copied,
     repair,
 )
-from task_spec.spec.request_note import request_note
 
 TASK = "draft_feature_task"
 SEED_TRAP = "t1"  # v2: 재료의 숨은 요구 하나
@@ -254,7 +254,7 @@ def _with_note(body: str, note: str, cap: int) -> str:
 
 def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeatureOutput:
     """v4 출력 → 전체 기능형 출력. 계산할 수 있는 칸은 여기서 정한다 (LLM 에 맡기지 않음):
-    자료 번호(1단계 a1…, 2단계 이어서)·요청 한도·질문 한도·관찰 행동·2단계 연결·공통 문구, 숨은 요구·허용 설계(재료)."""
+    자료 번호(1단계 a1…, 2단계 이어서)·요청 한도·질문 한도(초안 칸만 — 명세엔 넣지 않음)·관찰 행동·2단계 연결·공통 문구, 숨은 요구·허용 설계(재료)."""
     s1 = [a.model_copy(update={"artifact_id": f"a{i}"}) for i, a in enumerate(out.artifacts, 1)]
     n = len(s1)
     s2 = [
@@ -284,8 +284,10 @@ def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeat
     deliv2 = list(out.debug_stage.deliverables)
     if not any("이미 대응" in d for d in deliv2):
         deliv2.append(STAGE2_ALREADY)
-    scenario = _with_note(out.scenario, request_note(lim1, max_q), SCENARIO_MAX)
-    debug_scenario = _with_note(out.debug_stage.scenario, request_note(lim2), DEBUG_SCENARIO_MAX)
+    # 자료·질문 한도 없음 (analysis-stage.md §4.4 [확정: 2026-11-16 사용자]) — 상황 글에 한도 안내(request_note)를 붙이지 않는다.
+    # lim·max_q 는 초안 모델(DraftFeatureOutput — 예전 판 출력 스키마라 칸이 필수)과 자료 목록 검사에만 쓰고 명세에는 넣지 않는다(apply_feature)
+    scenario = _with_note(out.scenario, "", SCENARIO_MAX)
+    debug_scenario = _with_note(out.debug_stage.scenario, "", DEBUG_SCENARIO_MAX)
     data = {
         **out.model_dump(exclude={"concepts", "debug_stage", "clarifications", "artifacts"}),
         "scenario": scenario,
@@ -992,12 +994,13 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
     if out is None:
         return task.model_copy(update={"review_flags": [*task.review_flags, *res.flags]})
     dbg = out.debug_stage
+    # 자료·질문 한도는 넣지 않는다 — 한도 없음 (analysis-stage.md §4.4 [확정: 2026-11-16 사용자]). 초안의 한도 칸은 예전 판 출력 스키마라 남는다
     stage = DebugStage(
         time_limit_min=FEATURE_DEBUG_MIN,
         scenario=dbg.scenario,
         trap_ids=list(dbg.trap_ids),
         artifacts=list(dbg.artifacts),
-        max_requests=dbg.max_requests,
+        max_requests=None,
         deliverables=list(dbg.deliverables),
         observables=list(dbg.observables),
     )
@@ -1010,11 +1013,14 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
             "variable": list(out.variable),
             "traps": list(out.traps),
             "artifacts": list(out.artifacts),
-            "max_requests": out.max_requests,
+            "max_requests": None,
             "observables": list(out.observables),
             "behavioral_anchors": out.behavioral_anchors if res.anchors_ok else None,
             "requirements": list(out.requirements),
-            "acceptance_public": list(out.acceptance_public),
+            # 초안의 PublicAcceptance → 명세의 LinkedAcceptance (요구 연결 칸은 문제 분석 생성기가 채운다, 여기선 비어 있음)
+            "acceptance_public": [
+                LinkedAcceptance.model_validate(a.model_dump()) for a in out.acceptance_public
+            ],
             # 실패 지정은 재료가 쓰는 숨은 요구에서만 — 출력 스키마가 프롬프트 본문에 들어가 이전 판에도 이 칸이 보인다
             "acceptance_hidden": [
                 h
@@ -1023,7 +1029,7 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
                 for h in out.acceptance_hidden
             ],
             "clarifications": list(out.clarifications),
-            "max_clarifications": out.max_clarifications,
+            "max_clarifications": None,
             "accepted_designs": list(out.accepted_designs),
             "debug_stage": stage,
             "provenance_id": res.provenance_id,

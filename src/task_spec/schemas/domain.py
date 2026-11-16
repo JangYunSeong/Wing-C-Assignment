@@ -332,6 +332,34 @@ class PublicAcceptance(Schema):
     text: str = Field(min_length=1, max_length=300)
 
 
+ReqId = Annotated[str, Field(pattern=r"^r\d{1,2}$")]
+
+
+class LinkedAcceptance(PublicAcceptance):
+    """명세에 저장하는 공개 수용 기준 — 어느 공식 요구에 속하는지(`req_ids`)를 더한다 (docs/design/analysis-stage.md §6·§7.1).
+    생성기 출력(`DraftFeatureOutput*`)은 `PublicAcceptance` 그대로 둔다 — 출력 스키마가 프롬프트 본문에 들어가므로, 칸을 더하면
+    예전 판 프롬프트가 판 번호 없이 바뀐다. 명세로 옮길 때(spec/feature.py) 이 모델로 바꾼다."""
+
+    req_ids: list[ReqId] = Field(default_factory=list)  # 예전 판 명세는 비어 있음
+
+
+class Fact(Schema):
+    """요청자 지식 1건 (analysis-stage.md §4.2) — 지원자가 진행자에게 물으면 주는 답. 명세 승인 대상.
+    두 층 답은 추가 요구(`Clarification`)와 같고, 구체 답을 줄 질문은 낱말 목록이 아니라 문장(`ask_when`)으로 적는다 — 진행자 LLM 이 질문과 견준다.
+    진행자 보기로는 `covers`·`match_terms` 를 빼고 넘긴다 (§4.2·§8)."""
+
+    fact_id: str = Field(pattern=r"^f\d{1,2}$")
+    covers: list[Annotated[str, Field(pattern=r"^[rp]\d{1,2}$")]] = Field(
+        min_length=1
+    )  # 이 사실이 드러내는 공식 요구(r#)·공개 수용 기준(p#)
+    topic: str = Field(min_length=1, max_length=120)
+    ask_when: str = Field(min_length=1, max_length=300)  # 구체 답 조건 문장
+    answer: str = Field(min_length=1, max_length=600)  # 구체 답
+    answer_hint: str | None = Field(default=None, max_length=400)  # 모호한 답 — 주제만 맞는 질문에
+    # 낱말 규칙(이력) 비교용 — 명세 안에서만 쓰고 진행자 보기로 내보내지 않는다 (2026-11-16 사용자)
+    match_terms: list[str] = Field(default_factory=list, max_length=8)
+
+
 class HiddenFault(Schema):
     """숨김 수용 기준의 실패 지정 — 채점 때 하네스가 어느 요청을 실패시키는지, **순번이 아니라 항목 내용으로** (업무 말).
     [확정: 2026-11-11 사용자] 명세에 두고 사람이 승인한다 — 과제 코드 단계(plan_contract)는 이것을 계약 API·요청 칸에 옮기기만 하고
@@ -421,6 +449,9 @@ FEATURE_FIELDS = (
     "max_clarifications",
     "accepted_designs",
     "debug_stage",
+    "request",
+    "request_mentions",
+    "facts",
 )
 
 
@@ -462,7 +493,8 @@ class TaskItem(Schema):
     artifacts: list[Artifact] = Field(
         default_factory=list
     )  # 요청 시 공개 자료 (비면 자료가 scenario 안에 다 있음)
-    max_requests: int | None = Field(default=None, ge=1, le=12)  # 지원자가 요청할 수 있는 자료 수
+    # 지원자가 요청할 수 있는 자료 수 — 새로 만드는 기능형은 None(한도 없음, analysis-stage.md §4.4 [확정: 2026-11-16 사용자])
+    max_requests: int | None = Field(default=None, ge=1, le=12)
     observables: list[Observable] = Field(default_factory=list)
     behavioral_anchors: BehavioralAnchors | None = None
     follow_up_questions: list[str] = Field(
@@ -471,12 +503,19 @@ class TaskItem(Schema):
     source_incident: str | None = None  # 부서 결정적 사건 id — 수집 전에는 None
     # 기능형(feature) 전용 — LLM(draft_feature_task)이 채운다. incident 에서는 비어 있어야 한다
     requirements: list[Requirement] = Field(default_factory=list, max_length=6)
-    acceptance_public: list[PublicAcceptance] = Field(default_factory=list, max_length=6)
+    acceptance_public: list[LinkedAcceptance] = Field(default_factory=list, max_length=6)
     acceptance_hidden: list[HiddenAcceptance] = Field(default_factory=list, max_length=8)
     clarifications: list[Clarification] = Field(default_factory=list, max_length=6)
-    max_clarifications: int | None = Field(default=None, ge=1, le=6)
+    max_clarifications: int | None = Field(
+        default=None, ge=1, le=6
+    )  # 새로 만드는 기능형은 None (한도 없음)
     accepted_designs: list[AcceptedDesign] = Field(default_factory=list, max_length=5)
     debug_stage: DebugStage | None = None
+    # 문제 분석(analysis-stage.md §4·§6) — 요청 글로 시작해 요구를 진행자에게 물어 확인하는 판. 예전 판·이슈형은 비어 있다.
+    # id 사이 참조(covers·req_ids·request_mentions)는 spec/analysis.py 가 본다 — 스키마는 형식만
+    request: str | None = Field(default=None, max_length=1000)  # 요청 글 — README 요구 사항 절 자리
+    request_mentions: list[ReqId] = Field(default_factory=list)  # 요청 글이 이미 말한 공식 요구
+    facts: list[Fact] = Field(default_factory=list, max_length=12)  # 요청자 지식 — 물으면 주는 답
     review_flags: list[str] = Field(default_factory=list)  # 승인자가 꼭 볼 것
     provenance_id: str | None = None
 

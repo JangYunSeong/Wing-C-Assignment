@@ -262,6 +262,28 @@ class KitClarification(Schema):
     reveals: list[str] = Field(default_factory=list)  # trap_id
 
 
+class KitRequirement(Schema):
+    """공식 요구 1건 — 문제 분석 판에서는 지원자 README 에 없으므로, 평가 쪽이 요구별로 판단(§7.1)하려면 문장이 필요하다."""
+
+    req_id: str = Field(pattern=r"^r\d{1,2}$")
+    text: str = Field(min_length=1)
+
+
+class KitFact(Schema):
+    """요청자 지식 1건의 연결 — 진행자 기록에서 열린 사실을 요구로 맞춘다(§7.1 "물어서 앎"). 답 문장은 진행자 쪽에."""
+
+    fact_id: str = Field(pattern=r"^f\d{1,2}$")
+    covers: list[str] = Field(min_length=1)  # r#·p#
+    topic: str = Field(min_length=1)
+
+
+class KitPublicAcceptance(Schema):
+    """공개 수용 기준 → 공식 요구 — 공개 테스트 결과를 요구로 모은다(§7.1 "만들었나")."""
+
+    ac_id: str = Field(pattern=r"^p\d{1,2}$")
+    req_ids: list[str] = Field(min_length=1)
+
+
 class KitStage(Schema):
     """한 단계의 진단(과정) 평가 기준 — 진행자 기록(먼저 말한 것·요청한 자료·질문)과 맞춰 본다.
     2026-11-12 사용자 결정(A): 2단계는 1단계와 같은 함정의 증상을 주고 진단 과정을 보는 단계 — 새 숨은 요구·테스트는 없다."""
@@ -276,6 +298,18 @@ class KitStage(Schema):
         default_factory=list
     )  # 1단계만 (EvalKit 이 확인)
     max_clarifications: int | None = None  # 1단계만 — 진행자 보기의 max_questions 와 같은 값
+    # 문제 분석 판(analysis-stage.md §6·§8) — 1단계만, 명세에 사실이 있을 때만 채운다 (예전 판은 비어 있음)
+    request_mentions: list[str] = Field(
+        default_factory=list
+    )  # 요청 글이 이미 말한 r# → "보이는 것으로 앎"
+    requirements: list[KitRequirement] = Field(default_factory=list)
+    facts: list[KitFact] = Field(default_factory=list)
+    acceptance_public: list[KitPublicAcceptance] = Field(default_factory=list)
+
+    def analysis_fields(self) -> bool:
+        return bool(
+            self.request_mentions or self.requirements or self.facts or self.acceptance_public
+        )
 
 
 class KitImages(Schema):
@@ -336,6 +370,10 @@ class EvalKit(PackageHeader):
         known = case_traps | (set(s1.trap_ids) if s1 is not None else set())
         if s2 is not None and (s2.clarifications or s2.max_clarifications is not None):
             raise ValueError("stage2 에 추가 질문이 있다 — 질문은 1단계에만")
+        if s2 is not None and s2.analysis_fields():
+            raise ValueError("stage2 에 문제 분석 칸이 있다 — 요청 글·사실은 1단계에만")
+        if s1 is not None and s1.analysis_fields():
+            self._check_analysis(s1)
         for name, s in (("stage1", s1), ("stage2", s2)):
             if s is None:
                 continue
@@ -355,3 +393,16 @@ class EvalKit(PackageHeader):
                     refs.append(o.value)
             if bad := sorted(set(refs) - known):
                 raise ValueError(f"{name} 이 키트에 없는 함정을 가리킨다: {bad}")
+
+    @staticmethod
+    def _check_analysis(s: KitStage) -> None:
+        """문제 분석 칸의 키트 안 참조 — 평가 쪽이 진행자 기록·공개 테스트를 요구로 모을 수 있게 (명세 쪽 검사는 spec/analysis.py)."""
+        reqs = {r.req_id for r in s.requirements}
+        known = reqs | {a.ac_id for a in s.acceptance_public}
+        if bad := sorted({c for f in s.facts for c in f.covers} - known):
+            raise ValueError(f"stage1 facts 의 covers 가 키트에 없는 요구·기준을 가리킨다: {bad}")
+        pointed = {*s.request_mentions, *(r for a in s.acceptance_public for r in a.req_ids)}
+        if bad := sorted(pointed - reqs):
+            raise ValueError(
+                f"stage1 request_mentions·req_ids 가 키트에 없는 요구를 가리킨다: {bad}"
+            )

@@ -7,7 +7,10 @@ from task_spec.schemas.domain import (
     Artifact,
     Clarification,
     DebugStage,
+    Fact,
+    LinkedAcceptance,
     Observable,
+    Requirement,
     Trap,
 )
 from task_spec.starter.kit import kit_stages
@@ -111,3 +114,45 @@ def test_missing_stages_are_none() -> None:
         )
     )
     assert s1 is None and s2 is None
+
+
+def _analysis(**over: object) -> TaskItem:
+    """문제 분석 판 명세 (analysis-stage.md §6) — 요청 글·사실·요구 연결."""
+    return _task(
+        requirements=[Requirement(req_id="r1", text="가상 요구 문장")],
+        acceptance_public=[LinkedAcceptance(ac_id="p1", text="가상 기준", req_ids=["r1"])],
+        request="가상 요청 글",
+        request_mentions=[],
+        facts=[
+            Fact(
+                fact_id="f1",
+                covers=["r1", "p1"],
+                topic="가상 사실 주제",
+                ask_when="가상 조건을 물을 때",
+                answer="FACT-ANSWER-1",
+                answer_hint="FACT-HINT-1",
+                match_terms=["FACT-TERM-1"],
+            )
+        ],
+        **over,
+    )
+
+
+def test_analysis_links_go_to_stage1_without_answers() -> None:
+    """문제 분석 칸은 1단계에 연결만 — 사실의 답·모호한 답·매칭 낱말은 넣지 않는다 (진행자 쪽, §8)."""
+    s1, s2 = kit_stages(_analysis())
+    assert s1 is not None and s2 is not None
+    assert [(f.fact_id, f.covers, f.topic) for f in s1.facts] == [
+        ("f1", ["r1", "p1"], "가상 사실 주제")
+    ]
+    assert [(r.req_id, r.text) for r in s1.requirements] == [("r1", "가상 요구 문장")]
+    assert [(a.ac_id, a.req_ids) for a in s1.acceptance_public] == [("p1", ["r1"])]
+    assert not s2.analysis_fields()
+    dumped = s1.model_dump_json()
+    assert "FACT-ANSWER" not in dumped and "FACT-HINT" not in dumped and "FACT-TERM" not in dumped
+
+
+def test_old_specs_get_no_analysis_fields() -> None:
+    """사실이 없는 예전 판 명세는 키트에 문제 분석 칸이 비어 있다 — 지금 키트와 같다."""
+    s1, _ = kit_stages(_task(requirements=[Requirement(req_id="r1", text="가상 요구")]))
+    assert s1 is not None and not s1.analysis_fields()
