@@ -350,6 +350,31 @@ def test_merge_files_overwrites_keeps_and_deletes() -> None:
     ]
 
 
+def test_dotted_package_directory_is_written_with_slashes() -> None:
+    """2026-11-16 알파 pilot-coupons-ae1034: 공개 테스트를 `src/test/java/com.example.service/…` 에 써 fill_slots 밖으로 실패."""
+    from task_spec.nodes.starter.generate import fit_package_paths
+    from task_spec.schemas import GeneratedFile as F
+
+    files, notes = fit_package_paths(
+        [
+            F(path="src/test/java/com.example.service/publictests/Pt1Test.java", content="A"),
+            F(path="src/main/java/com/example/service/api/X.java", content="B"),
+            F(path="src/main/resources/application.yml", content="C"),
+            F(path="src/test/java/com/example/service/a.b/Odd.java", content="D"),
+        ]
+    )
+    assert [f.path for f in files] == [
+        "src/test/java/com/example/service/publictests/Pt1Test.java",
+        "src/main/java/com/example/service/api/X.java",
+        "src/main/resources/application.yml",
+        "src/test/java/com/example/service/a.b/Odd.java",  # 패키지 맨 앞 자리만 본다
+    ]
+    assert notes == [
+        "src/test/java/com.example.service/publictests/Pt1Test.java 를 "
+        "src/test/java/com/example/service/publictests/Pt1Test.java 로 — 패키지 디렉터리를 점으로 씀"
+    ]
+
+
 async def test_repair_gets_previous_output_and_returns_only_changed_files() -> None:
     """2026-11-07 루프: 숨은 테스트가 import 하나를 빠뜨렸는데 수리가 처음부터 다시 써 다른 문제가 생겼다."""
     fixed = ORDER.replace("private String status;", "private String status; // 고침")
