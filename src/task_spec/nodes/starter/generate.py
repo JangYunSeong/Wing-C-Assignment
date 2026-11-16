@@ -506,6 +506,26 @@ def merge_files(
     return list(merged.values())
 
 
+# Java 소스 경로에서 패키지 디렉터리를 점으로 쓴 것 (`src/test/java/com.example.service/…`)
+_DOTTED_PACKAGE = re.compile(r"^(src/(?:main|test)/java/)([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)/(.+)$")
+
+
+def fit_package_paths(files: Sequence[GeneratedFile]) -> tuple[list[GeneratedFile], list[str]]:
+    """패키지 디렉터리를 점으로 쓴 Java 소스 경로를 슬래시로 고친다 — 패키지 디렉터리 이름에는 점이 올 수 없어 뜻이 하나다.
+    2026-11-16 알파 pilot-coupons-ae1034: gen_public 이 공개 테스트를 두 번 다 `src/test/java/com.example.service/publictests/`
+    에 써 fill_slots 밖으로 생성이 실패했다 (재요청 문구가 쓸 수 있는 경로를 알려 줘도 같았다)."""
+    out: dict[str, GeneratedFile] = {}
+    notes: list[str] = []
+    for f in files:
+        m = _DOTTED_PACKAGE.match(f.path)
+        if m is not None:
+            path = f"{m.group(1)}{m.group(2).replace('.', '/')}/{m.group(3)}"
+            notes.append(f"{f.path} 를 {path} 로 — 패키지 디렉터리를 점으로 씀")
+            f = f.model_copy(update={"path": path})
+        out[f.path] = f
+    return list(out.values()), notes
+
+
 async def _generate(
     task_name: str,
     make_input: Callable[[str | None], Any],
@@ -552,9 +572,10 @@ async def _generate(
         res.provenance.append(r.provenance)
         out: GeneratedFiles = r.parsed  # type: ignore[assignment]
         files = merge_files(prev.files, out.files) if prev is not None else list(out.files)
-        fixed: list[str] = []
+        files, fixed = fit_package_paths(files)
         if fix is not None:
-            files, fixed = fix(files)
+            files, more = fix(files)
+            fixed += more
         overlay = make_overlay(files)
         problems = check(overlay)
         logger.info(
