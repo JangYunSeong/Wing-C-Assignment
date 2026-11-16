@@ -3,7 +3,8 @@
 응시 플랫폼의 진행자는 질문을 LLM(gemini-3.8-flash)으로 받는다 (2026-11-13 사용자). 손 시범도 같은 모델로 흉내 낸다.
 - LLM 은 질문이 묻는 항목과 구체 답 조건 해당 여부만 고른다 (`prompts/facilitator_choose`). 답 문장은 코드가 승인된 문장을
   그대로 낸다 — "고르기만, 문장 안 바꿈"(2026-11-06 확정)이 구조로 지켜진다.
-- 항목 상태(없음 → 모호 → 열림)·한 가지씩·반복·적중은 코드가 정한다 (§4.6 과 같게). LLM 판단은 상태와 무관하므로 캐시한다 —
+- 항목 상태(없음 → 모호 → 열림)·한 가지씩·반복·적중은 코드가 정한다 (§4.6 과 같게). 안 열린 항목 둘 이상을 물으면 콕 집은 항목은
+  모두 답하고, 콕 집은 것이 없을 때만 한 가지씩 (2026-11-16 사용자). LLM 판단은 상태와 무관하므로 캐시한다 —
   같은 질문(같은 규칙 글·요청 글·항목)에는 늘 같은 답 (손 시범 안의 재현성).
 - 판 1·4: 새 규칙 글(`ANSWER_RULE_ASK`) + 항목의 구체 조건 문장(ask_when, 없으면 매칭 낱말). 판 3: 지금 규칙 글(`ANSWER_RULE`) + 지금 자료.
 
@@ -29,7 +30,14 @@ from task_spec.llm.client import LLMClient
 from task_spec.llm.openai_compat import OpenAICompatBackend
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import AskedItem, FacilitatorChooseInput, FacilitatorChooseOutput
-from task_spec.starter.answer_rule import NO_INFO, ONE_AT_A_TIME, Reply, State, is_clarification
+from task_spec.starter.answer_rule import (
+    NO_INFO,
+    ONE_AT_A_TIME,
+    Reply,
+    State,
+    is_clarification,
+    item_order,
+)
 from task_spec.starter.facilitator import ANSWER_RULE, ANSWER_RULE_ASK, Answer
 
 TASK = "facilitator_choose"
@@ -181,14 +189,28 @@ def apply_choice(
     if not picked:  # 5. 어느 항목도 묻지 않음
         return Reply(text=NO_INFO, rule=5, layer="none", hit=0.0, states=state)
     closed = [k for k in picked if state[k] != "open"]
-    if len(closed) >= 2:  # 1. 안 열린 항목 둘 이상 — 한 가지씩
+    if len(closed) >= 2:  # 1. 안 열린 항목 둘 이상
+        named = sorted((k for k in closed if concrete[k]), key=item_order)
+        if not named:  # 콕 집은 항목 없음 — 넓은 질문, 한 가지씩
+            return Reply(
+                text=ONE_AT_A_TIME,
+                rule=1,
+                layer="one_at_a_time",
+                hit=0.0,
+                candidates=closed,
+                states=state,
+            )
+        # 콕 집은 항목은 모두 답한다 (2026-11-16 사용자) — 한도가 없어 나눠 물어도 같은 정보, "한 가지씩"은 묻는 형식만 벌했다.
+        # 콕 집지 않은 항목은 말하지 않는다. 적중 = 걸린 항목 중 콕 집은 비율 (나눠 물은 것과 같은 척도)
         return Reply(
-            text=ONE_AT_A_TIME,
+            text="\n".join(by_id[k].answer for k in named),
             rule=1,
-            layer="one_at_a_time",
-            hit=0.0,
+            layer="answer",
+            item_id=named[0],
+            item_ids=named if len(named) > 1 else [],
+            hit=len(named) / len(closed),
             candidates=closed,
-            states=state,
+            states={**state, **{k: "open" for k in named}},
         )
     if not closed:  # 3. 열린 항목만 — 같은 구체 답을 다시
         k = picked[0]

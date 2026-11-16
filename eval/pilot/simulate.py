@@ -45,19 +45,26 @@ OFFICIAL = "official.json"  # 공식 판정 기록 — 돌리기 전에 대상 �
 
 def classify(about: str | list[str] | None, r: Reply) -> str:
     """about — 한 항목 id(한 주제 질문) / 여러 id(여러 주제 질문) / None(주제 밖) / "vague"(넓은 질문)."""
+    answered = r.answered()
     if about == VAGUE:
-        opened = r.layer == "answer" and r.item_id is not None and not r.repeat
+        opened = r.layer == "answer" and bool(answered) and not r.repeat
         return "모호·구체 열림" if opened else "모호·막음"
     if about is None:
         return "주제 밖·정보 없음" if r.text == NO_INFO else "주제 밖·잘못 열림"
     if isinstance(about, list):
-        return "여러 주제·한 가지씩" if r.rule == 1 else "여러 주제·그 밖"
-    if r.rule == 1:
+        if r.layer == "one_at_a_time":
+            return "여러 주제·한 가지씩"
+        if r.layer == "answer" and set(about) <= set(answered):
+            return "여러 주제·다 답함"
+        return "여러 주제·그 밖"
+    if r.layer == "one_at_a_time":
         return "한 가지씩"
     if r.text == NO_INFO:
         return "정보 없음"
-    if r.item_id != about:
+    if about not in answered:
         return "다른 항목"
+    if len(answered) > 1:
+        return "구체 답·다른 항목도"  # 맞는 항목과 함께 묻지 않은 항목도 열림 — 구체 답으로 세지 않는다
     return "구체 답" if r.layer == "answer" else "모호한 답"
 
 
