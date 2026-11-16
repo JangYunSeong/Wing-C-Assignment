@@ -161,7 +161,7 @@ def test_feature_stage1_needs_only_two_distractors() -> None:
 
 
 async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.MonkeyPatch) -> None:
-    """승인자가 기능형 지정 → CURRENT(v6) 로 재료를 넣어 서술, 판 키에 재료 지문."""
+    """승인자가 기능형 지정 → CURRENT(v11) 로 재료를 넣어 서술, 판 키에 재료 지문."""
     from task_spec.nodes import spec as spec_mod
     from task_spec.spec.build import CommonDraft, build_common
     from task_spec.spec.store import InMemoryCommonStore
@@ -172,7 +172,7 @@ async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.Mon
         return CommonDraft(task=built.task, ctx=_seed_ctx(), flags=built.flags)
 
     monkeypatch.setattr(spec_mod, "build_common", fake_build)
-    fake = FakeBackend().push(Completion(json.dumps(_v5draft(), ensure_ascii=False)))
+    fake = FakeBackend().push(Completion(json.dumps(_v6draft(), ensure_ascii=False)))
     draft = spec_mod.make_draft_spec(
         None, llm=_client(fake), prompts=_REG, store=InMemoryCommonStore()
     )
@@ -182,12 +182,13 @@ async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.Mon
     spec = (await draft(_state("run-a", approval=revise)))["spec"]
     task = spec.common_tasks[0]
     assert task.task_kind == "feature" and task.traps[0].trap_id == "t1"
-    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@9+{feature_ref(BACKEND)}"
+    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@11+{feature_ref(BACKEND)}"
     assert FLAG_SEED_UNREVIEWED in task.review_flags
+    assert [a.req_ids for a in task.acceptance_public] == [["r1"], ["r2"]]  # v11 은 연결을 쓴다
 
 
-def test_current_feature_prompt_is_v6() -> None:
-    assert _REG.get("draft_feature_task").ref == "draft_feature_task@9"
+def test_current_feature_prompt_is_v11() -> None:
+    assert _REG.get("draft_feature_task").ref == "draft_feature_task@11"
 
 
 def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:

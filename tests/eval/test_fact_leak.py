@@ -161,3 +161,13 @@ def test_quote_that_skips_lines_counts_when_every_piece_is_there() -> None:
         }
     )
     assert score(task, out)["facts"][0]["verdict"] == "leaked"
+
+
+def test_spec_mode_protects_requirements_and_acceptance() -> None:
+    """문제 분석 전 명세 — 공식 요구·공개 수용 기준 문장이 지킬 답 (생성기 평가)."""
+    from eval.spec.run_fact_leak import spec_items
+
+    shown, table = spec_items(_task())
+    assert table == {"f1": "r1", "f2": "r2", "f3": "p1", "f4": "p2"}
+    inp = judge_input(shown, "artifact")
+    assert "f1 (r1) 상태 변경 요청마다 이력을 남긴다" in inp.facts and inp.hints == "(없음)"

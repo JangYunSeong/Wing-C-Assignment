@@ -8,7 +8,9 @@
   text = 보이는 글(제목·배경 글·요청 글) + 모호한 답(f#·c#) → 요청 글 단계 몫,
   artifact = 자료(a#, 보이는 글은 제목만) → 기능형 생성기 몫. all = 한 번에 (v1·v2 보정 기록 재현용).
 
-입력: 문제 분석 칸이 붙은 명세 — 평가 기록(`{"task": {...}}`, analysis-request-eval outputs) 또는 TaskItem JSON. 공고로 만든 명세만.
+입력: 문제 분석 칸이 붙은 명세 — 평가 기록(`{"task": {...}}`, analysis-request-eval outputs), TaskItem JSON,
+     run_feature 의 drafts.jsonl. 공고로 만든 명세만.
+--protect spec: 문제 분석 전 명세(생성기 평가) — 공식 요구·공개 수용 기준 문장을 지킬 답으로 놓고 자료 범위만 잰다.
 출력: data/eval/analysis-leak/<날짜>-<tag>/ (report.json, samples.md) — git 밖.
 사용: uv run python -m eval.spec.run_fact_leak --inputs data/eval/analysis-request-eval/2026-11-16/outputs/*.json \\
         --tag v1 [--version 2] [--scopes text artifact]
@@ -30,6 +32,7 @@ from task_spec.llm import LLMClient
 from task_spec.llm.factory import build_llm_client
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
+    Fact,
     JudgeLeakInput,
     JudgeLeakOutput,
     JudgeLeakOutputV2,
@@ -50,6 +53,34 @@ OUTPUTS: dict[str, type[JudgeLeakOutput] | type[JudgeLeakOutputV2]] = {
 def load_task(path: Path) -> TaskItem:
     d = json.loads(path.read_text("utf-8"))
     return TaskItem.model_validate(d.get("task", d))
+
+
+def load_tasks(path: Path) -> list[tuple[str, TaskItem]]:
+    """(이름, 명세) — drafts.jsonl 은 줄마다 공고 하나 (생성 실패로 명세가 없는 줄은 뺀다)."""
+    if path.suffix != ".jsonl":
+        return [(path.stem, load_task(path))]
+    out = []
+    for line in path.read_text("utf-8").splitlines():
+        rec = json.loads(line)
+        if rec.get("task"):
+            out.append(
+                (str(rec.get("posting") or rec.get("id")), TaskItem.model_validate(rec["task"]))
+            )
+    return out
+
+
+def spec_items(task: TaskItem) -> tuple[TaskItem, dict[str, str]]:
+    """공식 요구·공개 수용 기준 문장을 지킬 답(사실 자리)으로 — 문제 분석 전 명세의 자료 흘림을 잰다. 돌려주는 표: f# → r#·p#."""
+    items = [(r.req_id, r.text) for r in task.requirements]
+    items += [(a.ac_id, a.text) for a in task.acceptance_public]
+    facts = [
+        Fact(fact_id=f"f{i}", covers=[iid], topic=iid, ask_when="-", answer=text)
+        for i, (iid, text) in enumerate(items, 1)
+    ]
+    shown = task.model_copy(
+        update={"facts": facts, "request_mentions": [], "background": None, "request": None}
+    )
+    return shown, {f.fact_id: f.covers[0] for f in facts}
 
 
 def sources(task: TaskItem) -> dict[str, str]:
@@ -259,9 +290,21 @@ async def main() -> None:
         default=["text", "artifact"],
         help="판정 범위 — 범위마다 한 번씩 부른다",
     )
+    ap.add_argument(
+        "--protect",
+        choices=("facts", "spec"),
+        default="facts",
+        help="지킬 답 — facts: 사실(문제 분석 판) / spec: 공식 요구·공개 수용 기준 (생성기 평가, 자료 범위만)",
+    )
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args()
-    tasks = [(p.stem, load_task(p)) for p in a.inputs]
+    tasks = [x for p in a.inputs for x in load_tasks(p)]
+    items: dict[str, dict[str, str]] = {}
+    if a.protect == "spec":
+        a.scopes = ["artifact"]  # 보이는 글은 문제 분석 전이라 잴 것이 없다
+        for i, (n, t) in enumerate(tasks):
+            tasks[i] = (n, spec_items(t)[0])
+            items[n] = spec_items(t)[1]
     tasks = [(n, t) for n, t in tasks if t.facts]
     llm = build_llm_client(Settings())
     prompts = PromptRegistry(ROOT / "prompts")
@@ -276,6 +319,9 @@ async def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     for scope in a.scopes:
         rows = await asyncio.gather(*(one(n, t, scope) for n, t in tasks))
+        for r in rows:  # spec 모드 — 사실 자리 번호를 r#·p# 로 되돌려 적는다
+            for f in r.get("facts", []):
+                f["item"] = items.get(r["name"], {}).get(f["fact_id"], f["fact_id"])
         summary = {
             "tag": a.tag,
             "prompt": prompts.get(TASK, a.version).ref,
