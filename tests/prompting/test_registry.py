@@ -45,6 +45,23 @@ def test_repo_prompts_all_valid() -> None:
     assert reg.get("extract_claims", 2).ref == "extract_claims@2"
 
 
+def test_task_without_current_is_skipped_but_its_files_are_checked(tmp_path: Path) -> None:
+    """평가 전 새 작업(CURRENT 없음)은 운영 검증에서 건너뛰고 판 파일 형식만 본다 (2026-11-16 사용자 — 새 단계는 CURRENT 가 생길 때만)."""
+    reg = _write(tmp_path, GOOD)
+    (tmp_path / "demo" / "CURRENT").unlink()
+    assert reg.validate_all() == [] and not reg.has_current("demo")
+    (tmp_path / "demo" / "v1.md").write_text(GOOD.replace("{{text}}", ""), encoding="utf-8")
+    with pytest.raises(PromptError, match="빠졌습니다"):
+        PromptRegistry(tmp_path).validate_all()  # 형식이 깨진 판은 CURRENT 가 없어도 기동 실패
+
+
+def test_analysis_request_has_no_current_until_evaluated() -> None:
+    """draft_analysis_request v1 은 평가 전 — CURRENT 가 없어 명세 그래프가 건너뛴다 (불변식 7)."""
+    reg = PromptRegistry(REPO_PROMPTS)
+    assert not reg.has_current("draft_analysis_request")
+    assert reg.get("draft_analysis_request", 1).ref == "draft_analysis_request@1"
+
+
 def test_good_template_loads(tmp_path: Path) -> None:
     tpl = _write(tmp_path, GOOD).get("demo")
     assert tpl.ref == "demo@1"
