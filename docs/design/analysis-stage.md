@@ -123,19 +123,24 @@
 - 질문·자료 요청은 **전부 시각과 함께 기록**한다.
 - **진행자 기록 형식은 P1 이 정하고 응시 플랫폼이 그대로 남긴다** [확정: 2026-11-16 사용자] — 플랫폼 → 평가 쪽 계약.
   §7.1 "물어서 앎"은 상태 열림이므로, 답 문장만 남기면 채점이 문장에서 항목을 거꾸로 찾아야 하고 같은 문장을 쓰는 항목이 있으면 틀린다.
-  요청 한 건마다 다음을 남긴다 — 시범 기록(`eval/pilot/facilitator.py` jsonl, 답 칸은 `starter/answer_rule.Reply`)이 `provenance` 를 빼고 이 형식이다.
+  요청 한 건마다 다음을 남긴다. 시범은 같은 내용을 두 곳에 나눠 남긴다 — 기록(`eval/pilot/facilitator.py` jsonl, 답 칸은 `reply` 아래 `starter/answer_rule.Reply`)과
+  판단 캐시(`eval/pilot/llm_facilitator.py`, 질문마다 `asked`·`provenance`). 운영 기록은 한 줄에 다 담는다 — 캐시는 구현마다 달라 계약이 될 수 없다.
 
   | 칸 | 내용 |
   |---|---|
   | `t` | 시각 |
-  | `kind` · `arg` | `question`(질문 원문) · `material_list` · `material`(자료 번호) |
-  | `candidates` | LLM 이 고른 항목 id (판단 그대로) |
+  | `kind` · `arg` | `question`(질문 원문) · `material_list` · `material`(요청한 자료 번호) · `refused`(빈 질문·없는 자료 번호 — 판단 없이 거절 문장만) |
+  | `served` | 자료 요청에 실제로 준 자료 id (본문은 남기지 않는다) |
+  | `asked` | LLM 판단 그대로 — `[{item_id, concrete}]`. 넓은 질문 수(§7.2)를 세고, 규칙을 바꾼 뒤 기록에서 다시 계산하는 근거 |
+  | `candidates` | 판단에 걸린 항목 — 판단 1: 안 열린 항목 전부 · 2·4: 답한 항목 하나 · 3: 고른 항목 전부 · 5: 비움 (모호한 답이 없는 `f#` 을 주제만으로 물었으면 그 항목) |
   | `item_id` | 답을 준 항목 id (없으면 비움) |
   | `layer` | 준 층 — `answer` · `hint`(`answer_hint`) · `one_at_a_time` · `none` |
-  | `rule` · `hit` · `repeat` | 적용한 판단 번호(아래 §4.6 표 1~5) · 적중(1 · 0.5 · 0) · 반복 여부 |
+  | `rule` · `hit` · `repeat` | 적용한 판단 번호(아래 §4.6 표 1~5) · 적중(1 · 0.5 · 0, **반복이면 비움** — 적중률 분모에서 뺀다, §9.1) · 반복 여부 |
   | `states` | 이 요청 뒤 항목별 상태 — `none` · `hint` · `open` |
-  | `text` | 지원자에게 보낸 문장 |
+  | `text` | 지원자에게 보낸 문장 (자료는 본문 대신 `served` 에 id 만) |
   | `provenance` | 판단을 낸 `prompt_id@version+hash` · 모델·설정 (캐시에서 온 판단이면 그 판단의 것 — 불변식 8) |
+
+  `asked` 부터 `states`·`provenance` 까지는 `question` 줄에만 있다.
 
   기록은 지원자 데이터다 — 평가 쪽 밖·git 으로 내보내지 않는다 (불변식 1).
 - 관찰 종류(`Observable.kind`, `schemas/domain.py:312`)에 `asks_fact`(f#) 를 더할지 [미정 — 스키마 PR 전].
@@ -372,15 +377,17 @@ acceptance_public: [{ac_id: p#, text, req_ids: [r#]}]   # 새 칸 req_ids — �
 ## 8. 진행자·승인 화면·평가 키트
 
 - `FacilitatorView.stage1` 에 `request`·`facts`(`ask_when` 포함). `covers`·`request_mentions` 는 진행자에게 주지 않는다 (지금 `reveals` 를 빼는 원칙). 한도 `None`, `rule` 은 §4.6.
-- **받는 쪽별 전달** — 역할마다 따로 보낸다 (`ArtifactRole`, `schemas/package.py`). 같은 곳이 받아도 역할별로 두 번 보낸다.
+- **받는 쪽별로 무엇이 가나** — P1 이 보내는 묶음(candidate·grader·eval_kit)은 역할마다 따로 보낸다 (`ArtifactRole`, `schemas/package.py` —
+  받는 곳 하나에 역할 하나, `delivery_target`). 같은 곳이 받아도 역할별로 두 번 보낸다. 진행자 보기는 P1 API 로 읽고, 진행자 기록·AI 도우미는 응시 플랫폼 몫이다.
 
-  | 받는 쪽 | 들어가는 것 | 넣지 않는 것 |
+  | 받는 쪽 (길) | 들어가는 것 | 넣지 않는 것 |
   |---|---|---|
-  | 지원자 (candidate 이미지) | 얇은 README(요청 글·계약 모양·시드·진행 방식), 시작 코드 | 사실 답, `covers`, 숨은 요구, 공개 테스트 |
-  | 진행자 (플랫폼 **서버에만** — 브라우저로 내려보내지 않음, §4.6) | 진행자 보기(규칙 글·요청 글·항목·자료) + `facilitator_choose` 판 | `covers`·`request_mentions`·숨은 요구·`reveals` |
-  | 채점 서버 (grader 이미지·`grader.json`) | 공개·숨은 테스트, 케이스 id·시작 코드 기대값 | 함정 id·의도한 사유 (이미지 안 config·`result.json` 에만) |
-  | 평가 쪽 (eval_kit `kit.json`) | §6 — `covers`·`req_ids`·`request_mentions` + 응시 뒤 진행자 기록(§4.4 형식) | — |
-  | AI 도우미 | 지원자에게 보이는 것만 (§4.5) | 진행자 보기 전부 |
+  | 지원자 (candidate 이미지 — P1 전달) | 얇은 README(요청 글·계약 모양·시드·진행 방식), 시작 코드 | 사실 답, `covers`, 숨은 요구, 공개 테스트 |
+  | 진행자 (플랫폼 **서버에만** — 브라우저로 내려보내지 않음, §4.6. P1 API `GET /builds/{build_id}/facilitator`) | 진행자 보기(규칙 글·요청 글·항목·자료) + `facilitator_choose` 판 | `covers`·`request_mentions`·숨은 요구·`reveals` |
+  | 채점 서버 (grader 이미지·`grader.json` — P1 전달) | 공개·숨은 테스트, 케이스 id·시작 코드 기대값 | 함정 id·의도한 사유 (이미지 안 config·`result.json` 에만) |
+  | 평가 쪽 (eval_kit `kit.json` — P1 전달, 응시 전) | §6 — `covers`·`req_ids`·`request_mentions` | 진행자 기록 (아래 줄) |
+  | 평가 쪽 (진행자 기록 — 응시 플랫폼이 응시 뒤, `kit.json` 과 따로. 채점 위치는 §7 [미정]) | §4.4 형식 기록 | — |
+  | AI 도우미 (응시 플랫폼) | 지원자에게 보이는 것만 (§4.5) | 진행자 보기 전부 |
 - AI 도우미에는 진행자 보기를 넘기지 않는다 — 응시 플랫폼과 이 경계를 문서로 맞춘다.
 - 명세 승인 화면: 요청 글 ↔ 공식 요구, `request_mentions`, 사실 → `covers`, `p#` → `req_ids`.
 - 빌드 승인 화면(#130): 단언 값 검사·계약 누출 검사 결과, 테스트를 보지 않는 구현 결과·"진행자 답 부족 의심".
@@ -709,7 +716,8 @@ acceptance_public: [{ac_id: p#, text, req_ids: [r#]}]   # 새 칸 req_ids — �
 2. AI 채널 한도, AI 도우미 지시문 판 고정 규칙. ((b) 는 [확정: 2026-11-13 사용자])
 7. ~~§4.6 역할 나눔을 플랫폼이 그대로 구현할지, 진행자 지시문을 P1 이 판 관리할지~~ → **합의 조건으로 건다** [확정: 2026-11-16 사용자] —
    LLM 은 고르기만·문장·상태는 프로그램, `facilitator_choose` 판은 P1 관리, 진행자 보기는 서버에만, 진행자 기록은 §4.4 형식 (§4.6·§8).
-   남은 합의: 역할 나눔 코드(`starter/answer_rule.py` 판단 → 답)를 P1 이 넘길지 플랫폼이 같은 규칙으로 짤지.
+   남은 합의: 역할 나눔 코드(LLM 판단 → 답·상태 — 지금은 시범의 `apply_choice`, `eval/pilot/llm_facilitator.py`)를 P1 이 넘길지 플랫폼이 같은 규칙으로 짤지.
+   넘기려면 먼저 `src/` 로 옮긴다 (§12). `starter/answer_rule.answer` 는 같은 §4.6 표를 낱말 맞추기 판단으로 구현한 것 — 이력·비교용이다.
 
 빌드 알파 때:
 8. 테스트를 보지 않는 구현을 빌드마다 돌릴지, 알파·평가 때만 돌릴지 (§5.4).
@@ -747,7 +755,8 @@ acceptance_public: [{ac_id: p#, text, req_ids: [r#]}]   # 새 칸 req_ids — �
 3. 스키마 — `request`·`request_mentions`·`facts`·`req_ids`, 한도 `None`(생성 쪽 출력 모델·검사·수리·한도 문장 코드), 평가 키트, (`asks_fact`) + `task-spec-schema.md`.
 4. `draft_analysis_request` v1 + 명세 쪽 검사 + 스모크 (`sw.backend`).
 5. 빌드 쪽 정식 반영 + 빌드 승인 화면 표시.
-6. README 템플릿 새 판 · `FacilitatorView` · 명세 승인 화면.
+6. README 템플릿 새 판 · `FacilitatorView`(§4.6 규칙 글 + `facilitator_choose` 판을 함께 넘김) · 진행자 판단 → 답 코드를 `src/` 로(`apply_choice`, §10-7) ·
+   진행자 기록 형식 스키마(§4.4) · 명세 승인 화면.
 7. 본 평가(§9.3) → 기본값 결정 → 응시 플랫폼 합의.
 
 ## 부록 — 가상 예시 (형식 설명용, 실제 생성물 아님)
