@@ -349,7 +349,9 @@ def miss_cause(m: Material, r: RunData, req: str) -> tuple[Cause, str | None]:
         if e.kind != "question" or e.reply is None:
             continue
         rp = e.reply
-        if rp.item_id in facts and rp.states.get(rp.item_id) == "open" and opened_at is None:
+        if opened_at is None and any(
+            k in facts and rp.states.get(k) == "open" for k in rp.answered()
+        ):
             opened_at = e.t
         if facts & set(rp.candidates):
             asked = True

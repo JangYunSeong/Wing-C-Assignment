@@ -80,6 +80,8 @@ class Reply(BaseModel):
     rule: int  # 적용한 규칙 번호 — §4.6 은 1~5, 지금 규칙 모드는 1~3
     layer: Layer
     item_id: str | None = None
+    # 답을 준 항목이 여럿일 때 전부 (콕 집어 함께 물은 항목 — 진행자 LLM 판 규칙 1, eval/pilot/llm_facilitator.py). 하나면 비워 둔다
+    item_ids: list[str] = Field(default_factory=list)
     hit: float | None = (
         None  # 적중 1 · 0.5 · 0. 반복이거나 지금 규칙 모드면 None (적중률 분모에서 뺀다)
     )
@@ -88,6 +90,10 @@ class Reply(BaseModel):
     states: dict[str, State] = Field(
         default_factory=dict
     )  # 이 답 뒤의 항목 상태 (지금 규칙 모드는 비어 있음)
+
+    def answered(self) -> list[str]:
+        """답(구체·모호)을 준 항목 — 여럿을 함께 답했으면 전부."""
+        return self.item_ids or ([self.item_id] if self.item_id else [])
 
 
 def item_order(item_id: str) -> tuple[int, int, str]:

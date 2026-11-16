@@ -310,6 +310,14 @@ def test_miss_causes_follow_the_cause_table() -> None:
     blocked = _run(1, "opus", entries=[_q("회원당 수량?", broad)])
     assert an.miss_cause(m, blocked, "r2")[0] == "막힘"
     assert an.miss_cause(m, _run(1, "opus"), "r2")[0] == "묻지 않음"
+    both = broad.model_copy(  # 콕 집어 함께 물어 둘 다 답함 — 둘째 항목(f2)도 연 것으로 센다
+        update={"layer": "answer", "item_id": "f1", "item_ids": ["f1", "f2"], "hit": 1.0}
+        | {"states": {"f1": "open", "f2": "open"}}
+    )
+    named = late.model_copy(
+        update={"entries": [_q("회원당 수량?", both, "2026-11-13T10:05:00+09:00")]}
+    )
+    assert an.miss_cause(m, named, "r2")[0] == "늦게 받음"
 
 
 def test_late_only_when_both_runs_show_it() -> None:
@@ -528,6 +536,20 @@ def test_simulation_classifies_questions() -> None:
     assert classify(None, Reply(text=NO, rule=5, layer="none", hit=0.0)) == "주제 밖·정보 없음"
 
 
+def test_classify_counts_answers_to_several_named_items() -> None:
+    two = Reply(text="a\nb", rule=1, layer="answer", item_id="f1", item_ids=["f1", "f2"], hit=1.0)
+    assert classify(["f1", "f2"], two) == "여러 주제·다 답함"
+    assert classify(["f1", "f3"], two) == "여러 주제·그 밖"
+    assert (
+        classify("f1", two) == "구체 답·다른 항목도"
+    )  # 묻지 않은 f2 도 열림 — 구체 답으로 세지 않음
+    assert classify("vague", two) == "모호·구체 열림"
+    oat = Reply(text=ONE_AT_A_TIME, rule=1, layer="one_at_a_time", hit=0.0)
+    assert (
+        classify(["f1", "f2"], oat) == "여러 주제·한 가지씩" and classify("f1", oat) == "한 가지씩"
+    )
+
+
 def test_simulation_passes_at_the_thresholds() -> None:
     qs = [{"q": "회원당 몇 번이요?", "about": "f1"}] * 8 + [
         {"q": "점심은요?", "about": "f2"},  # 정보 없음 1
@@ -650,8 +672,20 @@ def test_llm_choice_follows_the_answer_rule_states() -> None:
     items = [F1, F2, C1]  # F1 모호한 답 없음, F2·C1 있음
     r = apply_choice(_picked(("f1", True)), items, {}, legacy=False)
     assert (r.rule, r.item_id, r.layer, r.hit, r.states["f1"]) == (2, "f1", "answer", 1.0, "open")
-    both = _picked(("f1", True), ("f2", True))
-    assert apply_choice(both, items, {}, legacy=False).text == ONE_AT_A_TIME
+    both = _picked(("f2", True), ("f1", True))
+    r = apply_choice(both, items, {}, legacy=False)  # 콕 집은 항목은 모두 답한다 (2026-11-16)
+    assert (r.rule, r.layer, r.item_ids, r.hit) == (1, "answer", ["f1", "f2"], 1.0)
+    assert r.text == f"{F1.answer}\n{F2.answer}" and r.answered() == ["f1", "f2"]
+    assert (r.states["f1"], r.states["f2"]) == ("open", "open")
+    vague = _picked(("f1", False), ("f2", False))  # 콕 집은 것 없이 여럿에 걸침 — 넓은 질문
+    assert apply_choice(vague, items, {}, legacy=False).text == ONE_AT_A_TIME
+    mixed = apply_choice(_picked(("f1", True), ("c1", False)), items, {}, legacy=False)
+    assert (mixed.text, mixed.item_ids, mixed.hit, mixed.states["c1"]) == (
+        F1.answer,
+        [],
+        0.5,
+        "none",
+    )
     r = apply_choice(both, items, {"f1": "open"}, legacy=False)  # 열린 것은 세지 않는다 — 이어 묻기
     assert (r.rule, r.item_id) == (2, "f2")
     again = apply_choice(_picked(("f1", True)), items, {"f1": "open"}, legacy=False)
