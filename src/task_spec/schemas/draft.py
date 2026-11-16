@@ -436,3 +436,66 @@ class DraftAnalysisOutput(Schema):
     )
     facts: list[FactDraft] = Field(min_length=1, max_length=12)
     acceptance_links: list[AcceptanceLink] = Field(min_length=1, max_length=6)
+
+
+class JudgeLeakInput(Schema):
+    """평가 전용 흘림 판정(judge_fact_leak) 입력 — 지원자가 묻지 않고 볼 수 있는 것 전부 + 지킬 구체 답 (analysis-stage.md §5.1)."""
+
+    visible: str = Field(min_length=1)  # 제목·배경 글·요청 글
+    hints: str  # 모호한 답 전부 "f1 …"·"c1 …" — 주제만 물어도 받는다 (없으면 "(없음)"). 주제명은 지원자에게 안 보여 넣지 않음
+    artifacts: str  # 자료 "[a1] 제목\n본문" — 한도 없이 열린다 (없으면 "(없음)")
+    facts: str  # 지킬 구체 답 "f1 (주제) 답" 줄 묶음
+
+
+class LeakPoint(Schema):
+    point: str = Field(
+        min_length=1, max_length=120, description="구체 답의 핵심 하나 — 값·순서·조건·대상"
+    )
+    quote: str = Field(
+        default="",
+        max_length=300,
+        description="이 핵심을 알려 주는 곳의 원문 그대로 (보이는 글·모호한 답·자료). 없으면 빈 문자열",
+    )
+    source: str = Field(
+        default="",
+        max_length=20,
+        description="quote 가 있는 곳 — title·background·request·f#·c#·a#",
+    )
+
+
+class FactLeak(Schema):
+    fact_id: str = Field(pattern=r"^f\d{1,2}$")
+    points: list[LeakPoint] = Field(min_length=1, max_length=6)
+
+
+class JudgeLeakOutput(Schema):
+    facts: list[FactLeak] = Field(min_length=1, max_length=12)
+
+
+class LeakEvidence(Schema):
+    source: str = Field(
+        min_length=1, max_length=20, description="있는 곳 — title·background·request·f#·c#·a#"
+    )
+    quote: str = Field(min_length=1, max_length=300, description="그 곳의 원문 그대로")
+
+
+class LeakPointV2(Schema):
+    """v2 — 한 핵심이 여러 곳에 보이면 모두 적는다 (v1 은 한 곳만 적어 보이는 글·모호한 답 흘림을 자료 흘림으로만 셌다, 2026-11-16 보정)."""
+
+    point: str = Field(
+        min_length=1, max_length=120, description="구체 답의 핵심 하나 — 값·순서·조건·대상"
+    )
+    evidence: list[LeakEvidence] = Field(
+        default_factory=list,
+        max_length=4,
+        description="이 핵심을 정하는 곳 전부 (찾지 못했으면 빈 목록)",
+    )
+
+
+class FactLeakV2(Schema):
+    fact_id: str = Field(pattern=r"^f\d{1,2}$")
+    points: list[LeakPointV2] = Field(min_length=1, max_length=6)
+
+
+class JudgeLeakOutputV2(Schema):
+    facts: list[FactLeakV2] = Field(min_length=1, max_length=12)
