@@ -30,6 +30,8 @@ from task_spec.schemas import (
     TaskKind,
     TaskSpec,
 )
+from task_spec.spec.analysis_request import TASK as ANALYSIS_TASK
+from task_spec.spec.analysis_request import apply_analysis, draft_analysis_request
 from task_spec.spec.build import build_common
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
@@ -186,6 +188,11 @@ def make_draft_spec(
                 if use_slots and prompts is not None:
                     # 슬롯 프롬프트가 바뀌어도 새 판 — 공통 과제와 슬롯은 함께 승인된다
                     prompt_ref = f"{prompt_ref}+{prompts.get(SLOT_TASK).ref}"
+                # 문제 분석 판(요청 글·사실, analysis-stage.md §5) — CURRENT 가 있을 때만 (평가 전에는 건너뜀, 2026-11-16 사용자).
+                # 판이 바뀌면 공통 과제도 새 판 — 예전 판(요청 글 없음)과 섞이지 않게
+                use_analysis = use_llm and kind == "feature" and _has_prompt(prompts, ANALYSIS_TASK)
+                if use_analysis and prompts is not None:
+                    prompt_ref = f"{prompt_ref}+{prompts.get(ANALYSIS_TASK).ref}"
                 inc = built.ctx.incident if built.ctx is not None else None
                 if (
                     use_llm
@@ -253,6 +260,19 @@ def make_draft_spec(
                             )
                             task = apply(task, res)
                         update = {"provenance": res.provenance, "errors": res.errors}
+                        if use_analysis and task.title:
+                            ares = await draft_analysis_request(
+                                task,
+                                built.ctx,
+                                llm=llm,
+                                prompts=prompts,
+                                reviewer_note=note if redo_common else None,
+                            )
+                            task = apply_analysis(task, ares)
+                            update = {
+                                "provenance": [*update["provenance"], *ares.provenance],
+                                "errors": [*update["errors"], *ares.errors],
+                            }
                         if use_slots and task.title:
                             assert ontology is not None
                             sres = await build_slots(

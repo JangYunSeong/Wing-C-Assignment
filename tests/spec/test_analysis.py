@@ -42,6 +42,7 @@ def _task(**over: Any) -> TaskItem:
             LinkedAcceptance(ac_id="p1", text="가상 기준 1", req_ids=["r1"]),
             LinkedAcceptance(ac_id="p2", text="가상 기준 2", req_ids=["r2"]),
         ],
+        "background": "가상 배경 글",
         "request": "가상 요청 글",
         "request_mentions": ["r1"],
         "facts": [_fact("f1", ["r1", "p1"]), _fact("f2", ["r2", "p2"])],
@@ -54,7 +55,12 @@ def test_complete_analysis_spec_passes() -> None:
 
 
 def test_old_spec_without_request_or_facts_passes() -> None:
-    assert check_analysis(_task(request=None, request_mentions=[], facts=[])) == []
+    assert check_analysis(_task(background=None, request=None, request_mentions=[], facts=[])) == []
+
+
+def test_analysis_spec_needs_a_background_without_requirements() -> None:
+    """지금 상황 글은 요구를 나열하므로 문제 분석 판은 요구 없는 배경 글을 둔다 (§4.1, 2026-11-16 사용자 (나))."""
+    assert any("배경 글이 없음" in p for p in check_analysis(_task(background=None)))
 
 
 def test_request_and_facts_come_together() -> None:

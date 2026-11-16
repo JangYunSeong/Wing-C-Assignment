@@ -128,6 +128,7 @@ def test_analysis_fields_load_and_old_specs_stay_valid() -> None:
             acceptance_public=[
                 LinkedAcceptance(ac_id="p1", text="성공한 변경 1건 → 기록 1건", req_ids=["r1"])
             ],
+            background="가상 회사의 예약 서비스 — 운영팀이 상태 변경을 추적하지 못한다.",
             request="예약 상태가 언제 바뀌었는지 알 수 있게 해 주세요.",
             request_mentions=["r1"],
             facts=[_fact()],
@@ -136,11 +137,12 @@ def test_analysis_fields_load_and_old_specs_stay_valid() -> None:
     again = TaskItem.model_validate(t.model_dump(mode="json"))
     assert again.facts[0].covers == ["r1", "p1"] and again.acceptance_public[0].req_ids == ["r1"]
     old = again.model_dump(mode="json")
-    for f in ("request", "request_mentions", "facts"):
+    for f in ("background", "request", "request_mentions", "facts"):
         old.pop(f)
     old["acceptance_public"][0].pop("req_ids")  # 칸이 생기기 전에 저장된 명세
     loaded = TaskItem.model_validate(old)
-    assert (loaded.request, loaded.facts, loaded.acceptance_public[0].req_ids) == (None, [], [])
+    assert (loaded.request, loaded.background, loaded.facts) == (None, None, [])
+    assert loaded.acceptance_public[0].req_ids == []
 
 
 def test_analysis_id_patterns() -> None:

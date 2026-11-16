@@ -156,9 +156,19 @@ class PromptRegistry:
             self._cache[key] = parse_template(path)
         return self._cache[key]
 
+    def has_current(self, task: str) -> bool:
+        """평가를 통과해 운영에 쓰는 판(CURRENT)이 있나. 새 작업은 평가 전까지 CURRENT 가 없다 — 부르는 쪽이 건너뛴다."""
+        return (self.root / task / "CURRENT").is_file()
+
     def validate_all(self) -> list[str]:
-        """모든 작업의 CURRENT 를 로드해 검증한다. 검증한 ref 목록을 돌려준다."""
+        """모든 작업의 CURRENT 를 로드해 검증한다. 검증한 ref 목록을 돌려준다.
+        CURRENT 가 없는 작업(평가 전 새 작업 — 예: draft_analysis_request v1)은 운영에서 쓰지 않으므로 건너뛰고,
+        판 파일만 읽어 형식은 본다 (2026-11-16 사용자: 새 단계는 CURRENT 가 생길 때만 돈다)."""
         refs = []
         for d in sorted(p for p in self.root.iterdir() if p.is_dir()):
-            refs.append(self.get(d.name).ref)
+            if self.has_current(d.name):
+                refs.append(self.get(d.name).ref)
+            else:
+                for f in sorted(d.glob("v*.md")):
+                    parse_template(f)
         return refs

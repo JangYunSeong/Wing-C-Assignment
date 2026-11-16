@@ -377,3 +377,62 @@ class FixedField(Schema):
 
 class FieldFixOutput(Schema):
     fields: list[FixedField] = Field(min_length=1, max_length=20)
+
+
+# ── 문제 분석 판 — 요청 글·요청자 지식 (prompts/draft_analysis_request, analysis-stage.md §4.1·§4.2·§5) ──
+
+
+class DraftAnalysisInput(Schema):
+    """승인 전 기능형 명세의 공개 칸·추가 요구·재료 업무 필요. 숨은 요구·허용 설계는 넣지 않는다 (§5). 지원자 문서 없음."""
+
+    title: str = Field(min_length=1)
+    scenario: str = Field(min_length=1)  # 상황 글
+    requirements: str = Field(min_length=1)  # "r1 …" 줄 묶음
+    acceptance_public: str = Field(min_length=1)  # "p1 …" 줄 묶음
+    clarifications: str  # "c1 주제 — 구체 답" 줄 묶음 (없으면 "(없음)")
+    business_need: str  # 재료의 만들 기능·업무 요구 (없으면 "(없음)")
+    revision_note: str  # 재작성 사유 — 검사 실패 내용·승인자 수정 요청 (없으면 "(없음)")
+
+
+class FactDraft(Schema):
+    """요청자 지식 1건 — 명세의 Fact 에서 매칭 낱말을 뺀 것 (진행자는 ask_when 을 본 LLM 판단으로 연다, §4.6)."""
+
+    fact_id: str = Field(pattern=r"^f\d{1,2}$")
+    covers: list[Annotated[str, Field(pattern=r"^[rp]\d{1,2}$")]] = Field(
+        min_length=1, max_length=4, description="이 사실이 드러내는 공식 요구 r#·공개 수용 기준 p#"
+    )
+    topic: str = Field(min_length=1, max_length=60, description="짧은 주제")
+    ask_when: str = Field(
+        min_length=1,
+        max_length=200,
+        description="구체 답을 줄 질문 — '~을 묻거나 ~을 물을 때' 문장",
+    )
+    answer: str = Field(min_length=1, max_length=400, description="구체 답 — 요청자 말투")
+    answer_hint: str = Field(
+        min_length=1,
+        max_length=200,
+        description="모호한 답 — 주제만 맞는 질문에. 답의 값·순서·조건 없이",
+    )
+
+
+class AcceptanceLink(Schema):
+    """공개 수용 기준 → 속한 공식 요구."""
+
+    ac_id: str = Field(pattern=r"^p\d{1,2}$")
+    req_ids: list[Annotated[str, Field(pattern=r"^r\d{1,2}$")]] = Field(min_length=1, max_length=3)
+
+
+class DraftAnalysisOutput(Schema):
+    background: str = Field(
+        min_length=1,
+        max_length=800,
+        description="배경 글 — 회사·서비스·누가 무엇 때문에 곤란한가. 공식 요구·수치·운영 조건 없이",
+    )
+    request: str = Field(
+        min_length=1, max_length=600, description="요청 글 — 요청자 말투 300자 안팎, 업무 필요만"
+    )
+    request_mentions: list[Annotated[str, Field(pattern=r"^r\d{1,2}$")]] = Field(
+        default_factory=list, max_length=6, description="배경 글·요청 글이 직접 말한 공식 요구 r#"
+    )
+    facts: list[FactDraft] = Field(min_length=1, max_length=12)
+    acceptance_links: list[AcceptanceLink] = Field(min_length=1, max_length=6)
