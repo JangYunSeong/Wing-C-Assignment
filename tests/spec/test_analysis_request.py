@@ -17,12 +17,14 @@ from task_spec.prompting import PromptRegistry
 from task_spec.schemas import ApprovalDecision, DraftAnalysisOutput, TaskItem
 from task_spec.spec.analysis_request import (
     FLAG_INVALID,
+    FLAG_LEAK,
     FLAG_OVERLAP,
     FLAG_REPAIRED,
     apply_analysis,
     build_analysis_input,
     check_analysis_draft,
     draft_analysis_request,
+    leak_flags,
     overlap_flags,
 )
 from task_spec.spec.build import CommonDraft, build_common
@@ -104,27 +106,16 @@ def test_good_draft_passes_the_checks() -> None:
 @pytest.mark.parametrize(
     ("edit", "fragment"),
     [
-        (lambda d: d.update(request=d["request"] + " 하루 3번 확인합니다."), "수치"),
         (
             lambda d: d.update(request=d["request"] + " 자원 고갈이 없게."),
             "자원 고갈",
         ),  # 먼저 말할 개념
-        (lambda d: d.update(request="조회 결과는 최신순으로 해 주세요."), "p2 문장을 거의 그대로"),
+        (
+            lambda d: d.update(background=d["background"] + " 자원 고갈이 걱정이다."),
+            "배경 글에 숨은 요구",
+        ),
         (lambda d: d.update(request="가" * 460), "요청 글이 김"),
         (lambda d: d.update(background="가" * 610), "배경 글이 김"),
-        (lambda d: d.update(background=d["background"] + " 하루 3번 확인한다."), "배경 글에 수치"),
-        (
-            lambda d: d.update(background=d["background"] + " 이력은 최신순으로 보여야 한다."),
-            "배경 글이 f2 의 답을 흘림 (최신순",
-        ),
-        (
-            lambda d: d.update(background=d["background"] + " 상태 변경 요청마다 이력을 남긴다."),
-            "배경 글이 공식 요구 r1 를 거의 그대로",
-        ),
-        (
-            lambda d: d["facts"][1].update(answer_hint="이력은 최신순으로 보여야 해요."),
-            "f2 의 모호한 답이 구체 답의 내용을 흘림",
-        ),
         (
             lambda d: d["facts"][1].update(answer_hint=d["facts"][1]["answer"]),
             "f2 의 모호한 답이 구체 답과 같음",
@@ -138,6 +129,49 @@ def test_checks_catch_each_problem(edit: Any, fragment: str) -> None:
     edit(d)
     problems = check_analysis_draft(DraftAnalysisOutput.model_validate(d), _task(), _ctx())
     assert any(fragment in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    ("edit", "fragment"),
+    [
+        (
+            lambda d: d.update(request=d["request"] + " 하루 3번 확인합니다."),
+            "요청 글에 수치 (3번)",
+        ),
+        (
+            lambda d: d.update(background=d["background"] + " V2X 단말도 붙어 있다."),
+            "배경 글에 수치 (V2X)",
+        ),  # 이름 속 숫자도 표시 — 승인자가 낱말을 보고 가린다
+        (
+            lambda d: d.update(request="조회 결과는 최신순으로 해 주세요."),
+            "요청 글이 공개 수용 기준 p2 문장과 거의 같음",
+        ),
+        (
+            lambda d: d.update(background=d["background"] + " 상태 변경 요청마다 이력을 남긴다."),
+            "배경 글이 공식 요구 r1 와 거의 같음",
+        ),
+        (
+            lambda d: d["facts"][1].update(answer_hint="이력은 최신순으로 보여야 해요."),
+            "f2 모호한 답에 구체 답의 말 (최신순",
+        ),
+        (
+            lambda d: d.update(background=d["background"] + " 이력은 최신순으로 보여야 한다."),
+            "배경 글에 f2 답의 말 (최신순",
+        ),
+    ],
+)
+def test_word_leaks_are_flagged_not_sent_back(edit: Any, fragment: str) -> None:
+    """낱말 겹침으로 본 흘림은 재요청이 아니라 표시만 — v1 평가 오탐 6건 중 4건·낱말 바꾼 흘림 놓침 (2026-11-16 사용자)."""
+    d = copy.deepcopy(_good())
+    edit(d)
+    out = DraftAnalysisOutput.model_validate(d)
+    assert check_analysis_draft(out, _task(), _ctx()) == []
+    flags = leak_flags(out, _task())
+    assert flags and flags[0].startswith(FLAG_LEAK) and fragment in flags[0], flags
+
+
+def test_good_draft_has_no_leak_flag() -> None:
+    assert leak_flags(DraftAnalysisOutput.model_validate(_good()), _task()) == []
 
 
 async def test_generate_applies_request_facts_and_links() -> None:
@@ -162,13 +196,13 @@ async def test_generate_applies_request_facts_and_links() -> None:
 
 async def test_problems_are_sent_back_once_then_the_better_answer_is_kept() -> None:
     bad = copy.deepcopy(_good())
-    bad["request"] += " 하루 3번 확인합니다."
+    bad["request"] += " 자원 고갈이 없게."
     fake = FakeBackend().push(_reply(bad), _reply(_good()))
     res = await draft_analysis_request(
         _task(), _ctx(), llm=_client(fake), prompts=_REGISTRY, version=1
     )
-    assert len(fake.calls) == 2 and any("수치" in p for p in res.first_problems)
-    assert res.output is not None and "3번" not in res.output.request and not res.flags
+    assert len(fake.calls) == 2 and any("자원 고갈" in p for p in res.first_problems)
+    assert res.output is not None and "고갈" not in res.output.request and not res.flags
 
 
 async def test_code_repairs_references_and_flags_what_is_left() -> None:
@@ -183,12 +217,12 @@ async def test_code_repairs_references_and_flags_what_is_left() -> None:
     assert not any(f.startswith(FLAG_INVALID) for f in res.flags)
 
     stuck = copy.deepcopy(_good())
-    stuck["request"] += " 하루 3번 확인합니다."  # 문장은 코드가 고치지 않는다
+    stuck["request"] += " 자원 고갈이 없게."  # 문장은 코드가 고치지 않는다
     fake = FakeBackend().push(_reply(stuck), _reply(stuck))
     res = await draft_analysis_request(
         _task(), _ctx(), llm=_client(fake), prompts=_REGISTRY, version=1
     )
-    assert any(f.startswith(FLAG_INVALID) and "수치" in f for f in res.flags)
+    assert any(f.startswith(FLAG_INVALID) and "자원 고갈" in f for f in res.flags)
 
 
 def test_fact_and_clarification_overlap_is_only_flagged() -> None:
