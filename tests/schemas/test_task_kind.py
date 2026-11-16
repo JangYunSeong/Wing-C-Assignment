@@ -14,7 +14,9 @@ from task_spec.schemas import (
     Artifact,
     Clarification,
     DebugStage,
+    Fact,
     HiddenAcceptance,
+    LinkedAcceptance,
     PublicAcceptance,
     Requirement,
     TargetCompetency,
@@ -67,7 +69,7 @@ def test_feature_task_with_two_stages_validates() -> None:
         **_base(
             task_kind="feature",
             requirements=[Requirement(req_id="r1", text="상태 변경마다 기록을 남긴다")],
-            acceptance_public=[PublicAcceptance(ac_id="p1", text="성공한 변경 1건 → 기록 1건")],
+            acceptance_public=[LinkedAcceptance(ac_id="p1", text="성공한 변경 1건 → 기록 1건")],
             acceptance_hidden=[
                 HiddenAcceptance(ac_id="h1", trap_id="t1", text="동시 32건에서 모두 기한 안")
             ],
@@ -100,6 +102,62 @@ def test_feature_fields_rejected_on_incident() -> None:
         TaskItem(**_base(requirements=[Requirement(req_id="r1", text="x")]))
     with pytest.raises(ValidationError, match="debug_stage"):
         TaskItem(**_base(debug_stage=_debug()))
+    with pytest.raises(ValidationError, match="request"):  # 문제 분석 칸도 기능형 전용
+        TaskItem(**_base(request="기록을 남겨 주세요"))
+
+
+def _fact(**over: Any) -> Fact:
+    return Fact(
+        **{
+            "fact_id": "f1",
+            "covers": ["r1", "p1"],
+            "topic": "기록을 남기는 때",
+            "ask_when": "언제 기록을 남기는지 물을 때",
+            "answer": "상태 변경 요청마다 한 건씩 남겨 주세요.",
+            **over,
+        }
+    )
+
+
+def test_analysis_fields_load_and_old_specs_stay_valid() -> None:
+    """문제 분석 칸(요청 글·사실·req_ids) — 있는 명세와 없는 예전 명세가 둘 다 읽힌다 (analysis-stage.md §6)."""
+    t = TaskItem(
+        **_base(
+            task_kind="feature",
+            requirements=[Requirement(req_id="r1", text="상태 변경마다 기록을 남긴다")],
+            acceptance_public=[
+                LinkedAcceptance(ac_id="p1", text="성공한 변경 1건 → 기록 1건", req_ids=["r1"])
+            ],
+            request="예약 상태가 언제 바뀌었는지 알 수 있게 해 주세요.",
+            request_mentions=["r1"],
+            facts=[_fact()],
+        )
+    )
+    again = TaskItem.model_validate(t.model_dump(mode="json"))
+    assert again.facts[0].covers == ["r1", "p1"] and again.acceptance_public[0].req_ids == ["r1"]
+    old = again.model_dump(mode="json")
+    for f in ("request", "request_mentions", "facts"):
+        old.pop(f)
+    old["acceptance_public"][0].pop("req_ids")  # 칸이 생기기 전에 저장된 명세
+    loaded = TaskItem.model_validate(old)
+    assert (loaded.request, loaded.facts, loaded.acceptance_public[0].req_ids) == (None, [], [])
+
+
+def test_analysis_id_patterns() -> None:
+    with pytest.raises(ValidationError):
+        _fact(fact_id="c1")  # 사실은 f 번호
+    with pytest.raises(ValidationError):
+        _fact(covers=["h1"])  # 숨김 기준·함정은 덮지 않는다 (r#·p# 만)
+    with pytest.raises(ValidationError):
+        _fact(covers=[])
+    with pytest.raises(ValidationError):
+        LinkedAcceptance(ac_id="p1", text="x", req_ids=["p1"])
+
+
+def test_draft_acceptance_schema_has_no_req_ids() -> None:
+    """생성기 출력의 공개 수용 기준에는 req_ids 가 없다 — 출력 스키마가 프롬프트에 들어가므로 예전 판 프롬프트가 바뀌지 않게."""
+    assert "req_ids" not in PublicAcceptance.model_json_schema()["properties"]
+    assert "req_ids" in LinkedAcceptance.model_json_schema()["properties"]
 
 
 def test_feature_only_on_common_track() -> None:

@@ -334,8 +334,8 @@ def test_v4_fill_computes_bookkeeping_fields() -> None:
     assert ("requests_artifact", "a1") in kinds and ("asks_clarification", "c1") in kinds
     assert all(h.trap_id == "t1" for h in out.acceptance_hidden)
     assert out.debug_stage.deliverables[-1] == STAGE2_ALREADY
-    assert out.scenario.endswith("질문은 최대 2개까지 할 수 있습니다.")
-    assert out.debug_stage.scenario.endswith("최대 2개를 요청해 볼 수 있습니다.")
+    # 한도 없음 (analysis-stage.md §4.4, 2026-11-16) — 상황 글에 한도 안내를 붙이지 않는다 (한도 칸은 초안에만)
+    assert "최대" not in out.scenario and "최대" not in out.debug_stage.scenario
     assert check_feature(out, _seed_ctx()) == []
 
 
@@ -526,19 +526,17 @@ def test_v5_six_match_terms_fit_draft_limit() -> None:
     assert len(out.clarifications[0].match_terms) <= 5
 
 
-def test_long_scenarios_keep_request_note_within_limit() -> None:
+def test_long_scenarios_stay_within_limit_without_request_note() -> None:
     from task_spec.schemas import DraftFeatureOutputV5
     from task_spec.spec.feature import fill_from_seed_v5
 
     d = _v5draft()
-    # 상한 꽉 채움 — 안내 문장을 붙이면 넘는다
+    # 상한 꽉 채움 — 한도 없음(2026-11-16)이라 안내 문장을 붙이지 않고 상한 안에 그대로 둔다
     d["scenario"] = ("주문 화면을 고칩니다. " * 300)[:3000]
     d["debug_stage"]["scenario"] = ("배포 뒤 문의가 늘었습니다. " * 200)[:2000]
     out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(d), BACKEND.feature)  # type: ignore[arg-type]
-    assert len(out.scenario) <= 3000 and out.scenario.endswith("할 수 있습니다.")
-    assert "\n\n아래 자료 중 최대" in out.scenario
-    assert len(out.debug_stage.scenario) <= 2000
-    assert out.debug_stage.scenario.endswith("요청해 볼 수 있습니다.")
+    assert len(out.scenario) <= 3000 and "아래 자료 중 최대" not in out.scenario
+    assert len(out.debug_stage.scenario) <= 2000 and "요청해 볼 수" not in out.debug_stage.scenario
 
 
 async def test_fill_error_fails_attempt_not_run(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -353,9 +353,10 @@ acceptance_public: [{ac_id: p#, text, req_ids: [r#]}]   # 새 칸 req_ids — �
 - **`req_ids`**: 공개 테스트는 공개 수용 기준에만 묶이고(`PublicTest.ac_id`, `schemas/build.py:460`), `PublicAcceptance`(`schemas/domain.py:328`)에는 요구 링크가 없다.
   요구별 채점(§7.1)이 테스트 결과를 요구로 모으려면 필요하다. 공개 수용 기준마다 하나 이상.
 - **평가 키트**에 사실 `covers`·`req_ids`·`request_mentions` 를 넣는다 — 지금 `KitStage.clarifications`(`schemas/package.py:255`)처럼. 진행자 보기는 `covers` 를 일부러 빼므로 채점은 평가 키트로.
-- **한도 `None`**: 명세 칸·평가 키트·진행자 보기는 이미 `None` 을 받고, README 진행 방식(`process_markdown` :170)도 `None` 이면 숫자를 뺀다. 생성 쪽을 바꾼다:
-  출력 모델 `DraftFeatureOutput`(`schemas/draft.py:112, 114` — 1~4 필수)과 검사(`spec/feature.py:655`)·수리(`:857`), 한도를 정하는 코드(`MAX_CLARIFICATIONS` :229, `_limit` :232, :267)와
-  **상황 글·2단계 증상 글에 한도 문장을 붙이는 코드**(:286–295) — 승인 대상 글에 한도가 들어가므로 같이 바꾼다.
+- **한도 `None`** [확정: 2026-11-16 사용자 — 구현: 스키마 PR]: 명세 칸·평가 키트·진행자 보기는 이미 `None` 을 받는다. 새로 만드는 기능형은
+  `apply_feature`(spec/feature.py)가 자료·질문 한도를 명세에 넣지 않고(`None`), 서술 채우기가 상황 글·2단계 증상 글에 한도 안내(`request_note`)를 붙이지 않는다.
+  README 진행 방식은 "질문 수에는 제한이 없다"·"개수 제한 없음"을 적는다. 생성기 출력 모델(`DraftFeatureOutput` 1~4 필수)과 그 검사·수리는 그대로 둔다 —
+  출력 스키마가 프롬프트 본문에 들어가 예전 판 프롬프트가 판 번호 없이 바뀌므로. 한도가 적힌 예전 명세는 그대로 읽힌다.
 - README 템플릿은 스택마다 **새 판**: "요구 사항"·"공개 수용 기준" 절 대신 "요청" 절, 계약 절은 모양만(B1). 공개 테스트 목록은 싣지 않는다.
 - **README 는 같은 빌드에서 두 판을 만든다** [확정: 2026-11-16 사용자]:
   - 얇은 판 `README.md` — 위 새 판. 지원자 이미지에 들어간다.

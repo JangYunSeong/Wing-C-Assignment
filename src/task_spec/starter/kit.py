@@ -18,8 +18,11 @@ from task_spec.schemas.package import (
     KitAcceptance,
     KitCase,
     KitClarification,
+    KitFact,
     KitImages,
     KitMaterial,
+    KitPublicAcceptance,
+    KitRequirement,
     KitStage,
     ReviewDecision,
     VerifySummary,
@@ -32,8 +35,25 @@ def _kit_materials(arts: list[Artifact]) -> list[KitMaterial]:
     return [KitMaterial(artifact_id=a.artifact_id, title=a.title, role=a.role) for a in arts]
 
 
+def _analysis_fields(task: TaskItem) -> dict[str, Any]:
+    """문제 분석 판(analysis-stage.md §6·§8)의 채점 연결 — 명세에 사실이 있을 때만. 사실의 답 문장·매칭 낱말은 넣지 않는다(진행자 쪽)."""
+    if not task.facts:
+        return {}
+    return {
+        "request_mentions": list(task.request_mentions),
+        "requirements": [KitRequirement(req_id=r.req_id, text=r.text) for r in task.requirements],
+        "facts": [
+            KitFact(fact_id=f.fact_id, covers=list(f.covers), topic=f.topic) for f in task.facts
+        ],
+        "acceptance_public": [
+            KitPublicAcceptance(ac_id=a.ac_id, req_ids=list(a.req_ids))
+            for a in task.acceptance_public
+        ],
+    }
+
+
 def kit_stages(task: TaskItem) -> tuple[KitStage | None, KitStage | None]:
-    """(1단계, 2단계). 1단계는 평가할 것(함정·관찰 항목·자료·질문)이 하나도 없을 때만 None, 2단계는 명세에 debug_stage 가 없을 때 None."""
+    """(1단계, 2단계). 1단계는 평가할 것(함정·관찰 항목·자료·질문·사실)이 하나도 없을 때만 None, 2단계는 명세에 debug_stage 가 없을 때 None."""
     s1 = KitStage(
         trap_ids=[t.trap_id for t in task.traps],
         observables=list(task.observables),
@@ -46,8 +66,13 @@ def kit_stages(task: TaskItem) -> tuple[KitStage | None, KitStage | None]:
             for c in task.clarifications
         ],
         max_clarifications=task.max_clarifications,
+        **_analysis_fields(task),
     )
-    stage1 = s1 if (s1.trap_ids or s1.observables or s1.materials or s1.clarifications) else None
+    stage1 = (
+        s1
+        if (s1.trap_ids or s1.observables or s1.materials or s1.clarifications or s1.facts)
+        else None
+    )
     d = task.debug_stage
     stage2 = (
         None
