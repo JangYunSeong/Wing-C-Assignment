@@ -3,6 +3,7 @@
 - 빌드 1건 = 공통 과제 판(`common_task.id` = `ct-…`, 판마다 새 id) 위의 시작 코드·숨은 테스트·참조 구현 생성 1회.
   같은 판을 다시 빌드하면 새 빌드(`-b2`)다 — 다시 빌드한 이미지는 `image_id` 가 달라지므로 승인된 빌드의 파일은 바꾸지 않는다.
 - 오버레이 본문은 `starter_file` 에만. 지원자 README(`kind='readme'`, 코드가 렌더)도 같은 곳 — 승인자가 보고, 지원자에게 보인 문장 기록이 된다. 그래프 State(`BuildState`)에는 `FileRef`(본문 없음)만.
+  문제 분석 판은 원래 판 README(`kind='readme_full'`, `README.full.md`)도 둔다 — 승인 화면·평가 키트에만 (응시용 이미지에 넣지 않음, analysis-stage.md §6).
 - 전달은 승인(시작 코드 승인 — 그래프 interrupt 로 받은 결과)된 빌드만. 승인은 검토 표시마다 승인자 판단이 있어야 한다.
 - 빌드 큐 (#128): 명세 승인과 과제 생성은 따로다 [확정: 2026-11-12 사용자] — 사람이 생성을 요청하면(`requested_by`) pending 빌드가
   생기고, builder 가 lease 를 잡고 가져간다. 같은 공통 과제에 진행 중(`ACTIVE_STATUSES`) 빌드는 하나만.
@@ -32,8 +33,11 @@ from task_spec.schemas.package import (
 
 DeliveryStatus = Literal["requested", "sent", "failed"]
 # 저장하는 파일 종류 — 생성기 오버레이(FileKind) + 코드가 렌더한 지원자 README (응시용 작업 경로에 들어간다)
-StoredFileKind = FileKind | Literal["readme"]
+# + 문제 분석 판의 원래 판 README (응시용 이미지에는 넣지 않는다)
+StoredFileKind = FileKind | Literal["readme", "readme_full"]
 README_PATH = "README.md"
+README_FULL_PATH = "README.full.md"
+README_PATHS = {"readme": README_PATH, "readme_full": README_FULL_PATH}
 TARGET_NAME = r"^[a-z0-9][a-z0-9_.-]{0,62}$"
 # 진행 중 — 같은 공통 과제에 하나만 (부분 유일 색인). review 는 사람이 볼 차례라 새 요청을 막지 않는다
 ACTIVE_STATUSES: tuple[BuildStatus, ...] = ("pending", "generating", "verifying")
@@ -164,8 +168,8 @@ class StarterFile(Schema):
         is_ref = self.kind in ("ref_naive", "ref_accepted")
         if is_ref != bool(self.variant):
             raise ValueError("variant 는 ref_* 에만, ref_* 에는 반드시")
-        if self.kind == "readme" and p != README_PATH:
-            raise ValueError(f"readme 경로는 {README_PATH} 만: {p!r}")
+        if self.kind in README_PATHS and p != README_PATHS[self.kind]:
+            raise ValueError(f"{self.kind} 경로는 {README_PATHS[self.kind]} 만: {p!r}")
         data = self.content.encode("utf-8")
         if hashlib.sha256(data).hexdigest() != self.sha256 or len(data) != self.size:
             raise ValueError(f"{p}: sha256·size 가 본문과 다르다")

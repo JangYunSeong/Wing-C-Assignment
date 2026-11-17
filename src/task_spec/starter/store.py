@@ -47,6 +47,7 @@ from task_spec.schemas.build import BuildStatus, HiddenPlan, RepairRecord, TaskC
 from task_spec.schemas.build_record import (
     ACTIVE_STATUSES,
     ERROR_MAX,
+    README_FULL_PATH,
     README_PATH,
     BuildArtifact,
     BuildFailure,
@@ -130,13 +131,14 @@ CREATE TABLE IF NOT EXISTS public.starter_file (
     size integer NOT NULL CHECK (size >= 0),
     PRIMARY KEY (build_id, kind, variant, path)
 );
--- kind 에 readme 추가 (지원자 README 저장) — 이미 만든 테이블의 이름 붙은 CHECK 를 바꾼다
+-- kind 에 readme(지원자 README)·readme_full(문제 분석 판 원래 판 README) 추가 — 이미 만든 테이블의 이름 붙은 CHECK 를 바꾼다
 ALTER TABLE public.starter_file DROP CONSTRAINT IF EXISTS starter_file_kind_check;
 ALTER TABLE public.starter_file ADD CONSTRAINT starter_file_kind_check CHECK (kind IN
-    ('starter', 'hidden', 'public_test', 'ref_naive', 'ref_accepted', 'readme'));
+    ('starter', 'hidden', 'public_test', 'ref_naive', 'ref_accepted', 'readme', 'readme_full'));
 ALTER TABLE public.starter_file DROP CONSTRAINT IF EXISTS starter_file_readme_path;
 ALTER TABLE public.starter_file ADD CONSTRAINT starter_file_readme_path CHECK
-    (kind <> 'readme' OR (path = 'README.md' AND variant = ''));
+    ((kind <> 'readme' OR (path = 'README.md' AND variant = ''))
+     AND (kind <> 'readme_full' OR (path = 'README.full.md' AND variant = '')));
 CREATE TABLE IF NOT EXISTS public.build_artifact (
     build_id text NOT NULL REFERENCES public.common_task_build (id) ON DELETE RESTRICT,
     role text NOT NULL CHECK (role IN ('candidate', 'grader', 'eval_kit')),
@@ -515,6 +517,10 @@ class BuildRepo(Protocol):
 
     async def readme(self, build_id: str) -> StarterFile | None: ...
 
+    async def full_readme(self, build_id: str) -> StarterFile | None:
+        """문제 분석 판의 원래 판 README(README.full.md) — 예전 판 빌드는 None. 오버레이와 같이 put_files 로 저장된다."""
+        ...
+
     async def approve(
         self, build_id: str, reviewer: str, at: datetime, decisions: list[ReviewDecision]
     ) -> BuildRecord: ...
@@ -714,6 +720,9 @@ class InMemoryBuildStore:
 
     async def readme(self, build_id: str) -> StarterFile | None:
         return self._files.get((build_id, "readme", "", README_PATH))
+
+    async def full_readme(self, build_id: str) -> StarterFile | None:
+        return self._files.get((build_id, "readme_full", "", README_FULL_PATH))
 
     async def approve(
         self, build_id: str, reviewer: str, at: datetime, decisions: list[ReviewDecision]
@@ -1306,6 +1315,15 @@ class PgBuildStore:
     async def readme(self, build_id: str) -> StarterFile | None:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             return await self._readme_of(cur, build_id)
+
+    async def full_readme(self, build_id: str) -> StarterFile | None:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM public.starter_file WHERE build_id = %s AND kind = 'readme_full'",
+                (build_id,),
+            )
+            r = await cur.fetchone()
+        return None if r is None else StarterFile.model_validate(r)
 
     async def files(
         self, build_id: str, kinds: Iterable[StoredFileKind] | None = None

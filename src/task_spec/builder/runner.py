@@ -27,6 +27,7 @@ from typing import Protocol
 from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
+    README_FULL_PATH,
     README_PATH,
     BuildFailure,
     BuildOutcome,
@@ -86,10 +87,11 @@ class ContractResult:
 class BuildResult:
     overlays: dict[str, Overlay]  # starter · hidden · public · 참조 구현 라벨
     plan: HiddenPlan  # 변별 못 하는 케이스를 뺀 뒤의 숨은 계획 (이미지·저장이 쓴다)
-    readme: str  # 지원자 README (시작 코드가 정해진 뒤 렌더)
+    readme: str  # 지원자 README (시작 코드가 정해진 뒤 렌더) — 문제 분석 판은 얇은 판
     review_flags: list[str]
     repairs: list[RepairRecord]
     cost_usd: float
+    readme_full: str | None = None  # 문제 분석 판의 원래 판 README — 승인 화면·평가 키트에만
 
 
 @dataclass(frozen=True)
@@ -144,13 +146,18 @@ def _write_error(work: Path, exc: BaseException) -> None:
         )
 
 
-def overlay_files(build_id: str, overlays: dict[str, Overlay], readme: str) -> list[StarterFile]:
+def overlay_files(
+    build_id: str, overlays: dict[str, Overlay], readme: str, readme_full: str | None = None
+) -> list[StarterFile]:
     out = [
         StarterFile.of(build_id, o.kind, f.path, f.content, o.label)
         for o in overlays.values()
         for f in o.files
     ]
-    return [*out, StarterFile.of(build_id, "readme", README_PATH, readme)]
+    out.append(StarterFile.of(build_id, "readme", README_PATH, readme))
+    if readme_full is not None:
+        out.append(StarterFile.of(build_id, "readme_full", README_FULL_PATH, readme_full))
+    return out
 
 
 class _Run:
@@ -196,7 +203,9 @@ async def run_job(
         await run.enter("build", c.cost_usd)
         b = await steps.build(job, c)
         await run.enter("files", b.cost_usd)
-        await store.put_files(build.build_id, overlay_files(build.build_id, b.overlays, b.readme))
+        await store.put_files(
+            build.build_id, overlay_files(build.build_id, b.overlays, b.readme, b.readme_full)
+        )
         await store.set_status(build.build_id, "verifying")
         await run.enter("images")
         i = await steps.images(job, c, b)

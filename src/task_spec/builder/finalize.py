@@ -3,6 +3,7 @@
 승인 그래프(API)는 DB 에 승인만 기록한다. builder 는 "approved 인데 묶음이 아직 확정 전"인 빌드를 찾아
 1. 응시용·채점용 descriptor 를 `approval=approved` 로 다시 쓰고 SHA256SUMS 를 갱신 (이미지 tar·README 는 그대로 — 저장소가 검사)
 2. 평가 키트(`kit.json` — 숨은 케이스·숨김 수용 기준·과정 기준·승인자 판단)를 만들어 `eval_kit/` 에 쓰고
+   (문제 분석 판이면 원래 판 README `README.full.md` 도 옆에 — 응시용 묶음에는 얇은 판만, analysis-stage.md §6·§8)
 3. 파일 목록 갱신·키트 등록·확정 시각을 한 번에 저장한다 (`store.finalize_packages`). 전달은 확정된 빌드만.
 
 파일 주인(builder 전용 사용자)·템플릿(실패 사유 설명)이 builder 쪽에 있어서 여기서 한다 — API 는 묶음 폴더를 읽기만.
@@ -21,7 +22,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from task_spec.schemas import TaskItem
-from task_spec.schemas.build_record import BuildArtifact, BuildRecord
+from task_spec.schemas.build_record import README_FULL_PATH, BuildArtifact, BuildRecord
 from task_spec.schemas.package import ArtifactFile, CandidateDescriptor, GraderDescriptor
 from task_spec.starter.artifacts import write_role
 from task_spec.starter.kit import build_kit
@@ -55,9 +56,9 @@ def _approved(model: Any, cls: type[Any]) -> Any:
 
 
 def write_final_packages(
-    root: Path, build: BuildRecord, task: TaskItem
+    root: Path, build: BuildRecord, task: TaskItem, readme_full: str | None = None
 ) -> tuple[list[ArtifactFile], list[ArtifactFile], list[ArtifactFile]]:
-    """파일 쓰기 (동기 — 스레드에서). (응시용·채점용·평가 키트 파일 목록)."""
+    """파일 쓰기 (동기 — 스레드에서). (응시용·채점용·평가 키트 파일 목록). readme_full 이 있으면 평가 키트 옆에."""
     o = build.outcome
     if o is None:
         raise FinalizeError("finalize: 결과(outcome)가 없다")
@@ -103,6 +104,8 @@ def write_final_packages(
         raise FinalizeError(f"finalize: 평가 키트 규칙 — {why}") from exc
     kdir = role_dir(root, build.build_id, "eval_kit")
     kdir.mkdir(parents=True, exist_ok=True)
+    if readme_full is not None:  # write_role 이 폴더의 파일을 모두 목록·SHA256SUMS·권한에 넣는다
+        (kdir / README_FULL_PATH).write_text(readme_full, "utf-8")
     kfiles = write_role(kdir, "kit.json", kit.model_dump_json(indent=2))
     return cfiles, gfiles, kfiles
 
@@ -117,8 +120,13 @@ class PackageFinalizer:
             task = await self.store.task(build.common_id)
             if task is None:
                 raise FinalizeError("finalize: 공통 과제 명세 없음")
+            full = await self.store.full_readme(build.build_id)
             cfiles, gfiles, kfiles = await asyncio.to_thread(
-                write_final_packages, self.images_root, build, task
+                write_final_packages,
+                self.images_root,
+                build,
+                task,
+                full.content if full is not None else None,
             )
             o = build.outcome
             assert o is not None

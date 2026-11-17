@@ -9,7 +9,7 @@ import httpx
 
 from task_spec.api.app import create_app
 from task_spec.schemas import TargetCompetency, TaskItem, TechEnv
-from task_spec.schemas.build_record import README_PATH, StarterFile
+from task_spec.schemas.build_record import README_FULL_PATH, README_PATH, StarterFile
 from task_spec.schemas.domain import (
     AcceptedDesign,
     Artifact,
@@ -157,6 +157,28 @@ async def test_readme(tmp_path: Path) -> None:
         assert body["sha256"] == readme.sha256
         assert [f["text"] for f in body["review_flags"]] == [README_FLAG]  # README 표시만
         assert SECRET not in r.text  # 다른 파일 본문은 내주지 않는다
+        assert body["full"] is None  # 예전 판 — 지원자 README 가 곧 원래 판
+
+
+async def test_readme_of_an_analysis_build_also_gives_the_full_version(tmp_path: Path) -> None:
+    """문제 분석 판 — 승인 화면이 두 README(얇은 판 ↔ 원래 판)를 나란히 보게 원래 판 README.full.md 도 (analysis-stage.md §8)."""
+    store = InMemoryBuildStore()
+    bid = (await store.new_build(CID, "onto-test", AT)).build_id
+    await store.set_status(bid, "generating")
+    full = StarterFile.of(bid, "readme_full", README_FULL_PATH, "# 가상 과제\n\n## 요구 사항\n")
+    await store.put_files(bid, [StarterFile.of(bid, "readme", README_PATH, "# 가상 과제\n"), full])
+    await store.set_status(bid, "verifying")
+    await store.save_outcome(bid, _outcome(H_NEW))
+    await store.set_status(bid, "review")
+    async with await _client(tmp_path, store) as c:
+        body = (await c.get(f"/builds/{bid}/readme")).json()
+    assert body["content"] == "# 가상 과제\n" and body["path"] == README_PATH
+    assert body["full"] == {
+        "path": README_FULL_PATH,
+        "sha256": full.sha256,
+        "size": full.size,
+        "content": full.content,
+    }
 
 
 async def test_readme_missing(tmp_path: Path) -> None:

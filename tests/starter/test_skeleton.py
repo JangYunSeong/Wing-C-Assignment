@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from task_spec.schemas import GeneratedFile, TaskContract
+from task_spec.starter.render import candidate_contract
 from task_spec.starter.skeleton import (
     APP,
     ENDPOINTS,
@@ -16,6 +17,7 @@ from task_spec.starter.skeleton import (
 from task_spec.starter.static_check import Overlay, _skeleton_kept
 from task_spec.starter.templates import load_template
 from tests.starter.test_contract_shapes import _contract, _ui_contract
+from tests.starter.test_plan_contract import _task
 
 V10 = load_template("frontend/react-vite-ts", 10)
 V8 = load_template("frontend/react-vite-ts", 8)
@@ -110,6 +112,30 @@ def test_java_skeleton_maps_every_endpoint_through_one_controller() -> None:
         assert f'{e.method.capitalize()}Mapping("{e.path}")' in ctl  # type: ignore[union-attr]
     assert "UnsupportedOperationException" in svc
     assert _jproblems(list(render_skeleton(CJ, J2.manifest))) == []
+
+
+def test_skeleton_comments_carry_no_summary_for_an_analysis_spec() -> None:
+    """문제 분석 판(요청 글이 있는 명세) — 시작 코드 주석은 모양만. 요약에 규칙이 들어간다(2026-11-17 알파 #006 컨트롤러 주석
+    '허용되지 않은 전이는 400으로 거절한다'). 예전 판은 요약 그대로, 이름·매핑은 두 판이 같다 (analysis-stage.md §5.2)."""
+    old, asked = _task(), _task().model_copy(update={"request": "가상 요청 글"})
+    for contract, manifest, path in (
+        (CJ, J2.manifest, JAVA_CONTROLLER),
+        (C, V10.manifest, ENDPOINTS),
+    ):
+        full = {
+            f.path: f.content for f in render_skeleton(candidate_contract(old, contract), manifest)
+        }
+        thin = {
+            f.path: f.content
+            for f in render_skeleton(candidate_contract(asked, contract), manifest)
+        }
+        for e in contract.endpoints:
+            assert f"{e.method} {e.path} — {e.summary}" in full[path]
+            assert (
+                e.summary not in thin[path] and f"{e.endpoint_id} {e.method} {e.path}" in thin[path]
+            )
+        assert thin[path].count("Mapping(") == full[path].count("Mapping(")
+    assert _jproblems(list(render_skeleton(candidate_contract(asked, CJ), J2.manifest))) == []
 
 
 def test_java_skeleton_changes_and_remapping_are_caught() -> None:

@@ -17,7 +17,8 @@ POST /builds/{build_id}/deliveries {role, target, requested_by} : SFTP 전달 �
                                    (sent·failed + 사유 코드). 같은 대상으로 보내는 중이거나 보낸 역할은 다시 보내지 않는다 (409).
                                    접속 설정이 없는 대상이면 409 delivery_target_not_configured
 GET  /builds/{build_id}/readme   : 지원자 README 본문(응시용 이미지 작업 경로의 README.md 와 같음) + README 검토 표시 —
-                                   지원자에게 보이는 공개 정보라 본문을 내준다. 검사·검증을 마친 빌드(review·approved·published)만
+                                   지원자에게 보이는 공개 정보라 본문을 내준다. 검사·검증을 마친 빌드(review·approved·published)만.
+                                   문제 분석 판은 `full` 에 원래 판 README.full.md(요구·공개 수용 기준·계약 규칙 그대로) — 승인 화면에서 나란히
 GET  /builds/{build_id}/facilitator: 진행자(응시 플랫폼) 보기 — 요청하면 주는 자료(제목·본문), 질문 답(주제·매칭 낱말·구체·모호한 답),
                                    1단계 제출 뒤 공개할 2단계. 자료 역할·reveals·숨은 요구·허용 설계는 응답 모델에 없다 (starter/facilitator.py).
                                    문제 분석 판(사실이 있는 명세)은 배경 글·요청 글·사실(주제·열림 조건 ask_when·두 층 답)과 열림 조건을 보는
@@ -134,6 +135,15 @@ class ArtifactView(BaseModel):
     created_at: datetime
 
 
+class FullReadmeView(BaseModel):
+    """문제 분석 판의 원래 판 README(README.full.md) — 요구 사항·공개 수용 기준·계약 규칙 설명이 그대로. 승인 화면에서 지원자 README 와 나란히."""
+
+    path: str
+    sha256: str
+    size: int
+    content: str
+
+
 class ReadmeView(BaseModel):
     build_id: str
     status: BuildStatus
@@ -142,6 +152,7 @@ class ReadmeView(BaseModel):
     size: int
     content: str
     review_flags: list[FlagView]  # README 에서 나온 검토 표시 — 승인자가 판단할 것
+    full: FullReadmeView | None = None  # 문제 분석 판만 — 예전 판은 지원자 README 가 곧 원래 판
 
 
 _README_READABLE: tuple[BuildStatus, ...] = ("review", "approved", "published")
@@ -408,6 +419,7 @@ async def get_readme(build_id: BuildIdPath, store: BuildsDep) -> ReadmeView:
         for f in (b.outcome.review_flags if b.outcome else [])
         if f.startswith(README)
     ]
+    full = await store.full_readme(build_id)
     return ReadmeView(
         build_id=build_id,
         status=b.status,
@@ -416,6 +428,11 @@ async def get_readme(build_id: BuildIdPath, store: BuildsDep) -> ReadmeView:
         size=readme.size,
         content=readme.content,
         review_flags=flags,
+        full=None
+        if full is None
+        else FullReadmeView(
+            path=full.path, sha256=full.sha256, size=full.size, content=full.content
+        ),
     )
 
 

@@ -9,6 +9,7 @@ import pytest
 
 from task_spec.config import Settings
 from task_spec.schemas.build_record import (
+    README_FULL_PATH,
     README_PATH,
     BuildArtifact,
     BuildOutcome,
@@ -109,6 +110,12 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
     assert [f.content for f in await store.files(bid, ["starter"])] == ["class App { }"]
     assert [f.variant for f in await store.files(bid, ["ref_accepted"])] == ["d1", "d2"]
     assert len(await store.files(bid)) == 4
+    # 문제 분석 판의 원래 판 README — 오버레이와 같이 저장, 지원자 README 와 따로 읽힌다 (DB 제약: 경로는 README.full.md 만)
+    assert await store.full_readme(bid) is None
+    full = StarterFile.of(bid, "readme_full", README_FULL_PATH, "# 가상 원래 판\n")
+    await store.put_files(bid, [full])
+    assert await store.full_readme(bid) == full and await store.readme(bid) is None
+    assert await store.files(bid, ["readme_full"]) == [full]
 
     await store.set_status(bid, "verifying")
     with pytest.raises(BuildRuleError, match="오버레이 파일 저장"):
@@ -270,6 +277,20 @@ async def test_approve_needs_readme() -> None:
 def test_readme_path_fixed() -> None:
     with pytest.raises(ValueError, match="readme 경로"):
         StarterFile.of("ct-0123456789ab-b1", "readme", "docs/README.md", "x")
+    with pytest.raises(ValueError, match="readme_full 경로는 README.full.md 만"):
+        StarterFile.of("ct-0123456789ab-b1", "readme_full", README_PATH, "x")
+
+
+async def test_full_readme_is_stored_with_the_overlays_and_read_apart() -> None:
+    """문제 분석 판 — 원래 판 README(README.full.md)는 오버레이와 같이 저장되고, 지원자 README 와 따로 읽힌다 (analysis-stage.md §6)."""
+    store = InMemoryBuildStore()
+    bid = (await store.new_build("ct-0123456789ab", "onto-test", AT)).build_id
+    assert await store.full_readme(bid) is None  # 예전 판 빌드
+    await store.set_status(bid, "generating")
+    readme = StarterFile.of(bid, "readme", README_PATH, "# 얇은 판\n")
+    full = StarterFile.of(bid, "readme_full", README_FULL_PATH, "# 원래 판\n")
+    await store.put_files(bid, [readme, full])
+    assert await store.readme(bid) == readme and await store.full_readme(bid) == full
 
 
 async def test_missing_build_raises_key_error() -> None:

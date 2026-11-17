@@ -48,7 +48,7 @@ from task_spec.spec.incidents import (
     load_incidents,
     pin_feature_incident,
 )
-from task_spec.starter.render import render_readme
+from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.templates import load_template, select_template
 from task_spec.starter.verify import verifier_for
 from task_spec.starter.verify.workspace import assemble
@@ -306,6 +306,9 @@ async def main() -> None:
         # 시작 코드가 정해진 뒤 다시 — '시작 코드' 절(이미 있는 파일·함수 이름)을 그 시작 코드에서 뽑아 넣는다 (starter/code_map.py)
         readme = render_readme(task, res.contract, template, starter=starter.files)
         (out / "candidate" / readme.path).write_text(readme.content, "utf-8")
+        if thin_readme(task):  # 문제 분석 판 — 원래 판은 응시자 폴더 밖에 (diff 로 두 판을 견준다)
+            full = render_readme(task, res.contract, template, starter=starter.files, full=True)
+            (out / full.path).write_text(full.content, "utf-8")
     report["build"] = {
         "status": built_out.status,
         "rounds": built_out.rounds,

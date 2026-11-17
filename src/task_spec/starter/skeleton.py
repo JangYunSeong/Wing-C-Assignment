@@ -14,7 +14,7 @@ from typing import Any
 from task_spec.schemas.build import Endpoint, GeneratedFile, Screen, TaskContract
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.hidden_helpers import method_name
-from task_spec.starter.ts_helpers import APP_TYPES, _ident, _ts, ts_type
+from task_spec.starter.ts_helpers import APP_TYPES, _ident, _ts, about, ts_type
 
 ENDPOINTS = "src/api/endpoints.ts"
 APP = "src/App.tsx"
@@ -124,7 +124,7 @@ def render_endpoints(contract: TaskContract) -> GeneratedFile | None:
         )
         lines += [
             "",
-            f"/** {e.endpoint_id} {e.method} {e.path} — {e.summary}{heads} */",
+            f"/** {e.endpoint_id} {e.method} {e.path}{about(e.summary)}{heads} */",
             f"export async function {method_name(e)}({', '.join(params)}): Promise<{base}Ok> {{{qs}",
             # Headers 로 받아야 부르는 쪽이 Headers 객체를 넘겨도 값이 남는다 (펼치기 {...headers} 는 Headers 를 비운다)
             "  const headers = new Headers(init?.headers);",
@@ -347,7 +347,7 @@ def render_java_skeleton(contract: TaskContract) -> list[GeneratedFile]:
     for e in eps:
         name = method_name(e)
         params = java_params(contract, e)
-        doc = f"    /** {e.endpoint_id} {e.method} {e.path} — {e.summary} */"
+        doc = f"    /** {e.endpoint_id} {e.method} {e.path}{about(e.summary)} */"
         spring_path = re.sub(r":(\w+)", r"{\1}", e.path)
         ann = f'    @{(e.method or "GET").capitalize()}Mapping("{spring_path}")'
         ctl += [

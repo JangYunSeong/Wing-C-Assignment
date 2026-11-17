@@ -2,6 +2,8 @@
 
 - `render_readme`: 지원자 README. 템플릿 `README.tpl.md` 의 자리를 승인된 명세 문장·공개 계약·진행 방식으로 채운다.
   숨은 요구·숨김 수용 기준·허용 설계·2단계·자료 본문·추가 요구 답은 **자리가 없다** — 넣을 방법이 없게 만든다 (승인한 문장 = 지원자가 보는 문장).
+  문제 분석 판(요청 글이 있는 명세, analysis-stage.md §5.2·§6)은 두 판: 지원자 `README.md` 는 얇은 판 — 상황 자리에 배경 글, '요구 사항'·
+  '공개 수용 기준' 절 대신 '요청' 절, 계약은 모양만(B1). 원래 판 `README.full.md`(full=True)는 지금 내용 그대로 — 승인 화면·평가 키트에만.
 - `render_params`: HiddenPlan.harness → 채점 조절값 파일 (템플릿 `hidden_layout.params`). 숨은 테스트 생성기가 쓰지 않고 코드가 쓴다.
 """
 
@@ -20,15 +22,23 @@ from task_spec.starter.tables import contract_tables, table_label
 from task_spec.starter.templates import Template
 
 README = "README.md"
+README_FULL = "README.full.md"  # 원래 판 — 응시용 이미지에 넣지 않는다 (승인 화면·평가 키트)
 README_TEMPLATE = "README.tpl.md"
 SLOTS = (
     "title",
     "scenario",
     "requirements",
     "acceptance_public",
+    "request",
     "contract",
     "deliverables",
     "process",
+)
+# 얇은 판에서 바꾸는 템플릿 절 — 세 스택 템플릿이 같은 이름을 쓴다 (판을 새로 만들지 않고 코드가 바꾼다)
+_REQUIREMENTS_HEAD = "## 요구 사항"
+_ACCEPTANCE_HEAD = "## 공개 수용 기준"
+REJECTED = (
+    "요청을 처리할 수 없음"  # 얇은 판의 오류 응답 — 어느 규칙인지 말하지 않는다 (B1 공통 거절)
 )
 
 _SLOT = re.compile(r"\{\{(\w+)\}\}")
@@ -36,6 +46,22 @@ _SLOT = re.compile(r"\{\{(\w+)\}\}")
 
 class RenderError(ValueError):
     pass
+
+
+def thin_readme(task: TaskItem) -> bool:
+    """지원자 README 를 얇은 판으로 — 문제 분석 판(요청 글이 있는 명세). 요구는 진행자에게 물어 안다 (analysis-stage.md §5.2)."""
+    return bool((task.request or "").strip())
+
+
+def candidate_contract(task: TaskItem, contract: TaskContract) -> TaskContract:
+    """지원자에게 보이는 코드(뼈대·앱 계약 타입 주석)에 쓰는 계약 — 얇은 판이면 엔드포인트 요약을 비운다.
+    요약에는 규칙이 들어간다(2026-11-17 알파 #006 컨트롤러 주석 '허용되지 않은 전이는 400으로 거절한다. 변경 시도마다 감사 기록을 남긴다').
+    채점 도우미·생성기 입력의 계약은 그대로다."""
+    if not thin_readme(task):
+        return contract
+    return contract.model_copy(
+        update={"endpoints": [e.model_copy(update={"summary": ""}) for e in contract.endpoints]}
+    )
 
 
 def public_scenario(task: TaskItem) -> str:
@@ -49,30 +75,49 @@ def public_scenario(task: TaskItem) -> str:
     return text
 
 
-def _field(f: ContractField) -> str:
+_ENUM = re.compile(r"enum\([^)]*\)")
+
+
+def _field(f: ContractField, shape_only: bool = False, hide_values: bool = False) -> str:
+    """hide_values: 값 목록(enum(…))을 string 으로 — 거절 응답 본문의 사유 값은 진행자 답에만 (B1 사유 값 예외, §4.2)."""
     extra = ", 선택" if not f.required else ""
-    note = f" — {f.constraints}" if f.constraints else ""
-    return f"`{f.name}` ({f.type}{extra}){note}"
+    note = f" — {f.constraints}" if f.constraints and not shape_only else ""
+    kind = _ENUM.sub("string", f.type) if hide_values else f.type
+    return f"`{f.name}` ({kind}{extra}){note}"
+
+
+def _rejected(status: int, cli: bool) -> bool:
+    """거절 응답인가 — HTTP 는 400 이상, 명령(CLI)은 0 이 아닌 종료 코드."""
+    return status != 0 if cli else status >= 400
 
 
 def contract_markdown(
-    contract: TaskContract, *, public_tests: bool = False, tables: TableNaming | None = None
+    contract: TaskContract,
+    *,
+    public_tests: bool = False,
+    tables: TableNaming | None = None,
+    shape_only: bool = False,
 ) -> str:
     """공개 계약 → README "API 계약" 절 본문. public_tests 는 공개 테스트를 지원자에게 줄 때만 (§4.3 [미정]).
-    tables 를 주면 엔티티마다 템플릿 규칙으로 정한 테이블 이름을 적는다 (starter/tables.py)."""
+    tables 를 주면 엔티티마다 템플릿 규칙으로 정한 테이블 이름을 적는다 (starter/tables.py).
+    shape_only(얇은 판, B1 — analysis-stage.md §5.2): 경로·메서드·칸 이름·형식·상태 값 이름만. 엔드포인트 요약·응답 설명·칸 제약은 빼고,
+    거절 응답은 상태 코드마다 한 줄 '요청을 처리할 수 없음' — 본문은 칸 이름·형식만(값 목록 없이). 상태 규칙이 있는 엔티티는 상태 값
+    이름만 적는다(허용 전이는 규칙). 화면·설정·입력 환경·시드는 그대로 — 프론트는 B1 대신 요소가 필요 없는 규칙만 묻는다(§5.6)."""
     names = {m.entity_id: m.name for m in contract.data_shapes()}
     table_of = contract_tables(contract, tables)
     out: list[str] = []
     for e in contract.endpoints:
         head = f"{e.method} {e.path}" if e.method else e.path
-        out += [f"### `{head}`", "", e.summary, ""]
+        out += [f"### `{head}`", ""] + ([] if shape_only else [e.summary, ""])
         if not e.method and (
             e.request or e.query
         ):  # CLI 명령 — 옵션은 --이름 (starter/py_helpers.flag)
             out.append(
                 "- 옵션: "
                 + " · ".join(
-                    _field(f).replace(f"`{f.name}`", f"`--{f.name.replace('_', '-')}`", 1)
+                    _field(f, shape_only).replace(
+                        f"`{f.name}`", f"`--{f.name.replace('_', '-')}`", 1
+                    )
                     for f in [*e.request, *e.query]
                 )
             )
@@ -82,16 +127,24 @@ def contract_markdown(
             else (("헤더", e.headers),)
         ):
             if fields:
-                out.append(f"- {label}: " + " · ".join(_field(f) for f in fields))
+                out.append(f"- {label}: " + " · ".join(_field(f, shape_only) for f in fields))
+        refused: set[int] = set()
         for r in e.responses:
+            rejected = shape_only and _rejected(r.status, cli=not e.method)
+            if rejected and r.status in refused:
+                continue  # 같은 상태 코드의 거절은 한 줄 — 몇 가지 규칙인지도 드러내지 않는다
             if r.returns:
                 target = names.get(r.returns.removesuffix("[]"), r.returns)
                 shape = f" → `{target}` 목록" if r.returns.endswith("[]") else f" → `{target}`"
             elif r.body:
-                shape = " → " + " · ".join(_field(f) for f in r.body)
+                shape = " → " + " · ".join(_field(f, shape_only, rejected) for f in r.body)
             else:
                 shape = ""
-            out.append(f"- `{r.status}` {r.description}{shape}")
+            if rejected:
+                refused.add(r.status)
+                out.append(f"- `{r.status}` {REJECTED}{shape}")
+            else:
+                out.append(f"- `{r.status}`{'' if shape_only else ' ' + r.description}{shape}")
         out.append("")
     for sc in contract.screens:
         out += [
@@ -136,11 +189,14 @@ def contract_markdown(
         head = f"#### `{m.name}`"
         if tables is not None and m.entity_id in table_of:
             head += " — " + table_label(table_of[m.entity_id], tables)
-        out += [head, "", "| 필드 | 형식 | 필수 | 제약 |", "|---|---|---|---|"]
-        out += [
-            f"| `{f.name}` | {f.type} | {'예' if f.required else '아니오'} | {f.constraints or ''} |"
-            for f in m.fields
-        ]
+        out += [head, "", *_field_table(m.fields, shape_only)]
+        if (
+            shape_only and m.state is not None
+        ):  # 상태 값은 제약 문장에 들어 있어 표에서 빠진다 — 이름만 (전이는 규칙)
+            out += [
+                "",
+                f"상태 값(`{m.state.field}`): " + " · ".join(f"`{v}`" for v in m.state.values),
+            ]
         if m.relations:
             out += ["", "관계: " + " · ".join(m.relations)]
         if m.foreign_keys:
@@ -158,11 +214,7 @@ def contract_markdown(
             "",
         ]
         for s in contract.response_shapes:
-            out += [f"#### `{s.name}`", "", "| 필드 | 형식 | 필수 | 제약 |", "|---|---|---|---|"]
-            out += [
-                f"| `{f.name}` | {f.type} | {'예' if f.required else '아니오'} | {f.constraints or ''} |"
-                for f in s.fields
-            ]
+            out += [f"#### `{s.name}`", "", *_field_table(s.fields, shape_only)]
             out.append("")
     if contract.fixtures:
         out += ["### 입력 환경", ""]
@@ -185,6 +237,40 @@ def contract_markdown(
         out += [f"- {t.test_id}: {t.checks}" for t in contract.public_tests]
         out.append("")
     return "\n".join(out).rstrip() + "\n"
+
+
+def _field_table(fields: Sequence[ContractField], shape_only: bool) -> list[str]:
+    """필드 표 — 얇은 판은 제약 칸을 뺀다 (제약에 수량 한도·허용 값 같은 규칙이 들어간다)."""
+    if shape_only:
+        return [
+            "| 필드 | 형식 | 필수 |",
+            "|---|---|---|",
+            *(f"| `{f.name}` | {f.type} | {'예' if f.required else '아니오'} |" for f in fields),
+        ]
+    return [
+        "| 필드 | 형식 | 필수 | 제약 |",
+        "|---|---|---|---|",
+        *(
+            f"| `{f.name}` | {f.type} | {'예' if f.required else '아니오'} | {f.constraints or ''} |"
+            for f in fields
+        ),
+    ]
+
+
+def _request_sections(tpl: str, name: str) -> str:
+    """얇은 판 템플릿 — '요구 사항' 절을 '요청' 절로 바꾸고 '공개 수용 기준' 절을 뺀다 (절 이름이 없으면 RenderError)."""
+    parts = re.split(r"(?m)^(?=## )", tpl)
+    heads = [p.splitlines()[0].strip() if p else "" for p in parts]
+    missing = [h for h in (_REQUIREMENTS_HEAD, _ACCEPTANCE_HEAD) if h not in heads]
+    if missing:
+        raise RenderError(f"{name} 에 얇은 판으로 바꿀 절이 없음: {', '.join(missing)}")
+    out = []
+    for head, part in zip(heads, parts, strict=True):
+        if head == _REQUIREMENTS_HEAD:
+            out.append("## 요청\n\n{{request}}\n\n")
+        elif head != _ACCEPTANCE_HEAD:
+            out.append(part)
+    return "".join(out)
 
 
 def process_markdown(task: TaskItem) -> str:
@@ -213,19 +299,29 @@ def render_readme(
     *,
     public_tests: bool = False,
     starter: Sequence[GeneratedFile] | None = None,
+    full: bool = False,
 ) -> GeneratedFile:
     """README.tpl.md 의 자리를 채운다. 템플릿이 모르는 자리를 쓰거나 값이 비면 RenderError.
     starter(시작 코드 출력)를 주면 '시작 코드' 절(이미 있는 파일·화면 경로·함수 이름 — starter/code_map.py)을 '코드 구조' 절 뒤에
-    붙이고, 적힌 이름이 시작 코드와 맞는지 대조한다 (맞지 않으면 RenderError — 코드와 README 가 어긋나면 안 된다)."""
+    붙이고, 적힌 이름이 시작 코드와 맞는지 대조한다 (맞지 않으면 RenderError — 코드와 README 가 어긋나면 안 된다).
+    문제 분석 판(thin_readme)은 기본이 얇은 판 README.md, full=True 면 원래 판 README.full.md. 예전 판은 full 과 관계없이 지금 그대로."""
     tpl_path = template.root / README_TEMPLATE
     tpl = tpl_path.read_text("utf-8")
+    thin = thin_readme(task) and not full
+    if thin:
+        tpl = _request_sections(tpl, tpl_path.name)
     values = {
         "title": task.title or "",
-        "scenario": public_scenario(task),
+        # 얇은 판 상황 자리는 배경 글 — 상황 글(scenario)에는 요구 문장이 들어 있다 (2026-11-17 #006: '성공·실패와 관계없이 기록을 남겨야')
+        "scenario": (task.background or "").strip() if thin else public_scenario(task),
         "requirements": "\n".join(f"- **{r.req_id}** {r.text}" for r in task.requirements),
         "acceptance_public": "\n".join(f"- {a.text}" for a in task.acceptance_public),
+        "request": (task.request or "").strip(),
         "contract": contract_markdown(
-            contract, public_tests=public_tests, tables=template.manifest.naming.table
+            contract,
+            public_tests=public_tests,
+            tables=template.manifest.naming.table,
+            shape_only=thin,
         ).strip(),
         "deliverables": "\n".join(f"{n}. {d}" for n, d in enumerate(task.deliverables, 1)),
         "process": process_markdown(task),
@@ -240,7 +336,9 @@ def render_readme(
     content = _SLOT.sub(lambda m: values[m.group(1)], tpl)
     if starter is not None:
         content = with_code_map(content, starter_view(template.root, starter), contract)
-    return GeneratedFile(path=README, content=content)
+    return GeneratedFile(
+        path=README_FULL if full and thin_readme(task) else README, content=content
+    )
 
 
 def with_code_map(
