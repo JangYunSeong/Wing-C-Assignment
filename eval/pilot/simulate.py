@@ -36,6 +36,7 @@ ONE_AT_A_TIME_MAX = 0.1  # 한 주제 질문 중 "한 가지씩" 비율 상한
 
 
 VAGUE = "vague"  # 특정 항목을 콕 집지 않는 넓은 질문 — 구체 답이 열리면 안 된다 (2026-11-13 사용자: 모호하게 물어 여럿 여는 것 조심)
+HIDDEN = "hidden"  # 숨은 요구 자체를 묻는 질문 — 공개 항목으로 답할 것이 아니라 구체 답 비율에서 빼고 무엇이 열렸는지만 센다 (2026-11-17 사용자)
 VAGUE_OPEN_MAX = 0.05  # 모호한 질문 중 구체 답이 열리는 비율 상한 (2026-11-13 사용자: 5%)
 # 판정에 필요한 질문 수 — 모자라면 새 눈가림 목록을 더 받아 합쳐 판정한다 (2026-11-13 사용자). 모호 20개면 5% = 1개까지
 MIN_FACT_QUESTIONS = 8
@@ -44,8 +45,14 @@ OFFICIAL = "official.json"  # 공식 판정 기록 — 돌리기 전에 대상 �
 
 
 def classify(about: str | list[str] | None, r: Reply) -> str:
-    """about — 한 항목 id(한 주제 질문) / 여러 id(여러 주제 질문) / None(주제 밖) / "vague"(넓은 질문)."""
+    """about — 한 항목 id(한 주제 질문) / 여러 id(여러 주제 질문) / None(주제 밖) / "vague"(넓은 질문) / "hidden"(숨은 요구)."""
     answered = r.answered()
+    if about == HIDDEN:
+        if r.layer == "one_at_a_time":
+            return "숨은 요구·한 가지씩"
+        if r.text == NO_INFO:
+            return "숨은 요구·정보 없음"
+        return "숨은 요구·구체 답" if r.layer == "answer" else "숨은 요구·모호한 답"
     if about == VAGUE:
         opened = r.layer == "answer" and bool(answered) and not r.repeat
         return "모호·구체 열림" if opened else "모호·막음"
@@ -102,7 +109,8 @@ def run(
             }
         )
     vague = [x for x in rows if x["about"] == VAGUE]
-    one = [x for x in rows if isinstance(x["about"], str) and x["about"] != VAGUE]
+    one = [x for x in rows if isinstance(x["about"], str) and x["about"] not in (VAGUE, HIDDEN)]
+    hidden = [x for x in rows if x["about"] == HIDDEN]  # 기록만 — 판정에 넣지 않는다
     single = [x for x in one if not is_clarification(x["about"])]  # 판정 — 사실(f#) 한 항목 질문
     clar = [x for x in one if is_clarification(x["about"])]  # 추가 요구(c#) — 기록만
     names = ("구체 답", "모호한 답", "정보 없음", "한 가지씩", "다른 항목")
@@ -118,6 +126,8 @@ def run(
         "facts_enough": facts_enough,
         "rates": rates,
         "clarification_rates": {name: _rate(clar, name) for name in names},
+        "hidden_count": len(hidden),
+        "hidden_counts": dict(Counter(x["result"] for x in hidden)),
         "vague_count": len(vague),
         "vague_enough": vague_enough,
         "vague_open_rate": vague_rate,
@@ -135,7 +145,9 @@ def run(
 def label_counts(questions: list[dict[str, Any]]) -> tuple[int, int]:
     """붙인 about 만으로 센 판정 질문 수 — (사실 f# 한 항목 질문, 모호한 질문). 진행자를 돌리기 전에 알 수 있다."""
     facts = sum(
-        isinstance(q.get("about"), str) and q["about"] != VAGUE and not is_clarification(q["about"])
+        isinstance(q.get("about"), str)
+        and q["about"] not in (VAGUE, HIDDEN)
+        and not is_clarification(q["about"])
         for q in questions
     )
     return facts, sum(q.get("about") == VAGUE for q in questions)
