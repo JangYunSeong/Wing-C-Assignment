@@ -11,7 +11,10 @@
   `backfill_readme()` 만 verifying·review 에서 한 번 (이미 있으면 같은 본문만) — 관리 스크립트(eval/starter/backfill_readme.py·
   import_mock_builds.py)만 부른다 (#175: 일회성 이행이 put_readme 상태 규칙의 영구 예외로 남아 있었다).
   응시용 묶음에 README.md 가 있으면 저장한 README 와 해시가 같아야 하고, 승인에는 저장한 README 가 있어야 한다 (승인자가 볼 문장).
-- 묶음: 응시용·채점용은 review 에서, 평가 키트는 approved 에서(승인자 판단이 들어가므로) 등록한다.
+- 묶음: 응시용·채점용은 verifying·review 에서, 평가 키트는 approved 에서(승인자 판단이 들어가므로) 등록한다.
+  builder 는 verifying 에서 묶음을 다 등록한 뒤 review 로 바꾼다 — review 면 묶음이 있다. 묶음을 쓰는 동안(1~2분)에도
+  heartbeat 가 lease 를 늘린다 (2026-11-17 ct-1eaccb671a03-b1: review 로 먼저 바꿔 그사이 heartbeat 가 실패해 묶음 없이 멈췄다).
+  review 에서의 등록은 적재 경로(eval import_mock_builds)용.
   묶음의 tree_sha256·grader_sha256 은 빌드의 현재 outcome 과 같아야 하고, 한 번 등록하면 바꾸지 않는다.
 - 승인은 review 에서만, 응시용·채점용 묶음이 현재 outcome 과 맞고 검토 표시마다 승인자 판단(flag_id)이 있어야 한다.
   승인 자체는 그래프 interrupt 로 받은 결과를 적는 것 (불변식 9).
@@ -89,8 +92,11 @@ _README_BACKFILL = (
 _OUTCOME_OPEN = ("generating", "verifying")
 _REOPENABLE = ("verifying", "review")
 _ARTIFACT_OPEN: dict[str, tuple[str, ...]] = {
-    "candidate": ("review",),
-    "grader": ("review",),
+    "candidate": (
+        "verifying",
+        "review",
+    ),  # builder 는 verifying 에서 등록한 뒤 review 로 (위 '묶음' 규칙)
+    "grader": ("verifying", "review"),
     "eval_kit": ("approved",),
 }
 _APPROVAL_NEEDS: tuple[ArtifactRole, ...] = ("candidate", "grader")

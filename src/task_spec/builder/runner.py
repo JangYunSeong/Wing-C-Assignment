@@ -2,7 +2,7 @@
 
 생성·이미지 단계(`Steps`)는 바꿔 끼운다 — 실제는 `builder/steps.py`, 시험은 가짜. 순서:
 
-    claim(generating) ─ contract ─ build ─ 파일·README 저장 ─ verifying ─ images ─ 결과 저장 ─ review ─ 묶음 등록
+    claim(generating) ─ contract ─ build ─ 파일·README 저장 ─ verifying ─ images ─ 결과 저장 ─ 묶음 등록 ─ review
 
 - 비용: 단계마다 provenance 비용을 `record_stage` 로 쌓고, 작업당 상한을 넘으면 다음 단계로 가지 않는다 (단계 중간에는 끊지 않음 —
   수리 루프는 MAX_ROUNDS 가 막는다). 하루 상한은 `claim` 이 막는다.
@@ -225,9 +225,10 @@ async def run_job(
             ),
         )
         await run.enter("package")
-        await store.set_status(build.build_id, "review")
-        run.stage = "package"
         await steps.register(store, job, c, b, i)
+        # 묶음을 다 등록한 뒤에 review — 묶음을 쓰는 동안 상태가 verifying 이라 heartbeat 가 lease 를 늘린다.
+        # 먼저 review 로 바꾸면 그사이 heartbeat 가 '진행 중 아님'으로 실패해 작업이 취소됐다 (2026-11-17 ct-1eaccb671a03-b1)
+        await store.set_status(build.build_id, "review")
         ok = True
         done = await store.get(build.build_id)
         assert done is not None
@@ -328,7 +329,10 @@ async def run_with_lease(
             if job.done():
                 return
             if not await store.heartbeat(build.build_id, worker, cfg.lease_seconds):
-                job.cancel()
+                # 이 작업이 묶음까지 등록하고 review 로 바꿨으면 lease 가 더 필요 없다 — 남은 정리(이미지·작업 폴더)는 끝까지
+                now = await store.get(build.build_id)
+                if now is None or now.status != "review" or now.worker != worker:
+                    job.cancel()
                 return
 
     hb = asyncio.create_task(beat())

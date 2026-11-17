@@ -116,13 +116,17 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
     await store.put_files(bid, [full])
     assert await store.full_readme(bid) == full and await store.readme(bid) is None
     assert await store.files(bid, ["readme_full"]) == [full]
+    with pytest.raises(BuildRuleError, match="candidate 묶음 등록"):
+        await store.put_artifact(_artifact(bid, "candidate", H_OLD))  # 생성 중에는 묶음이 없다
 
     await store.set_status(bid, "verifying")
     with pytest.raises(BuildRuleError, match="오버레이 파일 저장"):
         await store.put_files(bid, files[:1])  # 검증 중에는 고치지 않는다 — 수리는 reopen 뒤
     await store.save_outcome(bid, _outcome(H_OLD))
-    with pytest.raises(BuildRuleError, match="candidate 묶음 등록"):
-        await store.put_artifact(_artifact(bid, "candidate", H_OLD))  # review 전
+    # builder 는 verifying 에서 묶음을 등록한 뒤 review 로 (2026-11-17 — 묶음을 쓰는 동안 heartbeat 가 lease 를 늘리게).
+    # 검증 중에도 묶음은 현재 결과에서 나온 것이어야 한다
+    with pytest.raises(BuildRuleError, match="현재 결과와 다르다"):
+        await store.put_artifact(_artifact(bid, "candidate", H_NEW))
 
     await store.set_status(bid, "review")
     with pytest.raises(BuildRuleError, match="결과 저장"):
