@@ -18,7 +18,6 @@ from task_spec.schemas import (
     ApprovalDecision,
     DraftAnalysisOutput,
     DraftAnalysisOutputV2,
-    DraftAnalysisOutputV3,
     TaskItem,
 )
 from task_spec.spec.analysis_request import (
@@ -34,7 +33,6 @@ from task_spec.spec.analysis_request import (
     overlap_flags,
     repair_analysis,
 )
-from task_spec.spec.analysis_request import TASK as TASK_ANALYSIS
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.draft import DraftResult
 from task_spec.spec.feature import apply_feature
@@ -375,36 +373,3 @@ def test_v3_still_links_when_the_generator_did_not() -> None:
     assert check_analysis_draft(out, _task(), _ctx()) == []
     out = DraftAnalysisOutputV2.model_validate(_v3())
     assert any("p1 에 req_ids 가 없음" in p for p in check_analysis_draft(out, _task(), _ctx()))
-
-
-# ── v4: 요청 글은 공식 요구(무엇)를 모두, 사실은 규칙(어떻게)만 — request_mentions 는 코드가 [2026-11-16 사용자] ──
-
-
-async def test_v4_mentions_every_requirement_and_skips_business_need() -> None:
-    task = _linked_task()
-    d = _v3()
-    d["request_mentions"] = []  # 써 와도 무시한다 — 출력 스키마에도 없다
-    d["facts"] = [
-        {**f, "covers": [c for c in f["covers"] if c.startswith("p")]} for f in d["facts"]
-    ]
-    fake = FakeBackend().push(_reply(d))
-    res = await draft_analysis_request(
-        task, _ctx(), llm=_client(fake), prompts=_REGISTRY, version=4
-    )
-    assert len(fake.calls) == 1 and not res.flags, res.flags
-    done = apply_analysis(task, res)
-    assert done.request_mentions == ["r1", "r2"]  # 모든 공식 요구
-    assert not any("흐림 정도" in f for f in done.review_flags)  # 모두 말하는 것이 설계
-    assert res.provenance[0].prompt == "draft_analysis_request@4"
-    assert (
-        "request_mentions"
-        not in _REGISTRY.get(TASK_ANALYSIS, 4).output_model.model_json_schema()["properties"]
-    )
-    assert "business_need" not in _REGISTRY.get(TASK_ANALYSIS, 4).input_model.model_fields
-
-
-def test_v4_still_needs_every_acceptance_covered_by_a_fact() -> None:
-    d = _v3()
-    d["facts"] = d["facts"][:1]  # p2 를 덮는 사실이 없다
-    out = DraftAnalysisOutputV3.model_validate(d)
-    assert any("덮는 사실이 없는" in p for p in check_analysis_draft(out, _linked_task(), _ctx()))

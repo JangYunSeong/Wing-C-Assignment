@@ -75,8 +75,7 @@ task:                                  # common_tasks·verification_tasks·slots
   source_incident: critical_incident_id      # 부서 결정적 사건 — 수집 전에는 비어 있음
 
   # 기능 개발형(task_kind=feature) 전용 — incident에서는 비어 있어야 한다
-  requirements: [{req_id: r#, text}]         # 공개 요구 — '무엇을'만, 최대 6. draft_feature_task v12 는 재료의 만들 것(deliverables)과 같은 개수·순서,
-                                             # 규칙(값·순서·항목·조건)은 acceptance_public 에
+  requirements: [{req_id: r#, text}]         # 공개 요구 — '무엇을'만, 최대 6
   acceptance_public: [{ac_id, text, req_ids: [r#]}]   # 공개 수용 기준, 최대 6. req_ids = 확인하는 공식 요구 (예전 판은 비어 있음).
                                              # draft_feature_task v11 이 p# 와 함께 쓰고(출력 AcceptanceDraftV6), 그 전 판 명세는 문제 분석 생성기가 채운다.
                                              # v5 이하 생성기 출력 모델은 req_ids 없는 판(PublicAcceptance) — 출력 스키마가 프롬프트에 들어가므로
@@ -97,12 +96,12 @@ task:                                  # common_tasks·verification_tasks·slots
   debug_stage:                               # 2단계: 1단계 제출 뒤 '배포 후 운영 증상' → 진단·수정
     {reveal_after: stage1_submitted, time_limit_min: 5~120, scenario, trap_ids, artifacts, max_requests(null — 한도 없음), deliverables, observables}
   # 문제 분석 판 (analysis-stage.md §4·§6) — 요청 글로 시작해 요구를 진행자에게 물어 확인한다. 예전 판은 비어 있다.
-  # id 사이 참조는 spec/analysis.py 가 본다: covers 는 있는 r#·p# 만, p# 는 사실 하나 이상이 덮고 r# 는 사실이 덮거나 request_mentions 에 있다, req_ids·request_mentions 는 있는 r# 만,
+  # id 사이 참조는 spec/analysis.py 가 본다: covers 는 있는 r#·p# 만, 모든 r#·p# 는 사실 하나 이상이 덮는다, req_ids·request_mentions 는 있는 r# 만,
   # p# 마다 req_ids 하나 이상, r# 마다 가리키는 p# 하나 이상, 요청 글과 사실은 함께, 배경 글 필수
   background: "<배경 글>"                    # README 상황 절 자리 — 회사·서비스·누가 무엇 때문에 곤란한가만, 공식 요구 없이 (1500자 이하).
                                              # 지금 상황 글(scenario)은 요구를 나열하므로 문제 분석 판은 이 글을 보인다 [확정: 2026-11-16 사용자]
   request: "<요청 글>"                       # README 요구 사항 절 자리 (1000자 이하)
-  request_mentions: [r#]                     # 배경 글·요청 글이 이미 말한 공식 요구 → 채점에서 "보이는 것으로 앎". 요청 글 v4 는 코드가 모든 r# 로 채운다
+  request_mentions: [r#]                     # 배경 글·요청 글이 이미 말한 공식 요구 → 채점에서 "보이는 것으로 앎"
   facts:                                     # 요청자 지식 — 물으면 주는 답 (승인 대상), 최대 12
     - {fact_id: f#, covers: [r#|p#], topic, ask_when: "<구체 답 조건 문장>", answer, answer_hint, match_terms}
                                              # 진행자 보기로는 covers·match_terms 를 빼고 넘긴다 (match_terms 는 명세 안 비교용)
@@ -150,7 +149,6 @@ task:                                  # common_tasks·verification_tasks·slots
 | 기능형의 자료·질문 한도 없음 — 새로 만드는 기능형은 `max_requests`·`max_clarifications`·`debug_stage.max_requests` 가 null, 상황 글에 한도 안내를 붙이지 않고 README 는 "제한이 없다"고 적음. 생성기 출력의 한도 칸은 예전 판 출력 스키마라 남기되 명세에 넣지 않음 | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4.4 — 한도는 정보를 막지 못하고 묻는 형식만 벌함. 상한은 제한 시간 |
 | 문제 분석 판 칸 — `background`·`request`·`request_mentions`·`facts`(`ask_when` 포함)·`acceptance_public[].req_ids`. 기능형 전용, 예전 판은 비어 있음. 참조 검사는 `spec/analysis.py` | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4·§6 (스키마 PR, §12-3). 생성기는 다음 단계 |
 | 공개 수용 기준 연결(`req_ids`)은 p# 를 쓰는 기능형 생성기(v11)가 함께 쓰고 "모든 r# 에 p# 하나 이상"을 재요청 사유로 검사. 추가 요구에 질문 문장 `clarifications[].ask_when`(명세 모델 `TaskClarification`) — 문제 분석 생성기 v3 가 씀 | [확정: 2026-11-16 사용자] | `analysis-stage.md` §5.1 — 흘림 판정·v2 평가 뒤 원인 수정 (r# 에 p# 없음, 사실 질문에 c# 가 열림) |
-| 무엇/어떻게 분리 — 공식 요구 r# 는 만들 것(무엇), 규칙은 공개 수용 기준 p#. 문제 분석 판 요청 글은 r# 를 모두 말하고(request_mentions = 모든 r#) 사실은 p# 규칙만. 참조 검사: r# 는 사실 또는 request_mentions | [확정: 2026-11-16 사용자] | `analysis-stage.md` §5.1 — 경계가 나뉘지 않아 요청 글 단계가 매번 추측했다 |
 
 
 ## 바꾸는 법

@@ -74,15 +74,6 @@ def test_every_requirement_and_criterion_needs_a_covering_fact() -> None:
     assert any("덮는 사실이 없는" in p and "r2" in p and "p2" in p for p in problems)
 
 
-def test_requirement_said_by_the_request_needs_no_fact_but_criteria_do() -> None:
-    """공식 요구는 보이는 글이 직접 말하면(request_mentions) 사실이 없어도 된다 — 요청 글 v4 는 무엇을 모두 말하고 사실은 규칙만
-    (2026-11-16 사용자). 공개 수용 기준(규칙)은 늘 사실이 덮어야 한다."""
-    facts = [_fact("f1", ["p1"]), _fact("f2", ["p2"])]
-    assert check_analysis(_task(request_mentions=["r1", "r2"], facts=facts)) == []
-    problems = check_analysis(_task(request_mentions=["r1", "r2"], facts=facts[:1]))
-    assert any("덮는 사실이 없는" in p and "p2" in p and "r2" not in p for p in problems)
-
-
 def test_references_must_resolve() -> None:
     problems = check_analysis(
         _task(

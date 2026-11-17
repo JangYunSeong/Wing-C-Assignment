@@ -32,13 +32,11 @@ from task_spec.schemas import (
     ClarificationDraft,
     DebugStage,
     DraftFeatureOutput,
-    DraftFeatureOutputByDeliverable,
     DraftFeatureOutputLinked,
     DraftFeatureOutputV2,
     DraftFeatureOutputV4,
     DraftFeatureOutputV5,
     DraftFeatureOutputV6,
-    DraftFeatureOutputV7,
     FeatureSeed,
     HiddenAcceptance,
     LinkedAcceptance,
@@ -259,13 +257,6 @@ def _with_note(body: str, note: str, cap: int) -> str:
 def fill_from_seed_v4(out: DraftFeatureOutputV4, seed: FeatureSeed) -> DraftFeatureOutput:
     """v4 출력 → 전체 기능형 출력. 계산할 수 있는 칸은 여기서 정한다 (LLM 에 맡기지 않음):
     자료 번호(1단계 a1…, 2단계 이어서)·요청 한도·질문 한도(초안 칸만 — 명세엔 넣지 않음)·관찰 행동·2단계 연결·공통 문구, 숨은 요구·허용 설계(재료)."""
-    return DraftFeatureOutput.model_validate(
-        _seed_data(out, seed, [c.model_dump() for c in out.clarifications])
-    )
-
-
-def _seed_data(out: Any, seed: FeatureSeed, clarifications: list[dict[str, Any]]) -> dict[str, Any]:
-    """v4 이후 출력 → 전체 기능형 출력의 칸 (검증 전). 추가 요구는 초안 모양(ClarificationDraft)으로 받는다."""
     s1 = [a.model_copy(update={"artifact_id": f"a{i}"}) for i, a in enumerate(out.artifacts, 1)]
     n = len(s1)
     s2 = [
@@ -273,7 +264,9 @@ def _seed_data(out: Any, seed: FeatureSeed, clarifications: list[dict[str, Any]]
         for i, a in enumerate(out.debug_stage.artifacts, 1)
     ]
     lim1, lim2 = _limit(s1, 4), _limit(s2, 3)
-    clars = [{**c, "reveals": [SEED_TRAP] if c["reveals"] else []} for c in clarifications]
+    clars = [
+        {**c.model_dump(), "reveals": [SEED_TRAP] if c.reveals else []} for c in out.clarifications
+    ]
     max_q = min(len(clars), MAX_CLARIFICATIONS)
     obs1 = [
         *({"kind": "first_mention_of", "value": c} for c in out.concepts),
@@ -327,7 +320,7 @@ def _seed_data(out: Any, seed: FeatureSeed, clarifications: list[dict[str, Any]]
             "observables": obs2,
         },
     }
-    return data
+    return DraftFeatureOutput.model_validate(data)
 
 
 HINT_POINTER = "'{title}' 자료에서 확인할 수 있습니다."
@@ -356,19 +349,8 @@ def fill_from_seed_v5(out: DraftFeatureOutputV5, seed: FeatureSeed) -> DraftFeat
     단서 추가 요구(reveals 있음)의 모호한 답은 생성 모델이 지목한 1단계 자료(hint_source)로 코드가 만든다 —
     생성 모델은 모호한 답 문장을 쓰지 않으니 운영 조건을 흘릴 자리가 없다. 단서가 아닌 추가 요구는 생성 모델의 모호한 답 그대로.
     """
-    v4 = DraftFeatureOutputV4.model_validate(
-        {
-            **out.model_dump(exclude={"clarifications"}),
-            "clarifications": [c.model_dump() for c in _v5_clarifications(out)],
-        }
-    )
-    return fill_from_seed_v4(v4, seed)
-
-
-def _v5_clarifications(out: DraftFeatureOutputV5) -> list[ClarificationDraft]:
-    """단서 추가 요구의 모호한 답은 지목한 1단계 자료로 코드가 만든다 (v5 이후)."""
     titles = [a.title for a in out.artifacts]
-    return [
+    clars = [
         ClarificationDraft(
             clarification_id=c.clarification_id,
             topic=c.topic,
@@ -381,31 +363,13 @@ def _v5_clarifications(out: DraftFeatureOutputV5) -> list[ClarificationDraft]:
         )
         for c in out.clarifications
     ]
-
-
-def fill_from_seed_v7(
-    out: DraftFeatureOutputV7, seed: FeatureSeed
-) -> DraftFeatureOutputByDeliverable:
-    """v7 출력 → 전체 모델. 공식 요구가 재료의 만들 것과 같은 개수라 1개일 수 있어, 공식 요구 2개 이상인 예전 판 모델을 거치지 않는다.
-    공개 수용 기준의 req_ids 는 그대로 남는다."""
-    data = _seed_data(out, seed, [c.model_dump() for c in _v5_clarifications(out)])
-    return DraftFeatureOutputByDeliverable.model_validate(data)
-
-
-def check_deliverables(out: DraftFeatureOutput, seed: FeatureSeed | None) -> list[str]:
-    """공식 요구가 재료의 만들 것과 같은 개수인지 (v7 출력만) — 요청 글이 만들 것을 모두 말하는 문제 분석 판의 전제 (2026-11-16 사용자)."""
-    if (
-        not isinstance(out, DraftFeatureOutputByDeliverable)
-        or seed is None
-        or not seed.deliverables
-    ):
-        return []
-    want, got = len(seed.deliverables), len(out.requirements)
-    if want == got:
-        return []
-    return [
-        f"공식 요구가 {got}개 — 재료의 만들 것({want}개: {', '.join(seed.deliverables)})과 같은 개수·순서로 쓴다 (규칙은 공개 수용 기준에)"
-    ]
+    v4 = DraftFeatureOutputV4.model_validate(
+        {
+            **out.model_dump(exclude={"clarifications"}),
+            "clarifications": [c.model_dump() for c in clars],
+        }
+    )
+    return fill_from_seed_v4(v4, seed)
 
 
 def fill_from_seed_v6(out: DraftFeatureOutputV6, seed: FeatureSeed) -> DraftFeatureOutputLinked:
@@ -749,7 +713,6 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     clar = [c.clarification_id for c in out.clarifications]
 
     problems += check_links(out)
-    problems += check_deliverables(out, ctx.incident.feature if ctx.incident is not None else None)
     problems += _dup("requirements(req_id)", [r.req_id for r in out.requirements])
     problems += _dup("acceptance_public(ac_id)", [a.ac_id for a in out.acceptance_public])
     problems += _dup("acceptance_hidden(ac_id)", [a.ac_id for a in out.acceptance_hidden])
@@ -1194,10 +1157,8 @@ async def draft_feature_task(
     seed = inc.feature
 
     def fill_then_shuffle(out: Any, key: str) -> DraftFeatureOutput:
-        if isinstance(out, DraftFeatureOutputV7):  # v6 의 하위 모델이라 먼저
-            full: DraftFeatureOutput = fill_from_seed_v7(out, seed)
-        elif isinstance(out, DraftFeatureOutputV6):  # v5 의 하위 모델이라 먼저
-            full = fill_from_seed_v6(out, seed)
+        if isinstance(out, DraftFeatureOutputV6):  # v5 의 하위 모델이라 먼저
+            full: DraftFeatureOutput = fill_from_seed_v6(out, seed)
         elif isinstance(out, DraftFeatureOutputV5):  # v4 의 하위 모델이라 먼저
             full = fill_from_seed_v5(out, seed)
         elif isinstance(out, DraftFeatureOutputV4):
@@ -1214,12 +1175,7 @@ async def draft_feature_task(
         prompts=prompts,
         reviewer_note=reviewer_note,
         task=TASK,
-        # deliverables 는 입력 모델에 그 칸이 있는 판(v12)만 받는다 (build_input 이 거른다) — CURRENT v11 의 입력은 그대로
-        extra_input={
-            **extra_input(),
-            "feature_seed": seed_block(inc),
-            "deliverables": "\n".join(f"- {d}" for d in seed.deliverables) or "(없음)",
-        },
+        extra_input={**extra_input(), "feature_seed": seed_block(inc)},
         checker=cast(Any, check_feature),
         repairer=cast(Any, repair_feature),
         shuffler=fill_then_shuffle,

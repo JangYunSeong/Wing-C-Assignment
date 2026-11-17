@@ -67,9 +67,6 @@ class FeatureSeed(Schema):
     business_need: str = Field(
         min_length=1
     )  # 만들 기능과 업무 요구 — 사고·증상·원인 언급 없이 (1단계 상황 재료)
-    # 만들 것 — "무엇"만 (값·순서·항목·조건·입력 키 없이). 공식 요구 r# 가 이 목록과 같은 개수·순서로 나오고(draft_feature_task v12),
-    # 문제 분석 판 요청 글이 모두 말한다 — 규칙("어떻게")은 공개 수용 기준·사실로 (analysis-stage.md §5.1, 2026-11-16 사용자). 없으면 예전 판대로
-    deliverables: list[str] = Field(default_factory=list, max_length=6)
     naive_impl: str = Field(min_length=1)  # 공개 요구만 보고 짜는 흔한 구현 (AI 첫 답)
     hidden_requirement: str = Field(min_length=1)  # 이 회사 운영 조건에서 지켜야 할 숨은 요구
     trigger: str = Field(min_length=1)  # 흔한 구현을 깨는 운영 조건 — 1단계 자료에서 보여야 함

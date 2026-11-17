@@ -295,12 +295,6 @@ async def main() -> None:
     )
     ap.add_argument("--per-sub", type=int, default=1)
     ap.add_argument(
-        "--offset",
-        type=int,
-        default=0,
-        help="--subs 와 함께: 직군마다 앞의 이만큼 공고를 건너뛴다 (앞 평가와 겹치지 않는 새 표본)",
-    )
-    ap.add_argument(
         "--incident",
         default=None,
         help="--subs 와 함께: 공고 해시 배정이 이 사례(incident_id)인 공고만 (새 재료 점검)",
@@ -327,15 +321,9 @@ async def main() -> None:
     if a.subs:
         for sub in a.subs:
             got, d = await pick(
-                repo,
-                version,
-                incidents,
-                sub,
-                force=True,
-                limit=a.offset + a.per_sub,
-                incident=a.incident,
+                repo, version, incidents, sub, force=True, limit=a.per_sub, incident=a.incident
             )
-            picked += got[a.offset :]
+            picked += got
             dist[sub] = d["kinds"]
         split_name = "subs"
     else:

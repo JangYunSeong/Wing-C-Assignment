@@ -171,13 +171,3 @@ def test_spec_mode_protects_requirements_and_acceptance() -> None:
     assert table == {"f1": "r1", "f2": "r2", "f3": "p1", "f4": "p2"}
     inp = judge_input(shown, "artifact")
     assert "f1 (r1) 상태 변경 요청마다 이력을 남긴다" in inp.facts and inp.hints == "(없음)"
-
-
-def test_reqs_mode_asks_whether_the_request_shows_each_requirement() -> None:
-    """요청 글 v4 — 공식 요구(무엇)는 보여야 한다. 보이는 글은 그대로 두고 공식 요구만 판정할 것으로."""
-    from eval.spec.run_fact_leak import spec_items
-
-    shown, table = spec_items(_analysed(), reqs_only=True)
-    assert table == {"f1": "r1", "f2": "r2"}
-    inp = judge_input(shown, "text")
-    assert "[request] 주문 상태가" in inp.visible and "p1" not in inp.facts
