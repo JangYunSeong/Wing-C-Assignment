@@ -403,7 +403,9 @@ async function show(id) {
   }
 }
 
-/* 문제 보기 — 지원자가 받는 README 와, 진행자(응시 플랫폼)가 요청·질문에 내주는 자료·답·2단계. 숨은 칸은 두 API 모두 내리지 않는다 */
+/* 문제 보기 — 지원자가 받는 README 와, 진행자(응시 플랫폼)가 요청·질문에 내주는 자료·답·2단계. 숨은 칸은 두 API 모두 내리지 않는다.
+   문제 분석 판(#151)은 지원자 README 가 얇은 판이라 원래 판(README.full.md — 요구·공개 수용 기준·계약 규칙 그대로)을 탭 하나로 더 보인다.
+   원래 판은 /readme 응답의 full 에만 있다 (예전 판은 null — 탭을 숨긴다) */
 const inline = (t) =>
   esc(t)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -492,7 +494,7 @@ async function openProblem(id, tab) {
     dlg.id = "problem";
     dlg.className = "problem";
     dlg.innerHTML = `<div class="p-head"><h3 id="p-title"></h3>
-      <div class="seg" role="group" aria-label="보기" id="p-tabs"><button type="button" data-t="readme">지원자 과제 설명</button><button type="button" data-t="facilitator">진행자 보기</button></div>
+      <div class="seg" role="group" aria-label="보기" id="p-tabs"><button type="button" data-t="readme">지원자 과제 설명</button><button type="button" data-t="full" hidden>원래 판 (README.full.md)</button><button type="button" data-t="facilitator">진행자 보기</button></div>
       <button type="button" class="btn small" id="p-close">닫기</button></div><div class="p-body" id="p-body"></div>`;
     document.body.append(dlg);
     dlg.addEventListener("click", (ev) => {
@@ -505,15 +507,27 @@ async function openProblem(id, tab) {
   const b = builds.find((x) => x.build_id === id);
   $("#p-title").textContent = b?.title || id;
   for (const btn of $("#p-tabs").children) btn.setAttribute("aria-pressed", String(btn.dataset.t === tab));
+  // 원래 판 탭은 그 빌드의 README 응답에 full 이 있을 때만 — 빌드를 바꿔 열면 읽기 전까지 숨긴다
+  const fullTab = $("#p-tabs").querySelector('[data-t="full"]');
+  fullTab.hidden = !problemCache[`${id}|readme`]?.full;
   if (!dlg.open) dlg.showModal();
   const body = $("#p-body");
-  const key = `${id}|${tab}`;
+  const res = tab === "facilitator" ? "facilitator" : "readme"; // 원래 판도 /readme 응답(full)에서
+  const key = `${id}|${res}`;
   body.innerHTML = `<p class="placeholder">읽는 중…</p>`;
   try {
-    problemCache[key] ??= await api(`/builds/${encodeURIComponent(id)}/${tab}`);
+    problemCache[key] ??= await api(`/builds/${encodeURIComponent(id)}/${res}`);
     if (dlg.dataset.id !== id) return;
     const v = problemCache[key];
-    body.innerHTML = tab === "readme" ? markdown(v.content) : facilitatorBlock(v);
+    if (res === "readme") fullTab.hidden = !v.full;
+    body.innerHTML =
+      tab === "facilitator"
+        ? facilitatorBlock(v)
+        : tab === "full"
+          ? v.full
+            ? `<p class="faint">승인·평가용 원래 판 — 지원자에게는 보이지 않는다 (응시용 이미지에는 지원자 과제 설명만 들어간다)</p>${markdown(v.full.content)}`
+            : `<p class="placeholder">이 빌드는 원래 판이 따로 없다 — 문제 분석 판이 아니면 지원자 과제 설명이 곧 원래 판</p>`
+          : markdown(v.content);
     body.scrollTop = 0;
   } catch (e) {
     body.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
