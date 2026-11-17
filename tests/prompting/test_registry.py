@@ -60,6 +60,7 @@ def test_analysis_request_has_no_current_until_evaluated() -> None:
     reg = PromptRegistry(REPO_PROMPTS)
     assert not reg.has_current("draft_analysis_request")
     assert reg.get("draft_analysis_request", 1).ref == "draft_analysis_request@1"
+    assert reg.get("draft_analysis_request", 2).ref == "draft_analysis_request@2"
 
 
 def test_good_template_loads(tmp_path: Path) -> None:

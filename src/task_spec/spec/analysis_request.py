@@ -4,8 +4,12 @@
 배경 글은 README 상황 절 자리 — 지금 상황 글은 요구를 나열하므로 요구 없는 글을 새로 쓴다 (§4.1, 2026-11-16 사용자 (나)).
 생성 → 검사(§5.1) → 문제를 알려 1회 재요청 → 코드로 고칠 수 있는 것 고치기 → 다시 검사 — 기능형 초안(spec/draft.draft_task)과 같은 루프.
 - 입력에 숨은 요구·허용 설계를 넣지 않는다 (§5). 지원자 문서는 없다 — 공고·재료로 만든 명세만.
-- 사실과 추가 요구가 겹치거나 자료가 요구를 그대로 말하면 고치지 않고 승인 화면에 표시만 한다 (2026-11-16 사용자).
+- 재요청 사유는 틀림이 확실한 것만 (참조·길이·숨은 요구 금지어). 낱말 겹침으로 본 흘림·사실과 추가 요구 겹침·자료가 요구를 그대로
+  말함은 고치지 않고 승인 화면에 표시만 한다 — 흘림은 뜻의 문제라 낱말로 재면 오탐과 놓침이 번갈아 나온다 (v1·v2 평가, 2026-11-16 사용자).
+  흘림의 측정은 평가의 열림 측정과 흘림 판정(judge_fact_leak)이 맡는다.
 - CURRENT 가 없으면(평가 전) 명세 그래프가 부르지 않는다 — 평가·스모크는 판을 정해 부른다 (불변식 7).
+- v3 출력(DraftAnalysisOutputV2): 추가 요구 c# 마다 질문 문장(ask_when)도 쓴다 — 사실과 같은 단계가 써야 두 항목의 조건을 나눈다.
+  공개 수용 기준 연결은 생성기(draft_feature_task v11)가 쓴 것이 있으면 그것을 쓴다 (2026-11-16 사용자).
 """
 
 from __future__ import annotations
@@ -13,18 +17,23 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import cast
 
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
+    AcceptanceLink,
+    ClarificationAsk,
     DraftAnalysisInput,
     DraftAnalysisOutput,
+    DraftAnalysisOutputV2,
     Fact,
     NodeError,
     Provenance,
     TaskItem,
 )
+from task_spec.schemas.draft import FactDraft as FactDraftT
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.spec.analysis import check_analysis
 from task_spec.spec.draft import DraftContext
@@ -44,6 +53,9 @@ FLAG_FAILED = "요청 글·사실 생성 실패 — 문제 분석 칸 없이 예
 FLAG_INVALID = "요청 글·사실 자동 검사 실패 (재요청·고쳐 쓰기 후에도) — 남은 문제 확인 필요: "
 FLAG_REPAIRED = "요청 글·사실을 코드가 고침: "
 FLAG_OVERLAP = "요청 글·사실: 사실과 추가 요구가 겹침 — 한 질문이 두 항목에 걸리거나 추가 요구가 사실의 답을 흘림 (확인 필요): "
+FLAG_LEAK = (
+    "요청 글·사실: 묻지 않고 알 수 있을지 모름 — 낱말 겹침으로 본 후보라 오탐이 있음 (확인 필요): "
+)
 FLAG_ARTIFACT_STATES = (
     "요청 글·사실: 자료가 공식 요구를 거의 그대로 말함 — 묻지 않고 알 수 있음 (확인 필요): "
 )
@@ -78,7 +90,11 @@ def build_analysis_input(
         title=task.title or NONE,
         scenario=task.scenario or NONE,
         requirements="\n".join(f"- {r.req_id} {r.text}" for r in task.requirements) or NONE,
-        acceptance_public="\n".join(f"- {a.ac_id} {a.text}" for a in task.acceptance_public)
+        # 생성기가 연결을 쓴 명세(v11)는 [r#] 를 보여 준다 — v3 는 그때 acceptance_links 를 비운다
+        acceptance_public="\n".join(
+            f"- {a.ac_id} {'[' + ', '.join(a.req_ids) + '] ' if a.req_ids else ''}{a.text}"
+            for a in task.acceptance_public
+        )
         or NONE,
         clarifications=clars or NONE,
         business_need=seed.business_need if seed is not None else NONE,
@@ -119,9 +135,17 @@ def _hint_leak(answer: str, hint: str, context: str) -> list[str]:
     return leaked
 
 
+def _asks(out: DraftAnalysisOutput) -> dict[str, str]:
+    if not isinstance(out, DraftAnalysisOutputV2):
+        return {}
+    return {a.clarification_id: a.ask_when for a in out.clarification_asks}
+
+
 def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
-    """초안을 명세에 붙인 모습 (표시 없이) — 참조 검사·반영이 같은 변환을 쓴다."""
+    """초안을 명세에 붙인 모습 (표시 없이) — 참조 검사·반영이 같은 변환을 쓴다.
+    공개 수용 기준 연결은 명세에 이미 있으면(생성기 v11) 그대로, 없으면 이 단계가 쓴 것. 추가 요구 질문 문장은 v3 출력만."""
     links = {a.ac_id: list(a.req_ids) for a in out.acceptance_links}
+    asks = _asks(out)
     return task.model_copy(
         update={
             "background": out.background,
@@ -129,91 +153,120 @@ def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
             "request_mentions": list(out.request_mentions),
             "facts": [Fact(**f.model_dump()) for f in out.facts],
             "acceptance_public": [
-                a.model_copy(update={"req_ids": links.get(a.ac_id, [])})
+                a if a.req_ids else a.model_copy(update={"req_ids": links.get(a.ac_id, [])})
                 for a in task.acceptance_public
+            ],
+            "clarifications": [
+                c.model_copy(update={"ask_when": asks[c.clarification_id]})
+                if c.clarification_id in asks
+                else c
+                for c in task.clarifications
             ],
         }
     )
 
 
-def _visible_problems(
-    label: str, text: str, task: TaskItem, hidden: list[str], limit: int
-) -> list[str]:
-    """지원자가 처음부터 보는 글(배경 글·요청 글) 공통 검사 — 길이·수치·숨은 말·공개 수용 기준 베끼기."""
-    problems = []
-    if len(text) > limit:
-        problems.append(f"{label}이 김 ({len(text)}자) — {limit}자 안으로 줄인다")
-    if re.search(r"\d", text):
-        problems.append(f"{label}에 수치가 있음 — 수치는 사실의 구체 답에만")
-    if bad := find_terms(hidden, text):
-        problems.append(f"{label}에 숨은 요구·운영 조건을 드러내는 말: {', '.join(bad)}")
-    for a in task.acceptance_public:
-        ws = _words(a.text)
-        if ws and sum(bool(find_terms([w], text)) for w in ws) / len(ws) >= COPY_RATIO:
-            problems.append(f"{label}이 공개 수용 기준 {a.ac_id} 문장을 거의 그대로 씀 — 흐리게")
-    return problems
-
-
 def check_analysis_draft(out: DraftAnalysisOutput, task: TaskItem, ctx: DraftContext) -> list[str]:
-    """§5.1 명세 쪽 검사 — 재요청 사유. 참조(spec/analysis.check_analysis) + 배경 글 + 요청 글 + 사실 답."""
+    """§5.1 재요청 사유 — 틀림이 확실한 것만: 참조(spec/analysis.check_analysis)·길이·숨은 요구 금지어·모호한 답이 구체 답과 같음.
+    낱말 겹침으로 재는 흘림(수치·베끼기·모호한 답 흘림·배경 글 누출)은 leak_flags 로 표시만 — v1 평가에서 6건 중 4건이 일반 낱말 오탐,
+    "API 호출 시점에 남아요"처럼 낱말을 바꾼 흘림은 못 잡았다 (2026-11-16 사용자)."""
     problems = check_analysis(preview(task, out))
     hidden = _hidden_terms(task, ctx)
-    bg, req = out.background, out.request
-    problems += _visible_problems("배경 글", bg, task, hidden, BACKGROUND_MAX)
-    problems += _visible_problems("요청 글", req, task, hidden, REQUEST_MAX)
-    # 배경 글에는 공식 요구가 없어야 한다 — 요구 문장을 거의 그대로 쓰거나 사실의 답에만 있는 말(값·순서·조건)을 쓰면 묻지 않고 안다
-    for r in task.requirements:
-        ws = [w for w in _words(r.text) if not find_terms([w], task.title or "")]
-        if ws and sum(bool(find_terms([w], bg)) for w in ws) / len(ws) >= COPY_RATIO:
-            problems.append(f"배경 글이 공식 요구 {r.req_id} 를 거의 그대로 말함 — 요구는 사실로만")
-    title = task.title or ""
-    for f in out.facts:
-        own = " ".join([title, req, f.topic, f.ask_when])
-        leaked = [w for w in _answer_only(f.answer, own) if find_terms([w], bg)]
-        # 두 글자 낱말 하나("요청")는 소재 말일 때가 많다 — 두 낱말 이상이거나 세 글자 이상 낱말일 때만 (2026-11-16 스모크)
-        if len(leaked) >= 2 or any(len(w) >= 3 for w in leaked):
-            problems.append(
-                f"배경 글이 {f.fact_id} 의 답을 흘림 ({', '.join(leaked[:3])}) — 배경(누가 무엇 때문에 곤란한가)만"
-            )
-    # 지원자가 처음부터 보는 글 = 제목·배경 글·요청 글. 예전 상황 글은 요구를 나열하는 일이 많아(제품팀 요청 첫째·둘째…) 넣지 않는다 —
-    # 넣으면 상황 글에 있는 말은 다 "보인다"로 쳐 모호한 답의 누출을 놓친다 (2026-11-16 스모크)
-    context_base = " ".join([title, bg, req])
+    for label, text, limit in (
+        ("배경 글", out.background, BACKGROUND_MAX),
+        ("요청 글", out.request, REQUEST_MAX),
+    ):
+        if len(text) > limit:
+            problems.append(f"{label}이 김 ({len(text)}자) — {limit}자 안으로 줄인다")
+        if bad := find_terms(hidden, text):
+            problems.append(f"{label}에 숨은 요구·운영 조건을 드러내는 말: {', '.join(bad)}")
     for f in out.facts:
         if bad := find_terms(hidden, " ".join([f.topic, f.ask_when, f.answer, f.answer_hint])):
             problems.append(f"{f.fact_id} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(bad)}")
         if f.answer_hint.strip() == f.answer.strip():
             problems.append(f"{f.fact_id} 의 모호한 답이 구체 답과 같음")
-        elif leaked := _hint_leak(
-            f.answer, f.answer_hint, " ".join([context_base, f.topic, f.ask_when])
-        ):
-            problems.append(
-                f"{f.fact_id} 의 모호한 답이 구체 답의 내용을 흘림 ({', '.join(leaked[:3])}) — 그런 규칙이 있다는 것만"
-            )
+    if isinstance(out, DraftAnalysisOutputV2):
+        problems += _ask_problems(out, task)
     return problems
+
+
+def _ask_problems(out: DraftAnalysisOutputV2, task: TaskItem) -> list[str]:
+    """추가 요구 질문 문장 — c# 마다 하나, 있는 c# 만. 문장 안의 숨은 요구 말은 보지 않는다 (진행자만 보는 칸 — 사실 ask_when 과 같음)."""
+    have = [c.clarification_id for c in task.clarifications]
+    asked = [a.clarification_id for a in out.clarification_asks]
+    problems = []
+    if unknown := [c for c in asked if c not in have]:
+        problems.append(f"clarification_asks 에 없는 추가 요구: {', '.join(unknown)}")
+    if missing := [c for c in have if c not in asked]:
+        problems.append(
+            f"추가 요구 {', '.join(missing)} 의 ask_when 이 없음 — c# 마다 구체 답을 줄 질문 문장을 쓴다"
+        )
+    return problems
+
+
+def leak_flags(out: DraftAnalysisOutput, task: TaskItem) -> list[str]:
+    """낱말 겹침으로 본 흘림 후보 (표시만). 보이는 글 = 제목·배경 글·요청 글 — 예전 상황 글은 요구를 나열하는 일이 많아 넣지 않는다.
+    - 보이는 글의 수치 (숫자가 든 낱말을 그대로 보여 줘 "V2X" 같은 이름은 승인자가 바로 가린다)
+    - 보이는 글이 공개 수용 기준 문장 / 배경 글이 공식 요구 문장과 낱말이 거의 같음
+    - 모호한 답에 구체 답에만 있는 낱말 (값·순서·조건이 여기 든다)
+    - 배경 글에 구체 답에만 있는 낱말 — 두 낱말 이상이거나 세 글자 이상일 때만 ("요청한"·"현재" 같은 일반 낱말 오탐, v1 평가)."""
+    title, bg, req = task.title or "", out.background, out.request
+    hits: list[str] = []
+    for label, text in (("배경 글", bg), ("요청 글", req)):
+        if nums := [w for w in _WORD.findall(text) if re.search(r"\d", w)]:
+            hits.append(f"{label}에 수치 ({', '.join(nums[:3])})")
+        for a in task.acceptance_public:
+            ws = _words(a.text)
+            if ws and sum(bool(find_terms([w], text)) for w in ws) / len(ws) >= COPY_RATIO:
+                hits.append(f"{label}이 공개 수용 기준 {a.ac_id} 문장과 거의 같음")
+    for r in task.requirements:
+        ws = [w for w in _words(r.text) if not find_terms([w], title)]
+        if ws and sum(bool(find_terms([w], bg)) for w in ws) / len(ws) >= COPY_RATIO:
+            hits.append(f"배경 글이 공식 요구 {r.req_id} 와 거의 같음")
+    for f in out.facts:
+        own = " ".join([title, req, f.topic, f.ask_when])
+        if f.answer_hint.strip() != f.answer.strip() and (
+            leaked := _hint_leak(f.answer, f.answer_hint, " ".join([own, bg]))
+        ):
+            hits.append(f"{f.fact_id} 모호한 답에 구체 답의 말 ({', '.join(leaked[:3])})")
+        in_bg = [w for w in _answer_only(f.answer, own) if find_terms([w], bg)]
+        if len(in_bg) >= 2 or any(len(w) >= 3 for w in in_bg):
+            hits.append(f"배경 글에 {f.fact_id} 답의 말 ({', '.join(in_bg[:3])})")
+    return [FLAG_LEAK + "; ".join(hits)] if hits else []
 
 
 def repair_analysis(out: DraftAnalysisOutput, task: TaskItem) -> DraftAnalysisOutput:
     """코드로 고칠 수 있는 것 — 없는 id 를 가리키는 연결·covers 를 지우고, 사실 id 를 f1 부터 다시 매긴다. 문장은 고치지 않는다."""
     reqs = {r.req_id for r in task.requirements}
     known = reqs | {a.ac_id for a in task.acceptance_public}
-    facts = []
+    facts: list[FactDraftT] = []
     for f in out.facts:
         covers = [c for c in dict.fromkeys(f.covers) if c in known]
         if covers:
             facts.append(f.model_copy(update={"fact_id": f"f{len(facts) + 1}", "covers": covers}))
     acs = {a.ac_id for a in task.acceptance_public}
-    links = []
+    links: list[AcceptanceLink] = []
     for a in out.acceptance_links:
         rs = [r for r in dict.fromkeys(a.req_ids) if r in reqs]
         if a.ac_id in acs and rs and a.ac_id not in {x.ac_id for x in links}:
             links.append(a.model_copy(update={"req_ids": rs}))
-    return out.model_copy(
-        update={
-            "request_mentions": [r for r in dict.fromkeys(out.request_mentions) if r in reqs],
-            "facts": facts or out.facts,
-            "acceptance_links": links or out.acceptance_links,
-        }
-    )
+    upd = {
+        "request_mentions": [r for r in dict.fromkeys(out.request_mentions) if r in reqs],
+        "facts": facts or out.facts,
+        "acceptance_links": links or out.acceptance_links,
+    }
+    if isinstance(
+        out, DraftAnalysisOutputV2
+    ):  # 없는 추가 요구를 가리키는 문장·같은 c# 두 번째는 지운다 (빠진 문장은 못 고침)
+        have = {c.clarification_id for c in task.clarifications}
+        asks: list[ClarificationAsk] = []
+        for ca in out.clarification_asks:
+            if ca.clarification_id in have and ca.clarification_id not in {
+                x.clarification_id for x in asks
+            }:
+                asks.append(ca)
+        upd["clarification_asks"] = asks
+    return out.model_copy(update=upd)
 
 
 def overlap_flags(out: DraftAnalysisOutput, task: TaskItem) -> list[str]:
@@ -276,7 +329,13 @@ def apply_analysis(task: TaskItem, res: AnalysisResult) -> TaskItem:
     out = res.output
     if out is None:
         return task.model_copy(update={"review_flags": [*task.review_flags, *res.flags]})
-    shown = [*res.flags, *overlap_flags(out, task), *artifact_flags(task), *blur_flags(out, task)]
+    shown = [
+        *res.flags,
+        *leak_flags(out, task),
+        *overlap_flags(out, task),
+        *artifact_flags(task),
+        *blur_flags(out, task),
+    ]
     done = preview(task, out)
     return done.model_copy(update={"review_flags": [*task.review_flags, *shown]})
 
@@ -301,14 +360,14 @@ async def draft_analysis_request(
             template, build_analysis_input(task, seed, note), ontology_version=ctx.ontology_version
         )
         try:
-            r = await llm.call(prompt, DraftAnalysisOutput)
+            r = await llm.call(prompt, template.output_model)  # type: ignore[arg-type]
         except (SchemaViolation, EmptyResponse, TransientLLMError) as exc:
             res.errors.append(
                 NodeError(node=TASK, code=type(exc).__name__, message="요청 글·사실 생성 실패")
             )
             continue
         res.provenance.append(r.provenance)
-        out = r.parsed
+        out = cast(DraftAnalysisOutput, r.parsed)
         problems = check_analysis_draft(out, task, ctx)
         logger.info("%s attempt=%d problems=%d", TASK, attempt + 1, len(problems))
         if best is None or len(problems) < len(best[1]):

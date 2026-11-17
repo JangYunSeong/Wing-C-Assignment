@@ -17,8 +17,10 @@ from task_spec.schemas.domain import (
     BehavioralAnchors,
     Clarification,
     HiddenAcceptance,
+    LinkedAcceptance,
     Observable,
     PublicAcceptance,
+    ReqId,
     Requirement,
     Trap,
 )
@@ -276,6 +278,28 @@ class DraftFeatureOutputV5(DraftFeatureOutputV4):
     clarifications: list[ClarificationDraftV5] = Field(min_length=2, max_length=5)  # type: ignore[assignment]
 
 
+class AcceptanceDraftV6(PublicAcceptance):
+    """기능형 v6 출력의 공개 수용 기준 — 그 기준이 확인하는 공식 요구를 생성기가 함께 쓴다 (analysis-stage.md §5.1,
+    2026-11-16 사용자). p# 를 쓰는 곳에서 연결을 정해야 "모든 공식 요구에 p# 가 하나 이상"을 재요청 사유로 걸 수 있다."""
+
+    req_ids: list[ReqId] = Field(
+        min_length=1, max_length=3, description="이 기준이 확인하는 공식 요구 r#"
+    )
+
+
+class DraftFeatureOutputV6(DraftFeatureOutputV5):
+    """기능형 v6 출력 — v5 + 공개 수용 기준마다 확인하는 공식 요구 r#."""
+
+    acceptance_public: list[AcceptanceDraftV6] = Field(min_length=2, max_length=6)  # type: ignore[assignment]
+
+
+class DraftFeatureOutputLinked(DraftFeatureOutput):
+    """내부 전용 — v6 출력을 재료로 채운 전체 모델 (공개 수용 기준이 req_ids 를 가짐). 프롬프트 출력 스키마로 쓰지 않는다
+    (DraftFeatureOutput 은 v1 의 출력 스키마라 칸을 더하면 v1 프롬프트가 바뀐다). 칸 고쳐 쓰기(spec/patch.apply)가 type(out) 으로 다시 만든다."""
+
+    acceptance_public: list[LinkedAcceptance] = Field(min_length=2, max_length=6)  # type: ignore[assignment]
+
+
 class DraftFeatureOutputV3(DraftFeatureOutputV2):
     """기능형 v3 출력 — v2 + 추가 요구의 두 층 답 (prompts/draft_feature_task/v3.md)."""
 
@@ -436,3 +460,90 @@ class DraftAnalysisOutput(Schema):
     )
     facts: list[FactDraft] = Field(min_length=1, max_length=12)
     acceptance_links: list[AcceptanceLink] = Field(min_length=1, max_length=6)
+
+
+class ClarificationAsk(Schema):
+    """추가 요구 c# 의 구체 답을 줄 질문 문장 — 사실의 ask_when 과 같은 방식으로 문제 분석 생성기가 쓴다 (v3)."""
+
+    clarification_id: str = Field(pattern=r"^c\d{1,2}$")
+    ask_when: str = Field(
+        min_length=1,
+        max_length=200,
+        description="그 추가 요구의 구체 답을 줄 질문 — '~을 묻거나 ~을 물을 때' 문장",
+    )
+
+
+class DraftAnalysisOutputV2(DraftAnalysisOutput):
+    """v3 출력 — 추가 요구마다 질문 문장(clarification_asks). 공개 수용 기준 연결은 생성기(draft_feature_task v11)가 쓰면 비운다."""
+
+    acceptance_links: list[AcceptanceLink] = Field(  # type: ignore[assignment]
+        default_factory=list,
+        max_length=6,
+        description="입력 공개 수용 기준에 [r#] 가 없을 때만 — p# 마다 확인하는 공식 요구 r#",
+    )
+    clarification_asks: list[ClarificationAsk] = Field(
+        default_factory=list, max_length=6, description="입력 추가 요구 c# 마다 하나"
+    )
+
+
+class JudgeLeakInput(Schema):
+    """평가 전용 흘림 판정(judge_fact_leak) 입력 — 지원자가 묻지 않고 볼 수 있는 것 전부 + 지킬 구체 답 (analysis-stage.md §5.1)."""
+
+    visible: str = Field(min_length=1)  # 제목·배경 글·요청 글
+    hints: str  # 모호한 답 전부 "f1 …"·"c1 …" — 주제만 물어도 받는다 (없으면 "(없음)"). 주제명은 지원자에게 안 보여 넣지 않음
+    artifacts: str  # 자료 "[a1] 제목\n본문" — 한도 없이 열린다 (없으면 "(없음)")
+    facts: str  # 지킬 구체 답 "f1 (주제) 답" 줄 묶음
+
+
+class LeakPoint(Schema):
+    point: str = Field(
+        min_length=1, max_length=120, description="구체 답의 핵심 하나 — 값·순서·조건·대상"
+    )
+    quote: str = Field(
+        default="",
+        max_length=300,
+        description="이 핵심을 알려 주는 곳의 원문 그대로 (보이는 글·모호한 답·자료). 없으면 빈 문자열",
+    )
+    source: str = Field(
+        default="",
+        max_length=20,
+        description="quote 가 있는 곳 — title·background·request·f#·c#·a#",
+    )
+
+
+class FactLeak(Schema):
+    fact_id: str = Field(pattern=r"^f\d{1,2}$")
+    points: list[LeakPoint] = Field(min_length=1, max_length=6)
+
+
+class JudgeLeakOutput(Schema):
+    facts: list[FactLeak] = Field(min_length=1, max_length=12)
+
+
+class LeakEvidence(Schema):
+    source: str = Field(
+        min_length=1, max_length=20, description="있는 곳 — title·background·request·f#·c#·a#"
+    )
+    quote: str = Field(min_length=1, max_length=300, description="그 곳의 원문 그대로")
+
+
+class LeakPointV2(Schema):
+    """v2 — 한 핵심이 여러 곳에 보이면 모두 적는다 (v1 은 한 곳만 적어 보이는 글·모호한 답 흘림을 자료 흘림으로만 셌다, 2026-11-16 보정)."""
+
+    point: str = Field(
+        min_length=1, max_length=120, description="구체 답의 핵심 하나 — 값·순서·조건·대상"
+    )
+    evidence: list[LeakEvidence] = Field(
+        default_factory=list,
+        max_length=4,
+        description="이 핵심을 정하는 곳 전부 (찾지 못했으면 빈 목록)",
+    )
+
+
+class FactLeakV2(Schema):
+    fact_id: str = Field(pattern=r"^f\d{1,2}$")
+    points: list[LeakPointV2] = Field(min_length=1, max_length=6)
+
+
+class JudgeLeakOutputV2(Schema):
+    facts: list[FactLeakV2] = Field(min_length=1, max_length=12)

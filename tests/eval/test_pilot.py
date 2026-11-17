@@ -912,3 +912,16 @@ def test_starter_shows_rules_the_facts_did_not_mark_info_zero(
         "utf-8",
     )
     assert not any("findByMemberId" in x for x in pm.starter_shows(m))
+
+
+def test_hidden_questions_are_counted_apart_from_the_fact_rate() -> None:
+    """숨은 요구 자체를 묻는 질문(about="hidden")은 공개 항목의 구체 답 비율에 넣지 않고 무엇이 열렸는지만 센다 (2026-11-17)."""
+    hint = Reply(text="모호", rule=2, layer="hint", item_id="f1", hit=0.0)
+    assert classify("hidden", hint) == "숨은 요구·모호한 답"
+    assert (
+        classify("hidden", Reply(text=NO, rule=5, layer="none", hit=0.0)) == "숨은 요구·정보 없음"
+    )
+    qs = [{"q": "몰려도 넘치면 안 되나요?", "about": "hidden"}]
+    out = simulate_run([F1, F2, C1], qs)
+    assert out["single_topic"] == 0 and out["hidden_count"] == 1
+    assert label_counts(qs) == (0, 0)

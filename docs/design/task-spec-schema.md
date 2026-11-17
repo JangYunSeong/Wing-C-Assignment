@@ -76,8 +76,9 @@ task:                                  # common_tasks·verification_tasks·slots
 
   # 기능 개발형(task_kind=feature) 전용 — incident에서는 비어 있어야 한다
   requirements: [{req_id: r#, text}]         # 공개 요구 — '무엇을'만, 최대 6
-  acceptance_public: [{ac_id, text, req_ids: [r#]}]   # 공개 수용 기준, 최대 6. req_ids = 속한 공식 요구 (문제 분석 판, 예전 판은 비어 있음).
-                                             # 생성기 출력 모델은 req_ids 없는 판(PublicAcceptance) — 출력 스키마가 프롬프트에 들어가므로
+  acceptance_public: [{ac_id, text, req_ids: [r#]}]   # 공개 수용 기준, 최대 6. req_ids = 확인하는 공식 요구 (예전 판은 비어 있음).
+                                             # draft_feature_task v11 이 p# 와 함께 쓰고(출력 AcceptanceDraftV6), 그 전 판 명세는 문제 분석 생성기가 채운다.
+                                             # v5 이하 생성기 출력 모델은 req_ids 없는 판(PublicAcceptance) — 출력 스키마가 프롬프트에 들어가므로
   acceptance_hidden:                          # 숨김 수용 기준 (채점용, 숨은 요구 하나에 연결), 최대 8
     - ac_id: h#
       trap_id: ...
@@ -87,7 +88,9 @@ task:                                  # common_tasks·verification_tasks·slots
         - {operation: "<실패시킬 동작, 공개 요구의 말>", item: "<items 중 하나>", times: 1~3, status: 400~599|null(연결 실패)}
                                               # 실패하지 않는 항목이 items 에 하나 이상 남아야 한다
   clarifications:                            # 물으면 공개할 추가 요구·제약, 최대 6
-    - {clarification_id, topic, answer, answer_hint, reveals: [trap_id], match_terms}
+    - {clarification_id, topic, answer, answer_hint, reveals: [trap_id], match_terms, ask_when}
+                                             # ask_when = 구체 답을 줄 질문 문장 (TaskClarification) — 문제 분석 생성기 v3 가 사실과 함께 써
+                                             # 두 항목의 조건을 나눈다. 없으면(예전 판) 진행자가 match_terms 를 예시 표현으로 본다
   max_clarifications: 1~6 | null           # 기능형은 2026-11-16 부터 null (한도 없음)
   accepted_designs: [{design_id, summary, conditions, trap_ids}]   # 정답 설계 — 숨은 요구마다 2개 이상(생성 단계 검사), 최대 5
   debug_stage:                               # 2단계: 1단계 제출 뒤 '배포 후 운영 증상' → 진단·수정
@@ -145,6 +148,7 @@ task:                                  # common_tasks·verification_tasks·slots
 | 연결 문구(`link_text`)에 숫자·가명화 토큰·원문 베끼기·정답 개념 없음                                        | [제안]                 | P1 생성 단계 검사 `spec/questions.py` (스키마 검증 아님), 실패 시 1회 재요청 후 기본 문구                         |
 | 기능형의 자료·질문 한도 없음 — 새로 만드는 기능형은 `max_requests`·`max_clarifications`·`debug_stage.max_requests` 가 null, 상황 글에 한도 안내를 붙이지 않고 README 는 "제한이 없다"고 적음. 생성기 출력의 한도 칸은 예전 판 출력 스키마라 남기되 명세에 넣지 않음 | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4.4 — 한도는 정보를 막지 못하고 묻는 형식만 벌함. 상한은 제한 시간 |
 | 문제 분석 판 칸 — `background`·`request`·`request_mentions`·`facts`(`ask_when` 포함)·`acceptance_public[].req_ids`. 기능형 전용, 예전 판은 비어 있음. 참조 검사는 `spec/analysis.py` | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4·§6 (스키마 PR, §12-3). 생성기는 다음 단계 |
+| 공개 수용 기준 연결(`req_ids`)은 p# 를 쓰는 기능형 생성기(v11)가 함께 쓰고 "모든 r# 에 p# 하나 이상"을 재요청 사유로 검사. 추가 요구에 질문 문장 `clarifications[].ask_when`(명세 모델 `TaskClarification`) — 문제 분석 생성기 v3 가 씀 | [확정: 2026-11-16 사용자] | `analysis-stage.md` §5.1 — 흘림 판정·v2 평가 뒤 원인 수정 (r# 에 p# 없음, 사실 질문에 c# 가 열림) |
 
 
 ## 바꾸는 법
