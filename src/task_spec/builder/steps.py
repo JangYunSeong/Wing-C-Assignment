@@ -43,7 +43,7 @@ from task_spec.starter.images import (
 )
 from task_spec.starter.layers import Podman
 from task_spec.starter.loader import ImageRef, PackageInputs, register_packages
-from task_spec.starter.render import render_readme
+from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.repair import STARTER
 from task_spec.starter.store import BuildRepo
 from task_spec.starter.templates import select_template
@@ -182,8 +182,13 @@ class RealSteps:
                     repairs=list(out.repairs),
                 ),
             )
-        readme = render_readme(
-            job.task, c.contract, c.template, starter=out.overlays[STARTER].files
+        starter = out.overlays[STARTER].files
+        readme = render_readme(job.task, c.contract, c.template, starter=starter)
+        # 문제 분석 판 — 원래 판도 같은 명세에서 (손으로 고치지 않는다, analysis-stage.md §6)
+        full = (
+            render_readme(job.task, c.contract, c.template, starter=starter, full=True)
+            if thin_readme(job.task)
+            else None
         )
         return BuildResult(
             overlays=dict(out.overlays),
@@ -192,6 +197,7 @@ class RealSteps:
             review_flags=list(out.review_flags),
             repairs=list(out.repairs),
             cost_usd=out.cost_usd,
+            readme_full=full.content if full is not None else None,
         )
 
     # ③ 이미지

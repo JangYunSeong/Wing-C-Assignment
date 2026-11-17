@@ -62,7 +62,12 @@ from task_spec.starter.hidden_helpers import (
 )
 from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.java_imports import ensure_java_imports
-from task_spec.starter.render import contract_markdown, public_scenario, render_params
+from task_spec.starter.render import (
+    candidate_contract,
+    contract_markdown,
+    public_scenario,
+    render_params,
+)
 from task_spec.starter.seed_rows import RowRange, allocate_rows
 from task_spec.starter.seed_sql import render_seed_sql
 from task_spec.starter.skeleton import render_skeleton
@@ -300,7 +305,10 @@ def starter_input(
     m = template.manifest
     return GenStarterInputV3(
         stack=stack_text(m),
-        template_files=_with_app_types(template_files_text(template), contract, template),
+        # 뼈대·앱 계약 타입은 지원자가 받는 판 그대로 (얇은 판이면 엔드포인트 요약 없음 — render.candidate_contract)
+        template_files=_with_app_types(
+            template_files_text(template), candidate_contract(task, contract), template
+        ),
         slots=slots_text(m, "starter"),
         existing_apis=_lines(existing_apis(task, contract)),
         title=task.title or NONE,
@@ -726,8 +734,11 @@ def _app_overlay(
 ) -> Callable[[list[GeneratedFile]], Overlay]:
     """앱 쪽 계약 타입(src/api/contract-types.ts)은 코드가 쓴다 — 생성기가 같은 경로를 쓰면 버리고, 시작 코드에는 코드 판을 넣는다
     (참조 구현은 시작 코드 위에 놓이므로 시작 코드 판이 그대로 쓰인다)."""
-    types = render_app_types(b.contract, b.template.manifest)
-    skel = render_skeleton(b.contract, b.template.manifest)
+    shown = candidate_contract(
+        b.task, b.contract
+    )  # 지원자가 받는 파일 — 얇은 판이면 요약 없는 주석
+    types = render_app_types(shown, b.template.manifest)
+    skel = render_skeleton(shown, b.template.manifest)
     if types is None and not skel:
         return _overlay(kind, label)
 

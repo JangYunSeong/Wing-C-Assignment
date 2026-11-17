@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from task_spec.builder.finalize import PackageFinalizer
-from task_spec.schemas.build_record import README_PATH, BuildRecord, StarterFile
+from task_spec.schemas.build_record import README_FULL_PATH, README_PATH, BuildRecord, StarterFile
 from task_spec.schemas.domain import AcceptedDesign
 from task_spec.schemas.package import (
     CandidateDescriptor,
@@ -54,8 +54,9 @@ async def _approved_build(
     root: Path,
     monkeypatch: pytest.MonkeyPatch,
     ontology: str = "onto-v2026.11.01",
+    full_readme: str | None = None,
 ) -> BuildRecord:
-    """builder 가 만든 것처럼 — 생성 요청 → review + 승인 전 묶음(pending) → 승인."""
+    """builder 가 만든 것처럼 — 생성 요청 → review + 승인 전 묶음(pending) → 승인. full_readme = 문제 분석 판의 원래 판 README."""
     monkeypatch.setattr(loader, "pack", _fake_pack)
     store.commons[CID] = CommonRef("approved", "feature", ontology)
     store.tasks[CID] = _task(
@@ -71,6 +72,9 @@ async def _approved_build(
     b = await store.claim("w1", 60)  # type: ignore[assignment]
     assert b is not None
     await store.put_readme(StarterFile.of(b.build_id, "readme", README_PATH, "# 가상"))
+    if full_readme is not None:
+        full = StarterFile.of(b.build_id, "readme_full", README_FULL_PATH, full_readme)
+        await store.put_files(b.build_id, [full])
     await store.set_status(b.build_id, "verifying")
     await store.save_outcome(b.build_id, _outcome(H_OLD))
     b = await store.set_status(b.build_id, "review")
@@ -144,6 +148,24 @@ async def test_finalize_rewrites_descriptors_and_registers_the_kit(
         done
     )  # 두 번째는 규칙 위반 — 사유만, 상태 그대로
     assert again.status == "approved" and (again.error or "").startswith("finalize:")
+    assert not (kdir / README_FULL_PATH).exists()  # 예전 판 — 원래 판 README 없음
+
+
+async def test_full_readme_goes_beside_the_kit_not_into_the_candidate_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """문제 분석 판 — 원래 판 README 는 평가 키트 옆(평가 쪽, 채점과 같은 권한)에만. 응시용 묶음에는 얇은 판만 (analysis-stage.md §6·§8)."""
+    store = InMemoryBuildStore()
+    full = "# 가상 과제\n\n## 요구 사항\n\n- **r1** 가상 요구\n"
+    b = await _approved_build(store, tmp_path, monkeypatch, full_readme=full)
+    done = await PackageFinalizer(store, tmp_path).finalize(b)
+    assert done.packages_final_at is not None and done.error is None
+    kdir = role_dir(tmp_path, b.build_id, "eval_kit")
+    assert (kdir / README_FULL_PATH).read_text("utf-8") == full and _sums_ok(kdir)
+    kit = next(a for a in await store.artifacts(b.build_id) if a.role == "eval_kit")
+    assert {f.name for f in kit.files} == {"kit.json", README_FULL_PATH}
+    cdir = role_dir(tmp_path, b.build_id, "candidate")
+    assert not (cdir / README_FULL_PATH).exists()
 
 
 async def test_dirty_ontology_cannot_become_an_approved_package(

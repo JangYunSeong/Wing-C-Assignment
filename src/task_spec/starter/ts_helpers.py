@@ -52,6 +52,11 @@ def _ts(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def about(summary: str) -> str:
+    """주석 끝의 ' — 요약' — 요약이 비면(얇은 판 — render.candidate_contract) 붙이지 않는다."""
+    return f" — {summary}" if summary else ""
+
+
 def render_ts_contract(
     contract: TaskContract,
     manifest: TemplateManifest,
@@ -349,7 +354,7 @@ def render_app_types(contract: TaskContract, manifest: TemplateManifest) -> Gene
         err_types = list(dict.fromkeys(_body_type(r, names, by_name) for r in errs))
         lines += [
             "",
-            f"/** {e.endpoint_id} {e.method} {e.path} 성공 응답 본문 ({ok.status if ok else '-'}) — {e.summary} */",
+            f"/** {e.endpoint_id} {e.method} {e.path} 성공 응답 본문 ({ok.status if ok else '-'}){about(e.summary)} */",
             f"export type {base}Ok = {_body_type(ok, names, by_name) if ok else 'unknown'};",
             f"/** {e.endpoint_id} 오류 응답 본문 ({', '.join(str(r.status) for r in errs) or '-'}) */",
             f"export type {base}Error = {' | '.join(err_types) or 'unknown'};",

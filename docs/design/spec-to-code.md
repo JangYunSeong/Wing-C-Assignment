@@ -207,6 +207,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - 호출 수 = 계약 1 + 시작 코드 1 + 숨은 테스트 1 + 흔한 구현(1 + 숨은 요구 수, 숨은 요구 1개면 1) + 허용 구현(허용 설계 수). 숨은 요구 3·허용 설계 4 면 11회 — 상한 [미정, §10].
 - 각 생성기 출력에는 provenance(`prompt_id@version+hash`, 모델·설정, `ontology_version`, 템플릿 ref)를 붙인다 (불변식 8).
 - `render_readme`: `README.tpl.md` 의 자리(상황·요구·공개 기준·산출물·계약·실행 방법·채점 방법 한 문장)에 승인된 명세 문장, 계약 표, `manifest.commands` 를 넣는다. LLM 호출 없음. 숨은 수용 기준·숨은 요구·허용 설계·2단계 내용은 자리가 없다.
+  문제 분석 판(요청 글이 있는 명세)은 두 판 — 지원자 `README.md` 는 얇은 판(배경 글·요청 글·계약 모양만), 원래 판 `README.full.md` 는 승인 화면·평가 키트에만 (analysis-stage.md §6 구현).
 - `gen_hidden` 에 주는 숨은 요구 설명은 `traps[].description`·h* 기준·`HiddenPlan` 까지다. seed `why_naive_breaks`(흔한 구현이 깨지는 이유)까지 줄지는 [미정] — 주면 실패 지점을 정확히 노리는 테스트가 나오지만, `gen_naive` 가 보는 `naive_impl` 과 같은 서술을 공유해 두 생성기가 같은 이해(같은 오해)를 갖게 된다 (독립성).
 
 ### 4.1 템플릿이 이 파이프라인에 내줘야 할 것 (`manifest.yaml` 추가 필드) [제안]
