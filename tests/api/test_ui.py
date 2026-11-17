@@ -39,13 +39,15 @@ async def test_ui_builds_page_uses_build_apis_only(make_client: AppFactory) -> N
     # 숨은 계획 원문·계약 원문·파일 본문은 API 가 내주지 않는다 — 화면도 그 칸을 기대하지 않는다.
     # 케이스 설명·의도한 실패 사유는 승인자용 /cases 로만 받는다 [확정: 2026-11-11 사용자 — 문제를 쓸지 정하는 사람이 본다]
     assert "/cases" in js and "intended_reason" in js
-    # README 본문(/readme)·진행자 자료 본문(/facilitator)은 지원자가 받는 글이다 — 그 두 API 의 content 만 허용
+    # README 본문(/readme)·진행자 자료 본문(/facilitator)은 지원자가 받는 글이다 — 그 두 API 의 content 만 허용.
+    # 문제 분석 판의 원래 판(README.full.md)도 /readme 응답의 full 로만 — 승인 화면에서 지원자 README 와 함께 본다 (#151)
     assert (
         'data-t="readme"' in js
+        and 'data-t="full"' in js
         and 'data-t="facilitator"' in js
-        and "/builds/${encodeURIComponent(id)}/${tab}" in js
+        and "/builds/${encodeURIComponent(id)}/${res}" in js
     )
-    rest = js.replace("v.content", "").replace("a.content", "")
+    rest = js.replace("v.full.content", "").replace("v.content", "").replace("a.content", "")
     for hidden in ("hidden_plan", "contract", "content"):
         assert hidden not in rest, hidden
 
