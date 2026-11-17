@@ -13,7 +13,7 @@ import pytest
 from task_spec.llm import Completion, FakeBackend, LLMClient
 from task_spec.nodes import spec as spec_mod
 from task_spec.nodes.spec import FLAG_FEATURE_DEFERRED, make_draft_spec
-from task_spec.prompting import PromptRegistry
+from task_spec.prompting import PromptError, PromptRegistry
 from task_spec.schemas import ApprovalDecision, DraftFeatureOutput, TaskItem
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.common import FEATURE_DEBUG_MIN
@@ -33,11 +33,26 @@ from tests.spec.test_task_kind_flow import _state
 _REGISTRY = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
 
 
-class _V1:
-    """이 파일은 v1(공개 사례 원문 입력, LLM 이 숨은 요구까지 씀) 경로를 본다 — CURRENT 는 v2 (test_feature_seed)."""
+class NoAnalysis:
+    """요청 글 단계(draft_analysis_request)를 끈 레지스트리 — 기능형 서술만 보는 테스트용. 요청 글 단계는 test_analysis_request 가 본다
+    (CURRENT v3 — 2026-11-17 사용자 결정 (나))."""
+
+    def __init__(self, registry: Any) -> None:
+        self._registry = registry
 
     def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
-        return _REGISTRY.get(task, version or (1 if task == "draft_feature_task" else None))
+        if task == "draft_analysis_request" and version is None:
+            raise PromptError("요청 글 단계를 끈 테스트")
+        return self._registry.get(task, version)
+
+
+class _V1:
+    """이 파일은 v1(공개 사례 원문 입력, LLM 이 숨은 요구까지 씀) 경로를 본다 — CURRENT 는 v2 (test_feature_seed). 요청 글 단계는 끈다."""
+
+    def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
+        return NoAnalysis(_REGISTRY).get(
+            task, version or (1 if task == "draft_feature_task" else None)
+        )
 
 
 PROMPTS = _V1()

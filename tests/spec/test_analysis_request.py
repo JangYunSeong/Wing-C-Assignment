@@ -13,7 +13,7 @@ import pytest
 from task_spec.llm import Completion, FakeBackend, LLMClient
 from task_spec.nodes import spec as spec_mod
 from task_spec.nodes.spec import make_draft_spec
-from task_spec.prompting import PromptRegistry
+from task_spec.prompting import PromptError, PromptRegistry
 from task_spec.schemas import (
     ApprovalDecision,
     DraftAnalysisOutput,
@@ -259,7 +259,7 @@ def test_fact_and_clarification_overlap_is_only_flagged() -> None:
 async def test_spec_node_runs_analysis_only_when_the_prompt_has_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CURRENT 가 있으면 기능형 서술 뒤 요청 글·사실을 붙이고 판 키에 그 판을 넣는다. 없으면(지금 저장소) 건너뛴다."""
+    """CURRENT 가 있으면(지금 저장소 — v3, 2026-11-17 사용자 결정 (나)) 기능형 서술 뒤 요청 글·사실을 붙이고 판 키에 그 판을 넣는다. 없으면 건너뛴다."""
 
     async def fake_build(*args: Any, **kw: Any) -> CommonDraft:
         built = await build_common(*args, **kw)
@@ -288,7 +288,7 @@ async def test_spec_node_runs_analysis_only_when_the_prompt_has_current(
     class _NoCurrent(_Prompts):
         def get(self, task: str, version: int | None = None):  # type: ignore[no-untyped-def]
             if task == "draft_analysis_request" and version is None:
-                return _REGISTRY.get(task)  # CURRENT 없음 → PromptError
+                raise PromptError("CURRENT 없음")  # 저장소 상태와 무관하게 CURRENT 가 없는 경우
             return super().get(task, version)
 
     fake = FakeBackend().push(Completion(json.dumps(_fdraft(), ensure_ascii=False)))
