@@ -189,11 +189,38 @@ async def test_unexpected_error_keeps_only_the_stage_and_type(tmp_path: Path) ->
     assert SECRET in (steps.works[0] / "error.txt").read_text("utf-8")
 
 
-async def test_failure_after_review_marks_the_build_failed(tmp_path: Path) -> None:
-    """review 뒤 묶음 등록이 실패하면 승인할 수 없는 빌드 — failed 로 남긴다 (사람이 다시 요청)."""
+async def test_package_failure_marks_the_build_failed(tmp_path: Path) -> None:
+    """묶음 등록이 실패하면 승인할 수 없는 빌드 — review 로 가지 않고 failed 로 남긴다 (사람이 다시 요청)."""
     store, b = await _claimed()
     done = await run_job(store, FakeSteps(tmp_path, fail_at="package"), _cfg(tmp_path), b)
     assert (done.status, done.error) == ("failed", "package: 가상 실패")
+
+
+async def test_heartbeat_during_packaging_keeps_the_lease(tmp_path: Path) -> None:
+    """2026-11-17 ct-1eaccb671a03-b1: 묶음 단계 직전에 review 로 바꿔서, 묶음을 쓰는 동안 돈 heartbeat 가 '진행 중 아님'으로
+    실패해 작업이 취소됐다 — 응시용 묶음만 쓰고 등록 없이 review 로 남음. 묶음을 다 등록한 뒤 review 로 바꾼다."""
+    store, b = await _claimed(worker="w1")
+    seen: list[str] = []
+
+    class SlowPackaging(FakeSteps):
+        async def register(
+            self, store: BuildRepo, job: Job, c: ContractResult, b: BuildResult, i: ImagesResult
+        ) -> None:
+            now = await store.get(job.build.build_id)
+            seen.append(now.status if now is not None else "-")
+            for _ in range(5):  # 묶음을 쓰는 동안 heartbeat 가 여러 번 돈다
+                await asyncio.sleep(0)
+            await super().register(store, job, c, b, i)
+
+    async def instant(_: float) -> None:
+        await asyncio.sleep(0)
+
+    got = await run_with_lease(
+        store, SlowPackaging(tmp_path), _cfg(tmp_path), b, worker="w1", sleep=instant
+    )
+    assert got is not None and got.status == "review"
+    assert seen == ["verifying"]  # 묶음을 쓰는 동안은 아직 진행 중 상태
+    assert [a.role for a in await store.artifacts(b.build_id)] == ["candidate", "grader"]
 
 
 async def test_losing_the_lease_stops_the_job_without_touching_the_build(tmp_path: Path) -> None:
