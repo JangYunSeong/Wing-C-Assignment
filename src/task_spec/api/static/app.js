@@ -707,7 +707,26 @@ function kindBadge(t) {
 function idList(items, idKey, text) {
   return `<ul class="traps">${items.map((x) => `<li><span class="tid">${esc(x[idKey])}</span><span>${text(x)}</span></li>`).join("")}</ul>`;
 }
-/* 기능 개발형: 공개 요구 → 공개 수용 기준 → 자료 → 추가 요구 → 숨은 요구·숨김 기준·허용 설계 → 2단계 → 행동 기준 */
+// 문제 분석 판(#151) — 요청 글 단계의 검토 표시(spec/analysis_request.py FLAG_*)는 모두 이 머리말로 시작한다
+const ANALYSIS_FLAG = "요청 글·사실";
+/* "요청 글·사실: 머리 (확인 필요): 세부; 세부" → { head, items }. 흘림은 낱말로 본 후보라 사람이 글을 보고 거른다 (analysis-stage.md §5.1) */
+function analysisFlags(t) {
+  return (t.review_flags || [])
+    .filter((f) => f.startsWith(ANALYSIS_FLAG))
+    .map((f) => {
+      const body = f.replace(/^요청 글·사실:\s*/, "");
+      const i = body.indexOf(": ");
+      return i < 0 ? { head: body, items: [] } : { head: body.slice(0, i), items: body.slice(i + 2).split(/;\s*/) };
+    });
+}
+/* 세부가 가리키는 항목(r#·f#·c#) → 그 세부들 — 해당 줄에 '검토 표시'를 단다 */
+function flagMarks(flags) {
+  const out = {};
+  flags.forEach((f) => f.items.forEach((x) => new Set(x.match(/\b[rfc]\d{1,2}\b/g) || []).forEach((id) => (out[id] ||= []).push(x))));
+  return out;
+}
+/* 기능 개발형: (문제 분석 판이면 지원자가 받는 글 → 흘림 검토 →) 요구 → 공개 수용 기준 → (사실 →) 자료 → 숨은 요구·숨김 기준·허용 설계
+   → 추가 요구 → 2단계 → 행동 기준 */
 function renderFeatureTask(t) {
   const arts = t.artifacts || [];
   const dbg = t.debug_stage;
@@ -717,6 +736,21 @@ function renderFeatureTask(t) {
   const clar = t.clarifications || [];
   const hidden = t.acceptance_hidden || [];
   const designs = t.accepted_designs || [];
+  // 문제 분석 판 — 지원자 README(얇은 판)는 배경 글·요청 글만 보이고, 요구는 요청 글이 말하거나 진행자에게 물어 사실로 연다
+  const facts = t.facts || [];
+  const analysis = facts.length > 0;
+  const flags = analysisFlags(t);
+  const marks = flagMarks(flags);
+  const mark = (id) => (marks[id] ? `<span class="via flag" title="${esc(marks[id].join("\n"))}">검토 표시</span>` : "");
+  const said = new Set(t.request_mentions || []);
+  const opens = {}; // r#·p# → 그것을 드러내는 사실 f#
+  facts.forEach((f) => (f.covers || []).forEach((c) => (opens[c] ||= []).push(f.fact_id)));
+  const openedBy = (id) => (opens[id] ? `<span class="via">물으면 ${esc(opens[id].join("·"))}</span>` : "");
+  const reqRoutes = (id) =>
+    (said.has(id) ? `<span class="via said">요청 글이 말함</span>` : "") +
+    openedBy(id) +
+    (!said.has(id) && !opens[id] ? `<span class="via none">드러나는 길 없음</span>` : "") +
+    mark(id);
   // 실패 지정 (승인 대상) — 채점 때 어느 항목의 요청을 몇 번 실패시키는지. 순번이 아니라 항목 내용으로 정한다
   const faultList = (fs) => (fs && fs.length ? `<div class="note">실패 지정: ${fs.map((f) => `${esc(f.operation)} — <span class="mono">${esc(f.item)}</span> 처음 ${f.times}번 → ${f.status ? esc(String(f.status)) + " 응답" : "연결 실패"}`).join(" · ")}</div>` : "");
   const concepts = (obs) => (obs || []).filter((o) => o.kind === "first_mention_of").map((o) => `<span class="chip">${esc(o.value)}</span>`).join("");
@@ -732,9 +766,53 @@ function renderFeatureTask(t) {
       ${t.source_incident ? `<span class="mono">${esc(t.source_incident)}</span>` : ""}
     </div>
     ${compChips(t.target_competencies)}
-    ${t.scenario ? `<p class="scenario">${esc(t.scenario)}</p>` : ""}
-    ${reqs.length ? `<div><span class="eyebrow">공개 요구</span>${idList(reqs, "req_id", (x) => esc(x.text))}</div>` : ""}
-    ${pubs.length ? `<div><span class="eyebrow">공개 수용 기준</span>${idList(pubs, "ac_id", (x) => esc(x.text))}</div>` : ""}
+    ${
+      analysis
+        ? `<div class="asked"><div class="block-head"><span class="eyebrow">지원자가 받는 글 — README 상황·요청 절</span><span class="aside">요구 사항·공개 수용 기준 절 없이 이 두 글만 보입니다</span></div>
+        ${t.background ? `<p class="scenario">${esc(t.background)}</p>` : ""}
+        ${t.request ? `<p class="request">${esc(t.request)}</p>` : ""}
+      </div>
+      ${t.scenario ? `<details class="lines"><summary>원래 상황 글 — 지원자에게 안 보임 (원래 판 README)</summary><p class="scenario">${esc(t.scenario)}</p></details>` : ""}`
+        : t.scenario
+          ? `<p class="scenario">${esc(t.scenario)}</p>`
+          : ""
+    }
+    ${
+      flags.length
+        ? `<div><div class="block-head"><span class="eyebrow">흘림 검토</span><span class="aside">낱말로 본 후보라 오탐이 있습니다 — 글과 사실을 보고 묻지 않아도 알 수 있는지 판단하세요</span></div>
+        <ul class="aflags">${flags.map((f) => `<li>${esc(f.head)}${f.items.map((x) => `<span class="fi">${esc(x)}</span>`).join("")}</li>`).join("")}</ul></div>`
+        : ""
+    }
+    ${
+      reqs.length
+        ? analysis
+          ? `<div><div class="block-head"><span class="eyebrow">공식 요구</span><span class="only-approver">지원자 README 에 없음 — 요청 글이 말하거나 사실을 물어 연다</span></div>${idList(reqs, "req_id", (x) => esc(x.text) + reqRoutes(x.req_id))}</div>`
+          : `<div><span class="eyebrow">공개 요구</span>${idList(reqs, "req_id", (x) => esc(x.text))}</div>`
+        : ""
+    }
+    ${
+      pubs.length
+        ? `<div>${analysis ? `<div class="block-head"><span class="eyebrow">공개 수용 기준 (공개 테스트)</span><span class="only-approver">지원자 README 에 없음</span></div>` : `<span class="eyebrow">공개 수용 기준</span>`}${idList(
+            pubs,
+            "ac_id",
+            (x) => esc(x.text) + ((x.req_ids || []).length ? ` <span class="mono">→ ${esc(x.req_ids.join(", "))}</span>` : "") + openedBy(x.ac_id),
+          )}</div>`
+        : ""
+    }
+    ${
+      analysis
+        ? `<div><div class="block-head"><span class="eyebrow">사실 — 지원자가 진행자에게 물으면 공개 (열림 조건에 맞으면 구체 답, 주제만 맞으면 모호한 답)</span><span class="only-approver">드러내는 요구(→)는 승인자에게만, 나머지는 진행자에게도 보임</span></div>
+        ${idList(
+          facts,
+          "fact_id",
+          (x) =>
+            `<b>${esc(x.topic)}</b> <span class="mono">→ ${esc((x.covers || []).join(", "))}</span>${mark(x.fact_id)}` +
+            `<span class="why"><span class="lbl">열림 조건</span>${esc(x.ask_when)}</span>` +
+            `<span class="why"><span class="lbl">구체 답</span>${esc(x.answer)}</span>` +
+            `<span class="why"><span class="lbl">모호한 답</span>${x.answer_hint ? esc(x.answer_hint) : "없음"}</span>`,
+        )}</div>`
+        : ""
+    }
     ${t.deliverables && t.deliverables.length ? `<div><span class="eyebrow">제출물 (1단계)</span><ol class="deliv">${t.deliverables.map((d) => `<li>${esc(d)}</li>`).join("")}</ol></div>` : ""}
     ${
       arts.length || (t.traps || []).length
@@ -750,17 +828,20 @@ function renderFeatureTask(t) {
     }
     ${
       clar.length
-        ? `<div><div class="block-head"><span class="eyebrow">추가 요구 — 지원자가 물으면 공개 (짚은 질문엔 구체 답, 아니면 모호한 답)</span><span class="only-approver">주제·매칭 낱말·단서는 승인자·진행자에게만 보임</span></div>
+        ? `<div><div class="block-head"><span class="eyebrow">추가 요구 — 지원자가 물으면 공개 (짚은 질문엔 구체 답, 아니면 모호한 답)</span><span class="only-approver">주제·${analysis ? "열림 조건" : "매칭 낱말"}·단서는 승인자·진행자에게만 보임</span></div>
         ${idList(
           clar,
           "clarification_id",
+          // 열림 조건(ask_when)은 요청 글 단계가 쓴 명세만 — 있으면 진행자가 매칭 낱말 대신 이 문장으로 연다 (facilitator.ANSWER_RULE_ASK)
           (x) =>
-            `<b>${esc(x.topic)}</b>${(x.reveals || []).length ? ` <span class="mono">단서: ${esc(x.reveals.join(", "))}</span>` : ""}` +
+            `<b>${esc(x.topic)}</b>${(x.reveals || []).length ? ` <span class="mono">단서: ${esc(x.reveals.join(", "))}</span>` : ""}${mark(x.clarification_id)}` +
             (x.answer_hint
               ? `<span class="why">일반 질문 → ${esc(x.answer_hint)}</span>` +
-                ((x.match_terms || []).length
-                  ? `<span class="why">짚은 질문(${esc(x.match_terms.join(", "))}) → ${esc(x.answer)}</span>`
-                  : `<span class="why">구체 답 조건 없음 — 늘 모호한 답 (구체 답: ${esc(x.answer)})</span>`)
+                (x.ask_when
+                  ? `<span class="why"><span class="lbl">열림 조건</span>${esc(x.ask_when)} → ${esc(x.answer)}</span>`
+                  : (x.match_terms || []).length
+                    ? `<span class="why">짚은 질문(${esc(x.match_terms.join(", "))}) → ${esc(x.answer)}</span>`
+                    : `<span class="why">구체 답 조건 없음 — 늘 모호한 답 (구체 답: ${esc(x.answer)})</span>`)
               : ` — ${esc(x.answer)}`),
         )}</div>`
         : ""

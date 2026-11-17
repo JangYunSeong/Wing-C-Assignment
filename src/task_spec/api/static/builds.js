@@ -450,14 +450,16 @@ function materialsList(m) {
     .join("")}</ul>`;
 }
 
+/* 진행자 보기. 문제 분석 판(사실이 있음, #151)이면 지원자가 받은 배경 글·요청 글 → 답하는 규칙 → 사실 → 추가 요구 → 자료 순서로,
+   항목마다 열림 조건(ask_when) 문장을 보인다 — 평가 쪽 LLM 이 그 문장으로 열지 정한다 (starter/facilitator.py ANSWER_RULE_ASK) */
 function facilitatorBlock(f) {
   const s1 = f.stage1;
+  const facts = s1.facts || [];
+  const lbl = (k) => `<span class="faint">${k}:</span> `;
+  const item = (x, cond) =>
+    `<li><span class="mono faint">${esc(x.id)}</span> <b>${esc(x.topic)}</b><p>${cond}<br>${lbl("구체 답")}${esc(x.answer)}${x.answer_hint ? `<br>${lbl("모호한 질문엔")}${esc(x.answer_hint)}` : ""}</p></li>`;
   const qs = s1.clarifications.items
-    .map(
-      (c) => `<li><span class="mono faint">${esc(c.id)}</span> <b>${esc(c.topic)}</b>
-      <p><span class="faint">이 낱말이 있으면 구체 답:</span> ${esc(c.match_terms.join(", ") || "–")}<br>
-      <span class="faint">구체 답:</span> ${esc(c.answer)}${c.answer_hint ? `<br><span class="faint">모호한 질문엔:</span> ${esc(c.answer_hint)}` : ""}</p></li>`,
-    )
+    .map((c) => item(c, c.ask_when ? lbl("열림 조건") + esc(c.ask_when) : lbl("이 낱말이 있으면 구체 답") + esc(c.match_terms.join(", ") || "–")))
     .join("");
   const s2 = f.stage2
     ? `<h4>2단계 · ${f.stage2.time_limit_min}분 <span class="faint">(1단계 제출 뒤 공개)</span></h4>
@@ -465,10 +467,21 @@ function facilitatorBlock(f) {
       <div class="eyebrow">제출물</div><ul class="bflags">${f.stage2.deliverables.map((d) => `<li><p>${esc(d)}</p></li>`).join("")}</ul>
       <div class="eyebrow">요청하면 주는 자료</div>${materialsList(f.stage2.materials)}`
     : `<h4>2단계</h4><p class="placeholder">없음</p>`;
+  const limit = `질문 상한 ${s1.clarifications.max_questions ?? "없음"}`;
+  const rule = `<p class="faint">${esc(s1.clarifications.rule)}</p>`;
+  const materials = `<div class="eyebrow">요청하면 주는 자료</div>${materialsList(s1.materials)}`;
+  if (!facts.length)
+    return `<div class="fac"><h4>1단계 · ${s1.time_limit_min}분</h4>
+    ${materials}
+    <div class="eyebrow">질문 답 (${limit})</div>
+    ${rule}<ul class="bflags">${qs || "<li>없음</li>"}</ul>${s2}</div>`;
   return `<div class="fac"><h4>1단계 · ${s1.time_limit_min}분</h4>
-    <div class="eyebrow">요청하면 주는 자료</div>${materialsList(s1.materials)}
-    <div class="eyebrow">질문 답 (질문 상한 ${s1.clarifications.max_questions ?? "없음"})</div>
-    <p class="faint">${esc(s1.clarifications.rule)}</p><ul class="bflags">${qs || "<li>없음</li>"}</ul>${s2}</div>`;
+    <div class="eyebrow">지원자가 받은 글</div>
+    <div class="md">${s1.background ? `<p>${esc(s1.background).replace(/\n/g, "<br>")}</p>` : ""}${s1.request ? `<p class="request">${esc(s1.request)}</p>` : ""}</div>
+    <div class="eyebrow">답하는 규칙 (${limit})</div>${rule}
+    <div class="eyebrow">사실 — 물으면 주는 답</div><ul class="bflags">${facts.map((x) => item(x, lbl("열림 조건") + esc(x.ask_when))).join("")}</ul>
+    <div class="eyebrow">추가 요구</div><ul class="bflags">${qs || "<li>없음</li>"}</ul>
+    ${materials}${s2}</div>`;
 }
 
 let problemCache = {};

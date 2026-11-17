@@ -84,3 +84,39 @@ def test_ui_shows_two_tier_clarification_answers() -> None:
     assert '짚은 질문(${esc(x.match_terms.join(", "))}) → ${esc(x.answer)}' in js
     # 매칭 낱말이 다 지워진 단서 답 (prune_match_terms) — 늘 모호한 답이 나간다는 것을 승인자에게 보인다
     assert "구체 답 조건 없음 — 늘 모호한 답" in js
+
+
+def test_ui_shows_analysis_stage() -> None:
+    """문제 분석 판 (#151): 명세 승인 화면은 지원자가 받는 글·요구가 드러나는 길·사실·흘림 검토 표시를,
+    진행자 보기는 지원자가 받은 글·사실·열림 조건을 보인다 — 흘림은 사람이 화면을 보고 거른다 (analysis-stage.md §5.1)."""
+    from pathlib import Path
+
+    from task_spec.spec import analysis_request as ar
+
+    static = Path(__file__).resolve().parents[2] / "src/task_spec/api/static"
+    js = (static / "app.js").read_text("utf-8")
+    for field in (
+        "t.background",
+        "t.request",
+        "t.request_mentions",
+        "t.facts",
+        "x.req_ids",
+        "x.ask_when",
+    ):
+        assert field in js, field
+    # 흘림 검토 상자는 요청 글 단계의 검토 표시를 머리말로 고른다 — 서버 문구의 머리말이 바뀌면 여기서 깨진다
+    assert 'const ANALYSIS_FLAG = "요청 글·사실";' in js
+    for flag in (
+        ar.FLAG_FAILED,
+        ar.FLAG_INVALID,
+        ar.FLAG_REPAIRED,
+        ar.FLAG_OVERLAP,
+        ar.FLAG_LEAK,
+        ar.FLAG_ARTIFACT_STATES,
+        ar.FLAG_NO_MENTION,
+        ar.FLAG_ALL_MENTIONED,
+    ):
+        assert flag.startswith("요청 글·사실"), flag
+    builds = (static / "builds.js").read_text("utf-8")
+    for field in ("s1.background", "s1.request", "s1.facts", "c.ask_when", "x.ask_when"):
+        assert field in builds, field
