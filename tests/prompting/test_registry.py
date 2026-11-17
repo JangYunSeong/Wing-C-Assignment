@@ -55,10 +55,12 @@ def test_task_without_current_is_skipped_but_its_files_are_checked(tmp_path: Pat
         PromptRegistry(tmp_path).validate_all()  # 형식이 깨진 판은 CURRENT 가 없어도 기동 실패
 
 
-def test_analysis_request_has_no_current_until_evaluated() -> None:
-    """draft_analysis_request v1 은 평가 전 — CURRENT 가 없어 명세 그래프가 건너뛴다 (불변식 7)."""
+def test_analysis_request_current_is_v3_by_user_decision() -> None:
+    """draft_analysis_request — v3 는 흘림 기준 미달이지만 사용자 결정 (나)로 CURRENT (2026-11-17, PROMOTIONS.md — 불변식 7 의 사용자 예외).
+    흘림은 명세 승인 화면 표시로 사람이 거른다. 예전 판은 그대로 남는다."""
     reg = PromptRegistry(REPO_PROMPTS)
-    assert not reg.has_current("draft_analysis_request")
+    assert reg.current_version("draft_analysis_request") == 3
+    assert (REPO_PROMPTS / "draft_analysis_request" / "PROMOTIONS.md").is_file()
     assert reg.get("draft_analysis_request", 1).ref == "draft_analysis_request@1"
     assert reg.get("draft_analysis_request", 2).ref == "draft_analysis_request@2"
 

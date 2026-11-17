@@ -15,6 +15,7 @@ from task_spec.schemas.domain import (
     Artifact,
     Clarification,
     DebugStage,
+    Fact,
     HiddenAcceptance,
 )
 from task_spec.schemas.package import CaseResult, VerifySummary, flag_id
@@ -229,9 +230,58 @@ async def test_facilitator_view_has_only_what_candidates_can_ask_for(tmp_path: P
     )
     assert body["stage2"]["scenario"] == "가상 증상"
     assert body["stage2"]["materials"]["items"][0]["content"] == "로그"
+    # 예전 판(사실 없음) — 낱말 규칙 글, 문제 분석 칸은 비어 있다
+    assert s1["clarifications"]["rule"].startswith("질문에 match_terms")
+    assert (s1["facts"], s1["request"], s1["background"]) == ([], None, None)
     text = r.text
     for hidden in ('"role"', "distractor", '"key"', "reveals", "trap", "HIDDEN-REQ", "observables"):
         assert hidden not in text, hidden
+
+
+async def test_facilitator_view_of_an_analysis_spec_gives_open_conditions_per_item(
+    tmp_path: Path,
+) -> None:
+    """2026-11-17 사용자: 평가 쪽은 LLM 으로 진행하고 P1 은 항목마다 '이런 질문이 오면 연다'는 열림 조건과 답만 준다 — 사실 항목(열림 조건·두 층 답),
+    지원자가 받은 배경 글·요청 글, 열림 조건을 보는 새 규칙 글. 사실이 드러내는 요구(covers)·낱말 목록은 넣지 않는다 (analysis-stage.md §8)."""
+    store = InMemoryBuildStore()
+    bid = await _review_build(store)
+    task = _facilitator_task().model_copy(
+        update={
+            "background": "가상 배경 글",
+            "request": "가상 요청 글",
+            "facts": [
+                Fact(
+                    fact_id="f1",
+                    covers=["r1"],
+                    topic="목록 크기",
+                    ask_when="한 번에 몇 건을 보여 주는지 물을 때",
+                    answer="한 번에 20건이에요.",
+                    answer_hint="설정에 따라 달라요.",
+                    match_terms=["HIDDEN-TERM"],
+                )
+            ],
+        }
+    )
+    async with await _client(tmp_path, store) as c:
+        store.tasks[CID] = task
+        r = await c.get(f"/builds/{bid}/facilitator")
+    assert r.status_code == 200
+    s1 = r.json()["stage1"]
+    assert (s1["background"], s1["request"]) == ("가상 배경 글", "가상 요청 글")
+    assert s1["facts"] == [
+        {
+            "id": "f1",
+            "topic": "목록 크기",
+            "ask_when": "한 번에 몇 건을 보여 주는지 물을 때",
+            "answer": "한 번에 20건이에요.",
+            "answer_hint": "설정에 따라 달라요.",
+        }
+    ]
+    assert (
+        "ask_when" in s1["clarifications"]["rule"] and "한 가지씩" in s1["clarifications"]["rule"]
+    )
+    for hidden in ("covers", "HIDDEN-TERM", "request_mentions", "reveals"):
+        assert hidden not in r.text, hidden
 
 
 async def test_facilitator_view_waits_for_verified_build(tmp_path: Path) -> None:

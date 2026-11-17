@@ -25,7 +25,7 @@ from task_spec.spec.feature import (
 )
 from task_spec.spec.incidents import feature_ref, incident_ref, load_incidents
 from tests.spec.test_draft import _ctx
-from tests.spec.test_feature import _client, _fdraft, _skeleton
+from tests.spec.test_feature import NoAnalysis, _client, _fdraft, _skeleton
 
 ROOT = Path(__file__).resolve().parents[2]
 INCIDENTS = load_incidents(ROOT / "incidents" / "public_v1")
@@ -174,7 +174,7 @@ async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.Mon
     monkeypatch.setattr(spec_mod, "build_common", fake_build)
     fake = FakeBackend().push(Completion(json.dumps(_v6draft(), ensure_ascii=False)))
     draft = spec_mod.make_draft_spec(
-        None, llm=_client(fake), prompts=_REG, store=InMemoryCommonStore()
+        None, llm=_client(fake), prompts=NoAnalysis(_REG), store=InMemoryCommonStore()
     )
     revise = _decision(
         "revise", comment="기능 개발형으로", task_kind="feature", revise_target="common"
