@@ -252,7 +252,10 @@ podman exec task-api ls /srv/task-spec/images/<build_id>/candidate   # (배포 �
 ```
 
 - 첫 빌드는 검증용 템플릿 층(Java 약 0.7GB·Python 약 0.5GB)과 Node 의존성 캐시를 builder 사용자 저장소·`/srv/task-spec/builder/tools` 에 만든다 — 몇 분, 그때만 인터넷 필요.
-- 실패한 빌드의 작업 폴더(`/srv/task-spec/builder/work/<build_id>`, 생성 코드 평문 — git·외부 반출 금지)는 원인 확인용으로 남는다. 일주일 지난 것 정리 [제안]:
+- 실패한 빌드의 작업 폴더(`/srv/task-spec/builder/work/<build_id>`, 생성 코드 평문 — git·외부 반출 금지)는 원인 확인용으로 남는다.
+  `verify/*.log` = 검증 실행마다의 결과, `overlays/<키>/` = 수리 루프가 실패했을 때의 마지막 생성물(시작 코드·숨은·공개 테스트·흔한/허용 구현,
+  알파 실행 폴더의 overlays/ 와 같은 모양), `error.txt` = 예상 못 한 예외. builder 사용자 폴더라 볼 때는
+  `sudo cp -r /srv/task-spec/builder/work/<build_id> <내 폴더> && sudo chown -R <나>: <내 폴더>/<build_id>`. 일주일 지난 것 정리 [제안]:
   `find /srv/task-spec/builder/work -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} +`
 - 업그레이드: `podman stop task-builder` (지금 작업 뒤 멈춤, 60초 넘으면 강제 — lease 가 지나 다음 기동 때 다시 대기열로) → `podman rm task-builder` → 새 이미지 `podman load` → `run.sh`.
 - 비용 상한(작업당·하루)과 모델은 builder 설정 파일 — 모델을 바꾸면 상한도 같이 올린다.
