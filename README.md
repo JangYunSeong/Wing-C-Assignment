@@ -200,7 +200,7 @@ curl -s -X POST http://127.0.0.1:8000/runs/<run_id>/approve \
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | `POST` | `/common-tasks/{common_id}/builds` | 과제 생성 요청 — 큐에 넣기만. 승인된 기능형 공통 과제만 (아니면 409), 진행 중 빌드가 있으면 그 빌드 (200) |
-| `GET` | `/builds` | 빌드 목록 (`?common_id=`, 없으면 최근 빌드) |
+| `GET` | `/builds?common_id=&company=&limit=` | 빌드 목록 — `common_id` 가 없으면 최근 빌드부터, `limit` 이 없으면 전부. 회사 칸(`company_id`·`company`·`company_known`)과 `company` 거르기는 `GET /runs` 와 같은 규칙 (공통 과제 → 공고 → 회사) |
 | `GET` | `/builds/{build_id}` | 상태·검증 요약·검토 표시·파일 수 |
 | `GET` | `/builds/{build_id}/approval` | 빌드 승인 — `review` 빌드면 승인 대기를 열고 검토 표시·사유, 끝난 빌드면 결과 |
 | `POST` | `/builds/{build_id}/approve` | 승인·반려로 그래프 resume |

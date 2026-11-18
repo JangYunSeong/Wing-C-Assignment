@@ -15,6 +15,8 @@ from tests.api.conftest import (
     FAKE_OPENAI_KEY,
     FAKE_OPENCODE_KEY,
     AppFactory,
+    FakeOntology,
+    FakeProvisional,
     reviewer_decision,
     wait_status,
 )
@@ -327,27 +329,6 @@ async def test_list_runs_newest_first_with_status_filter(client: httpx.AsyncClie
     assert (await client.get("/runs", params={"limit": 0})).status_code == 422
 
 
-class _FakeOntology:
-    """회사 질의만 답하는 가상 온톨로지 (position.company·company 표)."""
-
-    def __init__(self, positions: dict[str, str], companies: list[str]) -> None:
-        self.positions, self.companies = positions, companies
-
-    async def fetch(self, query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
-        if "FROM company" in query:
-            return [{"name": n} for n in self.companies]
-        ids = params[0] if params else []
-        return [{"id": i, "company": self.positions[i]} for i in ids if i in self.positions]  # type: ignore[attr-defined]
-
-
-class _FakeProvisional:
-    def __init__(self, companies: dict[str, str | None]) -> None:
-        self.companies = companies
-
-    async def get_provisional(self, pid: str) -> dict[str, object] | None:
-        return {"id": pid, "company": self.companies[pid]} if pid in self.companies else None
-
-
 async def test_list_runs_by_company_including_companies_not_in_ontology(
     client: httpx.AsyncClient,
 ) -> None:
@@ -355,7 +336,7 @@ async def test_list_runs_by_company_including_companies_not_in_ontology(
     온톨로지에 없는 새 회사도 id 가 생긴다 (company_known=false). limit 이 없으면 회사의 실행을 전부."""
     app = client._transport.app  # type: ignore[attr-defined]
     app.state.postings = SimpleNamespace(
-        store=_FakeProvisional({"prov-fake0001": "(주) 가상 회사", "prov-fake0002": "New  Corp"})
+        store=FakeProvisional({"prov-fake0001": "(주) 가상 회사", "prov-fake0002": "New  Corp"})
     )
     ids = {}
     for pid in ("posting-fake-001", "prov-fake0001", "prov-fake0002", "posting-fake-003"):
@@ -363,7 +344,7 @@ async def test_list_runs_by_company_including_companies_not_in_ontology(
         assert resp.status_code == 202, resp.text
         ids[pid] = resp.json()["run_id"]
         await wait_status(client, ids[pid], "awaiting_approval")
-    app.state.ontology = _FakeOntology({"posting-fake-001": "가상회사"}, ["가상회사", "다른회사"])
+    app.state.ontology = FakeOntology({"posting-fake-001": "가상회사"}, ["가상회사", "다른회사"])
 
     rows = {r["posting_id"]: r for r in (await client.get("/runs")).json()}
     assert len(rows) == 4

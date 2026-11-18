@@ -27,6 +27,10 @@ async def test_lifecycle_pg() -> None:
     tag = f"t-{uuid.uuid4().hex[:8]}"  # 전달 대상 이름 — 실행마다 따로
     try:
         await run_lifecycle(store, row.id, tag)
+        # 최근 빌드 — limit=None 이면 전부 (LIMIT NULL). 테스트 DB 는 다른 빌드와 같이 쓴다
+        mine = {b.build_id for b in await store.builds(row.id)}
+        assert mine and mine <= {b.build_id for b in await store.recent(None)}
+        assert len(await store.recent(1)) == 1
     finally:
         async with store._pool.connection() as conn:
             ids = "SELECT id FROM public.common_task_build WHERE common_id = %s"
