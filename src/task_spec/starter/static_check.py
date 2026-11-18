@@ -38,7 +38,7 @@ import yaml
 from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
-from task_spec.spec.feature import find_terms
+from task_spec.spec.feature import find_terms, title_allowed_text
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
@@ -2619,11 +2619,39 @@ def readme_flags(
     """지원자 README 검사 — 승인자 표시(review_flags)만. README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제
     (재생성으로 못 고침). 표시는 '{README} …' 로 시작한다 (승인 화면 README 경고 칸이 이 머리로 고른다 — api/routers/builds.py).
     #232: 운영 빌드(builder/steps.py)는 README 를 렌더만 하고 검사하지 않아 그 칸이 늘 비어 있었다 — 평가 러너의
-    static_check(…, readme=…)와 같은 문장을 이 함수 하나가 만든다."""
-    out = [
-        f"{README} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(shown)} — 승인된 명세 문장에서 나옴, 명세 수정 필요"
-        for _, shown in _leaks([readme], hidden_terms(seed, spec))
+    static_check(…, readme=…)와 같은 문장을 이 함수 하나가 만든다.
+    '진행 방식' 의 자료 목록 줄(명세의 1단계 자료 제목 그대로 — spec.artifact_titles)은 명세 검사와 같은 허용으로 본다
+    (spec/feature.title_allowed_text — 재료의 업무 요구·자료 종류 이름에 나온 말). 2026-11-18: 이 허용을 몰라 명세가 통과시킨
+    자료 제목을 '명세 수정 필요'로 표시했다 — 알파 README 49개 중 33개, 걸린 44줄이 모두 자료 목록 줄."""
+    terms = hidden_terms(seed, spec)
+    titles = set(spec.artifact_titles)
+    listed: list[str] = []
+    rest: list[str] = []
+    for line in readme.content.splitlines():
+        (listed if line.strip().removeprefix("-").strip() in titles else rest).append(line)
+    allowed = title_allowed_text(seed) if seed is not None else ""
+    shown = [
+        *(
+            s
+            for _, hit in _leaks([GeneratedFile(path=readme.path, content="\n".join(rest))], terms)
+            for s in hit
+        ),
+        *(
+            s
+            for _, hit in _leaks(
+                [GeneratedFile(path=readme.path, content="\n".join(listed))],
+                [t for t in terms if not find_terms([t], allowed)],
+            )
+            for s in hit
+        ),
     ]
+    out = (
+        [
+            f"{README} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(dict.fromkeys(shown))} — 승인된 명세 문장에서 나옴, 명세 수정 필요"
+        ]
+        if shown
+        else []
+    )
     out += _hygiene(None, [readme], avoid_terms)
     out += _secret_hints(None, [readme])
     return out

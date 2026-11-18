@@ -265,7 +265,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 |---|---|---|
 | 경로·잠금·상한·`..`·탭/줄바꿈 | 모든 산출물 | 그 생성기 |
 | 잠긴 하네스(`hidden/harness/`)를 고침 | `hidden` | `gen_hidden` |
-| 숨은 요구 핵심어(`leak_terms`·`trigger_terms`·`stage2_cause_terms`)·숨은 테스트 이름이 공개 파일(코드·주석·README·공개 테스트)에 있음 | `starter`, README | `gen_starter` (README 면 명세 문제 → review_flags) |
+| 숨은 요구 핵심어(`leak_terms`·`trigger_terms`·`stage2_cause_terms`)·숨은 테스트 이름이 공개 파일(코드·주석·README·공개 테스트)에 있음 | `starter`, README | `gen_starter` (README 면 명세 문제 → review_flags). README '진행 방식' 의 자료 목록 줄(명세의 1단계 자료 제목)은 명세 검사와 같은 허용 — 재료의 업무 요구·자료 종류 이름(괄호 앞)에 나온 말은 자료의 이름이라 괜찮다 (`spec/feature.title_allowed_text`, 2026-11-18) |
 | 미끼 코드 — 숨은 요구 쪽 해법·문제 지점을 가리키는 주석·설정이 시작 코드에 있음 (배송 감사 r1 교훈: 풀·스레드 설정과 `REQUIRES_NEW` 가 늘 보였음) | `starter` | `gen_starter` |
 | `HiddenPlan` 의 운영 수치가 시작 코드 설정에 박혀 있음 (운영 값은 하네스가 채점 때 덮어쓴다 — 시작 코드에는 개발용 값만). **`harness_params` 의 설정 키에 든 값만** 대조한다 — 코드·주석의 아무 숫자와 비교하면 우연히 같은 값(8·32 등)이 오탐된다. `gen_starter` 는 `HiddenPlan` 을 보지 않으므로 걸리면 대개 템플릿 기본값이 운영 값과 같은 경우 → 템플릿 기본값을 바꿀 신호 | `starter` 설정 파일 | `gen_starter` (템플릿 기본값이면 review_flags) |
 | 비밀 값(실제 형식 — AWS 키·개인 키·`sk-`/`ghp-`/`xox-` 토큰)·네트워크 호출·실존 회사·제품 이름 | 모든 산출물 | 그 생성기 |
