@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -98,6 +99,18 @@ async def test_list_download_and_done_records_published(tmp_path: Path) -> None:
         assert rows[0]["delivered"] is True  # 다시 내려받기는 막지 않는다
         got = await c.get(f"/pull/builds/{bid}/files/{f.name}", headers=_auth(GRADER_TOKEN))
         assert got.status_code == 200
+
+
+async def test_an_older_approved_build_stays_listed_past_many_newer_builds(tmp_path: Path) -> None:
+    """#235: 목록이 최근 빌드 200개(recent(200))에서 승인·확정 빌드를 걸러, 더 새 빌드(실패·eval 적재 포함)가 200개 이상이면
+    승인·확정 빌드가 받는 쪽 목록에서 조용히 빠졌다 — id 로 직접 받기는 됐다. 받는 쪽은 알림 없이 이 목록만 본다 (deploy.md 2-12)."""
+    store = InMemoryBuildStore()
+    bid = await _with_files(tmp_path, store)
+    for i in range(200):
+        await store.new_build(CID, "onto-test", AT + timedelta(minutes=1 + i))
+    async with _client(tmp_path, store) as c:
+        rows = (await c.get("/pull/builds", headers=_auth(GRADER_TOKEN))).json()
+    assert [(r["build_id"], r["role"]) for r in rows] == [(bid, "grader")]
 
 
 async def test_role_is_separated_and_unknown_or_unapproved_is_404(tmp_path: Path) -> None:

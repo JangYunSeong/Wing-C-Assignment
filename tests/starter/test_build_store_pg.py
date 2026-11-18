@@ -11,7 +11,7 @@ from task_spec.spec.store import CommonKey, CommonTaskStore
 from task_spec.starter.store import PgBuildStore
 from tests.postings.test_postings_pg import _Urls
 from tests.spec.test_store_pg import _task
-from tests.starter.test_build_store import run_failure_record, run_lifecycle
+from tests.starter.test_build_store import run_deliverable, run_failure_record, run_lifecycle
 
 pytestmark = pytest.mark.pg
 
@@ -100,3 +100,9 @@ async def test_failure_record_pg(pg_common: tuple[PgBuildStore, str, str]) -> No
     """#250 — 메모리 구현과 같은 계약 (run_failure_record)."""
     store, common_id, _ = pg_common
     await run_failure_record(store, common_id)
+
+
+async def test_deliverable_pg(pg_common: tuple[PgBuildStore, str, str]) -> None:
+    """#235 — 메모리 구현과 같은 계약 (run_deliverable). 시험 DB 의 다른 빌드는 공통 과제 id 로 거른다."""
+    store, common_id, tag = pg_common
+    await run_deliverable(store, common_id, tag)

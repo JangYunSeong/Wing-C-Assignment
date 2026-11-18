@@ -501,6 +501,11 @@ class BuildRepo(Protocol):
         """최근 빌드부터. limit=None 이면 전부."""
         ...
 
+    async def deliverable(self) -> list[BuildRecord]:
+        """전달할 수 있는 빌드 — approved·published 이고 묶음을 확정한 것 전부, 최근 빌드부터 (받는 쪽 /pull 목록).
+        최근 N개에서 거르지 않는다 (#235: 더 새 빌드가 200개를 넘으면 승인·확정 빌드가 목록에서 빠졌다)."""
+        ...
+
     async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]: ...
 
     async def task(self, common_id: str) -> TaskItem | None:
@@ -674,6 +679,14 @@ class InMemoryBuildStore:
     async def recent(self, limit: int | None) -> list[BuildRecord]:
         rows = sorted(self._builds.values(), key=lambda b: (b.created_at, b.build_id), reverse=True)
         return rows[:limit]
+
+    async def deliverable(self) -> list[BuildRecord]:
+        rows = [
+            b
+            for b in self._builds.values()
+            if b.status in _DELIVERABLE and b.packages_final_at is not None
+        ]
+        return sorted(rows, key=lambda b: (b.created_at, b.build_id), reverse=True)
 
     async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]:
         return {c: self.labels[c] for c in common_ids if c in self.labels}
@@ -1193,6 +1206,16 @@ class PgBuildStore:
             await cur.execute(  # LIMIT NULL = 전부
                 "SELECT * FROM public.common_task_build ORDER BY created_at DESC, id DESC LIMIT %s",
                 (limit,),
+            )
+            rows = await cur.fetchall()
+        return [self._build(r) for r in rows]
+
+    async def deliverable(self) -> list[BuildRecord]:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM public.common_task_build WHERE status = ANY(%s) "
+                "AND packages_final_at IS NOT NULL ORDER BY created_at DESC, id DESC",
+                (list(_DELIVERABLE),),
             )
             rows = await cur.fetchall()
         return [self._build(r) for r in rows]

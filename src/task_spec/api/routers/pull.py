@@ -109,9 +109,9 @@ def _sums_hash(files: list[ArtifactFile]) -> str:
 @router.get("/builds")
 async def list_pullable(store: BuildsDep, who: PullerDep) -> list[PullBuild]:
     out: list[PullBuild] = []
-    for b in await store.recent(200):
-        if b.status not in DELIVERABLE or b.packages_final_at is None:
-            continue
+    # 전달할 수 있는 빌드 전부 — 최근 빌드 200개에서 거르면 더 새 빌드가 많을 때 승인·확정 빌드가 빠졌다 (#235).
+    # 역할 거르기는 그대로: 이 토큰 역할의 지금 묶음이 있는 빌드만
+    for b in await store.deliverable():
         try:
             a = await _deliverable(store, b.build_id, who.role)
         except PullNotAvailable:

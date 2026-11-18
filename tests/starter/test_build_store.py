@@ -398,8 +398,10 @@ def test_review_decision_id_must_match_text() -> None:
         ReviewDecision.model_validate({**d.model_dump(), "flag": "문구가 바뀐 표시"})
 
 
-async def _approved(store: InMemoryBuildStore, tree: str = H_NEW) -> str:
-    bid = (await store.new_build("ct-0123456789ab", "onto-test", AT)).build_id
+async def _approved(
+    store: BuildRepo, tree: str = H_NEW, common_id: str = "ct-0123456789ab", at: datetime = AT
+) -> str:
+    bid = (await store.new_build(common_id, "onto-test", at)).build_id
     await store.set_status(bid, "generating")
     readme = StarterFile.of(bid, "readme", README_PATH, "# 가상")
     await store.put_readme(readme)
@@ -446,6 +448,31 @@ async def test_finalize_changes_only_descriptors_and_registers_the_kit() -> None
     now = {a.role: a for a in await store.artifacts(bid)}
     assert set(now) == {"candidate", "grader", "eval_kit"}
     assert next(f for f in now["candidate"].files if f.name == "candidate.json").sha256 == "a" * 64
+
+
+async def run_deliverable(store: BuildRepo, common_id: str, tag: str) -> None:
+    """전달할 수 있는 빌드 (#235) — 두 구현이 같은 계약 (Postgres 는 test_build_store_pg.py). approved·published 이고 묶음을
+    확정한 빌드 전부, 최근 것부터 — 만든 시각과 상관없이. 예전 /pull/builds 는 최근 빌드 200개에서 걸러서, 더 새 빌드가
+    200개를 넘으면 승인·확정 빌드가 받는 쪽 목록에서 빠졌다."""
+    sent = await _approved(store, common_id=common_id, at=AT)
+    await finalize(store, sent, H_NEW)
+    await store.add_target(f"{tag}-grader", "grader")
+    d = await store.request_delivery(sent, "grader", f"{tag}-grader", "operator-fake", AT)
+    await store.finish_delivery(d.delivery_id, True, AT)  # 첫 전달 — published
+    final = await _approved(store, common_id=common_id, at=AT + timedelta(seconds=1))
+    await finalize(store, final, H_NEW)
+    await _approved(
+        store, common_id=common_id, at=AT + timedelta(seconds=2)
+    )  # 확정 전 — 아직 못 보냄
+    for i in range(201):  # 더 새 빌드 (생성 대기·eval 적재 등) — 예전 최근 200개 창을 넘긴다
+        await store.new_build(common_id, "onto-test", AT + timedelta(minutes=1, seconds=i))
+    got = [b for b in await store.deliverable() if b.common_id == common_id]
+    assert [(b.build_id, b.status) for b in got] == [(final, "approved"), (sent, "published")]
+    assert all(b.packages_final_at is not None for b in got)
+
+
+async def test_deliverable_in_memory() -> None:
+    await run_deliverable(InMemoryBuildStore(), "ct-0123456789ab", "t-mem")
 
 
 async def test_finalize_only_after_approval_and_pending_list() -> None:
