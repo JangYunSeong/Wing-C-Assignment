@@ -208,6 +208,8 @@ builder(#129)가 다른 호스트 사용자로 쓰게 되면 소유자 전용 �
   예전에는 일부 칸만 봐서 기동은 통과하고 첫 생성 요청에서 죽었다. 자동 업그레이드는 기동 로그만 보고 성공으로 처리했다).
   빌드 출처 칸 `origin`(#175)은 API 기동 때 생기고, 있던 빌드는 요청 시각이 있으면 `request`, 없으면 `eval` 로 채워진다.
   매니페스트 해시 칸 `manifest_sha256`(#176 — 같은 vN 에서 고칠 수 있는 검사·수리 칸의 판)도 API 기동 때 생긴다 (있던 빌드는 NULL). 이 칸이 생긴 뒤의 builder 는 칸이 없으면 기동에서 멈추므로 **API 를 먼저** 올린다.
+  생성기 provenance 칸 `provenance`(#233 — 계약·빌드 단계 LLM 호출마다 프롬프트 판·sha·모델·설정·비용, 실패한 빌드도)도 마찬가지로 API 기동 때 생기고(있던 빌드는 빈 목록) **API 를 먼저** 올린다.
+  builder 역할 권한은 표 단위(`GRANT … ON public.common_task_build`)라 새 칸 때문에 `db-role.sql` 을 다시 돌리지 않아도 된다.
 - LLM 이 만든 코드는 builder 사용자의 podman 에서 `--network none` 자식 컨테이너로만 돈다 (#127). 이미지에는 JDK·Gradle·Node 가 없다.
 - 묶음은 builder 가 쓰고(권한 0640/0750) API(배포 사용자, keep-id)가 기본 ACL 로 읽는다. 0600 이면 ACL 마스크가 비어 못 읽는다.
 

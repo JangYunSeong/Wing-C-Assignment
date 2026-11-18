@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -57,6 +57,7 @@ from task_spec.schemas.build_record import (
     BuildArtifact,
     BuildFailure,
     BuildOutcome,
+    BuildProvenance,
     BuildRecord,
     Delivery,
     DeliveryTarget,
@@ -207,6 +208,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS common_task_build_active_origin ON public.comm
     WHERE status IN ('pending', 'generating', 'verifying') AND origin = 'request';
 CREATE INDEX IF NOT EXISTS common_task_build_queue_origin ON public.common_task_build (requested_at)
     WHERE status = 'pending' AND origin = 'request';
+-- 생성기 provenance (#233, 불변식 8) — 계약·빌드 단계 LLM 호출마다 단계·시도·provenance (BuildProvenance). 있던 빌드는 빈 목록.
+-- builder 역할 권한은 표 단위(db-role.sql)라 새 칸도 따로 GRANT 하지 않는다
+ALTER TABLE public.common_task_build ADD COLUMN IF NOT EXISTS provenance jsonb NOT NULL DEFAULT '[]'::jsonb;
 """
 
 # `_build` 가 읽는 칸 — builder(DDL 을 돌리지 않는 역할)의 기동 확인이 이 칸 전체를 본다 (#175: #128 칸 셋만 봐서, API 가 옛 판이면
@@ -245,6 +249,7 @@ BUILD_COLUMNS = (
     "finished_at",
     "packages_final_at",
     "stage_log",
+    "provenance",  # #233 — builder 가 record_stage 로 쓰고 _build 가 읽는다
 )
 
 
@@ -593,8 +598,14 @@ class BuildRepo(Protocol):
         ...
 
     async def record_stage(
-        self, build_id: str, stage: str, cost_usd: float = 0.0
-    ) -> BuildRecord: ...
+        self,
+        build_id: str,
+        stage: str,
+        cost_usd: float = 0.0,
+        provenance: Sequence[BuildProvenance] = (),
+    ) -> BuildRecord:
+        """단계 기록 — 비용은 방금 끝난 단계에 더하고, 그 단계의 LLM 호출 provenance 는 빌드 기록 끝에 붙인다 (#233, 한 번에)."""
+        ...
 
     async def fail(
         self,
@@ -925,12 +936,24 @@ class InMemoryBuildStore:
         self._put(b, lease_until=(at or datetime.now(UTC)) + timedelta(seconds=lease_s))
         return True
 
-    async def record_stage(self, build_id: str, stage: str, cost_usd: float = 0.0) -> BuildRecord:
+    async def record_stage(
+        self,
+        build_id: str,
+        stage: str,
+        cost_usd: float = 0.0,
+        provenance: Sequence[BuildProvenance] = (),
+    ) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         _require_status(build, _RUNNING, "단계 기록")
         cost = max(cost_usd, 0.0)
         log = next_stage_log(build.stage_log, stage, cost, datetime.now(UTC), build.attempt)
-        return self._put(build, stage=stage, cost_usd=build.cost_usd + cost, stage_log=log)
+        return self._put(
+            build,
+            stage=stage,
+            cost_usd=build.cost_usd + cost,
+            stage_log=log,
+            provenance=[*build.provenance, *provenance],
+        )
 
     async def fail(
         self,
@@ -1118,6 +1141,7 @@ class PgBuildStore:
             finished_at=r["finished_at"],
             packages_final_at=r["packages_final_at"],
             stage_log=[StageMark.model_validate(x) for x in r["stage_log"]],
+            provenance=[BuildProvenance.model_validate(x) for x in r["provenance"]],
         )
 
     @staticmethod
@@ -1652,7 +1676,13 @@ class PgBuildStore:
             )
             return await cur.fetchone() is not None
 
-    async def record_stage(self, build_id: str, stage: str, cost_usd: float = 0.0) -> BuildRecord:
+    async def record_stage(
+        self,
+        build_id: str,
+        stage: str,
+        cost_usd: float = 0.0,
+        provenance: Sequence[BuildProvenance] = (),
+    ) -> BuildRecord:
         async with (
             self._pool.connection() as conn,
             conn.transaction(),
@@ -1664,8 +1694,15 @@ class PgBuildStore:
             log = next_stage_log(build.stage_log, stage, cost, datetime.now(UTC), build.attempt)
             await cur.execute(
                 "UPDATE public.common_task_build SET stage = %s, cost_usd = cost_usd + %s, "
-                "stage_log = %s WHERE id = %s RETURNING *",
-                (stage, cost, Jsonb([m.model_dump(mode="json") for m in log]), build_id),
+                "stage_log = %s, provenance = provenance || %s WHERE id = %s RETURNING *",
+                (
+                    stage,
+                    cost,
+                    Jsonb([m.model_dump(mode="json") for m in log]),
+                    # common_task.provenance 와 같은 모양 — 토큰 칸은 prompt-registry 형식 'in' (by_alias)
+                    Jsonb([p.model_dump(mode="json", by_alias=True) for p in provenance]),
+                    build_id,
+                ),
             )
             r = await cur.fetchone()
         return self._build(r)  # type: ignore[arg-type]

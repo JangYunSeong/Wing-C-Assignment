@@ -536,9 +536,32 @@ def test_build_columns_are_exactly_what_a_row_mapping_reads() -> None:
         "finished_at": None,
         "packages_final_at": None,
         "stage_log": [],
+        # 생성기 provenance (#233) — 저장 모양 그대로 (토큰 칸은 prompt-registry 형식 'in')
+        "provenance": [
+            {
+                "stage": "build",
+                "attempt": 1,
+                "provenance": {
+                    "provenance_id": "prov-000000000001",
+                    "prompt": "gen_hidden@5",
+                    "prompt_sha256": "a" * 64,
+                    "model": "openai:gpt-4.1",
+                    "params": {"temperature": 0},
+                    "ontology_version": "onto-test",
+                    "tokens": {"in": 10, "out": 2, "reasoning": 0},
+                    "cost_usd": 0.001,
+                },
+            }
+        ],
     }
     assert set(row) == set(BUILD_COLUMNS)
     assert PgBuildStore._build(row).origin == "request"
+    (call,) = PgBuildStore._build(row).provenance
+    assert (call.stage, call.provenance.prompt, call.provenance.tokens.in_) == (
+        "build",
+        "gen_hidden@5",
+        10,
+    )
     for col in BUILD_COLUMNS:
         with pytest.raises(KeyError):
             PgBuildStore._build({k: v for k, v in row.items() if k != col})

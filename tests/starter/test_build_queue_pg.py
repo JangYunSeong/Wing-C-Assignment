@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from task_spec.schemas.build import RepairRecord
-from task_spec.schemas.build_record import BuildFailure
+from task_spec.schemas.build_record import BuildFailure, BuildProvenance
 from task_spec.spec.store import CommonKey, CommonTaskStore
 from task_spec.starter.store import (
     LEASE_EXPIRED,
@@ -23,6 +23,7 @@ from task_spec.starter.store import (
     BuildRuleError,
     PgBuildStore,
 )
+from tests.builder.test_build_provenance import UNPRICED, _prov
 from tests.postings.test_postings_pg import _Urls
 from tests.spec.test_store_pg import _task
 from tests.starter.test_build_queue import run_lease_expiry_while_packaging
@@ -174,6 +175,37 @@ async def test_lease_expiry_while_packaging_is_failed_not_retried(env: Env) -> N
     await run_lease_expiry_while_packaging(env.store, b)
 
 
+async def test_stage_provenance_round_trip_and_survives_recovery(env: Env) -> None:
+    """생성기 provenance (#233) — record_stage 가 비용과 같이 끝에 붙이고(jsonb 왕복, 토큰 칸은 prompt-registry 형식 'in'),
+    죽은 작업 복구 뒤에도 지우지 않는다 (메모리 구현과 같게 — 시도는 attempt 로 가른다)."""
+    cid = await env.feature_task()
+    await env.store.request_build(cid, "가상승인자")
+    await _queue_only(env, cid)
+    b = await env.store.claim("w1", 60, T0)
+    assert b is not None
+    first = [BuildProvenance(stage="contract", attempt=1, provenance=_prov(1, "plan_contract@31"))]
+    more = [
+        BuildProvenance(
+            stage="build", attempt=1, provenance=_prov(2, "gen_hidden@5", None, UNPRICED)
+        )
+    ]
+    await env.store.record_stage(b.build_id, "build", 0.01, provenance=first)
+    s = await env.store.record_stage(b.build_id, "files", 0.0, provenance=more)
+    got = await env.store.get(b.build_id)
+    assert got is not None and got.provenance == s.provenance == [*first, *more]
+    async with env.store._pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT provenance->0->'provenance'->'tokens' FROM public.common_task_build WHERE id = %s",
+            (b.build_id,),
+        )
+        row = await cur.fetchone()
+    assert row is not None and row[0]["in"] == 1000  # common_task.provenance 와 같은 모양
+    (back,) = [
+        x for x in await env.store.recover_expired(T0 + timedelta(seconds=91)) if x.common_id == cid
+    ]
+    assert back.status == "pending" and back.provenance == got.provenance
+
+
 async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: Env) -> None:
     """builder 전용 DB 역할(docker/builder/db-role.sql) — 큐·빌드 표는 쓰고, DDL·체크포인트(지원자 파생물)는 못 한다 (#129).
     시험 DB 에 임시 역할로 같은 SQL 을 적용해 본다 (역할은 클러스터 단위라 시험 뒤 지운다)."""
@@ -208,7 +240,14 @@ async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: En
             assert (
                 await store.task(cid) is not None and (await store.task_labels([cid]))[cid].revision
             )
-            await store.record_stage(b.build_id, "build", 0.01)
+            # 생성기 provenance 칸(#233)도 builder 역할이 쓴다 — 권한이 표 단위라 db-role.sql 에 칸 GRANT 가 없다
+            calls = [
+                BuildProvenance(
+                    stage="build", attempt=b.attempt, provenance=_prov(1, "gen_hidden@5")
+                )
+            ]
+            staged = await store.record_stage(b.build_id, "build", 0.01, provenance=calls)
+            assert staged.provenance == calls
             await store.put_files(
                 b.build_id, [StarterFile.of(b.build_id, "readme", README_PATH, "# 가상")]
             )

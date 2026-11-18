@@ -149,6 +149,7 @@ class RealSteps:
             raise StepFailed(
                 f"contract: 계약 생성 실패 — {contract_failure(res)}",
                 cost_usd=_cost(list(res.provenance)),
+                provenance=res.provenance,
             )
         return ContractResult(
             template=template,
@@ -158,6 +159,7 @@ class RealSteps:
             seed=inc.feature,
             avoid_terms=tuple(inc.avoid_terms),
             review_flags=tuple(res.flags),
+            provenance=tuple(res.provenance),
         )
 
     # ② 빌드
@@ -190,6 +192,7 @@ class RealSteps:
             raise StepFailed(
                 f"build: 수리 루프 실패 (회차 {out.rounds}) — {why}",
                 cost_usd=out.cost_usd,
+                provenance=out.provenance,
                 # 사유 문장(숨은 테스트 문구가 올 수 있음)은 저장소 사유가 아니라 실패 빌드 기록(DB)에만
                 detail=BuildFailure(
                     hidden_plan=out.hidden_plan or c.plan,
@@ -213,6 +216,7 @@ class RealSteps:
             repairs=list(out.repairs),
             cost_usd=out.cost_usd,
             readme_full=full.content if full is not None else None,
+            provenance=tuple(out.provenance),
         )
 
     # ③ 이미지
