@@ -872,6 +872,15 @@ def contract_places(contract: TaskContract) -> list[tuple[str, str]]:
             for k, v in g.values.items()
         ]
     out += [(f"공개 테스트 {t.test_id}", t.checks) for t in contract.public_tests]
+    # README 에 그대로 나가는 그 밖의 칸 — #232: 빠져 있어 숨은 낱말이 지원자 README 로 나가도 재요청하지 않았다 (ui 계약은 background 가
+    # 필수라 프론트 과제는 늘 이 빈틈을 지났다). 앞 자리의 짚는 순서가 바뀌지 않게 끝에 둔다
+    out += [(f"설정 {s.key}", f"{s.key} {_words(s.key)} {s.meaning}") for s in contract.settings]
+    out += [("화면 조작 없이 나가는 요청(background)", contract.background or "")]
+    out += [(f"화면 {sc.route} 들어올 때(on_load)", sc.on_load or "") for sc in contract.screens]
+    out += [
+        (f"시드 파일 {i} 위치(path)", f"{fx.path} {_words(fx.path)}" if fx.path else "")
+        for i, fx in enumerate(contract.fixtures, 1)
+    ]
     return [(w, t) for w, t in out if t and t.strip()]
 
 

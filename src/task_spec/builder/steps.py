@@ -34,6 +34,7 @@ from task_spec.schemas.build_record import BuildFailure
 from task_spec.schemas.package import PackageHeader
 from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
 from task_spec.starter.artifacts import summaries
+from task_spec.starter.contract import SpecView
 from task_spec.starter.images import (
     TaskImages,
     TaskMaterial,
@@ -46,7 +47,7 @@ from task_spec.starter.layers import Podman
 from task_spec.starter.loader import ImageRef, PackageInputs, register_packages
 from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.repair import STARTER
-from task_spec.starter.static_check import Overlay
+from task_spec.starter.static_check import Overlay, readme_flags
 from task_spec.starter.store import BuildRepo
 from task_spec.starter.templates import select_template
 from task_spec.starter.verify import verifier_for
@@ -202,6 +203,9 @@ class RealSteps:
             )
         starter = out.overlays[STARTER].files
         readme = render_readme(job.task, c.contract, c.template, starter=starter)
+        # 응시용 README 누설 검사 → 승인 화면 README 경고 칸 (#232: 렌더만 하고 검사하지 않았다)
+        spec = SpecView.from_task(job.task)
+        flags = readme_flags(readme, spec=spec, seed=c.seed, avoid_terms=c.avoid_terms)
         # 문제 분석 판 — 원래 판도 같은 명세에서 (손으로 고치지 않는다, analysis-stage.md §6)
         full = (
             render_readme(job.task, c.contract, c.template, starter=starter, full=True)
@@ -212,7 +216,7 @@ class RealSteps:
             overlays=dict(out.overlays),
             plan=out.hidden_plan or c.plan,
             readme=readme.content,
-            review_flags=list(out.review_flags),
+            review_flags=[*out.review_flags, *flags],
             repairs=list(out.repairs),
             cost_usd=out.cost_usd,
             readme_full=full.content if full is not None else None,

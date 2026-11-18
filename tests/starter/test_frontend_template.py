@@ -502,6 +502,30 @@ def test_ui_element_action_reaches_contract_text_and_helper() -> None:
     )
 
 
+def test_hidden_terms_in_background_and_on_load_are_reasked() -> None:
+    """#232: background('화면 조작 없이 나가는 요청')·화면 on_load('화면에 들어오면')는 README 에 그대로 나가는데 계약 누설 검사
+    (contract_places)가 보지 않았다 — ui 계약은 background 가 필수라 프론트 과제는 늘 이 빈틈을 지났다."""
+    from task_spec.schemas import PublicIncident
+    from task_spec.starter.contract import check_contract
+    from tests.starter.test_contract import ROOT
+
+    raw = (ROOT / "incidents" / "public_v1" / "sw.frontend.offline-replay.json").read_text("utf-8")
+    seed = PublicIncident.model_validate_json(raw).feature
+
+    def leaks(c: TaskContract) -> list[str]:
+        res = check_contract(c, _plan(), _spec(), FE.manifest, seed)
+        return [p for p in res.problems if "숨은 요구·운영 조건을 드러내는 말이 공개 계약" in p]
+
+    c = _contract().model_copy(update={"background": "브라우저 online 이벤트가 오면 메모를 보냄"})
+    assert not leaks(c)
+    bg = c.model_copy(update={"background": "다시 연결된 직후 대기열의 메모를 순서대로 보냄"})
+    got = leaks(bg)
+    assert len(got) == 1 and "다시 연결된 직후" in got[0] and "background" in got[0]
+    screen = c.screens[0].model_copy(update={"on_load": "저장소의 메모 중 실패한 것만 다시 보냄"})
+    got = leaks(c.model_copy(update={"screens": [screen]}))
+    assert len(got) == 1 and "실패한 것만" in got[0] and "화면 /search 들어올 때" in got[0]
+
+
 def test_contract_helper_tells_harness_success_status_and_test_ids() -> None:
     """2026-11-11 프론트 알파 fe8: 상태를 주지 않은 respond(본문)이 200 이라 계약이 201 인 생성 API 에서 `res.status === 201` 로
     확인하는 허용 구현만 떨어졌고, textsByRole('listitem', TID.X) 가 컴파일되지 않았다 — v8 은 contract.ts 가 하네스에 계약을 알린다."""
