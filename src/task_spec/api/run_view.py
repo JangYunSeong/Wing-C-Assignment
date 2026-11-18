@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import ValidationError
 
 from task_spec.api.launcher import RunLauncher
-from task_spec.api.schemas import RunView
+from task_spec.api.schemas import RunListItem, RunView
 from task_spec.schemas import ApprovalSummary, RunState, TaskSpec
 from task_spec.spec.summary import approval_summary
+
+# POST /runs 가 만드는 run_id (uuid4 hex) — 같은 체크포인터의 다른 thread(빌드 승인 `build-…`)와 가른다
+RUN_ID = re.compile(r"[0-9a-f]{32}")
 
 
 def _pending_interrupt(snapshot: Any) -> dict[str, Any] | None:
@@ -26,6 +32,54 @@ async def load_run_view(
 ) -> RunView | None:
     """없는 run 이면 None."""
     snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
+    return run_view(snapshot, launcher, run_id)
+
+
+async def list_runs(
+    graph: CompiledStateGraph,
+    launcher: RunLauncher,
+    *,
+    limit: int,
+    statuses: frozenset[str] | None = None,
+) -> list[RunListItem]:
+    """최근에 시작한 실행부터 (상태를 고르면 그 상태만). 시작 시각 = thread 의 첫 체크포인트(source=input)."""
+    saver = graph.checkpointer
+    if not isinstance(saver, BaseCheckpointSaver):
+        return []
+    # 목록을 다 받은 뒤 실행마다 상태를 읽는다 — 목록을 도는 동안 같은 저장소를 다시 부르지 않게
+    starts = [
+        (t.config["configurable"]["thread_id"], t.checkpoint["ts"])
+        async for t in saver.alist(None, filter={"source": "input"})
+    ]
+    runs = sorted((x for x in starts if RUN_ID.fullmatch(x[0])), key=lambda x: x[1], reverse=True)
+    out: list[RunListItem] = []
+    for run_id, started in runs:
+        snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
+        view = run_view(snapshot, launcher, run_id, detail=False)
+        if view is None or (statuses and view.status not in statuses):
+            continue
+        out.append(
+            RunListItem(
+                run_id=run_id,
+                status=view.status,
+                current_node=view.current_node,
+                revision=view.revision,
+                posting_id=(snapshot.values or {}).get("posting_id"),
+                started_at=datetime.fromisoformat(started),
+                updated_at=datetime.fromisoformat(snapshot.created_at)
+                if snapshot.created_at
+                else None,
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def run_view(
+    snapshot: Any, launcher: RunLauncher, run_id: str, *, detail: bool = True
+) -> RunView | None:
+    """없는 run 이면 None. detail=False 면 명세 초안·승인 요약 없이 상태만 (실행 목록 — 실행마다 요약을 다시 계산하지 않게)."""
     values: dict[str, Any] = snapshot.values or {}
     active = launcher.is_active(run_id)
 
@@ -53,11 +107,11 @@ async def load_run_view(
             **base,
             status="awaiting_approval",
             revision=draft.revision if draft else None,
-            spec=draft,
+            spec=draft if detail else None,
             approval_error=pending.get("error"),
             approval_summary=(
                 ApprovalSummary.model_validate(pending["summary"])
-                if pending.get("summary")
+                if detail and pending.get("summary")
                 else None
             ),
         )
@@ -71,12 +125,11 @@ async def load_run_view(
 
     approval = values.get("approval")
     revision = spec.revision if spec else None
+    summary = _summary(values) if detail else None
     if approval is not None and approval.status == "rejected":
-        return RunView(
-            **base, status="rejected", revision=revision, approval_summary=_summary(values)
-        )
+        return RunView(**base, status="rejected", revision=revision, approval_summary=summary)
     if approval is not None and approval.status == "approved" and spec and spec.approval:
-        return RunView(**base, status="done", revision=revision, approval_summary=_summary(values))
+        return RunView(**base, status="done", revision=revision, approval_summary=summary)
     return RunView(**base, status="failed", revision=revision)
 
 
