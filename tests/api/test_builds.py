@@ -528,3 +528,50 @@ async def test_build_reject_through_the_api(tmp_path: Path) -> None:
             assert r.json()["error"] == "승인자 반려 (가상승인자): 가상 반려 사유"
     b = await store.get(bid)
     assert b is not None and b.status == "failed"
+
+
+async def test_build_detail_summarizes_llm_calls_without_bodies(tmp_path: Path) -> None:
+    """#233 승인자 보기 — 시작 코드·테스트를 만든 프롬프트 판·모델마다 호출 수·비용 (단계·시도별). provenance 의 호출 id·설정·
+    few-shot id 는 빌드 기록(DB)에만, 프롬프트·응답 본문은 provenance 에도 없다. 목록 응답에는 싣지 않는다."""
+    from task_spec.schemas.build_record import BuildProvenance
+    from tests.builder.test_build_provenance import SHA, UNPRICED, _prov
+
+    store = InMemoryBuildStore()
+    b = await store.new_build(CID, "onto-test", AT)
+    await store.set_status(b.build_id, "generating")
+    calls = [
+        BuildProvenance(stage=stage, attempt=0, provenance=p)
+        for stage, p in (
+            ("contract", _prov(1, "plan_contract@31")),
+            ("contract", _prov(2, "plan_contract@31", 0.02)),
+            ("build", _prov(3, "gen_hidden@5")),
+            ("build", _prov(6, "gen_trap@2", None, UNPRICED)),
+        )
+    ]
+    await store.record_stage(b.build_id, "files", 0.04, provenance=calls)
+    async with await _client(tmp_path, store) as c:
+        r = await c.get(f"/builds/{b.build_id}")
+        assert r.status_code == 200
+        row = {"attempt": 0, "prompt_sha256": SHA, "model": "openai:gpt-4.1"}
+        assert r.json()["llm_calls"] == [
+            {
+                **row,
+                "stage": "contract",
+                "prompt": "plan_contract@31",
+                "calls": 2,
+                "cost_usd": 0.03,
+            },
+            {**row, "stage": "build", "prompt": "gen_hidden@5", "calls": 1, "cost_usd": 0.01},
+            {
+                **row,
+                "stage": "build",
+                "prompt": "gen_trap@2",
+                "model": UNPRICED,
+                "calls": 1,
+                "cost_usd": None,
+            },
+        ]
+        for detail in ("prov-", "temperature", "reasoning_effort", "ex-1"):
+            assert detail not in r.text, detail
+        (listed,) = (await c.get("/builds", params={"common_id": CID})).json()
+        assert "llm_calls" not in listed

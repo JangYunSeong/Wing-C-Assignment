@@ -9,7 +9,7 @@ POST /common-tasks/{common_id}/builds : 과제 생성 요청 — 명세 승인�
                                    진행 중 빌드가 있으면 새로 만들지 않고 그 빌드를 돌려준다 (200, 새로 만들면 202).
 
 GET  /builds[?common_id=]        : 공통 과제의 빌드 목록 (없으면 최근 빌드 — 화면 목록용, 제목·공고 id 함께)
-GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수
+GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수·생성기 호출 요약(프롬프트 판·모델별 호출 수·비용, #233)
 GET  /builds/{build_id}/artifacts: 역할별 묶음 파일(이름·sha256·크기)·image_id
 GET  /builds/{build_id}/deliveries: 전달 기록
 POST /builds/{build_id}/deliveries {role, target, requested_by} : SFTP 전달 요청 (#116) — 승인·확정된 빌드만, 기록(requested)을
@@ -63,6 +63,7 @@ from task_spec.schemas.build import BuildStatus
 from task_spec.schemas.build_approval import BuildApprovalDecision, BuildApprovalState
 from task_spec.schemas.build_record import (
     TARGET_NAME,
+    BuildProvenance,
     BuildRecord,
     Delivery,
     DeliveryTarget,
@@ -124,6 +125,19 @@ class FlagView(BaseModel):
     verdict: ReviewVerdict | None = None  # 승인자 판단 (없으면 아직)
 
 
+class LlmCallSummary(BaseModel):
+    """생성기 LLM 호출 요약 한 줄 (#233, 불변식 8) — 단계·시도·프롬프트 판·모델마다 호출 수와 비용 합계.
+    호출마다의 provenance(호출 id·설정·few-shot id·토큰)는 빌드 기록(DB)에만. 프롬프트·응답 본문은 provenance 에도 없다."""
+
+    stage: str  # contract · build
+    attempt: int  # builder 가 가져간 회차 (죽은 작업 복구 뒤 다시 가져가면 2)
+    prompt: str  # <task>@<version>
+    prompt_sha256: str  # 그 판 프롬프트 파일의 해시
+    model: str  # <provider>:<model>
+    calls: int
+    cost_usd: float | None = None  # 단가를 모르는 모델이면 None
+
+
 class BuildDetail(BuildSummary):
     tree_sha256: str | None = None
     grader_sha256: str | None = None
@@ -131,6 +145,8 @@ class BuildDetail(BuildSummary):
     review_flags: list[FlagView] = Field(default_factory=list)
     repairs: int = 0
     files: dict[str, int] = Field(default_factory=dict)  # 오버레이 종류별 파일 수 (본문 없음)
+    # 시작 코드·테스트를 만든 프롬프트 판·모델 (#233) — 승인자가 본다. 실패한 빌드도 그때까지 부른 것
+    llm_calls: list[LlmCallSummary] = Field(default_factory=list)
 
 
 class ArtifactView(BaseModel):
@@ -226,6 +242,30 @@ def _summary(
         packages_final_at=b.packages_final_at,
         stage_log=b.stage_log,
     )
+
+
+def _llm_calls(calls: list[BuildProvenance]) -> list[LlmCallSummary]:
+    """(단계, 시도, 프롬프트 판·sha, 모델)마다 호출 수·비용 합계 — 처음 부른 순서대로."""
+    groups: dict[tuple[str, int, str, str, str], list[float | None]] = {}
+    for c in calls:
+        p = c.provenance
+        groups.setdefault((c.stage, c.attempt, p.prompt, p.prompt_sha256, p.model), []).append(
+            p.cost_usd
+        )
+    return [
+        LlmCallSummary(
+            stage=stage,
+            attempt=attempt,
+            prompt=prompt,
+            prompt_sha256=sha,
+            model=model,
+            calls=len(costs),
+            cost_usd=None
+            if all(x is None for x in costs)
+            else round(sum(x or 0.0 for x in costs), 4),
+        )
+        for (stage, attempt, prompt, sha, model), costs in groups.items()
+    ]
 
 
 async def _build(store: BuildRepo, build_id: str) -> BuildRecord:
@@ -406,6 +446,7 @@ async def get_build(
         review_flags=flags,
         repairs=len(o.repairs) if o else 0,
         files=dict(kinds),
+        llm_calls=_llm_calls(b.provenance),
     )
 
 
