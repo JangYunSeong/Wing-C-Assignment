@@ -12,6 +12,9 @@ CERTS="${TASK_CERTS_DIR:-/etc/task-spec/certs}"
 OWNER="${TASK_USER:-yunseong}"
 NAME="${TASK_NGINX_NAME:-task-nginx}"
 SRC="${RENEWED_LINEAGE:?certbot deploy hook 으로만 실행 (RENEWED_LINEAGE 없음)}"
+CERT_NAME="${TASK_CERT_NAME:-task-spec}"
+
+[[ "$(basename "$SRC")" == "$CERT_NAME" ]] || exit 0
 
 install -d -o "$OWNER" -g "$OWNER" -m 700 "$CERTS"
 # 심볼릭 링크(live → archive)를 따라 실제 파일을 복사한다 — 컨테이너 안에서는 링크가 깨진다
