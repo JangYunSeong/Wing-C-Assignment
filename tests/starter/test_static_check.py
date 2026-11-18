@@ -217,15 +217,30 @@ def test_accepted_impl_relying_on_harness_overridden_config() -> None:
 def test_secrets_urls_and_real_names() -> None:
     code = (
         'class P { String url = "https://api.payments.example.io/v1"; String local = "http://localhost:8080";\n'
-        '  String password = "Abcdef123456789"; /* 우아한형제들 */ }'
+        '  String key = "AKIA' + "A" * 16 + '"; /* 우아한형제들 */ }'
     )
     res = _run(_overlays(ref_naive=[_f(f"{PKG}/order/OrderService.java", code)]))
     msgs = res.for_target("gen_naive")
-    assert _has(msgs, "비밀 값")
+    assert _has(msgs, "비밀 값")  # 실제 비밀 형식(AWS 키)은 다시 쓰게 한다
     assert _has(msgs, "외부 네트워크 주소", "api.payments.example.io") and not _has(
         msgs, "localhost"
     )
     assert _has(msgs, "실존 이름", "우아한형제들")
+
+
+def test_secret_like_name_value_is_a_review_flag_not_a_regeneration() -> None:
+    """2026-11-18 ct-10eb910705dd-b1: 계약 fixture 가 정한 시험용 토큰(access_token: 'test-token-001')을 공개 테스트가 그대로
+    써야 하는데 이름 = 값 추정 규칙이 재생성 사유로 막아, 재요청으로 못 고치고 빌드가 실패했다 — 추정은 승인자 표시로만."""
+    code = (
+        'class P { String password = "Abcdef123456789";\n'
+        "  // localStorage: { access_token: 'test-token-001' }\n}"
+    )
+    res = _run(_overlays(ref_naive=[_f(f"{PKG}/order/OrderService.java", code)]))
+    assert not _has(res.for_target("gen_naive"), "비밀 값")
+    assert _has(
+        res.review_flags, "OrderService.java", "비밀 값처럼 보이는 문자열", "시험용 값인지 확인"
+    )
+    assert not _has(_run().review_flags, "비밀 값")
 
 
 def test_hidden_case_rules() -> None:
