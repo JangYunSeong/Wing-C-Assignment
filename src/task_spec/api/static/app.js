@@ -1177,8 +1177,10 @@ function renderDecide(view, s) {
       body.restore_overlap = restore;
       body.promote_overlap = promote;
     }
+    // 보고 있는 판을 함께 보낸다 — 그 사이 다른 결정으로 다시 만들어졌으면 서버가 409 (#247)
+    const rev = view.revision ? `?revision=${encodeURIComponent(view.revision)}` : "";
     try {
-      await busy($("#decide-btn"), "보내는 중…", () => api("POST", `/runs/${encodeURIComponent(run.id)}/approve`, { json: body }));
+      await busy($("#decide-btn"), "보내는 중…", () => api("POST", `/runs/${encodeURIComponent(run.id)}/approve${rev}`, { json: body }));
       say(msg, status === "revise" ? "수정 요청을 보냈습니다. 다시 만드는 중입니다." : "보냈습니다. 확정하는 중입니다.", "ok");
       setStatus("running");
       run.lastKey = null;

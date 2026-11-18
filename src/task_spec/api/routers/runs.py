@@ -21,12 +21,14 @@ from task_spec.api.deps import (
 )
 from task_spec.api.errors import (
     ApprovalNotPending,
+    ApprovalRevisionMismatch,
     CommonTaskGone,
     ErrorResponse,
     PostingNotFound,
     RunNotFound,
     SpecNotFound,
 )
+from task_spec.api.launcher import RunBusy
 from task_spec.api.run_view import list_runs, load_run_view
 from task_spec.api.schemas import (
     TERMINAL_STATUSES,
@@ -154,18 +156,35 @@ async def run_events(
 async def approve_run(
     run_id: str,
     decision: ApprovalDecision,  # TODO(auth): reviewer 는 인증 전까지 요청 본문에서 받는다
-    view: RunViewDep,
+    graph: GraphDep,
     launcher: LauncherDep,
     common_store: CommonStoreDep,
+    # 승인자가 보고 있는 판 — 지금 승인 대기 판과 다르면 409 (#247). 결정(ApprovalDecision)은 체크포인트에
+    # 실리는 모델이라 칸을 더하지 않고 요청에만 둔다. 없으면 판을 확인하지 않는다 (예전 클라이언트)
+    revision: Annotated[int | None, Query(ge=1)] = None,
 ) -> RunAccepted:
+    # 상태를 읽기 전에 — 읽은 뒤 다른 결정이 이 실행을 띄웠으면 launch 가 거부한다 (#247)
+    seen = launcher.launches(run_id)
+    view = await load_run_view(graph, launcher, run_id)
+    if view is None:
+        raise RunNotFound(run_id)
     if view.status != "awaiting_approval":
         raise ApprovalNotPending(f"승인 대기 상태가 아닙니다 (현재: {view.status})", run_id=run_id)
+    if revision is not None and view.revision != revision:
+        raise ApprovalRevisionMismatch(revision, view.revision, run_id=run_id)
     # 확정(finalize)은 명세가 가리키는 공통 과제 판을 승인한다 — 판이 없으면 실행이 실패하므로 승인 전에 막는다
     if decision.status == "approved" and common_store is not None and view.spec is not None:
         gone = await common_store.missing([r.common_id for r in view.spec.common_refs])
         if gone:
             raise CommonTaskGone(gone, run_id=run_id)
-    launcher.launch(run_id, Command(resume=decision.model_dump(mode="json")))
+    try:
+        launcher.launch(run_id, Command(resume=decision.model_dump(mode="json")), after=seen)
+    except RunBusy:
+        # 같은 실행에 결정이 겹쳤다 — 먼저 들어온 결정이 도는 중이거나 이미 끝나, 이 결정이 본 판은 지나갔다
+        raise ApprovalNotPending(
+            "승인 대기 상태가 아닙니다 — 다른 결정이 먼저 들어왔습니다. 실행 상태를 다시 확인하세요",
+            run_id=run_id,
+        ) from None
     return RunAccepted(run_id=run_id, status="running")
 
 

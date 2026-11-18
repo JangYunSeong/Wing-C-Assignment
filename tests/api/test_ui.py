@@ -77,6 +77,19 @@ def test_ui_shows_task_kind_and_sends_kind_switch() -> None:
     assert 'kind && body.revise_target === "verification"' in js
 
 
+def test_ui_sends_the_revision_it_shows_with_a_decision() -> None:
+    """승인 결정에 보고 있는 판을 함께 보낸다 — 그 사이 다시 만들어진 판에 결정이 적용되지 않게 (#247)."""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
+        "utf-8"
+    )
+    assert (
+        'const rev = view.revision ? `?revision=${encodeURIComponent(view.revision)}` : "";' in js
+    )
+    assert "/approve${rev}`" in js
+
+
 def test_ui_shows_two_tier_clarification_answers() -> None:
     from pathlib import Path
 

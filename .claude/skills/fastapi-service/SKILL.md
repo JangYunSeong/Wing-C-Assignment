@@ -26,7 +26,7 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 | `GET` | `/runs?status=&company=&limit=` | 실행 목록 — 최근에 시작한 것부터, `limit` 이 없으면 전부 [확정: 2026-11-18 사용자 — 회사의 명세를 전부]. thread 첫 체크포인트(`source=input`)와 그 그래프 입력(공고 id)으로 찾고 run_id(uuid4 hex) 꼴만 (빌드 승인 thread 제외), 상태는 `GET /runs/{id}` 와 같은 계산. 회사(`postings/company.py`): id = 표기에서 공백·법인 표기를 빼고 소문자 — 온톨로지에 없는 새 회사도 id 가 생기고, 표시 이름은 온톨로지 `company.name` 과 같으면 그 표기, `company_known` = 온톨로지 회사인지. `company` 로 거르기는 상태를 읽기 전에. 상태·현재 노드·판·공고·회사·시작/마지막 시각만 — 명세 초안·승인 요약 없음 [확정: 2026-11-18 사용자 — Wing 관리 화면의 '최근 실행'] |
 | `GET` | `/runs/{run_id}` | 상태(`running`/`awaiting_approval`/`done`/`rejected`/`failed`) + 현재 노드 + (승인 대기 시) 명세 초안 + 승인 요약(`approval_summary` — 승인 대기·`done`·`rejected`, `spec/summary.py`) |
 | `GET` | `/runs/{run_id}/events` | SSE. 노드 진행·interrupt 발생 이벤트 |
-| `POST` | `/runs/{run_id}/approve` | `ApprovalDecision` 로 `Command(resume=...)`. 승인 대기 상태가 아니면 `409` |
+| `POST` | `/runs/{run_id}/approve?revision=` | `ApprovalDecision` 로 `Command(resume=...)`. 승인 대기 상태가 아니면 `409` (`approval_not_pending` — 같은 실행에 결정이 겹쳐 다른 결정이 먼저 띄웠으면, 그 결정이 이미 끝났어도). `revision`(승인자가 보고 있는 판, 화면이 보낸다)이 지금 승인 대기 판과 다르면 `409` (`approval_revision_mismatch`) — 판 번호는 체크포인트에 실리는 `ApprovalDecision` 이 아니라 요청에만 둔다 (#247) |
 | `GET` | `/runs/{run_id}/spec` | 확정 명세 (승인된 경우만, 아니면 `404`) |
 | `GET` | `/builds?common_id=&company=&limit=` | 빌드 목록 — 최근 빌드부터, `limit` 이 없으면 전부. 회사 칸·`company` 거르기는 `GET /runs` 와 같은 규칙(`postings/company.py`, 공통 과제의 공고로) — 빌드 상세(`/builds/{id}`)에도 회사 칸 [확정: 2026-11-18 사용자 — 빌드도 선택한 회사만] |
 | `GET` | `/builds/{build_id}/approval` | 빌드(시작 코드) 승인 (#130) — review 빌드면 빌드 승인 그래프 thread(`build-<build_id>-<결과 키>`)를 시작해 interrupt 까지, 검토 표시·사유. 끝난 빌드는 결과 |
@@ -45,6 +45,8 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
   `POST /runs` 는 실행을 백그라운드 태스크로 띄우고 즉시 반환.
 - 초기: `asyncio.create_task` + 프로세스 내 태스크 레지스트리. 다중 워커가 필요해지면 작업 큐로 교체 [미정].
   교체가 쉬도록 `RunLauncher` 인터페이스 하나로 감싼다.
+- 승인 resume 은 상태를 읽기 **전에** `launcher.launches(run_id)` 를 받아 `launch(after=…)` 로 넘긴다 — 읽은 뒤 다른 요청이
+  띄웠으면(먼저 들어온 결정이 이미 끝났어도) `RunBusy` → `409` (#247). 프로세스 안 레지스트리라 워커 하나(`--workers 1`)에서만 막는다.
 - 그래프 `config = {"configurable": {"thread_id": run_id}}`.
 
 ## lifespan

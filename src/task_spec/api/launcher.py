@@ -17,11 +17,16 @@ from langgraph.graph.state import CompiledStateGraph
 logger = logging.getLogger(__name__)
 
 
+class RunBusy(RuntimeError):
+    """이 실행이 이 프로세스에서 도는 중이거나, 부르는 쪽이 상태를 읽은 뒤 다른 요청이 띄웠다 (#247)."""
+
+
 class RunLauncher:
     def __init__(self, graph: CompiledStateGraph) -> None:
         self._graph = graph
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._failures: dict[str, str] = {}  # run_id → 예외 타입 이름 (메시지는 저장하지 않는다)
+        self._launches: dict[str, int] = {}  # run_id → 이 프로세스에서 띄운 횟수
 
     def is_active(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)
@@ -30,10 +35,20 @@ class RunLauncher:
     def failure(self, run_id: str) -> str | None:
         return self._failures.get(run_id)
 
-    def launch(self, run_id: str, graph_input: Any) -> None:
-        """그래프 입력(시작 dict 또는 Command(resume))으로 실행을 띄우고 즉시 반환한다."""
-        if self.is_active(run_id):
-            raise RuntimeError("run is already active")
+    def launches(self, run_id: str) -> int:
+        """이 프로세스에서 이 실행을 띄운 횟수. 상태를 읽기 전에 받아 두고 launch(after=…) 로 넘긴다."""
+        return self._launches.get(run_id, 0)
+
+    def launch(self, run_id: str, graph_input: Any, *, after: int | None = None) -> None:
+        """그래프 입력(시작 dict 또는 Command(resume))으로 실행을 띄우고 즉시 반환한다.
+
+        도는 중이면 RunBusy. after(부르는 쪽이 상태를 읽기 전에 본 launches) 가 있으면 그 사이 다른 요청이
+        띄웠을 때도 RunBusy — 읽은 상태가 낡았다 (같은 실행에 승인 결정이 겹칠 때, 먼저 들어온 결정이
+        이미 끝났어도 #247). 확인과 띄우기 사이에 await 가 없어 같은 이벤트 루프 안에서는 한 요청만 띄운다.
+        """
+        if self.is_active(run_id) or (after is not None and self.launches(run_id) != after):
+            raise RunBusy("run is already active")
+        self._launches[run_id] = self.launches(run_id) + 1
         self._failures.pop(run_id, None)
         self._tasks[run_id] = asyncio.create_task(self._run(run_id, graph_input))
 
