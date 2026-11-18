@@ -30,6 +30,7 @@ from task_spec.schemas.package import (
     ReviewDecision,
     VerifySummary,
 )
+from task_spec.schemas.provenance import Provenance
 
 DeliveryStatus = Literal["requested", "sent", "failed"]
 # 저장하는 파일 종류 — 생성기 오버레이(FileKind) + 코드가 렌더한 지원자 README (응시용 작업 경로에 들어간다)
@@ -86,6 +87,18 @@ def next_stage_log(
     return out
 
 
+class BuildProvenance(Schema):
+    """빌드가 부른 LLM 호출 1건의 출처 (#233, 불변식 8) — 어느 단계·몇 번째 시도에서 불렀는지 + 그 호출의 `Provenance` 그대로
+    (프롬프트 판·sha·모델·설정·few-shot id·온톨로지 판·토큰·비용). 프롬프트·응답 본문은 Provenance 에도 없다.
+    builder 가 그 단계의 비용과 같은 때(`record_stage`)에 붙인다 — 실패한 단계·실패한 호출·수리 재요청·관문 호출도."""
+
+    # 호출이 난 단계 (contract · build — StageMark 와 같은 이름)
+    stage: str = Field(min_length=1, max_length=40)
+    # builder 가 가져간 회차 (BuildRecord.attempt — 죽은 작업 복구 뒤 다시 가져가면 +1)
+    attempt: int = Field(default=0, ge=0)
+    provenance: Provenance
+
+
 class BuildFailure(Schema):
     """실패한 빌드가 끝까지 가지 못한 데까지 남긴 것 — 원인을 보려고 로그·작업 폴더를 따로 받지 않게 (2026-11-15 프론트 빌드:
     실패한 빌드는 계약을 저장하지 않아 하네스 경로 버그를 메시지 구조로만 짚었다). 성공 빌드의 `BuildOutcome` 과 같은 칸에 같은 것만 —
@@ -133,6 +146,9 @@ class BuildRecord(Schema):
     started_at: datetime | None = None  # 처음 가져간 시각
     finished_at: datetime | None = None  # review 또는 failed 가 된 시각
     stage_log: list[StageMark] = Field(default_factory=list)  # 단계 진행 기록 (화면 진행 막대)
+    # 생성기 provenance (#233, 불변식 8) — 계약·빌드 단계 LLM 호출마다, 비용 누계처럼 쌓기만 한다 (실패한 빌드도, 죽은 작업 복구 뒤에도
+    # 지우지 않음 — 시도는 attempt 로 가른다). 승인 화면에는 프롬프트 판·모델별 요약만 (api/routers/builds.py)
+    provenance: list[BuildProvenance] = Field(default_factory=list)
     # 묶음 확정 (#130 ③ A) — 승인 뒤 builder 가 descriptor 를 approved 로 다시 쓰고 평가 키트를 등록한 시각. 전달은 이것이 있어야
     packages_final_at: datetime | None = None
 

@@ -812,6 +812,54 @@ def test_no_evidence_timed_value_matching_material_is_flagged_not_a_gap() -> Non
     assert 1.0 in _converted(line, "s") and 3.0 not in _converted(line, "s")
 
 
+def test_words_that_only_start_like_a_time_unit_are_not_time() -> None:
+    """#238: _TIMED 뒤 막기가 한글을 막지 않고 _time_word 가 앞부분만 보아 '50 초과'를 50초, '3분기'를 3분, '초기'를 초로 읽었다
+    ('msgs'→ms, 'minimum'→min 도). 개수 조절값은 헛 재요청(wrong_unit — 같은 근거뿐이면 계약 실패), 시간 조절값은 개수 문장으로
+    통과했고 근거가 '없음'이면 그 줄을 근거 후보(힌트)로 줬다."""
+    from task_spec.starter.contract import _converted, _time_word, timed_hints, timed_matches
+
+    assert [_time_word(w) for w in ("초과", "초기", "분기", "분야", "msgs", "minimum")] == [
+        None
+    ] * 6
+    assert [_time_word(w) for w in ("초를", "ms입니다", "분이상", "초", "s")] == [
+        "초",
+        "ms",
+        "분",
+        "초",
+        "s",
+    ]
+    burst, glued, orders = (
+        "피크 때 동시 요청 50 초과",
+        "동시 요청은 50초과",
+        "주문 수는 대부분 2 초과",
+    )
+    texts = [burst, glued, orders, "3분기 매출 집계", "큐에 5 msgs 쌓임"]
+    # 개수 조절값 — 비교 말(초과·이상·이하·미만)과 영문 낱말은 단위가 아니다 (붙여 쓴 꼴 포함)
+    assert value_check(50, burst, "50", texts, None).verdict == "ok"
+    assert value_check(50, glued, "50초과", texts, None).verdict == "ok"
+    assert value_check(50, "동시 요청 50이상", "50이상", ["동시 요청 50이상"], None).verdict == "ok"
+    assert value_check(5, "큐에 5 msgs 쌓임", "5", texts, None).verdict == "ok"
+    # 시간 조절값 — 개수 문장으로 통과하지 않고, 그런 줄은 근거 후보가 아니다
+    assert value_check(2, orders, "2", texts, "s").verdict == "wrong_unit"
+    assert value_check(2, orders, "2 초과", texts, "s").verdict == "wrong_unit"
+    assert timed_hints("request_timeout_s", texts) == []
+    assert timed_matches("request_timeout_s", 50, texts) == []
+    assert _converted("3분기 매출 · 초기 로딩 2초", "s") == {2.0}
+    # 조사·어미·비교 말이 붙은 시간 단위는 그대로 시간 ('1초를'·'500ms의'·'30분마다'·'2초초과'·'1분30초')
+    timed = ["응답이 1초를 넘으면 이탈", "왕복 500ms의 지연", "30분마다 동기화", "2초초과 시 실패"]
+    assert timed_hints("request_timeout_s", timed) == timed
+    assert value_check(1800, "30분마다 동기화", "30분", timed, "s").verdict == "ok"
+    assert value_check(2, "2초초과 시 실패", "2초초과", timed, "s").verdict == "ok"
+    assert value_check(2, "2초초과 시 실패", "2초초과", timed, None).verdict == "wrong_unit"
+    assert _converted("1분30초 안에", "s") == {60.0, 30.0}
+    # 계약 검사 — 개수 문장을 근거로 낸 개수 조절값은 재요청하지 않는다 (같은 근거뿐이면 세 번 뒤 계약 실패였다)
+    plan = _plan(harness={"pool_size": 8, "concurrency": 50, "query_delay_ms": 20})
+    plan["evidence"] = {"concurrency": burst}
+    plan["evidence_value"] = {"concurrency": "50"}
+    res = _check(plan=plan, spec=_spec(visible_texts=("pool: 8", burst)))
+    assert not _has(res.problems, "concurrency"), res.problems
+
+
 def test_api_field_names_fixed_by_the_spec_are_accepted() -> None:
     # 2026-11-10 확장 알파 C #062: 공개 요구가 API 필드를 member_id·recharge_id 로 정해 camelCase 규칙과 충돌 — 명세가 우선 (사용자 결정 A)
     from dataclasses import replace

@@ -9,14 +9,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
 from task_spec.llm.quotes import quote_in
 from task_spec.nodes.pseudonymize.detectors import TOKEN_RE, detect_patterns
-from task_spec.schemas import ExtractedRef, NodeError, PseudoCheck, PseudoDocRef, RunState
+from task_spec.schemas import Claim, ExtractedRef, NodeError, PseudoCheck, PseudoDocRef, RunState
 from task_spec.schemas.pseudo_text import _MINT, PseudonymizedText
 
 Pseudonymizer = Callable[[str, ExtractedRef], Awaitable[PseudoDocRef]]
@@ -146,6 +147,7 @@ def load_pseudonymized(ref: PseudoDocRef) -> PseudonymizedText:
 
     State 가 오염돼도 임의 파일이 LLM 으로 가지 않게 (privacy-auditor W3):
     경로 모양이 `.../pseudonymized/<run_id>/<doc_id>.txt` 이고, 심볼릭 링크가 아니고, sha256 이 맞아야 한다.
+    파일이 없거나 읽을 수 없거나(OSError) UTF-8 이 아니어도 PseudonymizedNotAvailable 하나로 낸다 (#246).
     """
     if not ref.check.passed or ref.path is None or ref.sha256 is None:
         raise PseudonymizedNotAvailable(ref.doc_id)
@@ -156,7 +158,59 @@ def load_pseudonymized(ref: PseudoDocRef) -> PseudonymizedText:
         or path.parent.parent.name != "pseudonymized"
     ):
         raise PseudonymizedNotAvailable(ref.doc_id)
-    raw = path.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != ref.sha256:
-        raise PseudonymizedNotAvailable(ref.doc_id)
-    return mint_pseudonymized(raw.decode("utf-8"))
+    try:
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != ref.sha256:
+            raise PseudonymizedNotAvailable(ref.doc_id)
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        # 원인 예외는 잇지 않는다 — 디코드 오류 메시지에는 본문 바이트가 들어간다 (id 만)
+        raise PseudonymizedNotAvailable(ref.doc_id) from None
+    return mint_pseudonymized(text)
+
+
+async def load_claim_texts(
+    state: RunState,
+    claims: Iterable[Claim],
+    *,
+    node: str,
+    derive: Callable[[PseudonymizedText, Claim], PseudonymizedText] | None = None,
+) -> tuple[dict[str, PseudonymizedText], list[NodeError]]:
+    """주장 → 다음 단계 입력 텍스트 (주장 순서 그대로). 주장 텍스트를 가명화본에서 다시 만드는 곳은 이것만 쓴다 (#246).
+
+    문서마다 가명화본을 한 번 읽는다 (to_thread). 가명화본이 없거나 읽을 수 없거나(PseudonymizedNotAvailable)
+    인용이 가명화본에 없으면(derive 의 ValueError) 그 주장만 빼고 claim_not_pseudonymized 를 남긴다 — id·고정 문구만.
+    derive 기본값은 "행동: {action} / 문장: {quote}" (derive_pseudonymized).
+    """
+    make = derive or _claim_with_action
+    sources: dict[str, PseudonymizedText | None] = {}
+    texts: dict[str, PseudonymizedText] = {}
+    errors: list[NodeError] = []
+    for c in claims:
+        if c.doc_id not in sources:
+            ref = next((d for d in state.pseudo_docs if d.doc_id == c.doc_id), None)
+            try:
+                sources[c.doc_id] = (
+                    await asyncio.to_thread(load_pseudonymized, ref) if ref else None
+                )
+            except PseudonymizedNotAvailable:
+                sources[c.doc_id] = None
+        src = sources[c.doc_id]
+        try:
+            if src is None:
+                raise ValueError("가명화본 없음")
+            texts[c.claim_id] = make(src, c)
+        except ValueError:
+            errors.append(
+                NodeError(
+                    node=node,
+                    code="claim_not_pseudonymized",
+                    message="주장 텍스트 검사 실패",
+                    ref_id=c.claim_id,
+                )
+            )
+    return texts, errors
+
+
+def _claim_with_action(source: PseudonymizedText, claim: Claim) -> PseudonymizedText:
+    return derive_pseudonymized(source, quote=claim.quote, summary=claim.action)

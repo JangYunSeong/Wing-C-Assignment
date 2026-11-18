@@ -2,12 +2,14 @@
 
 - 기존 vN.md 는 고치지 않는다 (훅 protect-prompt-versions 가 막는다). 로더는 읽기만 한다.
 - 머리말 스키마·템플릿 변수·입출력 스키마 클래스를 로드 시점에 검증한다.
-- 해시는 조립 전 템플릿 파일 바이트 기준 (prompt-registry §3).
+- 해시 둘 (prompt-registry §3): sha256 = 템플릿 파일 바이트 (레지스트리·PROMOTIONS.md),
+  prompt_sha256 = 파일 + 렌더된 출력 스키마 — provenance 에 적는 값 (2026-11-18 #240).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from functools import cached_property
 from pathlib import Path
@@ -17,6 +19,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from task_spec import schemas
+from task_spec.prompting.schema_text import compact_schema
 
 _VERSION_FILE = re.compile(r"^v(\d+)\.md$")
 _VAR = re.compile(r"\{\{\s*([a-z_][a-z0-9_]*)\s*\}\}")
@@ -74,6 +77,20 @@ class PromptTemplate(BaseModel):
     @cached_property
     def output_model(self) -> type[BaseModel]:
         return _schema_class(self.meta.output_schema)
+
+    @cached_property
+    def output_schema_text(self) -> str:
+        """{{output_schema}} 에 들어가는 글 — 머리말 output_schema 모델을 schema_style 대로 렌더 (입력과 무관)."""
+        if self.meta.schema_style == "compact":
+            return compact_schema(self.output_model)
+        return json.dumps(self.output_model.model_json_schema(), ensure_ascii=False, indent=1)
+
+    @cached_property
+    def prompt_sha256(self) -> str:
+        """provenance 의 prompt_sha256 — 파일 바이트(sha256) + 렌더된 출력 스키마의 해시 (2026-11-18 사용자 결정, #240).
+        출력 모델(클래스·필드·설명)이 바뀌면 같은 vN 파일이어도 모델이 받는 프롬프트가 바뀐다 — 파일 해시만으로는
+        같은 ref+해시가 서로 다른 프롬프트를 가리켰다. 입력·기준·예시처럼 호출마다 다른 값은 넣지 않는다."""
+        return hashlib.sha256(f"{self.sha256}\n{self.output_schema_text}".encode()).hexdigest()
 
     def variables(self) -> set[str]:
         return set(_VAR.findall(self.system)) | set(_VAR.findall(self.user))

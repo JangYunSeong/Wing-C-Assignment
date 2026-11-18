@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,32 @@ def test_good_template_loads(tmp_path: Path) -> None:
     tpl = _write(tmp_path, GOOD).get("demo")
     assert tpl.ref == "demo@1"
     assert len(tpl.sha256) == 64
+
+
+def test_prompt_sha256_covers_rendered_output_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#240: provenance 해시(prompt_sha256) = 파일 바이트 + 렌더된 출력 스키마. 같은 vN 파일이어도 출력 모델이
+    바뀌면 모델이 받는 프롬프트가 바뀌므로 달라진다. 파일만의 해시(sha256 — 레지스트리·PROMOTIONS.md)는 그대로."""
+    from pydantic import Field
+
+    from task_spec import schemas
+    from task_spec.schemas import ClaimExtractionOutput
+
+    before = _write(tmp_path, GOOD).get("demo")
+    assert (
+        before.prompt_sha256
+        == hashlib.sha256(f"{before.sha256}\n{before.output_schema_text}".encode()).hexdigest()
+    )
+
+    class ClaimExtractionOutputChanged(ClaimExtractionOutput):
+        note: str | None = Field(default=None, description="가상 설명")
+
+    monkeypatch.setattr(schemas, "ClaimExtractionOutput", ClaimExtractionOutputChanged)
+    after = PromptRegistry(tmp_path).get("demo")
+    assert after.sha256 == before.sha256 == hashlib.sha256(GOOD.encode()).hexdigest()
+    assert after.output_schema_text != before.output_schema_text
+    assert after.prompt_sha256 != before.prompt_sha256
 
 
 @pytest.mark.parametrize(

@@ -1133,7 +1133,8 @@ function renderDecide(view, s) {
     const v = form.querySelector('input[name="decision"]:checked').value;
     $("#target-wrap").hidden = v !== "revise";
     $("#kind-wrap").hidden = v !== "revise";
-    if ($("#reassign")) $("#reassign").hidden = v !== "revise";
+    // 공통 과제만 다시 만들면 배정은 그대로 — 배정 바꾸기를 숨기고 보내지 않는다 (서버는 반영하지 않고 기록, #249)
+    if ($("#reassign")) $("#reassign").hidden = v !== "revise" || $("#revise-target").value === "common";
     if ($("#lower")) $("#lower").hidden = v !== "revise";
     if ($("#restore")) $("#restore").hidden = v !== "revise";
     if ($("#promote")) $("#promote").hidden = v !== "revise";
@@ -1163,11 +1164,13 @@ function renderDecide(view, s) {
       if (kind && body.revise_target === "verification")
         return say(msg, "과제 유형을 바꾸면 공통 과제를 다시 만들어야 합니다 — '공통 과제·슬롯' 또는 '전부'를 고르세요.", "err");
       if (kind) body.task_kind = kind;
-      const reassign = {};
-      form.querySelectorAll("select[data-claim]").forEach((sel) => {
-        if (sel.value) reassign[sel.dataset.claim] = sel.value === "__none__" ? null : sel.value;
-      });
-      body.reassign = reassign;
+      if (body.revise_target !== "common") {
+        const reassign = {};
+        form.querySelectorAll("select[data-claim]").forEach((sel) => {
+          if (sel.value) reassign[sel.dataset.claim] = sel.value === "__none__" ? null : sel.value;
+        });
+        body.reassign = reassign;
+      }
       const lower = [...form.querySelectorAll("input[data-lower]:checked")].map((x) => x.dataset.lower);
       const restore = [...form.querySelectorAll("input[data-restore]:checked")].map((x) => x.dataset.restore);
       const promote = [...form.querySelectorAll("input[data-promote]:checked")].map((x) => x.dataset.promote);
@@ -1177,8 +1180,10 @@ function renderDecide(view, s) {
       body.restore_overlap = restore;
       body.promote_overlap = promote;
     }
+    // 보고 있는 판을 함께 보낸다 — 그 사이 다른 결정으로 다시 만들어졌으면 서버가 409 (#247)
+    const rev = view.revision ? `?revision=${encodeURIComponent(view.revision)}` : "";
     try {
-      await busy($("#decide-btn"), "보내는 중…", () => api("POST", `/runs/${encodeURIComponent(run.id)}/approve`, { json: body }));
+      await busy($("#decide-btn"), "보내는 중…", () => api("POST", `/runs/${encodeURIComponent(run.id)}/approve${rev}`, { json: body }));
       say(msg, status === "revise" ? "수정 요청을 보냈습니다. 다시 만드는 중입니다." : "보냈습니다. 확정하는 중입니다.", "ok");
       setStatus("running");
       run.lastKey = null;

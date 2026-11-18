@@ -165,6 +165,20 @@ function flagsBlock(flags) {
     .join("")}</ul>`;
 }
 
+/* 생성 기록 (#233, 불변식 8) — 시작 코드·테스트를 만든 프롬프트 판·모델마다 호출 수·비용. 호출마다의 출처는 DB 에만, 본문은 어디에도 없다 */
+function llmCallsTable(rows) {
+  if (!rows || !rows.length) return `<p class="placeholder">생성기 호출 기록이 없습니다 (기록을 남기기 전 빌드·적재 빌드).</p>`;
+  const body = rows
+    .map(
+      (r) => `<tr><td>${esc(r.stage)}${r.attempt > 1 ? ` <span class="faint">시도 ${r.attempt}</span>` : ""}</td>
+        <td class="mono">${esc(r.prompt)} <span class="faint" title="${esc(r.prompt_sha256)}">${esc(r.prompt_sha256.slice(0, 12))}</span></td>
+        <td class="mono">${esc(r.model)}</td><td class="num">${r.calls}</td>
+        <td class="num">${r.cost_usd == null ? "–" : `$${Number(r.cost_usd).toFixed(3)}`}</td></tr>`,
+    )
+    .join("");
+  return `<div class="tbl-wrap"><table><thead><tr><th>단계</th><th>프롬프트 판</th><th>모델</th><th class="num">호출</th><th class="num">비용</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 function artifactsBlock(arts) {
   if (!arts.length) return `<p class="placeholder">등록된 묶음이 없습니다.</p>`;
   return arts
@@ -385,6 +399,7 @@ async function show(id) {
         <div class="kv"><span>오버레이 파일</span><b>${esc(files)}</b><span>수리</span><b>${b.repairs}건</b>
         <span>시작 코드 해시</span><b class="mono">${esc((b.tree_sha256 || "–").slice(0, 16))}</b><span>채점 내용 해시</span><b class="mono">${esc((b.grader_sha256 || "–").slice(0, 16))}</b>
         <span>온톨로지</span><b class="mono">${esc(b.ontology_version)}</b></div></section>
+      <section class="block" id="b-llm"><div class="block-head"><h3>생성 기록</h3><span class="aside">시작 코드·테스트를 만든 프롬프트 판·모델마다 호출 수·비용 (실패한 호출·수리 재요청 포함)</span></div>${llmCallsTable(b.llm_calls)}</section>
       <section class="block" id="b-cases"><div class="block-head"><h3>테스트</h3><span class="aside">문제를 쓸지 정할 때 — 케이스마다 무엇을 확인하고 누가 통과했나 (칸에 마우스를 올리면 실패 메시지)</span></div>${casesBlock(cases)}</section>
       <section class="block" id="b-flags"><div class="block-head"><h3>검토 표시</h3><span class="aside">승인 전에 표시마다 승인자 판단이 필요합니다 · ${decided}/${b.review_flags.length} 판단</span></div>${flagsBlock(b.review_flags)}</section>
       ${

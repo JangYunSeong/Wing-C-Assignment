@@ -104,6 +104,20 @@ class ApprovalNotPending(DomainError):
     status_code = 409
 
 
+class ApprovalRevisionMismatch(DomainError):
+    """승인 결정이 가리키는 판(?revision=)이 지금 승인 대기 판이 아니다 — 그 사이 다른 결정으로 다시 만들어졌다 (#247)."""
+
+    code = "approval_revision_mismatch"
+    status_code = 409
+
+    def __init__(self, asked: int, current: int | None, *, run_id: str) -> None:
+        now = f"{current}판" if current is not None else "판 없음"
+        super().__init__(
+            f"보고 있는 판({asked}판)이 지금 승인 대기 판({now})이 아닙니다 — 새로 고친 뒤 다시 결정하세요",
+            run_id=run_id,
+        )
+
+
 class UnsupportedFileType(DomainError):
     code = "unsupported_file_type"
     status_code = 415

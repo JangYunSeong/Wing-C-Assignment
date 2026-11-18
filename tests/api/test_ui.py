@@ -36,6 +36,7 @@ async def test_ui_builds_page_uses_build_apis_only(make_client: AppFactory) -> N
     for hidden in ("hidden_plan", "contract.", "content"):
         assert hidden not in stages.text, hidden
     assert "/builds?limit=" in js and "/artifacts" in js and "/delivery-targets" in js
+    assert "llm_calls" in js  # 승인자가 생성기 프롬프트 판·모델별 호출 수를 본다 (#233)
     # 숨은 계획 원문·계약 원문·파일 본문은 API 가 내주지 않는다 — 화면도 그 칸을 기대하지 않는다.
     # 케이스 설명·의도한 실패 사유는 승인자용 /cases 로만 받는다 [확정: 2026-11-11 사용자 — 문제를 쓸지 정하는 사람이 본다]
     assert "/cases" in js and "intended_reason" in js
@@ -74,6 +75,30 @@ def test_ui_shows_task_kind_and_sends_kind_switch() -> None:
     assert "if (kind) body.task_kind = kind;" in js
     # 서버와 같은 규칙: 유형을 바꾸면 경험 검증만 다시 만들 수는 없다
     assert 'kind && body.revise_target === "verification"' in js
+
+
+def test_ui_sends_the_revision_it_shows_with_a_decision() -> None:
+    """승인 결정에 보고 있는 판을 함께 보낸다 — 그 사이 다시 만들어진 판에 결정이 적용되지 않게 (#247)."""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
+        "utf-8"
+    )
+    assert (
+        'const rev = view.revision ? `?revision=${encodeURIComponent(view.revision)}` : "";' in js
+    )
+    assert "/approve${rev}`" in js
+
+
+def test_ui_hides_and_does_not_send_reassign_when_only_common_is_rebuilt() -> None:
+    """공통 과제만 다시 만들면 배정은 그대로 — 배정 바꾸기를 숨기고 보내지 않는다 (#249)."""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
+        "utf-8"
+    )
+    assert '$("#reassign").hidden = v !== "revise" || $("#revise-target").value === "common";' in js
+    assert 'if (body.revise_target !== "common") {\n        const reassign = {};' in js
 
 
 def test_ui_shows_two_tier_clarification_answers() -> None:

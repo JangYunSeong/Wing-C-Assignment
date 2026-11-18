@@ -42,7 +42,7 @@ class CompileError(Schema):
 class TargetRun(Schema):
     """대상 하나 — 시작 코드만(기존 테스트), 또는 시작 코드 + 참조 구현 + 숨은 테스트."""
 
-    target: str = Field(min_length=1)  # "starter" · 참조 구현 라벨 (naive-all · naive-miss-t2 · d1)
+    target: str = Field(min_length=1)  # "starter" · 참조 구현 라벨 (naive-all · d1)
     kind: TargetKind
     setup: SetupResult = "ok"
     compile_errors: list[CompileError] = Field(default_factory=list)

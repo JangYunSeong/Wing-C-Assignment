@@ -30,7 +30,7 @@ task_spec:
     comment: ...                       # revise면 필수
     revise_target: common|verification|all
     # 아래는 모두 status=revise일 때만
-    reassign: {claim_id: slot_id|null}       # 슬롯 배정 바꾸기 — 규칙보다 우선
+    reassign: {claim_id: slot_id|null}       # 슬롯 배정 바꾸기 — 규칙보다 우선, revise_target이 verification·all일 때만 반영 (common이면 배정 유지 + reassign_ignored 기록)
     downgrade_overlap: [competency_id]       # 겹침 → 관련 경험으로 낮추기 (경험 검증 다시 만듦)
     restore_overlap: [competency_id]         # 낮춘 겹침 되돌리기
     promote_overlap: [competency_id]         # 선택 경로만 고른(select_only) 공고 역량을 겹침으로 올리기

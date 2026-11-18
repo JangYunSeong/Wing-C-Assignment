@@ -28,7 +28,9 @@ class ApprovalDecision(Schema):
     comment: str | None = Field(default=None, max_length=4000)
     # revise 대상: common = 공고 공통 과제(새 판) / verification = 이 지원자의 확장 문항만 (공통 과제는 재사용) / all
     revise_target: Literal["common", "verification", "all"] = "all"
-    # 슬롯 배정 바꾸기 (revise 일 때만): {주장 id: 슬롯 id 또는 null(슬롯 없이 면접 질문만)} — 규칙보다 우선
+    # 슬롯 배정 바꾸기 (revise 일 때만): {주장 id: 슬롯 id 또는 null(슬롯 없이 면접 질문만)} — 규칙보다 우선.
+    # revise_target=common 이면 반영하지 않고 draft_spec 이 reassign_ignored 를 남긴다 (#249). 여기 검증기로 막지 않는다 —
+    # 저장된 체크포인트의 결정이 State 를 만들 때 다시 검증돼 깨진다 (tests/schemas/test_approval.py)
     reassign: dict[str, str | None] = Field(default_factory=dict)
     # 겹침 낮추기 (revise 일 때만): 공고 역량 id — 겹침을 관련 경험으로 내리고 경험 검증을 다시 만든다 [2026-11-04]
     downgrade_overlap: list[CompetencyRef] = Field(default_factory=list, max_length=60)

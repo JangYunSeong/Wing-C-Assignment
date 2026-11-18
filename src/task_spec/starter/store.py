@@ -28,7 +28,9 @@
 - builder 는 `claim()` 으로 요청된 pending 빌드를 하나씩 가져간다 (Postgres: FOR UPDATE SKIP LOCKED). 가져갈 때 공통 과제가 더는
   approved 가 아니면(새 판이 승인됨) 빌드하지 않고 failed + `superseded`. lease 는 `heartbeat()` 로 늘린다.
 - `recover_expired()`: lease 가 지난 generating·verifying 빌드는 시도가 남았으면 파일·결과를 지우고 pending 으로(인프라 오류
-  1회 자동 재시도), 아니면 failed + `lease_expired`. 생성 실패는 사람이 다시 요청한다.
+  1회 자동 재시도), 아니면 failed + `lease_expired`. 묶음 행이 있으면(묶음 등록 중에 멈춤) 시도가 남아도 failed + `lease_expired` —
+  묶음은 한 번 등록하면 바꾸지 않고 builder 역할은 묶음 행을 지우지 못해서(docker/builder/db-role.sql), 다시 하면 생성·검증을 다 하고
+  묶음 단계에서 '이미 등록'으로 실패했다 (#244). 생성 실패는 사람이 다시 요청한다.
 - eval 적재(`new_build`)로 만든 빌드는 요청 시각이 없어 builder 가 가져가지 않는다.
 """
 
@@ -36,7 +38,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -55,6 +57,7 @@ from task_spec.schemas.build_record import (
     BuildArtifact,
     BuildFailure,
     BuildOutcome,
+    BuildProvenance,
     BuildRecord,
     Delivery,
     DeliveryTarget,
@@ -205,6 +208,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS common_task_build_active_origin ON public.comm
     WHERE status IN ('pending', 'generating', 'verifying') AND origin = 'request';
 CREATE INDEX IF NOT EXISTS common_task_build_queue_origin ON public.common_task_build (requested_at)
     WHERE status = 'pending' AND origin = 'request';
+-- 생성기 provenance (#233, 불변식 8) — 계약·빌드 단계 LLM 호출마다 단계·시도·provenance (BuildProvenance). 있던 빌드는 빈 목록.
+-- builder 역할 권한은 표 단위(db-role.sql)라 새 칸도 따로 GRANT 하지 않는다
+ALTER TABLE public.common_task_build ADD COLUMN IF NOT EXISTS provenance jsonb NOT NULL DEFAULT '[]'::jsonb;
 """
 
 # `_build` 가 읽는 칸 — builder(DDL 을 돌리지 않는 역할)의 기동 확인이 이 칸 전체를 본다 (#175: #128 칸 셋만 봐서, API 가 옛 판이면
@@ -243,6 +249,7 @@ BUILD_COLUMNS = (
     "finished_at",
     "packages_final_at",
     "stage_log",
+    "provenance",  # #233 — builder 가 record_stage 로 쓰고 _build 가 읽는다
 )
 
 
@@ -261,7 +268,7 @@ class BuildRuleError(ValueError):
 
 # 큐 실패 사유 (error 칸) — 원문 없이 짧은 코드
 SUPERSEDED = "superseded"  # 대기 중에 공고의 새 판이 승인됨
-LEASE_EXPIRED = "lease_expired"  # builder 가 heartbeat 없이 사라짐 (시도를 다 씀)
+LEASE_EXPIRED = "lease_expired"  # builder 가 heartbeat 없이 사라짐 (시도를 다 썼거나 묶음 등록 중)
 _RUNNING = ("generating", "verifying")  # builder 가 lease 를 쥐고 있는 상태
 _FINISHED = ("review", "failed")  # finished_at 을 적는 상태
 
@@ -499,6 +506,11 @@ class BuildRepo(Protocol):
         """최근 빌드부터. limit=None 이면 전부."""
         ...
 
+    async def deliverable(self) -> list[BuildRecord]:
+        """전달할 수 있는 빌드 — approved·published 이고 묶음을 확정한 것 전부, 최근 빌드부터 (받는 쪽 /pull 목록).
+        최근 N개에서 거르지 않는다 (#235: 더 새 빌드가 200개를 넘으면 승인·확정 빌드가 목록에서 빠졌다)."""
+        ...
+
     async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]: ...
 
     async def task(self, common_id: str) -> TaskItem | None:
@@ -586,8 +598,14 @@ class BuildRepo(Protocol):
         ...
 
     async def record_stage(
-        self, build_id: str, stage: str, cost_usd: float = 0.0
-    ) -> BuildRecord: ...
+        self,
+        build_id: str,
+        stage: str,
+        cost_usd: float = 0.0,
+        provenance: Sequence[BuildProvenance] = (),
+    ) -> BuildRecord:
+        """단계 기록 — 비용은 방금 끝난 단계에 더하고, 그 단계의 LLM 호출 provenance 는 빌드 기록 끝에 붙인다 (#233, 한 번에)."""
+        ...
 
     async def fail(
         self,
@@ -596,12 +614,16 @@ class BuildRepo(Protocol):
         at: datetime | None = None,
         detail: BuildFailure | None = None,
     ) -> BuildRecord:
-        """failed 로 — detail 이 있으면 끝까지 가지 못한 데까지의 계약·숨은 계획·표시·수리 기록도 남긴다."""
+        """failed 로 — detail 이 있으면 끝까지 가지 못한 데까지의 계약·숨은 계획·표시·수리 기록도 남긴다 (failure).
+        failure 는 결과(outcome) 저장 전 실패만 — 결과를 저장한 뒤의 실패는 결과를 그대로 두고 detail 은 쓰지 않는다 (Postgres 에서
+        같은 칸이고, 그때 실행기가 넘기는 detail 은 결과와 같은 것). #250: PG 는 결과 칸을 detail 로 덮고 메모리는 둘 다 남겼다."""
         ...
 
     async def recover_expired(
         self, at: datetime | None = None, max_attempts: int = 2
-    ) -> list[BuildRecord]: ...
+    ) -> list[BuildRecord]:
+        """lease 가 지난 진행 중 빌드 — 시도가 남았고 묶음 행이 없으면 pending, 아니면 failed + lease_expired (#244)."""
+        ...
 
     # ── 묶음 확정 (#130 ③ A) ──
     async def pending_finalize(self, limit: int = 20) -> list[BuildRecord]:
@@ -668,6 +690,14 @@ class InMemoryBuildStore:
     async def recent(self, limit: int | None) -> list[BuildRecord]:
         rows = sorted(self._builds.values(), key=lambda b: (b.created_at, b.build_id), reverse=True)
         return rows[:limit]
+
+    async def deliverable(self) -> list[BuildRecord]:
+        rows = [
+            b
+            for b in self._builds.values()
+            if b.status in _DELIVERABLE and b.packages_final_at is not None
+        ]
+        return sorted(rows, key=lambda b: (b.created_at, b.build_id), reverse=True)
 
     async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]:
         return {c: self.labels[c] for c in common_ids if c in self.labels}
@@ -906,12 +936,24 @@ class InMemoryBuildStore:
         self._put(b, lease_until=(at or datetime.now(UTC)) + timedelta(seconds=lease_s))
         return True
 
-    async def record_stage(self, build_id: str, stage: str, cost_usd: float = 0.0) -> BuildRecord:
+    async def record_stage(
+        self,
+        build_id: str,
+        stage: str,
+        cost_usd: float = 0.0,
+        provenance: Sequence[BuildProvenance] = (),
+    ) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         _require_status(build, _RUNNING, "단계 기록")
         cost = max(cost_usd, 0.0)
         log = next_stage_log(build.stage_log, stage, cost, datetime.now(UTC), build.attempt)
-        return self._put(build, stage=stage, cost_usd=build.cost_usd + cost, stage_log=log)
+        return self._put(
+            build,
+            stage=stage,
+            cost_usd=build.cost_usd + cost,
+            stage_log=log,
+            provenance=[*build.provenance, *provenance],
+        )
 
     async def fail(
         self,
@@ -922,13 +964,16 @@ class InMemoryBuildStore:
     ) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         check_transition(build, "failed")
+        failure = detail if detail is not None else build.failure
+        if build.outcome is not None:  # 결과 저장 뒤 실패 — 결과는 그대로, failure 는 비운다 (#250)
+            failure = None
         return self._put(
             build,
             status="failed",
             error=_reason(reason),
             finished_at=at or datetime.now(UTC),
             lease_until=None,
-            failure=detail if detail is not None else build.failure,
+            failure=failure,
         )
 
     async def recover_expired(
@@ -939,7 +984,9 @@ class InMemoryBuildStore:
         for b in list(self._builds.values()):
             if b.status not in _RUNNING or b.lease_until is None or b.lease_until >= now:
                 continue
-            if b.attempt < max_attempts:  # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다
+            packaged = any(k[0] == b.build_id for k in self._artifacts)  # 묶음 등록 중에 멈춤
+            # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다. 묶음 행이 있으면 다시 하지 않는다 (모듈 설명 recover_expired, #244)
+            if b.attempt < max_attempts and not packaged:
                 for key in [k for k in self._files if k[0] == b.build_id]:
                     del self._files[key]
                 out.append(
@@ -1094,6 +1141,7 @@ class PgBuildStore:
             finished_at=r["finished_at"],
             packages_final_at=r["packages_final_at"],
             stage_log=[StageMark.model_validate(x) for x in r["stage_log"]],
+            provenance=[BuildProvenance.model_validate(x) for x in r["provenance"]],
         )
 
     @staticmethod
@@ -1182,6 +1230,16 @@ class PgBuildStore:
             await cur.execute(  # LIMIT NULL = 전부
                 "SELECT * FROM public.common_task_build ORDER BY created_at DESC, id DESC LIMIT %s",
                 (limit,),
+            )
+            rows = await cur.fetchall()
+        return [self._build(r) for r in rows]
+
+    async def deliverable(self) -> list[BuildRecord]:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM public.common_task_build WHERE status = ANY(%s) "
+                "AND packages_final_at IS NOT NULL ORDER BY created_at DESC, id DESC",
+                (list(_DELIVERABLE),),
             )
             rows = await cur.fetchall()
         return [self._build(r) for r in rows]
@@ -1618,7 +1676,13 @@ class PgBuildStore:
             )
             return await cur.fetchone() is not None
 
-    async def record_stage(self, build_id: str, stage: str, cost_usd: float = 0.0) -> BuildRecord:
+    async def record_stage(
+        self,
+        build_id: str,
+        stage: str,
+        cost_usd: float = 0.0,
+        provenance: Sequence[BuildProvenance] = (),
+    ) -> BuildRecord:
         async with (
             self._pool.connection() as conn,
             conn.transaction(),
@@ -1630,8 +1694,15 @@ class PgBuildStore:
             log = next_stage_log(build.stage_log, stage, cost, datetime.now(UTC), build.attempt)
             await cur.execute(
                 "UPDATE public.common_task_build SET stage = %s, cost_usd = cost_usd + %s, "
-                "stage_log = %s WHERE id = %s RETURNING *",
-                (stage, cost, Jsonb([m.model_dump(mode="json") for m in log]), build_id),
+                "stage_log = %s, provenance = provenance || %s WHERE id = %s RETURNING *",
+                (
+                    stage,
+                    cost,
+                    Jsonb([m.model_dump(mode="json") for m in log]),
+                    # common_task.provenance 와 같은 모양 — 토큰 칸은 prompt-registry 형식 'in' (by_alias)
+                    Jsonb([p.model_dump(mode="json", by_alias=True) for p in provenance]),
+                    build_id,
+                ),
             )
             r = await cur.fetchone()
         return self._build(r)  # type: ignore[arg-type]
@@ -1648,8 +1719,11 @@ class PgBuildStore:
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
-            check_transition(await self._locked(cur, build_id), "failed")
-            if detail is None:
+            build = await self._locked(cur, build_id)
+            check_transition(build, "failed")
+            # 결과를 저장한 뒤의 실패는 결과 칸을 그대로 둔다 — detail 로 덮으면 failure 가 비고, 계약 없는 detail 이면 contract 가
+            # NULL 이 돼 이 행을 읽지 못했다 (BuildRepo.fail, #250)
+            if detail is None or build.outcome is not None:
                 await cur.execute(
                     "UPDATE public.common_task_build SET status = 'failed', error = %s, "
                     "finished_at = COALESCE(%s, now()), lease_until = NULL WHERE id = %s RETURNING *",
@@ -1691,7 +1765,13 @@ class PgBuildStore:
             expired = await cur.fetchall()
             out: list[BuildRecord] = []
             for r in expired:
-                if r["attempt"] < max_attempts:  # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다
+                # 묶음 등록 중에 멈춤 — 빌드 행을 잠갔으므로 그사이 묶음 행이 더 생기지 않는다 (put_artifact 도 빌드 행부터 잠근다)
+                await cur.execute(
+                    "SELECT 1 FROM public.build_artifact WHERE build_id = %s LIMIT 1", (r["id"],)
+                )
+                packaged = await cur.fetchone() is not None
+                # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다. 묶음 행이 있으면 다시 하지 않는다 (모듈 설명 recover_expired, #244)
+                if r["attempt"] < max_attempts and not packaged:
                     await cur.execute(
                         "DELETE FROM public.starter_file WHERE build_id = %s", (r["id"],)
                     )

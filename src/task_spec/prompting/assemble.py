@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -19,7 +18,6 @@ from task_spec.prompting.context import (
     FewshotProvider,
 )
 from task_spec.prompting.registry import _VAR, PromptError, PromptTemplate
-from task_spec.prompting.schema_text import compact_schema
 
 
 class Message(BaseModel):
@@ -80,11 +78,8 @@ def assemble(
     values: dict[str, str] = {k: str(v) for k, v in dict(payload).items()}
     values["criteria"] = "\n".join(f"- {c.text}" for c in crit) or "(없음)"
     values["examples"] = "\n\n".join(e.text for e in examples) or "(없음)"
-    values["output_schema"] = (
-        compact_schema(template.output_model)
-        if template.meta.schema_style == "compact"
-        else json.dumps(template.output_model.model_json_schema(), ensure_ascii=False, indent=1)
-    )
+    # provenance prompt_sha256 이 덮는 글과 같은 것 (PromptTemplate.output_schema_text — #240)
+    values["output_schema"] = template.output_schema_text
 
     return AssembledPrompt(
         template=template,

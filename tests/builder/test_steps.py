@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from task_spec.builder.steps import (
     FAILED_OVERLAYS,
@@ -89,3 +92,86 @@ def test_failed_build_keeps_the_last_overlays_inside_the_work_dir(tmp_path: Path
     assert keep_overlays(overlays, root) == ["hidden", "d1"]
     assert (root / "hidden/src/__hidden__/hc1.test.tsx").read_text("utf-8") == "가상 hc1"
     assert (root / "d1/src/App.tsx").read_text("utf-8") == "가상 d1"
+
+
+async def test_build_flags_hidden_terms_in_the_candidate_readme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#232: 운영 빌드는 응시용 README 를 렌더만 하고 누설 검사를 하지 않아 승인 화면 README 경고 칸이 늘 비어 있었다 — 계약 설정의
+    뜻에 든 숨은 낱말('커넥션 풀')이 README 설정 표로 나가도 표시가 없었다. 평가 러너의 static_check(…, readme=…)와 같은 문장으로."""
+    import task_spec.builder.steps as steps_mod
+    from task_spec.builder.runner import ContractResult, Job
+    from task_spec.nodes.starter.build import HIDDEN
+    from task_spec.schemas import HiddenPlan, TaskContract
+    from task_spec.starter.contract import SpecView
+    from task_spec.starter.render import README
+    from task_spec.starter.repair import STARTER
+    from task_spec.starter.static_check import static_check
+    from task_spec.starter.store import TaskLabel
+    from task_spec.starter.templates import load_template
+    from tests.builder.test_runner import _claimed
+    from tests.starter.test_contract import BACKEND_SEED, _contract, _plan
+    from tests.starter.test_plan_contract import _task
+
+    java = load_template("backend/java-spring-boot3-jpa", 2)
+    yml = "shop:\n  order:\n    page-size: 50\n"
+    starter = Overlay(
+        kind="starter",
+        files=(GeneratedFile(path="src/main/resources/application.yml", content=yml),),
+    )
+    hidden = Overlay(kind="hidden", files=(GeneratedFile(path="가상", content="가상"),))
+
+    async def built(*_a: object, **_k: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            status="review",
+            overlays={STARTER: starter, HIDDEN: hidden},
+            hidden_plan=None,
+            review_flags=["빌드 가상 표시"],
+            repairs=[],
+            cost_usd=0.0,
+            rounds=1,
+            provenance=[],  # build_and_repair 결과의 생성기 호출 기록 (#233 이 steps 에서 읽는다)
+        )
+
+    monkeypatch.setattr(steps_mod, "build_and_repair", built)
+    monkeypatch.setattr(steps_mod, "verifier_for", lambda *_a, **_k: None)
+    _, record = await _claimed()
+    task = _task()
+    label = TaskLabel(title="가상 과제", posting_id="가상_공고#001")
+    job = Job(build=record, task=task, label=label, work=tmp_path)
+    steps = steps_mod.RealSteps(None, None, tmp_path / "없음", tmp_path / "images")  # type: ignore[arg-type]
+    plan = HiddenPlan.model_validate(_plan())
+
+    async def flags(meaning: str) -> tuple[list[str], str]:
+        c = _contract()
+        c["settings"] = [
+            {"key": "shop.order.page-size", "default": 50, "meaning": meaning, "refs": ["r1"]}
+        ]
+        cr = ContractResult(
+            template=java,
+            contract=TaskContract.model_validate(c),
+            plan=plan,
+            cost_usd=0.0,
+            seed=BACKEND_SEED,
+            avoid_terms=("우아한형제들",),
+        )
+        out = await steps.build(job, cr)
+        return out.review_flags, out.readme
+
+    got, readme = await flags("커넥션 풀 크기에 맞춘 목록 한 번에 돌려줄 최대 개수")
+    leak = f"{README} 에 숨은 요구·운영 조건을 드러내는 말: 커넥션 풀, 풀 크기 — 승인된 명세 문장에서 나옴, 명세 수정 필요"
+    assert got == ["빌드 가상 표시", leak]
+    same = static_check(
+        [],
+        template=java,
+        plan=plan,
+        spec=SpecView.from_task(task),
+        seed=BACKEND_SEED,
+        readme=GeneratedFile(path=README, content=readme),
+        avoid_terms=("우아한형제들",),
+    )
+    assert same.review_flags == [
+        leak
+    ]  # 승인 화면 README 경고 칸이 고르는 머리(README.md)·문장 그대로
+    got, _ = await flags("목록 한 번에 돌려줄 최대 개수")
+    assert got == ["빌드 가상 표시"]

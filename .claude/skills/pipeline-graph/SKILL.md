@@ -122,10 +122,12 @@ class RunState(BaseModel):
 |---|---|
 | 과정 · 담당업무 | 참여 (participate) |
 | 기여한 점 | 주도 (lead) |
-| 기여한 점·담당업무 + 설계 표현(설계·아키텍처·구조 수립/정의) | 설계 (design) |
+| 기여한 점·담당업무 + 원문 인용에서 설계 표현(설계·아키텍처·구조 수립/정의) | 설계 (design) |
 | 문제 정의 · 성과 · 사용 기술 · 칸 밖(자기소개서 산문 등) | 판정 안 함 (None) → 명세에서 '역할 확인 필요' |
 
 주장마다 `field`(칸)·`role_basis`(근거)를 남긴다. 칸은 다음 칸 표시·빈 줄·절 제목·기간 머리말에서 끝난다.
+설계 표현은 원문 대조를 거친 인용(`quote`)에서만 찾고, LLM 이 쓴 행동 요약(`action`)은 보지 않는다
+[확정: 2026-11-18 사용자 #239] — 요약을 보면 같은 인용이 요약 문구에 따라 설계(검증 후보 가중치 4배)가 됐다.
 
 ## 과제 기술 환경 [확정: 2026-11-02 공통 과제 / 제안: 경험 검증 과제 — PR-4 에서 enables 데이터로 확정]
 
@@ -231,8 +233,13 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
   검사: 원문 베끼기(가명화 토큰·인용 수치·12자 겹침), 연결 문구 수치·과제 정답 개념. 1회 재요청.
 - 명세 `slot_assignments`(모든 고른 주장 — 슬롯 없으면 면접 질문만) + `verification_tasks`(슬롯이 배정된 주장만:
   `slot_id`·`parent_task_id`·`link_text`·`follow_up_questions`, 시간·역량은 슬롯 것). 승인 전 슬롯이면 review_flags.
-- revise: `revise_target` = common(공통 과제·슬롯 새 판, 배정 유지) / verification(공통 과제·슬롯 재사용, 배정·질문만 다시 + `reassign` 반영) / all.
-  `reassign {주장 id: 슬롯 id | null}` 은 revise 에서만.
+- revise: `revise_target` = common(공통 과제·슬롯 새 판, 배정 유지) / verification(명세의 공통 과제·슬롯 그대로 — 저장소에서 판을 다시 고르지 않음 #234,
+  배정·질문만 다시 + `reassign` 반영) / all.
+  `reassign {주장 id: 슬롯 id | null}` 은 revise 의 verification·all 에서만 반영 — common 은 직전 배정을 그대로 두므로
+  함께 오면 반영하지 않고 `reassign_ignored`(주장마다, 아는 주장 id 만 ref_id)를 남긴다. 화면은 common 일 때 배정 바꾸기를
+  숨기고 보내지 않는다. 예전에는 기록 없이 버렸다 (#249). 결정 검증기로 막지 않는 이유: 노드 입력(State)을 만들 때
+  `ApprovalDecision` 의 mode="after" 검증기가 인스턴스에도 다시 돌아, 이미 저장된 체크포인트의 결정이 깨진다
+  (LangGraph 역직렬화의 model_construct 대체로는 못 피함 — `tests/schemas/test_approval.py`).
 - 지원자별 확장 문항 서술(`verify_task`)은 폐기 — 서면 문항이 경험을 가리지 못함 (AI 단독 풀이 테스트 22/22 수준 3 이상).
 
 ## 공고 단위 공통 과제 재사용 [확정: 2026-11-03] (`spec/store.py`, task_db `public.common_task`)
@@ -240,7 +247,9 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 같은 공고 지원자는 같은 공통 과제를 받는다 (context.md §3). 키 = (posting_id, ontology_version, draft_task@N | skeleton).
 - draft_spec: revise 가 아니면 저장소에서 **승인된 최신 판 → 없으면 최신 초안**을 재사용 (LLM 호출 없음, 저장된 provenance 를 State 에 싣는다).
   없으면 생성 후 초안으로 저장. task_id = 저장 id(`ct-…`). 명세 `common_refs` 에 판 번호·재사용 여부를 남긴다.
-- revise: 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.
+- revise(common·all): 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.
+  revise(verification): 저장소를 보지 않고 명세가 가리키는 판을 그대로 둔다 (LLM 호출 없음, `common_refs` 의 `reused`=true) —
+  다시 고르면 그 사이 승인된 판·다른 실행의 새 판·배포로 바뀐 프롬프트의 새 판으로 바뀌었다 (#234).
 - finalize: 그 판을 approved 로, 같은 키의 이전 approved 판은 superseded 로 (이미 그 판을 받은 지원자의 명세는 그대로).
 - 승인 payload: `summary`(`schemas/summary.py ApprovalSummary` — 과제별 review_flags·시간 합계·공통 과제 판·대조 요약·검증 후보 claim_id·점수·사유) + `spec` + `provenance`.
   대조 요약의 `posting_checks` = 공고 역량마다 대조 결과·출처·확인 판정·근거 주장 id·역할·낮춤 여부 (`check_status` 함께).

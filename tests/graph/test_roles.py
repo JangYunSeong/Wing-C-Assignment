@@ -83,6 +83,25 @@ def test_design_term_ignored_outside_design_fields() -> None:
     assert decide_role(c) == ("participate", "field:과정")  # 과정 칸은 설계 표현이 있어도 참여
 
 
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        ("결제 모듈의 처리 흐름을 새로 짰다.", ("participate", "field:담당업무")),
+        ("결제 모듈의 아키텍처를 설계했다.", ("design", "field:담당업무+design_term")),
+    ],
+)
+def test_design_term_comes_from_quote_not_llm_summary(
+    quote: str, expected: tuple[str, str]
+) -> None:
+    """설계 표현은 원문 인용에서만 찾는다 (#239, 불변식 6) — 같은 인용이면 LLM 행동 요약 문구와 상관없이 같은 역할."""
+    text = f"⟦담당업무⟧ {quote}"
+    for action in ("결제 모듈 처리 흐름 재구성", "결제 모듈 아키텍처 설계", "결제 모듈 개선"):
+        c = Claim(
+            claim_id="c", doc_id="d", action=action, quote=quote, field=locate_field(text, quote)
+        )
+        assert decide_role(c) == expected, action
+
+
 def test_field_ends_at_header_and_section() -> None:
     fields = field_of_lines("⟦과정⟧ a\nb\n가상회사 2022.01 ~ 2023.01\nc\n학력\nd")
     assert fields == ["과정", "과정", None, None, None, None]

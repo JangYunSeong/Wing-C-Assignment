@@ -266,7 +266,7 @@ def test_starter_compile_errors_inside_test_files_go_to_the_test_generator() -> 
 
 
 def test_previous_hidden_file_is_kept_only_when_every_accepted_impl_passed() -> None:
-    """#102 검토: 이전 파일 유지는 게이트 ③·③' 이고 허용 구현이 모두 통과한 케이스만 — 허용 구현을 떨어뜨린 케이스(④)를 남기면
+    """#102 검토: 이전 파일 유지는 게이트 ③ 이고 허용 구현이 모두 통과한 케이스만 — 허용 구현을 떨어뜨린 케이스(④)를 남기면
     다음 회차에 같은 실패가 되풀이된다 (2026-11-11 재검증 오프라인 hc1)."""
     from task_spec.nodes.starter.build import BuildOutcome, _keepable_cases
     from task_spec.schemas import TargetRun, VerifyReport
@@ -293,9 +293,7 @@ def test_previous_hidden_file_is_kept_only_when_every_accepted_impl_passed() -> 
     def hidden(gate: str) -> RepairAction:
         return RepairAction("gen_hidden", "", gate, "가상 사유", "가상 수정 요청")
 
-    assert _keepable_cases([hidden("③"), hidden("③'")], out) == {
-        "hc1"
-    }  # hc2 는 허용 구현 d1 이 실패
+    assert _keepable_cases([hidden("③")], out) == {"hc1"}  # hc2 는 허용 구현 d1 이 실패
     assert _keepable_cases([hidden("③"), hidden("④")], out) == frozenset()
     assert _keepable_cases([hidden("③④")], out) == frozenset()
     assert _keepable_cases([hidden("③"), hidden("setup")], out) == frozenset()

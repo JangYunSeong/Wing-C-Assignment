@@ -2,12 +2,14 @@
 
 재시도 정책 (이 한 곳에만 있다)
 | 증상                               | 처리                                         |
-| 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회                   |
-| 빈 응답, 추론 설정이 이미 low       | 최대 MAX_RESAMPLES 회 다시 — 같은 설정(잘렸든 아니든), reasoning_off_last 호출(빌드 생성기)만 마지막은 추론 끔(NO_REASONING, 확인한 프로바이더만) — 내용 필터(finish_reason=content_filter)만 예외 그대로 |
+| 빈 응답 (추론에 토큰 소진 등)        | reasoning_effort=low 로 1회 — 추론 설정을 바꿀 수 있을 때만 (can_set_reasoning: 허용 칸에 있고 openai 는 추론 모델) |
+| 빈 응답, 추론 설정이 이미 low       | 최대 MAX_RESAMPLES 회 다시 — 같은 설정(잘렸든 아니든), reasoning_off_last 호출(빌드 생성기)만 마지막은 추론 끔(NO_REASONING, 확인한 프로바이더만) |
+| 빈 응답, 추론 설정을 못 바꾸는 모델   | 같은 설정으로 MAX_FIXED_RESAMPLES(1)회 다시 → 그래도 비면 EmptyResponse (Gemini·gpt-4.1 계열, #236) |
+| 빈 응답, 내용 필터(content_filter)   | 다시 부르지 않고 EmptyResponse — 같은 입력에 같은 결정 |
 | TransientLLMError (429·5xx·연결)     | 지수 백오프 최대 3회                          |
 | 시간 초과 (APITimeoutError)          | 1회만 다시 (요청 제한 시간 LLM_TIMEOUT_SECONDS, 기본 300초) |
 | JSON 파싱·스키마 검증 실패           | 검증 에러를 붙여 1회 재요청, 그래도 실패면 예외 |
-| 출력 잘림 (finish_reason=length)     | 호출자가 split_on_truncation=True 일 때만: (추론 설정이 low 가 아니면 low 로 1회 · 빈 응답이면 같은 설정으로 1회 — MAX_SPLIT_RESAMPLES) → OutputTruncated, 형식 재요청 없음 — 호출자가 입력을 나눈다. 기본(False)은 위 규칙 그대로 |
+| 출력 잘림 (finish_reason=length)     | 호출자가 split_on_truncation=True 일 때만: (추론 설정을 바꿀 수 있고 low 가 아니면 low 로 1회 · 빈 응답이면 같은 설정으로 1회 — MAX_SPLIT_RESAMPLES) → OutputTruncated, 형식 재요청 없음 — 호출자가 입력을 나눈다. 기본(False)은 위 규칙 그대로 |
 
 재시도·포기는 WARNING/ERROR 로그(프롬프트 ref·모델·사유·경과 ms)로 남긴다.
 메시지 본문·키 값은 로그·provenance·예외 메시지에 넣지 않는다.
@@ -22,6 +24,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -53,6 +56,16 @@ ALLOWED_PARAMS: dict[str, frozenset[str]] = {
     "gemini": frozenset({"temperature", "max_tokens", "top_p"}),
 }
 
+
+def can_set_reasoning(provider: str, model: str) -> bool:
+    """재시도에서 reasoning_effort 를 넣을 수 있나 — 허용 칸에 있고, openai 면 추론 모델일 때만.
+    2026-11-18 #236: 빈 응답 재시도가 이 확인 없이 low 를 넣었다 — Gemini 는 이 칸을 받지 않고(허용 칸에 없음),
+    gpt-4.1(-mini) 는 비추론 모델이라 요청 오류(400)로 빌드 관문·/postings/suggest 가 실패했다."""
+    if "reasoning_effort" not in ALLOWED_PARAMS.get(provider, frozenset()):
+        return False
+    return provider != "openai" or is_reasoning_model(provider, model)
+
+
 MAX_TRANSIENT_RETRIES = 3
 # 빈 응답 + 잘림(추론이 상한을 다 씀)을 같은 설정으로 다시 부르는 횟수. 2026-11-09 측정: qwen3.8-flash 는 low 에서 추론이
 # 정확히 4096 토큰에서 끊기고 본문은 ~2k 토큰 — 빈 응답은 그 예산이 듣지 않는 가끔의 폭주라, 상한을 낮춰 빨리 실패시키고 여러 번 다시 부른다
@@ -62,6 +75,9 @@ MAX_RESAMPLES = 3
 # reasoning_effort=none 이면 추론 0 으로 바로 답한다 (minimal 은 low 와 같음). 모르는 프로바이더는 low 로 다시 부른다
 NO_REASONING: dict[str, str] = {"opencode": "none"}
 MAX_SPLIT_RESAMPLES = 1
+# 추론 설정을 바꿀 수 없는 공급자·모델(can_set_reasoning 거짓 — Gemini·gpt-4.1 계열)의 빈 응답은 같은 설정으로 이만큼만 다시.
+# 같은 설정 여러 번(MAX_RESAMPLES)은 qwen 의 추론 폭주를 잰 값이라 넓히지 않는다 (2026-11-18 #236)
+MAX_FIXED_RESAMPLES = 1
 # 시간 초과는 1번만 다시 시도한다 — 출력이 길어 생긴 초과는 같은 요청을 반복해도 대개 다시 넘는다
 # (2026-11-03 운영: 120초 × 4회 × 호출 여러 번으로 draft_spec 이 수십 분 멈춤)
 MAX_TIMEOUT_RETRIES = 1
@@ -162,7 +178,7 @@ class LLMClient:
         reasoning_off_last: bool = False,
     ) -> LLMResult[T]:
         """split_on_truncation=True: 잘린 응답(finish_reason=length)을 형식 재요청 없이 OutputTruncated 로
-        돌려준다 (추론 설정이 low 가 아니면 low 로 1회 먼저). 입력을 나눠 다시 부를 수 있는 호출자만 켠다.
+        돌려준다 (추론 설정을 바꿀 수 있고 low 가 아니면 low 로 1회 먼저). 입력을 나눠 다시 부를 수 있는 호출자만 켠다.
         reasoning_off_last=True: 빈 응답+잘림 재시도의 마지막 한 번을 추론 없이 (NO_REASONING). 출력을 정적 검사·수리 루프가
         다시 보는 빌드 생성기(계약·시작 코드·테스트·참조 구현)만 켠다 — 판정·선택·겹침 확인 같은 판단 호출은 끄고 둔다
         (추론 없는 판단이 지원자 결과에 섞이지 않게, 2026-11-09 사용자 결정)."""
@@ -180,21 +196,26 @@ class LLMClient:
             and not (k in REASONING_ONLY_DEFAULT and is_reasoning_model(provider, model))
         }
         dropped = sorted(set(prompt.params) - set(params))
+        # 재시도에서 reasoning_effort 를 바꿀 수 있나 — 못 바꾸면(Gemini·gpt-4.1 계열) 빈 응답은 같은 설정으로만 다시 (#236)
+        tunable = can_set_reasoning(provider, model)
 
         messages = list(prompt.messages)
         retries: list[str] = []
         total = Usage()
         started = time.monotonic()
+        called_at = datetime.now(UTC)  # 단가 적용일 기준 (llm/pricing.PRICE_CHANGES)
         schema_retry_used = False
         empty_retry_used = False
-        resamples = 0  # 빈 응답 + 잘림 (이미 low) → 같은 설정으로 MAX_RESAMPLES 회까지
+        # 빈 응답 (이미 low) → 같은 설정으로 MAX_RESAMPLES 회까지 (추론 설정을 못 바꾸는 모델은 MAX_FIXED_RESAMPLES)
+        resamples = 0
 
         def record() -> Provenance:
             latency_ms = int((time.monotonic() - started) * 1000)
             return Provenance(
                 provenance_id=f"prov-{uuid.uuid4().hex[:12]}",
                 prompt=prompt.template.ref,
-                prompt_sha256=prompt.template.sha256,
+                # 파일 + 렌더된 출력 스키마 — 파일만의 해시(template.sha256)는 출력 모델이 바뀌어도 같다 (#240)
+                prompt_sha256=prompt.template.prompt_sha256,
                 model=prompt.model,
                 params={**params, **({"dropped": dropped} if dropped else {})},
                 fewshot_ids=prompt.fewshot_ids,
@@ -206,7 +227,7 @@ class LLMClient:
                 ),
                 latency_ms=latency_ms,
                 cost_usd=cost_usd(
-                    prompt.model, total.input, total.output
+                    prompt.model, total.input, total.output, at=called_at
                 ),  # output 에 추론 토큰 포함 (OpenAI 호환 usage)
             )
 
@@ -228,11 +249,10 @@ class LLMClient:
                         break
                     except (ValueError, ValidationError) as exc:
                         summary = _validation_summary(exc)
-                if (
-                    not completion.content.strip()
-                    and params.get("reasoning_effort") == "low"
-                    and resamples < MAX_SPLIT_RESAMPLES
-                ):
+                # 추론 설정을 더 내릴 수 없으면(이미 low, 또는 못 바꾸는 모델) 빈 응답만 같은 설정으로 1회 —
+                # 내용이 있는 잘림은 같은 설정이면 같은 곳에서 다시 잘린다
+                settled = params.get("reasoning_effort") == "low" or not tunable
+                if not completion.content.strip() and settled and resamples < MAX_SPLIT_RESAMPLES:
                     resamples += 1
                     retries.append("empty_truncated->resample")
                     logger.warning(
@@ -242,7 +262,7 @@ class LLMClient:
                         int((time.monotonic() - started) * 1000),
                     )
                     continue
-                if not empty_retry_used and params.get("reasoning_effort") != "low":
+                if not empty_retry_used and tunable and params.get("reasoning_effort") != "low":
                     empty_retry_used = True
                     retries.append("output_truncated->reasoning_effort=low")
                     logger.warning(
@@ -268,20 +288,22 @@ class LLMClient:
                 # 빈 응답은 다시 부르면 대개 산다 — 잘림(추론이 상한을 다 씀, 추론 길이는 호출마다 다름)이든 아니든. 내용 필터만은
                 # 같은 입력에 같은 결정이라 다시 부르지 않는다. 2026-11-15: 잘리지 않은 빈 응답은 재시도 없이 바로 실패해 알파 둘
                 # (retry-lig024 gen_public@8 두 번 · g187c woori001 plan_contract@30)이 생성기와 무관하게 떨어졌다 — 잘린 빈 응답
-                # 재시도(2026-11-05·09 측정)만 있었고 잘리지 않은 것을 뺀 근거는 없었다
+                # 재시도(2026-11-05·09 측정)만 있었고 잘리지 않은 것을 뺀 근거는 없었다.
+                # 추론 설정을 못 바꾸는 모델(Gemini·gpt-4.1 계열)은 low 를 넣지 않고 같은 설정으로 MAX_FIXED_RESAMPLES 회만 (#236)
                 kind = (
                     "empty_truncated" if completion.finish_reason == "length" else "empty_resample"
                 )
+                filtered = completion.finish_reason == "content_filter"
                 if (
-                    completion.finish_reason != "content_filter"
-                    and params.get("reasoning_effort") == "low"
-                    and resamples < MAX_RESAMPLES
+                    not filtered
+                    and (params.get("reasoning_effort") == "low" or not tunable)
+                    and resamples < (MAX_RESAMPLES if tunable else MAX_FIXED_RESAMPLES)
                 ):
                     resamples += 1
                     # 마지막 한 번은 추론을 끈다 — 폭주가 이어져도 빈 응답으로 끝나지 않게 (품질은 정적 검사·수리 루프가 본다)
                     off = (
                         NO_REASONING.get(provider)
-                        if reasoning_off_last and resamples == MAX_RESAMPLES
+                        if reasoning_off_last and tunable and resamples == MAX_RESAMPLES
                         else None
                     )
                     retries.append(
@@ -299,9 +321,11 @@ class LLMClient:
                     if off:
                         params = {**params, "reasoning_effort": off}
                     continue
-                if empty_retry_used or params.get("reasoning_effort") in (
-                    "low",
-                    *NO_REASONING.values(),
+                if (
+                    filtered  # 첫 재시도(low 로 바꾸기)도 내용 필터는 다시 부르지 않는다 (#236)
+                    or not tunable
+                    or empty_retry_used
+                    or params.get("reasoning_effort") in ("low", *NO_REASONING.values())
                 ):
                     empty = EmptyResponse(
                         f"{prompt.template.ref}: 빈 응답 (finish_reason={completion.finish_reason}, "

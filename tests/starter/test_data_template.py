@@ -239,6 +239,19 @@ def test_file_fixture_needs_one_format_and_a_row_entity() -> None:
     assert len(stray) == 1 and "raw, YYYY-MM-DD 가 명령 옵션이 아님" in stray[0]
 
 
+def test_hidden_terms_in_fixture_path_are_reasked() -> None:
+    """#232: 입력 위치(fixtures[].path)는 README 입력 환경의 '위치:' 줄로 그대로 나가는데 계약 누설 검사(contract_places)가 보지 않았다."""
+    from task_spec.starter.contract import check_contract
+
+    def leaks(c: TaskContract) -> list[str]:
+        res = check_contract(c, _plan(), _spec(), DE.manifest, _batch_seed())
+        return [p for p in res.problems if "숨은 요구·운영 조건을 드러내는 말이 공개 계약" in p]
+
+    assert not leaks(_with_fixture("한 줄에 Payment 하나"))
+    got = leaks(_with_fixture("한 줄에 Payment 하나", path="{raw_dir}/backfill/{date}/*.jsonl"))
+    assert len(got) == 1 and "backfill" in got[0] and "시드 파일 1 위치" in got[0]
+
+
 def test_dated_input_folders_need_date_named_input_folder_and_date_option() -> None:
     """날짜별 입력 폴더 = 파일 입력 환경의 위치(path) 마디 하나가 통째로 날짜 형식 명령 옵션. 글 표기를 짐작하지 않는다 (#187 woori001:
     `{YYYY-MM-DD}/` 로 바르게 적은 계약을 `YYYY-MM-DD/` 꼴만 받던 검사가 재요청)."""

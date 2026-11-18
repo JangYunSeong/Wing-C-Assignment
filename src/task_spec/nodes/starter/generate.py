@@ -453,12 +453,12 @@ def naive_input(
     template: Template,
     starter: Overlay,
     seed: FeatureSeed,
-    keep_traps: Sequence[str] = (),
     note: str | None = None,
     public: Overlay | None = None,
 ) -> GenRefInput:
-    """흔한 구현 — 재료의 naive_impl 만 (깨지는 이유는 주지 않는다: 알면 피해 간다). keep_traps = 하나만 놓친 판에서 지킬 숨은 요구."""
-    keep = [t.description for t in task.traps if t.trap_id in keep_traps]
+    """흔한 구현 — 재료의 naive_impl 만 (깨지는 이유는 주지 않는다: 알면 피해 간다). 모든 숨은 요구를 놓친 판 하나뿐이라 '지킬 것'
+    칸은 비운다 — 하나만 놓친 판(지킬 숨은 요구)은 넘기는 곳이 없어 지웠다 (#243, 숨은 요구 여러 개를 지원할 때 다시 설계).
+    칸은 gen_accepted 와 같이 쓰고 옛 판 프롬프트도 렌더하므로 남긴다."""
     goal = seed.naive_impl
     if (
         template.manifest.naive_conditions
@@ -466,7 +466,7 @@ def naive_input(
         goal += "\n\n이 스택에서 위 구조를 설명대로 동작하게 쓰는 법:\n" + _lines(
             [f"- {c}" for c in template.manifest.naive_conditions]
         )
-    return _ref_input(task, contract, template, starter, goal, _lines(keep), note, public)
+    return _ref_input(task, contract, template, starter, goal, NONE, note, public)
 
 
 def accepted_input(
@@ -899,7 +899,7 @@ async def gen_hidden(
 ) -> GenResult:
     """숨은 테스트 — 케이스마다 따로 (동시에) 부르고 합친다. 입력 계획에는 그 케이스만 보이고, 도우미·조절값은 계획 전체로 코드가 쓴다.
     수리(previous)는 사유가 가리키는 케이스만 그 케이스의 이전 파일로 다시 만들고, 다른 케이스 파일은 그대로 둔다.
-    keep_previous: 재요청 뒤에도 문제가 남으면 이전 파일을 그대로 둘 케이스 — 빌드가 고른다 (사유 게이트가 모두 ③·③' 이고
+    keep_previous: 재요청 뒤에도 문제가 남으면 이전 파일을 그대로 둘 케이스 — 빌드가 고른다 (사유 게이트가 모두 ③ 이고
     직전 검증에서 허용 구현이 모두 그 케이스를 통과한 것만, build._keepable_cases). 그 밖의 수리는 이전 파일이 올바른 구현에 맞는지
     모르니 비운다 — 남기면 같은 실패가 되풀이된다.
     2026-11-09 (사용자 결정): 한 번에 모든 케이스를 쓰면 한 케이스의 문제로 숨은 테스트 전체를 다시 만들어, 맞던 케이스도 바뀔 수 있다."""
@@ -994,24 +994,18 @@ async def gen_naive(
     llm: LLMClient,
     prompts: PromptRegistry,
     ontology_version: str,
-    keep_traps: Sequence[str] = (),
     note: str | None = None,
     previous: Overlay | None = None,
     public: Overlay | None = None,
 ) -> GenResult:
+    """흔한 구현 — 모든 숨은 요구를 놓친 판(naive-all) 하나 (#243)."""
     if b.seed is None:
         raise ValueError("gen_naive 는 재료(feature seed)의 흔한 구현 설명이 필요하다")
     seed = b.seed
-    label = (
-        "naive-all"
-        if not keep_traps
-        else "naive-miss-"
-        + "-".join(t.trap_id for t in b.task.traps if t.trap_id not in keep_traps)
-    )
     return await _generate(
         "gen_naive",
-        lambda n: naive_input(b.task, b.contract, b.template, starter, seed, keep_traps, n, public),
-        _app_overlay(b, "ref_naive", label),
+        lambda n: naive_input(b.task, b.contract, b.template, starter, seed, n, public),
+        _app_overlay(b, "ref_naive", "naive-all"),
         b.check,
         llm=llm,
         prompts=prompts,

@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from task_spec.config import Settings
+from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
     README_FULL_PATH,
     README_PATH,
     BuildArtifact,
+    BuildFailure,
     BuildOutcome,
     BuildRecord,
     StarterFile,
@@ -259,6 +261,44 @@ async def test_lifecycle_in_memory() -> None:
     await run_lifecycle(InMemoryBuildStore(), "ct-0123456789ab", "t-mem")
 
 
+async def run_failure_record(store: BuildRepo, common_id: str) -> None:
+    """실패 빌드 기록 (#250) — 두 구현이 같은 계약 (Postgres 는 test_build_store_pg.py).
+
+    failure 는 결과(outcome)를 저장하기 전에 실패한 빌드만 — Postgres 에서 결과 칸과 같은 칸이라 둘을 함께 둘 수 없다. 결과를
+    저장한 뒤 실패하면(묶음 단계) 결과를 그대로 두고 failure 는 비운다. 예전에는 PG 가 결과 칸을 detail 로 덮어 failure 가
+    비었고(detail 에 계약이 없으면 행을 읽지 못함), 메모리는 outcome·failure 를 둘 다 남겼다."""
+    rec = RepairRecord(gate="⑤", target="gen_public", reason="가상 수리", result="skipped")
+    detail = BuildFailure(
+        contract=_contract(), hidden_plan=_plan(), review_flags=["가상 표시"], repairs=[rec]
+    )
+    # 결과 저장 전 실패 (빌드 단계) — 넘긴 것을 failure 로
+    early = (await store.new_build(common_id, "onto-test", AT)).build_id
+    await store.set_status(early, "generating")
+    got = await store.fail(early, "build: 가상 실패", AT, detail=detail)
+    for x in (got, await store.get(early)):
+        assert x is not None and x.outcome is None and x.failure == detail
+    # 넘긴 것이 없으면 (계약 전 실패) 비운다
+    bare = (await store.new_build(common_id, "onto-test", AT)).build_id
+    await store.set_status(bare, "generating")
+    got = await store.fail(bare, "contract: 가상 실패", AT)
+    for x in (got, await store.get(bare)):
+        assert x is not None and x.outcome is None and x.failure is None
+    # 결과 저장 뒤 실패 (묶음 단계) — 결과는 그대로, failure 는 비운다. 계약 없는 detail 도 결과 칸을 덮지 않는다
+    late = (await store.new_build(common_id, "onto-test", AT)).build_id
+    await store.set_status(late, "generating")
+    await store.set_status(late, "verifying")
+    await store.save_outcome(late, _outcome(H_OLD))
+    other = BuildFailure(review_flags=["다른 가상 표시"], repairs=[rec])
+    got = await store.fail(late, "package: 가상 실패", AT, detail=other)
+    for x in (got, await store.get(late)):
+        assert x is not None and (x.status, x.error) == ("failed", "package: 가상 실패")
+        assert x.outcome == _outcome(H_OLD) and x.failure is None
+
+
+async def test_failure_record_in_memory() -> None:
+    await run_failure_record(InMemoryBuildStore(), "ct-0123456789ab")
+
+
 async def test_approve_needs_readme() -> None:
     """README 를 저장하지 않은 빌드는 묶음이 다 있어도 승인하지 않는다 — 승인자가 지원자 문장을 볼 수 없다."""
     store = InMemoryBuildStore()
@@ -358,8 +398,10 @@ def test_review_decision_id_must_match_text() -> None:
         ReviewDecision.model_validate({**d.model_dump(), "flag": "문구가 바뀐 표시"})
 
 
-async def _approved(store: InMemoryBuildStore, tree: str = H_NEW) -> str:
-    bid = (await store.new_build("ct-0123456789ab", "onto-test", AT)).build_id
+async def _approved(
+    store: BuildRepo, tree: str = H_NEW, common_id: str = "ct-0123456789ab", at: datetime = AT
+) -> str:
+    bid = (await store.new_build(common_id, "onto-test", at)).build_id
     await store.set_status(bid, "generating")
     readme = StarterFile.of(bid, "readme", README_PATH, "# 가상")
     await store.put_readme(readme)
@@ -406,6 +448,31 @@ async def test_finalize_changes_only_descriptors_and_registers_the_kit() -> None
     now = {a.role: a for a in await store.artifacts(bid)}
     assert set(now) == {"candidate", "grader", "eval_kit"}
     assert next(f for f in now["candidate"].files if f.name == "candidate.json").sha256 == "a" * 64
+
+
+async def run_deliverable(store: BuildRepo, common_id: str, tag: str) -> None:
+    """전달할 수 있는 빌드 (#235) — 두 구현이 같은 계약 (Postgres 는 test_build_store_pg.py). approved·published 이고 묶음을
+    확정한 빌드 전부, 최근 것부터 — 만든 시각과 상관없이. 예전 /pull/builds 는 최근 빌드 200개에서 걸러서, 더 새 빌드가
+    200개를 넘으면 승인·확정 빌드가 받는 쪽 목록에서 빠졌다."""
+    sent = await _approved(store, common_id=common_id, at=AT)
+    await finalize(store, sent, H_NEW)
+    await store.add_target(f"{tag}-grader", "grader")
+    d = await store.request_delivery(sent, "grader", f"{tag}-grader", "operator-fake", AT)
+    await store.finish_delivery(d.delivery_id, True, AT)  # 첫 전달 — published
+    final = await _approved(store, common_id=common_id, at=AT + timedelta(seconds=1))
+    await finalize(store, final, H_NEW)
+    await _approved(
+        store, common_id=common_id, at=AT + timedelta(seconds=2)
+    )  # 확정 전 — 아직 못 보냄
+    for i in range(201):  # 더 새 빌드 (생성 대기·eval 적재 등) — 예전 최근 200개 창을 넘긴다
+        await store.new_build(common_id, "onto-test", AT + timedelta(minutes=1, seconds=i))
+    got = [b for b in await store.deliverable() if b.common_id == common_id]
+    assert [(b.build_id, b.status) for b in got] == [(final, "approved"), (sent, "published")]
+    assert all(b.packages_final_at is not None for b in got)
+
+
+async def test_deliverable_in_memory() -> None:
+    await run_deliverable(InMemoryBuildStore(), "ct-0123456789ab", "t-mem")
 
 
 async def test_finalize_only_after_approval_and_pending_list() -> None:
@@ -469,9 +536,32 @@ def test_build_columns_are_exactly_what_a_row_mapping_reads() -> None:
         "finished_at": None,
         "packages_final_at": None,
         "stage_log": [],
+        # 생성기 provenance (#233) — 저장 모양 그대로 (토큰 칸은 prompt-registry 형식 'in')
+        "provenance": [
+            {
+                "stage": "build",
+                "attempt": 1,
+                "provenance": {
+                    "provenance_id": "prov-000000000001",
+                    "prompt": "gen_hidden@5",
+                    "prompt_sha256": "a" * 64,
+                    "model": "openai:gpt-4.1",
+                    "params": {"temperature": 0},
+                    "ontology_version": "onto-test",
+                    "tokens": {"in": 10, "out": 2, "reasoning": 0},
+                    "cost_usd": 0.001,
+                },
+            }
+        ],
     }
     assert set(row) == set(BUILD_COLUMNS)
     assert PgBuildStore._build(row).origin == "request"
+    (call,) = PgBuildStore._build(row).provenance
+    assert (call.stage, call.provenance.prompt, call.provenance.tokens.in_) == (
+        "build",
+        "gen_hidden@5",
+        10,
+    )
     for col in BUILD_COLUMNS:
         with pytest.raises(KeyError):
             PgBuildStore._build({k: v for k, v in row.items() if k != col})

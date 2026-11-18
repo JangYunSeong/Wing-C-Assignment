@@ -120,7 +120,7 @@ _URL = re.compile(r"https?://([A-Za-z0-9.\-]+)")
 _LOCAL_HOSTS = re.compile(
     r"^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|(?:[\w-]+\.)*example\.(?:com|org|net)|[\w-]+\.test|[\w-]+\.invalid)$"
 )
-_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]*")  # 케밥 표기도 한 이름 (#241)
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _CONFIG_SUFFIX = (".yml", ".yaml", ".properties")
 
@@ -166,10 +166,10 @@ class StaticResult:
 
 
 def identifier_words(text: str) -> str:
-    """코드 식별자를 낱말로 푼 글 — connectionPoolSize · max_pool → "connection pool size" · "max pool"."""
+    """코드 식별자를 낱말로 푼 글 — connectionPoolSize · max_pool · retry-queue → "connection pool size" · "max pool" · "retry queue"."""
     words = []
     for ident in set(_IDENT.findall(text)):
-        spaced = _CAMEL.sub(" ", ident).replace("_", " ").strip().lower()
+        spaced = _CAMEL.sub(" ", ident).replace("_", " ").replace("-", " ").strip().lower()
         if " " in spaced:
             words.append(spaced)
     return "\n".join(sorted(words))
@@ -2604,15 +2604,29 @@ def static_check(
             res.problems += _harness_overrides(o, starter, template, plan)
 
     if readme is not None:
-        # README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제 (재생성으로 못 고침)
-        for _, shown in _leaks([readme], hidden_terms(seed, spec)):
-            res.review_flags.append(
-                f"{README} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(shown)} — 승인된 명세 문장에서 나옴, 명세 수정 필요"
-            )
-        res.review_flags += _hygiene(None, [readme], avoid_terms)
-        res.review_flags += _secret_hints(None, [readme])
+        res.review_flags += readme_flags(readme, spec=spec, seed=seed, avoid_terms=avoid_terms)
     res.review_flags = list(dict.fromkeys(res.review_flags))
     return res
+
+
+def readme_flags(
+    readme: GeneratedFile,
+    *,
+    spec: SpecView,
+    seed: FeatureSeed | None = None,
+    avoid_terms: Sequence[str] = (),
+) -> list[str]:
+    """지원자 README 검사 — 승인자 표시(review_flags)만. README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제
+    (재생성으로 못 고침). 표시는 '{README} …' 로 시작한다 (승인 화면 README 경고 칸이 이 머리로 고른다 — api/routers/builds.py).
+    #232: 운영 빌드(builder/steps.py)는 README 를 렌더만 하고 검사하지 않아 그 칸이 늘 비어 있었다 — 평가 러너의
+    static_check(…, readme=…)와 같은 문장을 이 함수 하나가 만든다."""
+    out = [
+        f"{README} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(shown)} — 승인된 명세 문장에서 나옴, 명세 수정 필요"
+        for _, shown in _leaks([readme], hidden_terms(seed, spec))
+    ]
+    out += _hygiene(None, [readme], avoid_terms)
+    out += _secret_hints(None, [readme])
+    return out
 
 
 def _imports_package(stmt: ast.stmt, pkg: str) -> bool:

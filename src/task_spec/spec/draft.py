@@ -197,8 +197,12 @@ def _allowed_tech(env: TechEnv) -> set[str]:
 
 
 def _phrase(term: str) -> re.Pattern[str]:
-    """'SYN cookie' → 단어 사이 공백 1개 이상, 영문 단어 경계 (TcpExtSyncookiesSent 는 안 잡음)."""
-    body = r"\s+".join(re.escape(w) for w in term.split())
+    """'SYN cookie' → 단어 사이 공백·밑줄·붙임표 1개 이상, 영문 단어 경계 (TcpExtSyncookiesSent 는 안 잡음).
+    #241: 낱말 사이를 공백만 받아 'race condition' 이 race-condition(파일 이름·CSS 클래스·설정 키)을 못 찾았다. 낱말의 붙임표도
+    낱말 사이로 본다 — 'single-flight' 가 single flight(식별자를 낱말로 푼 글)·single_flight 를 찾는다. 밑줄이 든 낱말
+    (REQUIRES_NEW·hibernate_sequence)은 식별자 그대로다 ('requires new' 는 흔한 영어)."""
+    words = [w for w in re.split(r"[\s\-]+", term) if w] or [term]
+    body = r"[\s_\-]+".join(re.escape(w) for w in words)
     return re.compile(rf"(?<![A-Za-z0-9_]){body}(?![A-Za-z0-9_])", re.IGNORECASE)
 
 

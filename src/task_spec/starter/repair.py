@@ -16,9 +16,11 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
 4. 숨은 케이스 `HARNESS_ERR`(테스트 자체 예외)·결과 없음 — 구현끼리 비교: 모든 구현에서면 `gen_hidden`, 일부 구현에서만이면 그 구현
    (2026-11-08: 한 구현만 계약과 다른 응답 모양을 돌려 테스트가 파싱하다 예외인데 숨은 테스트를 고치러 갔다).
    ③·④ 도 같은 생각 — 흔한 구현이 통과하면 흔한 구현부터, 허용 구현이 흔한 구현과 같은 메시지로 실패하면 허용 구현 탓으로 보지 않음.
-5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다. 통과 → 흔한 구현을 ③ 으로 아직 다시 만들지 않았으면(다른 게이트의 재생성과 따로 셈) `gen_naive`
+5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다 (숨은 요구마다 따로 판정 — #242). 통과 → 흔한 구현을 ③ 으로 아직 다시 만들지 않았으면(다른 게이트의 재생성과 따로 셈) `gen_naive`
    (설명을 안 따랐을 수 있음 — 그 회차에는 그 대상의 다른 ③ 배정을 미룸), 이미 다시 만들었으면 `gen_hidden`(약함). 다른 사유·사유 없음 → `gen_hidden`
-   (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`). ③' 지킨 요구의 케이스에서 실패 → `gen_hidden`.
+   (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`).
+   흔한 구현은 모든 숨은 요구를 놓친 판(naive-all) 하나다 — 하나만 놓친 판과 그 ③'(지킨 요구의 케이스는 통과해야 함)은 만드는 곳이
+   없어 지웠다 (#243, 숨은 요구 여러 개를 지원할 때 다시 설계).
 6. ④ 허용 구현: 허용 구현이 둘 이상이고 모두 같은 케이스에서 실패 → `gen_hidden`(너무 엄격). 일부만 실패, 또는 허용 구현이 하나뿐이면
    그 구현을 먼저 (`gen_accepted`) — 이미 다시 만들었는데 또 실패하면: 흔한 구현이 그 케이스에서 의도한 사유로 실패하면(테스트는 제 몫) 설계를 못 따른 것(사람 확인),
    아니고 허용 구현이 하나뿐이면 `gen_hidden`, 그 밖은 설계 조건 부족(배정 못 함).
@@ -32,7 +34,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from task_spec.schemas import HiddenPlan, TargetRun, TestResult, VerifyReport
+from task_spec.schemas import HiddenCase, HiddenPlan, TargetRun, TestResult, VerifyReport
 from task_spec.schemas.build import GeneratorName
 from task_spec.schemas.template import RepairTerms
 from task_spec.starter.static_check import Overlay
@@ -120,7 +122,7 @@ SAME_KIND_ALL_FILES = (
 class RepairAction:
     generator: GeneratorName
     label: str  # 오버레이 라벨 — 시작 코드·숨은 테스트는 "", 참조 구현은 naive-all · d1 …
-    gate: str  # ① ② ③ ③' ④ ⑤ ⑨ setup
+    gate: str  # ① ② ③ ④ ⑤ ⑨ setup
     reason: str  # 짧은 사유 (RepairRecord.reason, 승인 화면)
     note: str  # 생성기에 붙일 수정 요청
     pool: Pool = GENERAL  # 재생성 예산 풀 (POOLS)
@@ -197,7 +199,7 @@ _GATE = re.compile(r"[①-⑳]'?|[a-z]+")
 
 
 def gates_of(gate: str) -> list[str]:
-    """수리의 게이트 — `_merge` 가 사유를 합치며 이어 붙인 게이트(예: "③③'")를 나눈다."""
+    """수리의 게이트 — `_merge` 가 사유를 합치며 이어 붙인 게이트(예: "③④")를 나눈다. ②' 처럼 ' 가 붙은 게이트는 하나로 본다."""
     return _GATE.findall(gate)
 
 
@@ -995,34 +997,43 @@ def _gate3(
     """흔한 구현의 숨은 케이스 결과로 숨은 테스트·흔한 구현을 고친다.
     family: 재료가 정한 이 숨은 요구의 사유들(FeatureSeed.reasons) — 흔한 구현이 의도한 사유 대신 같은 묶음의 다른 사유로 떨어져도
     함정을 잡은 것으로 본다. 2026-11-11 재측정 오프라인: 첫 재연결 500 에서 흔한 구현은 메모를 겹치지 않고 잃었다(lost) — hc2(duplicated)를
-    세 번 다시 만들게 할 일이 아니다. 대신 의도한 사유가 어느 케이스에서도 안 보이면 승인자 표시로 남긴다."""
+    세 번 다시 만들게 할 일이 아니다. 대신 의도한 사유가 어느 케이스에서도 안 보이면 승인자 표시로 남긴다.
+    숨은 요구마다 따로 판정한다 (#242) — 함정을 보였나·의도한 사유로 잡은 케이스·관찰한 사유는 그 숨은 요구의 케이스에서만 센다.
+    한꺼번에 세면 다른 숨은 요구의 케이스가 이 숨은 요구를 잡은 것으로 쳐져, 이 숨은 요구의 케이스가 모두 '변별 못 함'으로 채점에서
+    빠지거나 흔한 구현을 먼저 다시 만들 기회를 놓친다. 숨은 요구가 하나면 예전과 같다."""
     fam = set(family)
 
     def same(intended: str, got: str | None) -> bool:
         return got == intended or (got is not None and got in fam and intended in fam)
+
+    def asserted(trap: str) -> list[tuple[HiddenCase, TestResult]]:
+        """그 숨은 요구의 케이스 중 흔한 구현이 단언에서 떨어진 것 (계획 순서)."""
+        return [
+            (c, r)
+            for c in plan.cases
+            if c.trap_id == trap and (r := run.case(c.case_id)) is not None and r.result == "ASSERT"
+        ]
 
     passed = [
         c
         for c in plan.cases
         if c.trap_id in missed and (r := run.case(c.case_id)) is not None and r.result == "PASS"
     ]
-    # 같은 숨은 요구의 다른 케이스에서 의도한 사유(계획의 어느 케이스든)로 떨어졌으면 흔한 구현은 함정을 갖고 있다 — 통과한 케이스가
-    # 그 함정을 못 잰 것이니 흔한 구현을 다시 만들지 않는다. 2026-11-09 v19-loop1: 흔한 구현(따로 둔 AuditService 의 REQUIRES_NEW)이
-    # hc2·hc3·hc4 를 rollback_left_success 로 떨어졌는데 hc1 만 통과해 흔한 구현을 다시 만들었고, 다시 만든 판은 REQUIRES_NEW 를
-    # 같은 클래스 안에서 불러(프록시를 안 거쳐 무효) 함정을 잃고 숨은 케이스를 모두 통과했다.
-    intended = {c.intended_reason for c in plan.cases} | fam
-    traps = {c.trap_id for c in passed}
-    shows_trap = any(
-        c.trap_id in traps
-        and (r := run.case(c.case_id)) is not None
-        and r.result == "ASSERT"
-        and r.reason in intended
-        for c in plan.cases
-    )
-    if passed and not shows_trap and hits:
+
+    # 같은 숨은 요구의 다른 케이스에서 의도한 사유(그 숨은 요구의 어느 케이스든)로 떨어졌으면 흔한 구현은 함정을 갖고 있다 — 통과한
+    # 케이스가 그 함정을 못 잰 것이니 흔한 구현을 다시 만들지 않는다. 2026-11-09 v19-loop1: 흔한 구현(따로 둔 AuditService 의
+    # REQUIRES_NEW)이 hc2·hc3·hc4 를 rollback_left_success 로 떨어졌는데 hc1 만 통과해 흔한 구현을 다시 만들었고, 다시 만든 판은
+    # REQUIRES_NEW 를 같은 클래스 안에서 불러(프록시를 안 거쳐 무효) 함정을 잃고 숨은 케이스를 모두 통과했다.
+    def shows_trap(trap: str) -> bool:
+        intended = {c.intended_reason for c in plan.cases if c.trap_id == trap} | fam
+        return any(r.reason in intended for _, r in asserted(trap))
+
+    # 통과한 케이스 중 그 숨은 요구에 함정을 보인 케이스가 없는 것
+    unshown = [c for c in passed if not shows_trap(c.trap_id)]
+    if unshown and hits:
         # 흔한 구현이 숨은 케이스를 통과했고 그 코드에 허용 설계의 장치가 있다 — 숨은 테스트가 아니라 흔한 구현(또는 재료) 문제.
         # 2026-11-10 응답 순서 cf: 흔한 구현이 매 회차 React 정리 패턴(let cancelled …)을 썼는데 ③ 이 숨은 테스트를 다시 만들었다.
-        ids = ", ".join(c.case_id for c in passed)
+        ids = ", ".join(c.case_id for c in unshown)
         found = ", ".join(hits)
         if not exhausted(regen_counts, "gen_naive", run.target, NAIVE_FIRST):
             return (
@@ -1048,17 +1059,13 @@ def _gate3(
             ],
             [],
         )
-    if (
-        passed
-        and not shows_trap
-        and not exhausted(regen_counts, "gen_naive", run.target, NAIVE_FIRST)
-    ):
+    if unshown and not exhausted(regen_counts, "gen_naive", run.target, NAIVE_FIRST):
         # 흔한 구현이 숨은 케이스를 통과 — 테스트가 약한지보다 흔한 구현이 설명을 안 따랐는지를 먼저 본다.
         # 2026-11-07 배송 감사 재실행: 흔한 구현이 REQUIRES_NEW 를 상태 변경 트랜잭션이 끝난 뒤 불러 커넥션을 하나씩만 썼다.
         # 숨은 테스트는 맞았다 (진짜 흔한 구현으로 바꾸자 hc1·hc2 모두 의도한 사유로 실패). 이 회차에는 이 대상의 다른 ③ 배정을 미룬다 —
         # 흔한 구현이 틀렸으면 사유 불일치도 그 탓일 수 있다 (같은 재실행의 hc2 record_missing).
-        ids = ", ".join(c.case_id for c in passed)
-        traps = ", ".join(sorted({c.trap_id for c in passed}))
+        ids = ", ".join(c.case_id for c in unshown)
+        traps = ", ".join(sorted({c.trap_id for c in unshown}))
         return (
             [
                 RepairAction(
@@ -1080,29 +1087,27 @@ def _gate3(
     # 잘못된 전이의 실패 기록을 봐 흔한 구현도 통과 — 함정(동시 요청에서 커넥션 고갈)이 터지는 조건을 재현하지 않았다.
     # 2026-11-10 gen-item2: hc1·hc2·hc3 이 의도한 사유로 잡는 t1 을 hc4(record_missing)가 다시 만든 뒤에도 못 잡아 예산을 다 쓰고
     # 루프가 failed — 허용 구현 3개는 숨은 케이스 4개를 모두 통과했다 (흔한 구현의 함정은 기록 누락이 아니라 연결 고갈).
-    caught = sorted(
-        c.case_id
-        for c in plan.cases
-        if c.trap_id in traps
-        and (r := run.case(c.case_id)) is not None
-        and r.result == "ASSERT"
-        and same(c.intended_reason, r.reason)
-    )
+    # 잡은 케이스는 같은 숨은 요구의 것만 (#242) — 다른 숨은 요구의 케이스로 빼면 이 숨은 요구의 케이스가 하나도 안 남을 수 있다.
+    caught = {
+        t: sorted(c.case_id for c, r in asserted(t) if same(c.intended_reason, r.reason))
+        for t in {c.trap_id for c in passed}
+    }
     flags: list[str] = []
     weak: list[str] = []  # 채점에서 뺄 케이스 (변별하지 못함)
-    substituted: list[tuple[str, str, str]] = []  # (케이스, 의도한 사유, 대신 관찰한 사유)
-    settled = caught and exhausted(regen_counts, "gen_hidden")
+    # (케이스, 숨은 요구, 의도한 사유, 대신 관찰한 사유)
+    substituted: list[tuple[str, str, str, str]] = []
+    rewritten = exhausted(regen_counts, "gen_hidden")  # 숨은 테스트를 이미 다시 만들었다
     out: list[RepairAction] = []
     for c in plan.cases:
         r = run.case(c.case_id)
         if r is None or r.result == "HARNESS_ERR":
             continue
         if c.trap_id in missed:
-            if r.result == "PASS" and settled:
+            if r.result == "PASS" and caught[c.trap_id] and rewritten:
                 weak.append(c.case_id)
                 flags.append(
                     f"숨은 케이스 {c.case_id} 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현({run.target})이 통과 — 같은 숨은 요구 {c.trap_id} 는 "
-                    f"{', '.join(caught)} 가 의도한 사유로 잡는다. {c.case_id} 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 뺐다 "
+                    f"{', '.join(caught[c.trap_id])} 가 의도한 사유로 잡는다. {c.case_id} 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 뺐다 "
                     f"(무엇을 확인했나: {c.expect[:120]})"
                 )
             elif r.result == "PASS":
@@ -1120,7 +1125,7 @@ def _gate3(
                     )
                 )
             elif r.reason != c.intended_reason and same(c.intended_reason, r.reason):
-                substituted.append((c.case_id, c.intended_reason, r.reason or ""))
+                substituted.append((c.case_id, c.trap_id, c.intended_reason, r.reason or ""))
             elif r.reason != c.intended_reason:
                 got = r.reason or "사유 표시 없음"
                 call = (terms or RepairTerms()).reason_call
@@ -1149,23 +1154,9 @@ def _gate3(
                         note,
                     )
                 )
-        elif r.result != "PASS":  # ③' 지킨 숨은 요구의 케이스는 통과해야 한다
-            out.append(
-                RepairAction(
-                    "gen_hidden",
-                    "",
-                    "③'",
-                    f"{run.target} 가 지킨 요구의 {c.case_id} 에서 실패",
-                    f"숨은 요구 {c.trap_id} 를 지킨 구현({run.target})이 {c.case_id} 에서 실패했다: {_short(r.message)} "
-                    "— 케이스가 다른 숨은 요구에 기대지 않게 한다.",
-                )
-            )
-    seen = {
-        r.reason
-        for c in plan.cases
-        if (r := run.case(c.case_id)) is not None and r.result == "ASSERT" and r.reason
-    }
-    for cid, want, got in substituted:
+    for cid, trap, want, got in substituted:
+        # 의도한 사유를 본 케이스는 같은 숨은 요구에서만 센다 (#242)
+        seen = {r.reason for _, r in asserted(trap) if r.reason}
         if want not in seen:
             flags.append(
                 f"숨은 케이스 {cid} 는 흔한 구현({run.target})을 {want} 대신 {got} 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "

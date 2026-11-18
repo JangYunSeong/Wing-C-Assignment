@@ -165,6 +165,29 @@ async def test_invalid_decision_is_422_and_does_not_resume(client: httpx.AsyncCl
     assert (await client.get(f"/runs/{run_id}")).json()["status"] == "awaiting_approval"
 
 
+async def test_reassign_with_common_only_revise_is_recorded_not_dropped(
+    client: httpx.AsyncClient,
+) -> None:
+    """공통 과제만 다시 만드는 수정 요청에 슬롯 배정 바꾸기를 함께 보내면 202 그대로 — 배정은 바꾸지 않고
+    reassign_ignored 로 남긴다 (#249, 예전에는 기록 없이 버림). 결정 검증기로 막지 않는 이유는 tests/schemas/test_approval."""
+    run_id = await _create(client)
+    await wait_status(client, run_id, "awaiting_approval")
+    body = {
+        **reviewer_decision("revise", "가상 사유"),
+        "revise_target": "common",
+        "reassign": {"d1-c1": "s1"},
+    }
+    assert (await client.post(f"/runs/{run_id}/approve", json=body)).status_code == 202
+    async with asyncio.timeout(5):
+        while True:
+            view = await wait_status(client, run_id, "awaiting_approval")
+            if view["spec"]["revision"] == 2:
+                break
+            await asyncio.sleep(0.02)
+    ignored = [e for e in view["errors"] if e["code"] == "reassign_ignored"]
+    assert [(e["node"], e["ref_id"]) for e in ignored] == [("draft_spec", None)]  # 모르는 주장 id
+
+
 async def test_disallowed_extension_rejected(client: httpx.AsyncClient, tmp_path: Path) -> None:
     resp = await client.post(
         "/runs",

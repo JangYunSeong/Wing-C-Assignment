@@ -14,10 +14,10 @@ from task_spec.llm import Completion, LLMClient
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import GeneratedFile, HiddenPlan, TargetRun, VerifyReport
-from task_spec.starter.repair import DESIGN, assign
+from task_spec.starter.repair import DESIGN, NAIVE_FIRST, RepairPlan, assign
 from task_spec.starter.static_check import Overlay
-from tests.starter.test_generate import D1, D2, SERVICE, STARTER, _files, _inputs
-from tests.starter.test_static_check import CASES, HC1, PKG
+from tests.starter.test_generate import D1, D2, SERVICE, STARTER, _files, _inputs, _task
+from tests.starter.test_static_check import CASES, HC1, PKG, PLAN
 
 PROMPTS = PromptRegistry(__import__("pathlib").Path(__file__).resolve().parents[2] / "prompts")
 
@@ -357,25 +357,6 @@ def test_compile_repair_asks_to_fix_the_same_kind_in_every_file() -> None:
     plan = _assign(_report(naive, _run("d1", "ref_accepted", *GOOD_ACC)))
     hidden = next(a for a in plan.actions if a.generator == "gen_hidden")
     assert hidden.compile and "모든 파일" in hidden.note and "IOException" in hidden.note
-
-
-def test_gate3_prime_kept_requirement_must_pass() -> None:
-    plan2 = PLAN2.model_copy(
-        update={"cases": [PLAN2.cases[0], PLAN2.cases[1].model_copy(update={"trap_id": "t2"})]}
-    )
-    miss_t1 = _run(
-        "naive-miss-t1",
-        "ref_naive",
-        GOOD_NAIVE[0],
-        _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
-    )
-    plan = assign(
-        _report(miss_t1, _run("d1", "ref_accepted", *GOOD_ACC)),
-        plan2,
-        OVERLAYS,
-        {"naive-miss-t1": {"t1"}},
-    )
-    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].gate == "③'"
 
 
 def test_regenerated_design_alone_stuck_in_a_hidden_case_suspects_the_test_once() -> None:
@@ -1138,7 +1119,6 @@ def test_budget_pools_are_one_table_with_the_old_limits() -> None:
     from task_spec.starter.repair import (
         COMPILE,
         GENERAL,
-        NAIVE_FIRST,
         POOLS,
         budget_key,
         exhausted,
@@ -1156,12 +1136,15 @@ def test_budget_pools_are_one_table_with_the_old_limits() -> None:
 
 
 def test_merged_gates_are_split_before_comparing() -> None:
-    """#183: KEEP_GATES 가 글자 집합이라 우연히 맞던 비교 — 합친 수리의 이어 붙은 게이트("③③'")는 나눠 비교한다."""
+    """#183: KEEP_GATES 가 글자 집합이라 우연히 맞던 비교 — 합친 수리의 이어 붙은 게이트("③④")는 나눠 비교한다.
+    ' 가 붙은 게이트(②')는 글자로 쪼개지 않고 하나로 본다."""
     from task_spec.nodes.starter.build import KEEP_GATES
     from task_spec.starter.repair import gates_of
 
-    assert gates_of("③③'") == ["③", "③'"] and set(gates_of("③③'")) <= KEEP_GATES
+    assert gates_of("③④") == ["③", "④"] and gates_of("②'③") == ["②'", "③"]
+    assert set(gates_of("③")) <= KEEP_GATES
     assert not set(gates_of("③④")) <= KEEP_GATES and not set(gates_of("setup")) <= KEEP_GATES
+    assert not set(gates_of("②'③")) <= KEEP_GATES
 
 
 def test_regenerated_design_that_regressed_is_rebuilt_not_the_test() -> None:
@@ -1347,3 +1330,423 @@ def test_a_new_api_public_test_passing_on_the_starter_remakes_the_starter() -> N
     assert not acts and any("시작 코드에서 통과하는 공개 테스트" in f for f in flags)
     acts, flags = _starter_public(run, {"gen_starter": 1}, {"pt1"})  # 예산을 다 썼으면 표시
     assert not acts and any("다시 만든 시작 코드에서도 새 API" in f for f in flags)
+
+
+# ── ③ 숨은 요구 1개 출력 고정 (#242) ──────────────────────────
+# 판정을 숨은 요구별로 바꿔도 숨은 요구가 1개(지금 운영)면 배정·표시·수리 요청 문구(LLM 입력)가 글자 그대로여야 한다.
+# 기대값은 고치기 전 코드(162a142)의 출력 그대로다 — ③ 의 갈래마다 하나씩.
+MISSING = _t("hidden", "hc2", "ASSERT", "record_missing", "실패 기록 없음")
+UNREASONED = _t("hidden", "hc2", "ASSERT", None, "expected 2 to be greater than or equal to 3") | {
+    "at": "src/__grading__/cases/hc2.test.tsx:66"
+}
+FAMILY = ("pool_acquire_timeout", "rollback_left_success", "record_missing")
+SPENT_NAIVE = {"gen_naive:naive-all#naive-first": 1}
+MARKED = {
+    "overlays": {
+        **OVERLAYS,
+        "naive-all": Overlay(
+            kind="ref_naive",
+            label="naive-all",
+            files=(GeneratedFile(path="src/pages/Search.tsx", content="let cancelled = false;"),),
+        ),
+    },
+    "fix_markers": [r"\blet\s+cancelled\s*="],
+}
+# 이름 → (흔한 구현의 숨은 케이스 결과, 예산, assign 추가 인자)
+ONE_NEED: dict[str, tuple[Sequence[dict[str, Any]], dict[str, int], dict[str, Any]]] = {
+    "naive_first": ((_t("hidden", "hc1"), MISSING), {}, {}),
+    "naive_first_spent": ((_t("hidden", "hc1"), MISSING), SPENT_NAIVE, {}),
+    "shown_elsewhere": ((_t("hidden", "hc1"), GOOD_NAIVE[1]), {}, {}),
+    "weak": ((_t("hidden", "hc1"), GOOD_NAIVE[1]), {"gen_hidden": 1}, {}),
+    "all_pass_spent": (GOOD_ACC, {**SPENT_NAIVE, "gen_hidden": 1}, {}),
+    "fix_markers": (GOOD_ACC, {}, MARKED),
+    "material": (GOOD_ACC, SPENT_NAIVE, MARKED),
+    "other_reason": ((GOOD_NAIVE[0], MISSING), {}, {}),
+    "unreasoned": ((GOOD_NAIVE[0], UNREASONED), {}, {"feature_reasons": FAMILY[1:]}),
+    "substituted": (
+        (
+            _t("hidden", "hc1", "ASSERT", "record_missing", "x"),
+            _t("hidden", "hc2", "ASSERT", "pool_acquire_timeout", "y"),
+        ),
+        {},
+        {"feature_reasons": FAMILY},
+    ),
+    "weak_and_substituted": (
+        (_t("hidden", "hc1"), MISSING),
+        {"gen_hidden": 1},
+        {"feature_reasons": FAMILY},
+    ),
+}
+
+
+def _one_need(name: str) -> dict[str, Any]:
+    """그 시나리오의 assign 출력 전부 — 수리(생성기·라벨·게이트·사유·수정 요청·예산 풀·겨냥한 케이스)·막는 표시·표시·뺄 케이스."""
+    tests, counts, kw = ONE_NEED[name]
+    kw = dict(kw)
+    overlays = kw.pop("overlays", OVERLAYS)
+    report = _report(_run("naive-all", "ref_naive", *tests), _run("d1", "ref_accepted", *GOOD_ACC))
+    plan = assign(report, PLAN2, overlays, MISSED, counts, **kw)
+    return {
+        "actions": [
+            (a.generator, a.label, a.gate, a.reason, a.note, a.pool.suffix, a.cases)
+            for a in plan.actions
+        ],
+        "unresolved": plan.unresolved,
+        "flags": plan.flags,
+        "weak": plan.weak,
+    }
+
+
+ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
+    "naive_first": {
+        "actions": [
+            (
+                "gen_naive",
+                "naive-all",
+                "③",
+                "흔한 구현이 hc1 통과 — 흔한 구현을 먼저 다시 (naive-all)",
+                "이 흔한 구현은 숨은 요구 t1 를 어기는 구현이어야 하는데 숨은 케이스 hc1 를 통과했다 — 입력의 흔한 구현 설명을 "
+                "구조 그대로 따르지 않았다. 설명이 말하는 그 구조를 그대로 쓰고, 설명에 없는 장치를 더하거나 더 안전한 방식으로 "
+                "바꾸지 않는다.",
+                "#naive-first",
+                (),
+            )
+        ],
+        "unresolved": [],
+        "flags": [],
+        "weak": [],
+    },
+    "naive_first_spent": {
+        "actions": [
+            (
+                "gen_hidden",
+                "",
+                "③",
+                "흔한 구현이 hc1 통과 (naive-all); hc2 사유 record_missing ≠ 의도 "
+                "rollback_left_success (naive-all)",
+                "흔한 구현(naive-all)이 숨은 케이스 hc1 를 통과했다. 통과 조건(모두 정상 응답)은 그대로 두고 "
+                "올바른 구현이 통과하는 단언을 유지한다 — 숨은 요구 t1 를 어기는 구현이 어기게 되는 관찰 결과(기대와 "
+                "다른 응답·시간 초과가 없어야 함, 요청마다 결과와 맞는 기록 등)를 그 조건대로 확인하고, 그 단언에 의도한 "
+                "사유(pool_acquire_timeout)를 붙인다. 실패나 시간 초과가 **일어나야 한다**고 단언하지 "
+                "않는다 — 그러면 올바른 구현이 떨어진다.\n"
+                "숨은 케이스 hc2 가 흔한 구현에서 의도한 사유(rollback_left_success) 대신 "
+                "record_missing 로 실패했다: 실패 기록 없음 — 의도한 실패를 가장 먼저 확인하는 단언 순서로, "
+                "사유는 Reasons.as 로 붙인다.",
+                "",
+                (),
+            )
+        ],
+        "unresolved": [],
+        "flags": [],
+        "weak": [],
+    },
+    "shown_elsewhere": {
+        "actions": [
+            (
+                "gen_hidden",
+                "",
+                "③",
+                "흔한 구현이 hc1 통과 (naive-all)",
+                "흔한 구현(naive-all)이 숨은 케이스 hc1 를 통과했다. 통과 조건(모두 정상 응답)은 그대로 두고 "
+                "올바른 구현이 통과하는 단언을 유지한다 — 숨은 요구 t1 를 어기는 구현이 어기게 되는 관찰 결과(기대와 다른 "
+                "응답·시간 초과가 없어야 함, 요청마다 결과와 맞는 기록 등)를 그 조건대로 확인하고, 그 단언에 의도한 "
+                "사유(pool_acquire_timeout)를 붙인다. 실패나 시간 초과가 **일어나야 한다**고 단언하지 않는다 "
+                "— 그러면 올바른 구현이 떨어진다.",
+                "",
+                (),
+            )
+        ],
+        "unresolved": [],
+        "flags": [],
+        "weak": [],
+    },
+    "weak": {
+        "actions": [],
+        "unresolved": [],
+        "flags": [
+            "숨은 케이스 hc1 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현(naive-all)이 통과 — 같은 숨은 요구 t1 는 hc2 가 의도한 "
+            "사유로 잡는다. hc1 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 뺐다 (무엇을 확인했나: 모두 정상 응답)"
+        ],
+        "weak": ["hc1"],
+    },
+    "all_pass_spent": {
+        "actions": [
+            (
+                "gen_hidden",
+                "",
+                "③",
+                "흔한 구현이 hc1 통과 (naive-all); 흔한 구현이 hc2 통과 (naive-all)",
+                "흔한 구현(naive-all)이 숨은 케이스 hc1 를 통과했다. 통과 조건(모두 정상 응답)은 그대로 두고 올바른 "
+                "구현이 통과하는 단언을 유지한다 — 숨은 요구 t1 를 어기는 구현이 어기게 되는 관찰 결과(기대와 다른 응답·시간 "
+                "초과가 없어야 함, 요청마다 결과와 맞는 기록 등)를 그 조건대로 확인하고, 그 단언에 의도한 "
+                "사유(pool_acquire_timeout)를 붙인다. 실패나 시간 초과가 **일어나야 한다**고 단언하지 않는다 "
+                "— 그러면 올바른 구현이 떨어진다.\n"
+                "흔한 구현(naive-all)이 숨은 케이스 hc2 를 통과했다. 통과 조건(실패 기록만 남음)은 그대로 두고 "
+                "올바른 구현이 통과하는 단언을 유지한다 — 숨은 요구 t1 를 어기는 구현이 어기게 되는 관찰 결과(기대와 다른 "
+                "응답·시간 초과가 없어야 함, 요청마다 결과와 맞는 기록 등)를 그 조건대로 확인하고, 그 단언에 의도한 "
+                "사유(rollback_left_success)를 붙인다. 실패나 시간 초과가 **일어나야 한다**고 단언하지 않는다 "
+                "— 그러면 올바른 구현이 떨어진다.",
+                "",
+                (),
+            )
+        ],
+        "unresolved": [],
+        "flags": [],
+        "weak": [],
+    },
+    "fix_markers": {
+        "actions": [
+            (
+                "gen_naive",
+                "naive-all",
+                "③",
+                "흔한 구현이 hc1, hc2 통과 — 정답 장치(let cancelled =)를 씀 (naive-all)",
+                "이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치(let cancelled =)를 썼다 — 그 "
+                "장치를 빼고 입력의 흔한 구현 설명대로만 쓴다 (설명에 없는 장치를 더하지 않는다).",
+                "#naive-first",
+                (),
+            )
+        ],
+        "unresolved": [],
+        "flags": [],
+        "weak": [],
+    },
+    "material": {
+        "actions": [],
+        "unresolved": [
+            "재료 판정: 흔한 구현(naive-all)이 다시 만든 뒤에도 허용 설계의 장치(let cancelled =)를 써 숨은 "
+            "케이스 hc1, hc2 를 통과 — AI 흔한 구현이 기본으로 정답을 쓰므로 이 함정은 AI 첫 답을 가르지 못할 수 "
+            "있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
+        ],
+        "flags": [],
+        "weak": [],
+    },
+    "other_reason": {
+        "actions": [
+            (
+                "gen_hidden",
+                "",
+                "③",
+                "hc2 사유 record_missing ≠ 의도 rollback_left_success (naive-all)",
+                "숨은 케이스 hc2 가 흔한 구현에서 의도한 사유(rollback_left_success) 대신 "
+                "record_missing 로 실패했다: 실패 기록 없음 — 의도한 실패를 가장 먼저 확인하는 단언 순서로, 사유는 "
+                "Reasons.as 로 붙인다.",
+                "",
+                (),
+            )
+        ],
+        "unresolved": [],
+        "flags": [],
+        "weak": [],
+    },
+    "unreasoned": {
+        "actions": [
+            (
+                "gen_hidden",
+                "",
+                "③",
+                "hc2 사유 사유 표시 없음 ≠ 의도 rollback_left_success (naive-all)",
+                "숨은 케이스 hc2 가 흔한 구현에서 사유 표시 없는 단언 "
+                "(src/__grading__/cases/hc2.test.tsx:66) 에서 먼저 실패했다: expected 2 to be "
+                "greater than or equal to 3 — 이 단언이 숨은 요구 t1 를 어긴 결과(이 요구의 사유: "
+                "record_missing, rollback_left_success)를 보는 것이면 그 단언에 맞는 사유를 "
+                "Reasons.as 로 붙이고, 기능 준비 확인이면 흔한 구현도 지나가게 쓴다 (흔한 구현이 잃거나 늘리는 값을 준비 "
+                "단계에서 단언하지 않는다). 의도한 실패(rollback_left_success)를 가장 먼저 확인하는 단언 순서로.",
+                "",
+                (),
+            )
+        ],
+        "unresolved": [],
+        "flags": [],
+        "weak": [],
+    },
+    "substituted": {
+        "actions": [],
+        "unresolved": [],
+        "flags": [
+            "숨은 케이스 hc2 는 흔한 구현(naive-all)을 rollback_left_success 대신 "
+            "pool_acquire_timeout 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "
+            "rollback_left_success 를 확인하는 케이스가 없다 (사람 확인)"
+        ],
+        "weak": [],
+    },
+    "weak_and_substituted": {
+        "actions": [],
+        "unresolved": [],
+        "flags": [
+            "숨은 케이스 hc1 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현(naive-all)이 통과 — 같은 숨은 "
+            "요구 t1 는 hc2 가 의도한 사유로 잡는다. hc1 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 "
+            "뺐다 (무엇을 확인했나: 모두 정상 응답)",
+            "숨은 케이스 hc2 는 흔한 구현(naive-all)을 rollback_left_success 대신 "
+            "record_missing 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "
+            "rollback_left_success 를 확인하는 케이스가 없다 (사람 확인)",
+        ],
+        "weak": ["hc1"],
+    },
+}
+
+
+@pytest.mark.parametrize("name", list(ONE_NEED))
+def test_gate3_output_for_one_hidden_need_is_pinned(name: str) -> None:
+    """#242: ③ 을 숨은 요구별로 판정해도 숨은 요구가 1개(지금 운영)면 배정·표시·수리 요청 문구(LLM 입력)가 글자까지 같다."""
+    assert _one_need(name) == ONE_NEED_PINNED[name]
+
+
+# ── ③ 숨은 요구 2개 (#242) ──────────────────────────────────
+# t1: hc1·hc2, t2: hc3. 지금 운영은 숨은 요구 1개지만 ③ 은 숨은 요구마다 따로 판정한다 — 다른 숨은 요구의 케이스는 근거가 아니다.
+PLAN3 = PLAN2.model_copy(
+    update={
+        "cases": [
+            *PLAN2.cases,
+            PLAN2.cases[1].model_copy(
+                update={
+                    "case_id": "hc3",
+                    "ac_id": "h3",
+                    "trap_id": "t2",
+                    "scenario": "기록 단계 실패",
+                    "expect": "요청마다 기록 1건",
+                    "intended_reason": "record_missing",
+                }
+            ),
+        ]
+    }
+)
+MISSED3 = {"naive-all": {"t1", "t2"}}
+# 이슈 재현 결과: t1 은 흔한 구현이 hc1 을 통과하고 hc2 가 의도한 사유로 잡음, t2 는 흔한 구현이 hc3 을 통과 — 허용 구현은 모두 통과
+TWO_NEEDS = _report(
+    _run("naive-all", "ref_naive", _t("hidden", "hc1"), GOOD_NAIVE[1], _t("hidden", "hc3")),
+    _run("d1", "ref_accepted", *GOOD_ACC, _t("hidden", "hc3")),
+)
+
+
+def _assign3(report: VerifyReport, reasons: Sequence[str] = (), **counts: int) -> RepairPlan:
+    budget = {k.replace("__", ":"): v for k, v in counts.items()}
+    return assign(report, PLAN3, OVERLAYS, MISSED3, budget, feature_reasons=reasons)
+
+
+def test_gate3_does_not_let_one_hidden_need_vouch_for_another() -> None:
+    """#242 재현: t1 의 hc2 는 t2 를 잡은 근거가 아니다. 예전엔 숨은 테스트를 한 번 다시 만든 뒤 hc1·hc3 을 함께 '변별 못 함'으로 빼
+    t2 가 채점에서 통째로 빠졌고(승인자 표시 't2 는 hc2 가 잡는다'), 예산 0회차의 '흔한 구현 먼저 다시'도 빠졌다."""
+    # 예산 0회차: t2 는 함정을 보인 케이스가 없다 — 흔한 구현을 먼저 다시 (그 회차엔 이 대상의 다른 ③ 배정을 미룬다)
+    first = _assign3(TWO_NEEDS)
+    assert [(a.key, a.gate, a.pool) for a in first.actions] == [
+        ("gen_naive:naive-all", "③", NAIVE_FIRST)
+    ]
+    note = first.actions[0].note
+    assert "숨은 요구 t2 를" in note and "숨은 케이스 hc3 를" in note and "hc1" not in note
+    # 숨은 테스트를 한 번 다시 만든 뒤(이슈의 재현 조건)에도 t2 의 hc3 은 빼지 않는다 — 흔한 구현을 먼저
+    again = _assign3(TWO_NEEDS, gen_hidden=1)
+    assert again.weak == [] and [a.key for a in again.actions] == ["gen_naive:naive-all"]
+    # 흔한 구현도 다시 만든 뒤: t1 의 hc1 만 뺀다 (hc2 가 잡음). t2 의 hc3 은 숨은 테스트를 다시 — 예산이 없으면 빌드가 멈춘다
+    last = _assign3(TWO_NEEDS, gen_hidden=1, **{"gen_naive__naive-all#naive-first": 1})
+    assert last.weak == ["hc1"]
+    assert [(a.key, a.gate, a.reason) for a in last.actions] == [
+        ("gen_hidden", "③", "흔한 구현이 hc3 통과 (naive-all)")
+    ]
+    [flag] = last.flags
+    assert (
+        "숨은 케이스 hc1 는" in flag and "같은 숨은 요구 t1 는 hc2 가 의도한 사유로 잡는다" in flag
+    )
+
+
+def test_gate3_reasons_count_only_within_the_same_hidden_need() -> None:
+    """#242: 의도한 사유·관찰한 사유도 숨은 요구마다 — 다른 숨은 요구의 사유로 떨어진 케이스는 이 숨은 요구의 함정을 보인 것이 아니고,
+    다른 숨은 요구의 케이스가 본 사유는 이 숨은 요구의 의도한 사유를 확인한 것이 아니다."""
+    d1 = _run("d1", "ref_accepted", *GOOD_ACC, _t("hidden", "hc3"))
+    # t1 의 hc2 가 t2 의 사유(record_missing)로 떨어짐 — t1 의 함정을 보인 것이 아니니 hc1 을 통과한 흔한 구현을 먼저 다시
+    other = _run(
+        "naive-all",
+        "ref_naive",
+        _t("hidden", "hc1"),
+        MISSING,
+        _t("hidden", "hc3", "ASSERT", "record_missing", "기록 없음"),
+    )
+    plan = _assign3(_report(other, d1))
+    assert [a.key for a in plan.actions] == ["gen_naive:naive-all"]
+    assert "숨은 요구 t1 를" in plan.actions[0].note
+    # 재료 사유 묶음으로 대신 잡은 hc1(t1) — 그 의도한 사유(pool_acquire_timeout)를 본 것은 t2 의 hc3 뿐이라 t1 에는 확인한 케이스가 없다
+    swapped = _run(
+        "naive-all",
+        "ref_naive",
+        _t("hidden", "hc1", "ASSERT", "rollback_left_success", "성공 기록이 남음"),
+        GOOD_NAIVE[1],
+        _t("hidden", "hc3", "ASSERT", "pool_acquire_timeout", "기대와 다른 응답 수 32"),
+    )
+    plan = _assign3(_report(swapped, d1), FAMILY)
+    assert plan.actions == []
+    assert any(
+        f.startswith("숨은 케이스 hc1 는")
+        and "pool_acquire_timeout 대신 rollback_left_success" in f
+        for f in plan.flags
+    ), plan.flags
+
+
+HC_CLASSES = {
+    "hc1": "OrderStatusBurstTest",
+    "hc2": "OrderStatusSecondTest",
+    "hc3": "OrderStatusThirdTest",
+}
+
+
+class PerCaseBackend(RoutedBackend):
+    """숨은 테스트는 케이스마다 따로 부른다 — 입력 계획에 보이는 그 케이스의 파일을 돌려준다 (병렬 호출 순서와 무관)."""
+
+    async def complete(self, model: str, messages: list[Any], params: dict[str, Any]) -> Completion:
+        if self.MARKERS["gen_hidden"] not in messages[0].content:
+            return await super().complete(model, messages, params)
+        self.calls.append("gen_hidden")
+        cid = next(c for c in HC_CLASSES if f"- {c} (" in messages[-1].content)
+        name = HC_CLASSES[cid]
+        return _files(
+            (f"{CASES}/{name}.java", HC1.replace("hc1", cid).replace("OrderStatusBurstTest", name))
+        )
+
+
+async def test_build_keeps_a_hidden_need_that_none_of_its_own_cases_catches() -> None:
+    """#242 재현 (build_and_repair 끝까지): 검증 결과가 늘 t1(hc1 통과·hc2 의도한 사유) · t2(hc3 통과)면 예전엔 0회차에 숨은
+    테스트를 다시 만들고 1회차에 hc1·hc3 을 함께 빼 review 로 끝났다 — t2 의 케이스 0개, 표시는 't2 는 hc2 가 잡는다'.
+    이제 0회차에 흔한 구현을 먼저 다시 만들고, 그래도 t2 를 가르는 케이스가 없으면 hc3 을 빼지 않고 멈춘다 (사람 확인)."""
+    task = _task()
+    t2 = task.traps[0].model_copy(update={"trap_id": "t2", "description": "가상 두 번째 숨은 요구"})
+    # 세 케이스 모두 같은 사유(pool_acquire_timeout)·같은 꼴의 케이스 파일 — 정적 검사는 그대로 통과
+    hc1 = PLAN.cases[0]
+    plan = PLAN.model_copy(
+        update={
+            "cases": [
+                hc1,
+                hc1.model_copy(update={"case_id": "hc2", "ac_id": "h2", "data": []}),
+                hc1.model_copy(
+                    update={"case_id": "hc3", "ac_id": "h3", "trap_id": "t2", "data": []}
+                ),
+            ]
+        }
+    )
+    b = _inputs(task=task.model_copy(update={"traps": [*task.traps, t2]}), plan=plan)
+    caught = _t("hidden", "hc2", "ASSERT", "pool_acquire_timeout", "기대와 다른 응답 수 32")
+    report = _report(
+        _run("naive-all", "ref_naive", _t("hidden", "hc1"), caught, _t("hidden", "hc3")),
+        _run("d1", "ref_accepted", *(_t("hidden", c) for c in HC_CLASSES)),
+    )
+    backend = PerCaseBackend(
+        gen_public=[PUBLIC], gen_starter=[_files(*STARTER)], gen_naive=[SVC], gen_accepted=[SVC]
+    )
+    llm = LLMClient({"opencode": backend, "openai": backend, "gemini": backend}, sleep=_no_sleep)  # type: ignore[dict-item]
+    out = await build_and_repair(
+        b,
+        (D1,),
+        llm=llm,
+        prompts=PROMPTS,
+        ontology_version="onto-test",
+        verifier=ScriptedVerifier(report),
+    )
+    # 0회차 — t2 는 함정을 보인 케이스가 없다: 흔한 구현 먼저. 1회차 — hc1·hc3 숨은 테스트를 다시. 2회차 — hc1 은 hc2 가 잡지만
+    # hc3 은 여전히 통과하고 숨은 테스트 예산이 없다
+    assert [(r.gate, r.target, r.result) for r in out.repairs] == [
+        ("③", "gen_naive", "regenerated"),
+        ("③", "gen_hidden", "regenerated"),
+        ("③", "gen_hidden", "skipped"),
+    ]
+    assert "hc3" in out.repairs[0].reason and "hc1" not in out.repairs[0].reason
+    assert out.status == "failed" and out.dropped_cases == []  # t2 의 hc3 은 채점에서 빠지지 않는다
+    assert any("재생성 예산을 다 씀 — gen_hidden" in f and "hc3" in f for f in out.review_flags)
+    assert not any("t2 는 hc2" in f for f in out.review_flags)

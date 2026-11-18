@@ -82,6 +82,28 @@ def test_readme_shows_settings_table() -> None:
     assert "### 설정" not in contract_markdown(TaskContract.model_validate(_contract()))
 
 
+LEAK = "숨은 요구·운영 조건을 드러내는 말이 공개 계약"
+
+
+def test_hidden_terms_in_setting_key_and_meaning_are_reasked() -> None:
+    """#232: 설정 키·뜻은 README 설정 표로 그대로 나가는데 계약 누설 검사(contract_places)가 보지 않았다 — 같은 말을 엔드포인트
+    요약에 두면 재요청 사유였다. 케밥 키(N+1 재료의 'batch size' ← shop.order.batch-size)도."""
+    from task_spec.schemas import PublicIncident
+    from tests.starter.test_contract import ROOT
+
+    def leaks(contract: dict[str, Any], **kw: Any) -> list[str]:
+        return [p for p in _check(contract, manifest=JAVA.manifest, **kw).problems if LEAK in p]
+
+    assert not leaks(_with(PAGE))
+    got = leaks(_with({**PAGE, "meaning": "커넥션 풀 크기에 맞춘 목록 한 번에 돌려줄 최대 개수"}))
+    assert len(got) == 1 and "커넥션 풀" in got[0] and "설정 shop.order.page-size" in got[0]
+    raw = (ROOT / "incidents" / "public_v1" / "sw.backend.n-plus-one.json").read_text("utf-8")
+    nplus1 = PublicIncident.model_validate_json(raw).feature
+    batch = {**PAGE, "key": "shop.order.batch-size", "meaning": "한 번에 읽어 오는 연관 행 수"}
+    got = leaks(_with(batch), seed=nplus1)
+    assert len(got) == 1 and "batch size" in got[0] and "설정 shop.order.batch-size" in got[0]
+
+
 def _static(starter_yml: str, public_test: str) -> list[str]:
     contract = TaskContract.model_validate(_with(PAGE))
     plan = HiddenPlan.model_validate(_plan())

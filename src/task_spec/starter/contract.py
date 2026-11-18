@@ -207,7 +207,7 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
-# 단위가 붙은 수 — 조절값 단위(이름 끝 _ms·_s)로 환산해 맞춰 본다
+# 단위가 붙은 수 — 조절값 단위(이름 끝 _ms·_s)로 환산해 맞춰 본다. 단위 뒤에 한글이 이어지면 조사·어미일 때만 단위다 (_timed)
 _TIMED = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])", re.I)
 _UNIT_MS = {
     "ms": 1.0,
@@ -218,6 +218,16 @@ _UNIT_MS = {
     "분": 60000.0,
     "min": 60000.0,
 }
+
+
+def _timed(text: str) -> list[tuple[str, str]]:
+    """글 속 시간 값 (수, 단위) — 단위 바로 뒤가 조사·어미가 아닌 한글이면 다른 낱말이라 뺀다 (_time_word 와 같은 기준).
+    #238: 뒤 막기가 영문만 막아 '50 초과'를 50초, '3분기'를 3분, '초기'를 초로 읽어 근거 후보(timed_hints)·환산(_converted)에 넣었다."""
+    return [
+        (m.group(1), m.group(2))
+        for m in _TIMED.finditer(text)
+        if _time_word(text[m.start(2) : m.end(2) + 1]) is not None
+    ]
 
 
 def timed_matches(name: str, value: HarnessValue, texts: Iterable[str]) -> list[str]:
@@ -288,7 +298,7 @@ def _converted(quote: str, unit: str) -> set[float]:
     2026-11-10 nplus1-e: 'p50 은 11.4ms' 로 query_delay_ms=12, '목표는 500ms' 로 request_timeout_s=1 을 냈는데
     인용 안에 12·1 이 그대로 없다고 거절했다 (정수 조절값이라 반올림·초 단위 올림이 맞다)."""
     out: set[float] = set()
-    for raw, u in _TIMED.findall(quote):
+    for raw, u in _timed(quote):
         n = _number(raw)
         if n is None:
             continue
@@ -310,7 +320,7 @@ def timed_hints(name: str, texts: Iterable[str], limit: int = TIMED_CANDIDATES) 
     for text in texts:
         for line in text.splitlines():
             line = line.strip()
-            if _TIMED.search(line) and line not in out:
+            if _timed(line) and line not in out:
                 out.append(line[:MAX_QUOTE])
     return out[:limit]
 
@@ -336,6 +346,10 @@ def _listed_value_ok(value: HarnessValue, quote: str) -> bool:
 _RULE_SKIP = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?|\d[\d,]*(?:\.\d+)?\s*%")
 # 공백 하나 뒤에 와도 단위로 보는 말 — 그 밖의 말은 다음 항목이다 ('19.8 p95' · '35.1 최대' · '3.1 스크롤')
 _COUNT_UNITS = ("건", "개", "명", "회", "번", "행", "배", "대", "곳", "줄")
+# 수 바로 뒤의 비교 말 — 단위가 아니다 ('동시 요청 50 초과' · '50초과' · '2 이상'). 개수 조절값에서는 단위 없는 수로 보고, 시간 조절값에서는
+# 시간 값이 아니다 (머리 줄 단위가 있으면 그 단위). #238: '초과'를 '초'로 읽어 개수 값 '50 초과'를 wrong_unit 으로 재요청했고(같은 근거뿐이면
+# 계약 실패), 시간 조절값은 개수 문장 '2 초과'를 2초로 받아 통과시켰다
+_COMPARE = ("초과", "이상", "이하", "미만")
 # 머리 줄의 단위 표기 — '왕복 시간 (ms)' · '단위: 초'. 단위 없는 수는 이 단위
 _RULE_HEAD = re.compile(
     r"\(\s*(?:단위\s*[:：]?\s*)?(ms|밀리초|초|sec|s|분|min)\s*\)|단위\s*[:：]\s*(ms|밀리초|초|sec|s|분|min)(?![A-Za-z])",
@@ -344,8 +358,15 @@ _RULE_HEAD = re.compile(
 # 값 앞 이름표 — 백분위·평균·최대 등 (재료 규칙의 이름표와 함께 찾는다)
 _RULE_STAT = r"[pP]\d{2,3}(?:\.\d)?|평균|중앙값|최댓값|최솟값|최대|최소|avg|mean|median|max|min"
 _RULE_LEAD = 16  # 이름표를 찾는 값 앞 글자 수 (앞 토큰이 끝난 뒤부터)
-# 시간 단위 낱말 — 앞에서부터 맞춘다 ('ms' 를 's' 보다 먼저). 's' 는 낱말 전체일 때만 ('sql' 은 단위가 아니다)
+# 시간 단위 낱말 — 앞에서부터 맞춘다 ('ms' 를 's' 보다 먼저). 뒤에 영문 글자가 이어지면 단위가 아니다 ('sql'·'msgs'·'minimum')
 _TIME_WORDS = ("밀리초", "sec", "min", "ms", "분", "초", "s")
+# 시간 단위 바로 뒤에 붙어도 단위로 읽는 한글의 첫 글자 — 조사·어미·의존 명사 ('2초를'·'30분마다'·'2초이내'·'2초초과'·'1분여'·'3초대'·
+# '2초입니다'). 그 밖의 한글이 이어지면 다른 낱말이다 — '초과'·'초기'·'초안'·'분기'·'분석'·'분야' (#238). 받침 없는 '초'·'밀리초' 뒤의
+# '과'는 조사가 아니고('와'가 조사 — '초과'), 받침 있는 '분' 뒤에는 '를·는·로·다·야…' 대신 '을·은·으로·이다·이야…'가 붙는다.
+# 영문 단위(ms·s·sec·min) 뒤의 한글은 늘 조사·어미로 본다 ('500ms의'·'28ms입니다')
+_UNIT_TAIL = "의에도만까부마씩쯤간내후뒤전대째정동짜남여넘이미초밖처뿐조보가인일임입"
+_UNIT_TAIL_OPEN = "를는와로다였며고야나면라"  # 받침 없는 단위 (초·밀리초)
+_UNIT_TAIL_CLOSED = "을은과으"  # 받침 있는 단위 (분)
 _TOK_NUM = r"\d(?:[\d,]*\d)?(?:\.\d+)?"
 _TOK_WORD = r"[^\s\d.,:;()\[\]{}/|=~～∼<>≤≥·\-–—%]+"
 # 값 토큰 — 수 + 붙은 말, 범위면 '수~수' 째 ('~' 는 띄어 써도, 붙임표는 붙여 쓸 때만 — '3건 - 5건' 은 둘).
@@ -358,11 +379,25 @@ _SPACED_WORD = re.compile(rf"\s({_TOK_WORD})")
 
 
 def _time_word(word: str) -> str | None:
+    """붙은 말이 시간 단위인가 — 단위 그대로이거나 단위 뒤에 조사·어미만 이어진 말 ('초를'·'ms의'·'분마다'·'초초과').
+    #238: 앞부분만 보아 '초과'·'초기'·'분기'·'msgs'·'minimum' 을 시간 단위로 읽었다."""
     w = word.lower()
     for t in _TIME_WORDS:
-        if w.startswith(t) and (t != "s" or w == "s"):
+        if w.startswith(t) and _unit_tail(t, w[len(t) :]):
             return t
     return None
+
+
+def _unit_tail(unit: str, rest: str) -> bool:
+    """단위 뒤 글자가 단위를 끊지 않는가 — 없음, 영문 글자가 아닌 것(숫자·기호 — '1분30초'), 한글이면 조사·어미의 첫 글자."""
+    if not rest:
+        return True
+    c = rest[0]
+    if not "가" <= c <= "힣":
+        return not (c.isascii() and c.isalpha())
+    if unit.isascii():
+        return True
+    return c in _UNIT_TAIL + (_UNIT_TAIL_CLOSED if unit == "분" else _UNIT_TAIL_OPEN)
 
 
 @dataclass(frozen=True)
@@ -375,6 +410,7 @@ class _Tok:
         str, ...
     ]  # 끝마다 붙은 말 ('' = 없음) — 범위의 앞 끝에 말이 없으면 뒤 끝의 말을 같이 쓴다
     label: str | None  # 바로 앞 이름표
+    compared: bool = False  # 수 바로 뒤에 비교 말(_COMPARE) — units 에는 넣지 않는다
 
 
 def _value_tokens(quote: str, rule: HarnessRule | None) -> tuple[list[_Tok], str | None]:
@@ -400,11 +436,17 @@ def _value_tokens(quote: str, rule: HarnessRule | None) -> tuple[list[_Tok], str
             _time_word(spaced.group(1)) or spaced.group(1).startswith((*_COUNT_UNITS, *extra))
         ):
             tail, end = spaced.group(1), spaced.end()  # '500 ms' · '14 ~ 16 ms' · '17 건'
+            spaced = None
         if b is None:
             nums, units = (a,), (tail or "",)
         else:  # 범위 — 한 끝에만 말이 붙었으면 두 끝이 같이 쓴다 ('14~16ms' · '14ms~16')
             ua = m.group("ua") or ""
             nums, units = (a, b), (ua or tail or "", tail or ua)
+        # 비교 말은 단위가 아니다 — 붙여 쓴 꼴('50초과')은 단위 자리에서 빼고, 띄어 쓴 꼴('50 초과')은 토큰에 넣지 않고 표시만 (#238)
+        compared = any(u.startswith(_COMPARE) for u in units) or bool(
+            spaced and spaced.group(1).startswith(_COMPARE)
+        )
+        units = tuple("" if u.startswith(_COMPARE) else u for u in units)
         lead = q[max(prev_end, m.start() - _RULE_LEAD) : m.start()]
         labels = list(label_rx.finditer(lead))
         out.append(
@@ -415,6 +457,7 @@ def _value_tokens(quote: str, rule: HarnessRule | None) -> tuple[list[_Tok], str
                 nums,
                 units,
                 labels[-1].group(0) if labels else None,
+                compared,
             )
         )
         prev_end = end
@@ -502,7 +545,10 @@ def value_check(
         if unit is not None:  # 시간 조절값
             if words:
                 return "same" if all(_time_word(w) for w in words) else "other"
-            return "same" if head_unit else "bare"
+            if head_unit:
+                return "same"
+            # 단위 없는 수 뒤 비교 말('2 초과')은 개수 문장 — 시간 값이 아니다 (#238)
+            return "other" if t.compared else "bare"
         if extra:
             return "same" if words and all(w.startswith(extra) for w in words) else "other"
         return "same" if all(w.startswith(_COUNT_UNITS) for w in words) else "other"
@@ -872,6 +918,15 @@ def contract_places(contract: TaskContract) -> list[tuple[str, str]]:
             for k, v in g.values.items()
         ]
     out += [(f"공개 테스트 {t.test_id}", t.checks) for t in contract.public_tests]
+    # README 에 그대로 나가는 그 밖의 칸 — #232: 빠져 있어 숨은 낱말이 지원자 README 로 나가도 재요청하지 않았다 (ui 계약은 background 가
+    # 필수라 프론트 과제는 늘 이 빈틈을 지났다). 앞 자리의 짚는 순서가 바뀌지 않게 끝에 둔다
+    out += [(f"설정 {s.key}", f"{s.key} {_words(s.key)} {s.meaning}") for s in contract.settings]
+    out += [("화면 조작 없이 나가는 요청(background)", contract.background or "")]
+    out += [(f"화면 {sc.route} 들어올 때(on_load)", sc.on_load or "") for sc in contract.screens]
+    out += [
+        (f"시드 파일 {i} 위치(path)", f"{fx.path} {_words(fx.path)}" if fx.path else "")
+        for i, fx in enumerate(contract.fixtures, 1)
+    ]
     return [(w, t) for w, t in out if t and t.strip()]
 
 
@@ -2223,30 +2278,38 @@ def _ui_form_fields(contract: TaskContract) -> list[str]:
         forms = [el for el in sc.elements if el.role == "form"]
         if not forms:
             continue
-        roles = {el.role for el in sc.elements}
-        missing = [
-            w
-            for w, ok in (("입력란", bool(roles & _FIELD_ROLES)), ("제출 버튼", "button" in roles))
-            if not ok
-        ]
-        if not missing:
-            continue
-        sent = [(f, e) for f in forms if (e := _form_endpoint(contract, f)) is not None]
-        if sent:
-            how = "; ".join(
-                f"{f.test_id} 는 {e.method} {e.path} 를 보낸다 — 요청 칸 {'·'.join(x.name for x in e.request) or '없음'} 중 사용자가 입력하는 칸마다"
-                for f, e in sent
+        # 폼마다 그 폼의 요소로 — fit_forms 와 같은 소속 (폼이 하나면 화면 전체, 여럿이면 test id 접두). #248: 화면 전체의 역할을
+        # 한데 모아 완전한 폼(login-form) 옆의 입력란·버튼 없는 폼(profile-form)을 놓쳤다. 빠진 것이 같은 폼끼리 한 문장
+        broken: dict[tuple[str, ...], list[UiElement]] = {}
+        for form in forms:
+            roles = {el.role for el in sc.elements if len(forms) == 1 or _owned(form, el)}
+            missing = tuple(
+                w
+                for w, ok in (
+                    ("입력란", bool(roles & _FIELD_ROLES)),
+                    ("제출 버튼", "button" in roles),
+                )
+                if not ok
             )
-            advice = f"{how} 입력란(textbox 등)을, 그리고 제출 버튼을 각각 test id 가 있는 요소로 적고 조작(action)을 쓴다"
-        else:
-            advice = (
-                "폼 요소의 조작(action)에 제출할 때 나가는 요청을 메서드·경로로 적고 (예: '제출 버튼을 누르면 POST /api/auth/login'), "
-                "그 요청 칸 중 사용자가 입력하는 칸마다 입력란(textbox 등)과 제출 버튼을 각각 test id 가 있는 요소로 적는다"
+            if missing:
+                broken.setdefault(missing, []).append(form)
+        for missing, bad in broken.items():
+            sent = [(f, e) for f in bad if (e := _form_endpoint(contract, f)) is not None]
+            if sent:
+                how = "; ".join(
+                    f"{f.test_id} 는 {e.method} {e.path} 를 보낸다 — 요청 칸 {'·'.join(x.name for x in e.request) or '없음'} 중 사용자가 입력하는 칸마다"
+                    for f, e in sent
+                )
+                advice = f"{how} 입력란(textbox 등)을, 그리고 제출 버튼을 각각 test id 가 있는 요소로 적고 조작(action)을 쓴다"
+            else:
+                advice = (
+                    "폼 요소의 조작(action)에 제출할 때 나가는 요청을 메서드·경로로 적고 (예: '제출 버튼을 누르면 POST /api/auth/login'), "
+                    "그 요청 칸 중 사용자가 입력하는 칸마다 입력란(textbox 등)과 제출 버튼을 각각 test id 가 있는 요소로 적는다"
+                )
+            out.append(
+                f"화면 {sc.route} 의 폼({', '.join(f.test_id for f in bad)})에 {'·'.join(missing)} 요소가 없음 — {advice} "
+                "(테스트는 test id 로만 찾는다). 입력란이 필요 없는 폼이면 form 대신 button 하나로 적는다"
             )
-        out.append(
-            f"화면 {sc.route} 의 폼({', '.join(f.test_id for f in forms)})에 {'·'.join(missing)} 요소가 없음 — {advice} "
-            "(테스트는 test id 로만 찾는다). 입력란이 필요 없는 폼이면 form 대신 button 하나로 적는다"
-        )
     return out
 
 
