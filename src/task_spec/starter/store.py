@@ -598,7 +598,9 @@ class BuildRepo(Protocol):
         at: datetime | None = None,
         detail: BuildFailure | None = None,
     ) -> BuildRecord:
-        """failed 로 — detail 이 있으면 끝까지 가지 못한 데까지의 계약·숨은 계획·표시·수리 기록도 남긴다."""
+        """failed 로 — detail 이 있으면 끝까지 가지 못한 데까지의 계약·숨은 계획·표시·수리 기록도 남긴다 (failure).
+        failure 는 결과(outcome) 저장 전 실패만 — 결과를 저장한 뒤의 실패는 결과를 그대로 두고 detail 은 쓰지 않는다 (Postgres 에서
+        같은 칸이고, 그때 실행기가 넘기는 detail 은 결과와 같은 것). #250: PG 는 결과 칸을 detail 로 덮고 메모리는 둘 다 남겼다."""
         ...
 
     async def recover_expired(
@@ -926,13 +928,16 @@ class InMemoryBuildStore:
     ) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
         check_transition(build, "failed")
+        failure = detail if detail is not None else build.failure
+        if build.outcome is not None:  # 결과 저장 뒤 실패 — 결과는 그대로, failure 는 비운다 (#250)
+            failure = None
         return self._put(
             build,
             status="failed",
             error=_reason(reason),
             finished_at=at or datetime.now(UTC),
             lease_until=None,
-            failure=detail if detail is not None else build.failure,
+            failure=failure,
         )
 
     async def recover_expired(
@@ -1654,8 +1659,11 @@ class PgBuildStore:
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):
-            check_transition(await self._locked(cur, build_id), "failed")
-            if detail is None:
+            build = await self._locked(cur, build_id)
+            check_transition(build, "failed")
+            # 결과를 저장한 뒤의 실패는 결과 칸을 그대로 둔다 — detail 로 덮으면 failure 가 비고, 계약 없는 detail 이면 contract 가
+            # NULL 이 돼 이 행을 읽지 못했다 (BuildRepo.fail, #250)
+            if detail is None or build.outcome is not None:
                 await cur.execute(
                     "UPDATE public.common_task_build SET status = 'failed', error = %s, "
                     "finished_at = COALESCE(%s, now()), lease_until = NULL WHERE id = %s RETURNING *",

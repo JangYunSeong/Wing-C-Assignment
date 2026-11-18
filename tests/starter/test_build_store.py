@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from task_spec.config import Settings
+from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
     README_FULL_PATH,
     README_PATH,
     BuildArtifact,
+    BuildFailure,
     BuildOutcome,
     BuildRecord,
     StarterFile,
@@ -257,6 +259,44 @@ async def run_lifecycle(store: BuildRepo, common_id: str, tag: str) -> None:
 
 async def test_lifecycle_in_memory() -> None:
     await run_lifecycle(InMemoryBuildStore(), "ct-0123456789ab", "t-mem")
+
+
+async def run_failure_record(store: BuildRepo, common_id: str) -> None:
+    """실패 빌드 기록 (#250) — 두 구현이 같은 계약 (Postgres 는 test_build_store_pg.py).
+
+    failure 는 결과(outcome)를 저장하기 전에 실패한 빌드만 — Postgres 에서 결과 칸과 같은 칸이라 둘을 함께 둘 수 없다. 결과를
+    저장한 뒤 실패하면(묶음 단계) 결과를 그대로 두고 failure 는 비운다. 예전에는 PG 가 결과 칸을 detail 로 덮어 failure 가
+    비었고(detail 에 계약이 없으면 행을 읽지 못함), 메모리는 outcome·failure 를 둘 다 남겼다."""
+    rec = RepairRecord(gate="⑤", target="gen_public", reason="가상 수리", result="skipped")
+    detail = BuildFailure(
+        contract=_contract(), hidden_plan=_plan(), review_flags=["가상 표시"], repairs=[rec]
+    )
+    # 결과 저장 전 실패 (빌드 단계) — 넘긴 것을 failure 로
+    early = (await store.new_build(common_id, "onto-test", AT)).build_id
+    await store.set_status(early, "generating")
+    got = await store.fail(early, "build: 가상 실패", AT, detail=detail)
+    for x in (got, await store.get(early)):
+        assert x is not None and x.outcome is None and x.failure == detail
+    # 넘긴 것이 없으면 (계약 전 실패) 비운다
+    bare = (await store.new_build(common_id, "onto-test", AT)).build_id
+    await store.set_status(bare, "generating")
+    got = await store.fail(bare, "contract: 가상 실패", AT)
+    for x in (got, await store.get(bare)):
+        assert x is not None and x.outcome is None and x.failure is None
+    # 결과 저장 뒤 실패 (묶음 단계) — 결과는 그대로, failure 는 비운다. 계약 없는 detail 도 결과 칸을 덮지 않는다
+    late = (await store.new_build(common_id, "onto-test", AT)).build_id
+    await store.set_status(late, "generating")
+    await store.set_status(late, "verifying")
+    await store.save_outcome(late, _outcome(H_OLD))
+    other = BuildFailure(review_flags=["다른 가상 표시"], repairs=[rec])
+    got = await store.fail(late, "package: 가상 실패", AT, detail=other)
+    for x in (got, await store.get(late)):
+        assert x is not None and (x.status, x.error) == ("failed", "package: 가상 실패")
+        assert x.outcome == _outcome(H_OLD) and x.failure is None
+
+
+async def test_failure_record_in_memory() -> None:
+    await run_failure_record(InMemoryBuildStore(), "ct-0123456789ab")
 
 
 async def test_approve_needs_readme() -> None:
