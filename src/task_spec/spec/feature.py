@@ -457,6 +457,15 @@ def find_terms(terms: Iterable[str], text: str) -> list[str]:
     return [t for t in dict.fromkeys(terms) if len(_norm(t)) >= 2 and _in_text(t, text)]
 
 
+def title_allowed_text(seed: FeatureSeed) -> str:
+    """자료 제목에 써도 되는 말이 있는 글 — 재료의 업무 요구와 자료 종류 이름(괄호 앞). 그 말은 자료의 이름이라 괜찮다
+    (예: DBA "DB 정리 작업 설정"). 괄호 안 설명의 말은 안 된다. 1단계 자료 제목(명세 검사)과 지원자 README 의 자료 목록
+    (README 검사 starter/static_check.readme_flags)이 같은 규칙을 쓴다 — 2026-11-18: README 검사만 이 허용을 몰라
+    명세가 통과시킨 자료 제목('운영 DB 왕복 지연 지표' 등)을 '명세 수정 필요'로 표시했다."""
+    names = "\n".join(re.split(r"[(（]", d, maxsplit=1)[0] for d in seed.discoverable_by)
+    return "\n".join([seed.business_need, names])
+
+
 def public_text(out: DraftFeatureOutput) -> str:
     """지원자가 처음부터 보는 1단계 글 — 제목·상황·공개 요구·공개 수용 기준·제출물."""
     return "\n".join(
@@ -850,10 +859,9 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
                 + " — 상황은 만들 기능만, 운영 조건은 자료(원시 값)와 정확히 짚은 질문의 구체 답에서만"
                 + _quote(cond, story)
             )
-        # 1단계 자료 제목 (요청 전부터 보이고, v5 단서 자료 답이 제목을 그대로 쓴다) — 재료의 자료 종류 이름(괄호 앞)에
-        # 나온 말은 그 자료의 이름이라 괜찮다 (예: DBA "DB 정리 작업 설정"). 괄호 안 설명의 말은 안 된다
-        names = "\n".join(re.split(r"[(（]", d, maxsplit=1)[0] for d in seed.discoverable_by)
-        allowed = "\n".join([seed.business_need, names])
+        # 1단계 자료 제목 (요청 전부터 보이고, v5 단서 자료 답이 제목을 그대로 쓴다) — 재료의 업무 요구·자료 종류 이름에
+        # 나온 말은 괜찮다 (title_allowed_text — README 검사와 같은 규칙)
+        allowed = title_allowed_text(seed)
         art_titles = "\n".join(a.title for a in out.artifacts)
         tcond = [
             t for t in seed.trigger_terms if not _in_text(t, allowed) and _in_text(t, art_titles)

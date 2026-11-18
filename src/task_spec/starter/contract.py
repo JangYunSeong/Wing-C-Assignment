@@ -76,6 +76,8 @@ class SpecView:
     req_texts: dict[str, str] = field(
         default_factory=dict
     )  # r* → 공식 요구 문장 (새로 추가하는 API 인지 — _added_marked_existing)
+    # 1단계 자료 제목 — 지원자 README '진행 방식' 의 자료 목록 줄 (render.py). README 검사가 명세 검사와 같은 허용으로 본다
+    artifact_titles: tuple[str, ...] = ()
 
     @classmethod
     def from_task(cls, task: TaskItem) -> SpecView:
@@ -98,6 +100,7 @@ class SpecView:
             ),
             hidden_faults={h.ac_id: tuple(h.faults) for h in task.acceptance_hidden if h.faults},
             req_texts={r.req_id: r.text for r in task.requirements},
+            artifact_titles=tuple(a.title for a in task.artifacts),
         )
 
 

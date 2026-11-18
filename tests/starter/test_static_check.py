@@ -998,3 +998,62 @@ def test_generated_tests_may_not_skip() -> None:
         )
         == 3
     )
+
+
+def _material_seed(incident_id: str) -> Any:
+    from pathlib import Path
+
+    from task_spec.spec.incidents import incident_by_id, load_incidents
+
+    root = Path(__file__).resolve().parents[2] / "incidents" / "public_v1"
+    inc = incident_by_id(load_incidents(root), incident_id)
+    assert inc is not None and inc.feature is not None
+    return inc.feature
+
+
+def _readme_leaks(text: str, seed: Any, titles: tuple[str, ...]) -> list[str]:
+    from task_spec.starter.static_check import readme_flags
+
+    spec = SpecView(
+        req_ids=(),
+        public_ac_ids=(),
+        hidden_acs={},
+        trap_ids=(),
+        visible_texts=(),
+        artifact_titles=titles,
+    )
+    flags = readme_flags(GeneratedFile(path="README.md", content=text), spec=spec, seed=seed)
+    return [f for f in flags if "숨은 요구" in f]
+
+
+def test_readme_artifact_list_allows_material_artifact_names_like_the_spec_check() -> None:
+    """2026-11-18 #251 배포 뒤: README 누설 검사가 명세 검사의 자료 제목 허용(재료의 업무 요구·자료 종류 이름에 나온 말)을 몰라,
+    명세가 통과시킨 '진행 방식' 자료 목록 줄을 '명세 수정 필요'로 표시했다 — 알파 README 49개 중 33개, 걸린 44줄이 모두 자료 목록.
+    실제 재료 셋의 걸렸던 줄로 고정한다. 같은 말이 자료 목록 밖에 나오거나, 승인된 자료 제목이 아니면 그대로 잡는다."""
+    cases = [
+        ("pub:sw.backend:list-query-per-row", "운영 DB 왕복 지연 지표", "왕복"),  # Java
+        (
+            "pub:sw.frontend:offline-replay-partial-failure",
+            "저장 API 오류 지표",
+            "오류 지표",
+        ),  # React
+        ("pub:sw.backend:retry-double-processing", "게이트웨이 전달 설정", "게이트웨이"),
+    ]
+    for incident_id, title, term in cases:
+        seed = _material_seed(incident_id)
+        listed = f"## 진행 방식\n\n- 저장소에 없는 다음 자료는 진행자에게 요청하면 받을 수 있다.\n  - {title}\n"
+        assert _readme_leaks(listed, seed, (title,)) == [], title
+        # 승인된 자료 제목이 아닌 줄, 자료 목록 밖(상황 글)에 나온 같은 말은 그대로 숨은 말
+        assert _has(_readme_leaks(listed, seed, ()), term), title
+        assert _has(
+            _readme_leaks(f"# 과제\n\n{title} 를 보고 원인을 찾는다.\n" + listed, seed, (title,)),
+            term,
+        )
+
+
+def test_readme_artifact_list_still_flags_words_only_in_the_material_description() -> None:
+    """허용은 자료 종류 이름(괄호 앞)까지 — 괄호 안 설명의 말('저장 API 오류 지표 (재연결 직후 실패율)' 의 실패율)은 명세 검사처럼 잡는다."""
+    seed = _material_seed("pub:sw.frontend:offline-replay-partial-failure")
+    title = "저장 API 실패율 지표"
+    leaks = _readme_leaks(f"## 진행 방식\n\n  - {title}\n", seed, (title,))
+    assert _has(leaks, "실패율")
