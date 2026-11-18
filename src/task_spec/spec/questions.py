@@ -15,11 +15,7 @@ from dataclasses import dataclass, field
 
 from task_spec.llm import LLMClient
 from task_spec.llm.client import EmptyResponse, SchemaViolation, TransientLLMError
-from task_spec.nodes.pseudonymize import (
-    PseudonymizedNotAvailable,
-    derive_pseudonymized,
-    load_pseudonymized,
-)
+from task_spec.nodes.pseudonymize import load_claim_texts
 from task_spec.ontology.relatedness import Relatedness
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
@@ -132,37 +128,11 @@ async def make_questions(
 async def _claim_texts(
     state: RunState, claim_ids: list[str]
 ) -> tuple[dict[str, PseudonymizedText], list[NodeError]]:
+    # 가명화본 로딩·실패 처리는 세 곳이 같은 규칙 (load_claim_texts, #246)
     claims = {c.claim_id: c for c in state.claims}
-    sources: dict[str, PseudonymizedText | None] = {}
-    out: dict[str, PseudonymizedText] = {}
-    errors: list[NodeError] = []
-    for cid in claim_ids:
-        c = claims.get(cid)
-        if c is None:
-            continue
-        if c.doc_id not in sources:
-            ref = next((d for d in state.pseudo_docs if d.doc_id == c.doc_id), None)
-            try:
-                sources[c.doc_id] = (
-                    await asyncio.to_thread(load_pseudonymized, ref) if ref else None
-                )
-            except PseudonymizedNotAvailable:
-                sources[c.doc_id] = None
-        src = sources[c.doc_id]
-        try:
-            if src is None:
-                raise ValueError("가명화본 없음")
-            out[cid] = derive_pseudonymized(src, quote=c.quote, summary=c.action)
-        except ValueError:
-            errors.append(
-                NodeError(
-                    node=TASK,
-                    code="claim_not_pseudonymized",
-                    message="주장 텍스트 검사 실패",
-                    ref_id=cid,
-                )
-            )
-    return out, errors
+    return await load_claim_texts(
+        state, [claims[cid] for cid in claim_ids if cid in claims], node=TASK
+    )
 
 
 async def build_slot_verifications(

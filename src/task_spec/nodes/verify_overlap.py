@@ -23,7 +23,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -31,10 +30,9 @@ from typing import Any
 
 from task_spec.llm import LLMClient
 from task_spec.nodes.pseudonymize import (
-    PseudonymizedNotAvailable,
     derive_pseudonymized,
     join_pseudonymized,
-    load_pseudonymized,
+    load_claim_texts,
 )
 from task_spec.prompting import PromptError, PromptRegistry, assemble
 from task_spec.retrieve.cards import CardSet, CompetencyCard
@@ -44,7 +42,6 @@ from task_spec.schemas import (
     OverlapCheck,
     OverlapCheckResult,
     Provenance,
-    PseudoDocRef,
     PseudonymizedText,
     RunState,
     VerifyOverlapInput,
@@ -151,35 +148,9 @@ def _note(reason: str, ref: str) -> NodeError:
 async def _claim_texts(
     state: RunState,
 ) -> tuple[list[tuple[str, PseudonymizedText]], list[NodeError]]:
-    sources: dict[str, PseudonymizedText | None] = {}
-    texts: list[tuple[str, PseudonymizedText]] = []
-    errors: list[NodeError] = []
-    for c in state.claims:
-        if c.doc_id not in sources:
-            ref: PseudoDocRef | None = next(
-                (d for d in state.pseudo_docs if d.doc_id == c.doc_id), None
-            )
-            try:
-                sources[c.doc_id] = (
-                    await asyncio.to_thread(load_pseudonymized, ref) if ref else None
-                )
-            except (PseudonymizedNotAvailable, OSError, UnicodeDecodeError):
-                sources[c.doc_id] = None
-        src = sources[c.doc_id]
-        try:
-            if src is None:
-                raise ValueError("가명화본 없음")
-            texts.append((c.claim_id, claim_text(src, c)))
-        except ValueError:
-            errors.append(
-                NodeError(
-                    node=NODE,
-                    code="claim_not_pseudonymized",
-                    message="주장 텍스트 검사 실패",
-                    ref_id=c.claim_id,
-                )
-            )
-    return texts, errors
+    # 가명화본 로딩·실패 처리는 세 곳이 같은 규칙 (load_claim_texts, #246)
+    texts, errors = await load_claim_texts(state, state.claims, node=NODE, derive=claim_text)
+    return list(texts.items()), errors
 
 
 def _failure(exc: BaseException, message: str) -> NodeError:

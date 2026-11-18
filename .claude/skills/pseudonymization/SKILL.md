@@ -240,6 +240,9 @@ class PseudonymizedText(str):
 
 - 구현: `schemas/pseudo_text.py` — 생성에 모듈 private 토큰 `_MINT` 필요. 만드는 곳은 `nodes/pseudonymize.py` 의
   `mint_pseudonymized()`·`load_pseudonymized()`(검사 통과본만) 뿐. 입력 스키마 필드는 `PseudoTextField` 로 선언한다.
+- 가명화본이 없거나 읽을 수 없으면(경로·해시 불일치, 없는 파일·OSError, UTF-8 아님) `load_pseudonymized()` 는 모두
+  `PseudonymizedNotAvailable` 하나로 낸다. 주장 텍스트를 가명화본에서 다시 만드는 곳(retrieve_t1·verify_overlap·면접 질문)은
+  `load_claim_texts()` 만 쓴다 — 못 만든 주장은 빼고 `claim_not_pseudonymized`(id·고정 문구), 실행은 계속 (#246).
 - `prompting.assemble()` 과 임베딩 클라이언트는 지원자 텍스트 인자를 `PseudonymizedText` 로만 받는다.
 - 일반 `str` 을 넘기면 타입 검사(mypy/pyright)와 런타임 검사 둘 다에서 막힌다.
 

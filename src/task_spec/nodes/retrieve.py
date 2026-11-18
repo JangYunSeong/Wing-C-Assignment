@@ -13,17 +13,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from task_spec.llm import LLMClient
-from task_spec.nodes.pseudonymize import (
-    PseudonymizedNotAvailable,
-    derive_pseudonymized,
-    load_pseudonymized,
-)
+from task_spec.nodes.pseudonymize import load_claim_texts
 from task_spec.ontology.queries import evidence as query_evidence
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve.select import SelectInputClaim, candidate_refs, select
 from task_spec.retrieve.t1 import T1Retriever
-from task_spec.schemas import ClaimCandidates, NodeError, PseudonymizedText, RunState
+from task_spec.schemas import ClaimCandidates, NodeError, RunState
 
 T1 = "retrieve_t1"
 TOP_K = 10
@@ -64,34 +60,13 @@ def make_retrieve_t1(
                 ],
             }
 
-        errors: list[NodeError] = []
-        sources: dict[str, PseudonymizedText | None] = {}
-        inputs: list[SelectInputClaim] = []
-        for c, h in zip(state.claims, hits, strict=True):
-            if c.doc_id not in sources:
-                ref = next((d for d in state.pseudo_docs if d.doc_id == c.doc_id), None)
-                try:
-                    sources[c.doc_id] = (
-                        await asyncio.to_thread(load_pseudonymized, ref) if ref else None
-                    )
-                except PseudonymizedNotAvailable:
-                    sources[c.doc_id] = None
-            src = sources[c.doc_id]
-            try:
-                if src is None:
-                    raise ValueError("가명화본 없음")
-                text = derive_pseudonymized(src, quote=c.quote, summary=c.action)
-            except ValueError:
-                errors.append(
-                    NodeError(
-                        node=T1,
-                        code="claim_not_pseudonymized",
-                        message="주장 텍스트 검사 실패",
-                        ref_id=c.claim_id,
-                    )
-                )
-                continue
-            inputs.append(SelectInputClaim(claim_id=c.claim_id, text=text, hits=h))
+        # 가명화본에서 다시 만든 주장 텍스트만 (못 만든 주장은 빼고 claim_not_pseudonymized — 세 곳 같은 규칙, #246)
+        texts, errors = await load_claim_texts(state, state.claims, node=T1)
+        inputs = [
+            SelectInputClaim(claim_id=c.claim_id, text=texts[c.claim_id], hits=h)
+            for c, h in zip(state.claims, hits, strict=True)
+            if c.claim_id in texts
+        ]
 
         label = f"{sub}: {retriever.cards.sub_labels.get(sub, sub)}" if sub else "(미상)"
         res = await select(inputs, sub=label, cards=retriever.cards, llm=llm, prompts=prompts)
