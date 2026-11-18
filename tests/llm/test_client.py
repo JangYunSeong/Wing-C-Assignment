@@ -57,6 +57,40 @@ async def test_success_with_provenance() -> None:
     ]
 
 
+async def test_provenance_hash_covers_rendered_output_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #240: 같은 ref·같은 vN 파일이어도 출력 모델이 바뀌면 {{output_schema}} 가 바뀐다 — provenance 해시도 달라야 한다
+    # (예전엔 파일 바이트 해시라 plan_contract@31 + sha 가 서로 다른 프롬프트를 가리킬 수 있었다)
+    from pydantic import Field
+
+    from task_spec import schemas
+
+    cur = PROMPTS.get("extract_claims")
+    (tmp_path / "extract_claims").mkdir()
+    (tmp_path / "extract_claims" / cur.path.name).write_bytes(cur.path.read_bytes())
+    (tmp_path / "extract_claims" / "CURRENT").write_text(f"v{cur.meta.version}", "utf-8")
+
+    async def run() -> tuple[str, list[str], Any]:
+        tpl = PromptRegistry(tmp_path).get("extract_claims")
+        payload = ClaimExtractionInput(doc_kind="resume", text=mint_pseudonymized(TEXT))
+        prompt = assemble(tpl, payload, ontology_version="onto-v2026.11.02")
+        r = await _client(FakeBackend().push(Completion(GOOD))).call(prompt, ClaimExtractionOutput)
+        return tpl.sha256, [m.content for m in prompt.messages], r.provenance
+
+    file1, sent1, p1 = await run()
+
+    class ClaimExtractionOutputChanged(ClaimExtractionOutput):
+        note: str | None = Field(default=None, description="가상 설명")
+
+    monkeypatch.setattr(schemas, "ClaimExtractionOutput", ClaimExtractionOutputChanged)
+    file2, sent2, p2 = await run()
+    assert (p1.prompt, file1) == (p2.prompt, file2)  # 같은 ref, 같은 파일
+    assert sent1 != sent2  # 모델이 받는 프롬프트는 다르다
+    assert p1.prompt_sha256 != p2.prompt_sha256
+    assert p1.prompt_sha256 != file1  # 파일만의 해시가 아니다
+
+
 async def test_code_fence_is_tolerated() -> None:
     fake = FakeBackend().push(Completion(f"```json\n{GOOD}\n```"))
     r = await _client(fake).call(_prompt(), ClaimExtractionOutput)

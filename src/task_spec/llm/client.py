@@ -214,7 +214,8 @@ class LLMClient:
             return Provenance(
                 provenance_id=f"prov-{uuid.uuid4().hex[:12]}",
                 prompt=prompt.template.ref,
-                prompt_sha256=prompt.template.sha256,
+                # 파일 + 렌더된 출력 스키마 — 파일만의 해시(template.sha256)는 출력 모델이 바뀌어도 같다 (#240)
+                prompt_sha256=prompt.template.prompt_sha256,
                 model=prompt.model,
                 params={**params, **({"dropped": dropped} if dropped else {})},
                 fewshot_ids=prompt.fewshot_ids,

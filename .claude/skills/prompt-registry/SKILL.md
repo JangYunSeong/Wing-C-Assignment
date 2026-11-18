@@ -96,7 +96,16 @@ LLM 호출 1건마다:
 }
 ```
 
-- 해시는 **조립 전 템플릿 파일** 기준 (입력이 다르면 달라지는 값은 해시에 넣지 않는다).
+- `prompt_sha256` 은 **프롬프트 파일 바이트 + 렌더된 출력 스키마**의 해시다 [확정: 2026-11-18 사용자 — #240]:
+  `sha256(<파일 sha256 16진 64자> + "\n" + <{{output_schema}} 에 들어가는 글>)` = `PromptTemplate.prompt_sha256`.
+  출력 모델(`schemas/` 의 클래스·필드·설명)·`schema_style` 이 바뀌면 vN 파일이 같아도 모델이 받는 프롬프트가 바뀌므로 해시도 바뀐다
+  (파일 해시만 적던 때는 같은 `plan_contract@31`+해시가 서로 다른 프롬프트를 가리킬 수 있었다). 입력·판단 기준·예시처럼 호출마다 달라지는 값은 넣지 않는다.
+  새 칸을 더하지 않고 뜻만 바꿨다 — Provenance 는 체크포인트에 실리고 `extra=forbid` 라, 칸을 더하면 배포를 되돌릴 때 승인 대기 실행을 못 읽는다.
+- 파일만의 해시는 `PromptTemplate.sha256` 그대로 — 레지스트리·`PROMOTIONS.md`(§5)·평가 리포트 `meta.prompt_sha` 는 이 값이다.
+  2026-11-18 이전 provenance 의 `prompt_sha256` 은 파일 해시라 그 뒤 기록과 값으로 비교할 수 없다 (옛 기록은 PROMOTIONS 의 파일 sha256 과 맞춰 본다).
+- CURRENT 프롬프트마다 렌더된 출력 스키마의 해시를 `tests/prompting/output_schema_golden.json` 이 고정한다 — 출력 모델을 바꾸면
+  `test_output_schema_golden` 이 깨진다. 의도한 변경이면 (지시문과 어긋나면 새 vN 부터)
+  `UPDATE_OUTPUT_SCHEMA_GOLDEN=1 uv run pytest tests/prompting/test_output_schema_golden.py -q` 로 갱신해 같은 커밋에 넣는다.
 - 명세의 각 항목은 자신을 만든 provenance 를 id 로 가리킨다 → 승인자가 "왜 이 역량이 주인지" 따라갈 수 있어야 한다.
 
 ## 4. 코드 규칙
@@ -113,7 +122,7 @@ LLM 호출 1건마다:
 1. 새 `vN+1.md` 추가 (머리말 `changed` 필수, `eval: pending`).
 2. 평가셋으로 실행 (eval-harness): dev 로 고치고, **test(숨김)** 는 승격 판단 때 한 번.
 3. 정밀도·재현율·안정성이 **현재 CURRENT 보다 나빠지지 않을 때만** 승격 — 같은 test 에서 두 버전을 함께 돌려 비교.
-4. 사람이 승인하면 `CURRENT` 를 바꾸고 **`prompts/<task>/PROMOTIONS.md`** 에 날짜·버전·sha256·모델·수치·리포트·승인자를 적는다.
+4. 사람이 승인하면 `CURRENT` 를 바꾸고 **`prompts/<task>/PROMOTIONS.md`** 에 날짜·버전·sha256(파일)·모델·수치·리포트·승인자를 적는다.
    [확정: 2026-11-02] 평가 결과를 vN 머리말에 다시 쓰지 않는다 — 머리말을 고치면 sha256 이 바뀌어
    평가한 프롬프트와 provenance 해시가 어긋난다 (훅도 기존 vN 수정을 막는다). 머리말 `eval` 은 작성 시점 상태.
 

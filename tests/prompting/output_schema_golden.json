@@ -1,0 +1,197 @@
+{
+ "draft_analysis_request": {
+  "output_schema": "DraftAnalysisOutputV2",
+  "schema_style": "compact",
+  "sha256": "0843524e9e1301b283adaf223997d18f259a25d5814f714b4d335a3b82c633a1"
+ },
+ "draft_feature_task": {
+  "output_schema": "DraftFeatureOutputV6",
+  "schema_style": "compact",
+  "sha256": "74656ff99f67dd94eeba980b0f71742d02ee7f25e29d44a9dfaa47f1eb14f01a"
+ },
+ "draft_slot": {
+  "output_schema": "DraftSlotOutput",
+  "schema_style": "json",
+  "sha256": "d427838ebaedc574af5768bad8ce66ba2d4f567e84128b93fdbf64c8fb6b2bf9"
+ },
+ "draft_task": {
+  "output_schema": "DraftTaskOutputV3",
+  "schema_style": "json",
+  "sha256": "55f43270ab1b7a3a9abbe3d9fba4f2c67e13e90e18f4739229bbe95f76694615"
+ },
+ "expand_match_terms": {
+  "output_schema": "ExpandTermsOutput",
+  "schema_style": "compact",
+  "sha256": "a74b1c14c14d86dfaca0ab22b4049288fec31b4775723d0b4b2424f67d4c75d7"
+ },
+ "extract_claims": {
+  "output_schema": "ClaimExtractionOutput",
+  "schema_style": "json",
+  "sha256": "fc70841850d7e4b9db61fbeec8a2a6d8a135bbbe79594d88b07e4ec85abffe76"
+ },
+ "facilitator_choose": {
+  "output_schema": "FacilitatorChooseOutput",
+  "schema_style": "compact",
+  "sha256": "d1388df41a790db59a2c0c98f2d74ff6c32f9c0948087075f47fadee74a5ba7e"
+ },
+ "fix_feature_fields": {
+  "output_schema": "FieldFixOutput",
+  "schema_style": "compact",
+  "sha256": "7c932ff309c646c13d81bcd938887c54be21b4ad1a20898f16a19a15eb3e9c65"
+ },
+ "gen_accepted": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_accepted_py": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_accepted_react": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_hidden": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_hidden_py": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_hidden_react": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_naive": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_naive_py": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_naive_react": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_public": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_public_py": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_public_react": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_starter": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_starter_py": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_starter_react": {
+  "output_schema": "GeneratedFiles",
+  "schema_style": "compact",
+  "sha256": "bb4f1e82d92937f32e7595735eb4b53b2371e305fd96513e3b1fdeecff820cf5"
+ },
+ "gen_trap": {
+  "output_schema": "GenTrapOutput",
+  "schema_style": "compact",
+  "sha256": "23633257835f0c117313cc446ff0d965e1278ac8d0c50f8f3889face6a358350"
+ },
+ "gen_variant": {
+  "output_schema": "GenVariantOutput",
+  "schema_style": "compact",
+  "sha256": "8b3a20fcfa7782036390091e493af879595ea48f417520b3f915666d456d1626"
+ },
+ "grade_solo": {
+  "output_schema": "GradeSoloOutput",
+  "schema_style": "json",
+  "sha256": "a928e9a84de5bf34c6da00172ff00c1db4d8910f0366aab255942bdd86fb87f8"
+ },
+ "judge_draft_task": {
+  "output_schema": "JudgeDraftOutput",
+  "schema_style": "json",
+  "sha256": "58e32f74e9f5b41de67aae88b03e9e9994df4873bbf112e0b98b73f55b99fd11"
+ },
+ "judge_fact_leak": {
+  "output_schema": "JudgeLeakOutputV2",
+  "schema_style": "compact",
+  "sha256": "49133b3c136511b9bdafb5291f6a3db89a34add0e8606c6f1e20ac856f2ede81"
+ },
+ "judge_overlap": {
+  "output_schema": "JudgeOverlapOutput",
+  "schema_style": "json",
+  "sha256": "71ae4607f726d050144a0702c9c5cb47438f53ea5473d9f6d4a4e861fbc9da43"
+ },
+ "judge_trap_facts": {
+  "output_schema": "JudgeTrapsOutput",
+  "schema_style": "json",
+  "sha256": "3a919d120e70084c1dc67b22200eee1a26d3996e59787a39be8bbc0cdc0a5db8"
+ },
+ "plan_contract": {
+  "output_schema": "PlanContractOutput",
+  "schema_style": "compact",
+  "sha256": "022bb222f39bfe779be898f454bfdcb882cc7a7263861ecc631a0a88242e97c3"
+ },
+ "segment_posting": {
+  "output_schema": "SegmentPostingOutput",
+  "schema_style": "json",
+  "sha256": "55b693cc82703ae9558a0d25dfeb594aa02b585dc920e4d2237b7f6fefe96fcc"
+ },
+ "select_competency": {
+  "output_schema": "SelectCompetencyOutput",
+  "schema_style": "json",
+  "sha256": "60fa90cac7a6d5e3ca29529521cf18976d6824a8b37c565b5f361898bcfa9cee"
+ },
+ "slot_questions": {
+  "output_schema": "SlotQuestionsOutput",
+  "schema_style": "json",
+  "sha256": "c1494715b349923e84f58e6ad17e7431971d938941743412abb54e0c195c6247"
+ },
+ "solve_select": {
+  "output_schema": "SolveSelectOutput",
+  "schema_style": "json",
+  "sha256": "9624e3bedf93f5d48ac8019deef16d81653c4471257395636b10a61c7f3e11da"
+ },
+ "solve_task": {
+  "output_schema": "SolveTaskOutput",
+  "schema_style": "json",
+  "sha256": "2d9e94bd9578adf73b2d76b8dcc69625635555540d34a046a44464f44a0aa6c7"
+ },
+ "suggest_field": {
+  "output_schema": "SuggestFieldOutput",
+  "schema_style": "json",
+  "sha256": "2a52661f583dec0a1646246c831fc0227e55baae52d397371cf5464e9f0aa502"
+ },
+ "verify_overlap": {
+  "output_schema": "VerifyOverlapOutput",
+  "schema_style": "json",
+  "sha256": "ec9e7e6e257c857f35c3fa06c75b34533380a9041caa4fde7c593de9cc1cb9a3"
+ },
+ "verify_task": {
+  "output_schema": "VerifyTaskOutput",
+  "schema_style": "json",
+  "sha256": "5649673861ae5530eee0cfb01fd6642744bc5d502db2e02cc350908e6fa4fea6"
+ }
+}

@@ -24,6 +24,8 @@ def test_assemble_renders_all_variables() -> None:
     assert TEXT in joined
     assert "{{" not in joined
     assert '"claims"' in joined  # output_schema 가 들어감
+    # provenance prompt_sha256 이 덮는 글이 그대로 들어간다 (#240)
+    assert PROMPTS.get("extract_claims").output_schema_text in joined
     assert p.model == "opencode:qwen3.8-flash"
     assert p.ontology_version == "onto-v2026.11.02"
 
