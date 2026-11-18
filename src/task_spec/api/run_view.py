@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 
 from task_spec.api.launcher import RunLauncher
 from task_spec.api.schemas import RunListItem, RunView
+from task_spec.postings.company import PostingCompany, company_id
 from task_spec.schemas import ApprovalSummary, RunState, TaskSpec
 from task_spec.spec.summary import approval_summary
 
@@ -35,25 +37,40 @@ async def load_run_view(
     return run_view(snapshot, launcher, run_id)
 
 
+CompanyResolver = Callable[[set[str]], Awaitable[dict[str, PostingCompany]]]
+
+
 async def list_runs(
     graph: CompiledStateGraph,
     launcher: RunLauncher,
     *,
-    limit: int,
+    limit: int | None = None,
     statuses: frozenset[str] | None = None,
+    companies: CompanyResolver | None = None,
+    company: str | None = None,
 ) -> list[RunListItem]:
-    """최근에 시작한 실행부터 (상태를 고르면 그 상태만). 시작 시각 = thread 의 첫 체크포인트(source=input)."""
+    """최근에 시작한 실행부터 — limit 이 없으면 전부. 상태·회사(id 또는 표기 — 같은 규칙으로 맞춤)를 고르면 그것만.
+    시작 시각·공고 = thread 의 첫 체크포인트(source=input)와 그 그래프 입력 — 회사로 먼저 걸러 상태를 읽는 실행을 줄인다."""
     saver = graph.checkpointer
     if not isinstance(saver, BaseCheckpointSaver):
         return []
     # 목록을 다 받은 뒤 실행마다 상태를 읽는다 — 목록을 도는 동안 같은 저장소를 다시 부르지 않게
-    starts = [
-        (t.config["configurable"]["thread_id"], t.checkpoint["ts"])
-        async for t in saver.alist(None, filter={"source": "input"})
-    ]
-    runs = sorted((x for x in starts if RUN_ID.fullmatch(x[0])), key=lambda x: x[1], reverse=True)
+    starts: list[tuple[str, str, str | None]] = []
+    async for t in saver.alist(None, filter={"source": "input"}):
+        run_id = t.config["configurable"]["thread_id"]
+        if not RUN_ID.fullmatch(run_id):
+            continue
+        start = (t.checkpoint.get("channel_values") or {}).get("__start__")
+        posting = start.get("posting_id") if isinstance(start, dict) else None
+        starts.append((run_id, t.checkpoint["ts"], posting))
+    starts.sort(key=lambda x: x[1], reverse=True)
+    found = await companies({p for _, _, p in starts if p}) if companies else {}
+    wanted = company_id(company) if company else None
     out: list[RunListItem] = []
-    for run_id, started in runs:
+    for run_id, started, posting in starts:
+        c = found.get(posting) if posting else None
+        if company and (c is None or c.company_id != wanted):
+            continue
         snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
         view = run_view(snapshot, launcher, run_id, detail=False)
         if view is None or (statuses and view.status not in statuses):
@@ -64,14 +81,17 @@ async def list_runs(
                 status=view.status,
                 current_node=view.current_node,
                 revision=view.revision,
-                posting_id=(snapshot.values or {}).get("posting_id"),
+                posting_id=posting or (snapshot.values or {}).get("posting_id"),
+                company_id=c.company_id if c else None,
+                company=c.name if c else None,
+                company_known=c.known if c else None,
                 started_at=datetime.fromisoformat(started),
                 updated_at=datetime.fromisoformat(snapshot.created_at)
                 if snapshot.created_at
                 else None,
             )
         )
-        if len(out) >= limit:
+        if limit is not None and len(out) >= limit:
             break
     return out
 

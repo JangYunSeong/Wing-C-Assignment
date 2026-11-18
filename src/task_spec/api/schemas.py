@@ -39,13 +39,18 @@ class RunView(BaseModel):
 
 
 class RunListItem(BaseModel):
-    """실행 목록 한 줄 (GET /runs) — 상태·공고·시각만. 명세 초안·승인 요약은 GET /runs/{id} 로."""
+    """실행 목록 한 줄 (GET /runs) — 상태·공고·회사·시각만. 명세 초안·승인 요약은 GET /runs/{id} 로."""
 
     run_id: str
     status: RunStatus
     current_node: str | None = None
     revision: int | None = None
     posting_id: str | None = None
+    # 회사 (postings/company.py) — id 는 표기에서 공백·법인 표기를 뺀 값이라 온톨로지에 없는 새 회사도 생긴다.
+    # 표시 이름은 온톨로지 회사면 그 표기. company_known = 온톨로지 company 표에 있는 회사. 공고·회사를 모르면 셋 다 null
+    company_id: str | None = None
+    company: str | None = None
+    company_known: bool | None = None
     started_at: datetime | None = None  # thread 의 첫 체크포인트
     updated_at: datetime | None = None  # 마지막 체크포인트
 

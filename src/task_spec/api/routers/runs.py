@@ -38,6 +38,7 @@ from task_spec.api.schemas import (
 )
 from task_spec.api.uploads import store_uploads
 from task_spec.ontology.queries import posting_exists
+from task_spec.postings.company import PostingCompany, posting_companies
 from task_spec.postings.store import is_provisional
 from task_spec.schemas import ApprovalDecision, DocumentKind, RunInput, TaskSpec
 
@@ -48,13 +49,29 @@ _ERRORS = {404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}
 
 @router.get("")
 async def get_runs(
+    request: Request,
     graph: GraphDep,
     launcher: LauncherDep,
+    ontology: OntologyDep,
     status: Annotated[list[RunStatus] | None, Query()] = None,
-    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    company: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    limit: Annotated[int | None, Query(ge=1)] = None,
 ) -> list[RunListItem]:
-    """최근에 시작한 실행부터. `status` 를 여러 번 주면 그 상태들만 (예: ?status=running&status=awaiting_approval)."""
-    return await list_runs(graph, launcher, limit=limit, statuses=frozenset(status or ()))
+    """최근에 시작한 실행부터, limit 이 없으면 전부. `status` 를 여러 번 주면 그 상태들만
+    (예: ?status=running&status=awaiting_approval). `company` 는 회사 id 또는 표기 — 같은 규칙(공백·법인 표기 빼기)으로 맞춘다."""
+    ctx = getattr(request.app.state, "postings", None)
+
+    async def companies(ids: set[str]) -> dict[str, PostingCompany]:
+        return await posting_companies(ids, ontology=ontology, store=ctx.store if ctx else None)
+
+    return await list_runs(
+        graph,
+        launcher,
+        limit=limit,
+        statuses=frozenset(status or ()),
+        companies=companies,
+        company=company,
+    )
 
 
 @router.post("", status_code=202, responses={413: {"model": ErrorResponse}})
