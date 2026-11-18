@@ -1057,3 +1057,35 @@ def test_readme_artifact_list_still_flags_words_only_in_the_material_description
     title = "저장 API 실패율 지표"
     leaks = _readme_leaks(f"## 진행 방식\n\n  - {title}\n", seed, (title,))
     assert _has(leaks, "실패율")
+
+
+def test_readme_artifact_list_allows_only_operating_condition_words_like_the_spec_check() -> None:
+    """허용은 운영 조건 낱말(trigger_terms)만 — 명세 검사는 숨은 요구·원인 낱말을 자료 제목에서 늘 잡는다
+    (spec/feature.py). 자료 종류 이름에 그 말이 들어 있어도 README 자료 목록 줄에서 그대로 표시한다."""
+    seed = _material_seed("pub:sw.backend:list-query-per-row")
+    for term, title in [
+        ("쿼리 수", "운영 DB 쿼리 수 지표"),
+        ("항목마다 추가 조회", "항목마다 추가 조회 기록"),
+    ]:
+        named = seed.model_copy(update={"discoverable_by": [*seed.discoverable_by, title]})
+        assert _has(_readme_leaks(f"## 진행 방식\n\n  - {title}\n", named, (title,)), term), title
+
+
+def test_rendered_readme_artifact_list_line_is_allowed_like_the_spec_check() -> None:
+    """실제 render_readme 출력의 자료 목록 줄로 확인 — 렌더 모양(들여쓰기·'- ')과 검사의 줄 고르기가 어긋나면 잡는다."""
+    from task_spec.starter.static_check import readme_flags
+
+    seed = _material_seed("pub:sw.backend:list-query-per-row")
+    title = "운영 DB 왕복 지연 지표"
+    t = _approved()
+    task = t.model_copy(
+        update={"artifacts": [t.artifacts[0].model_copy(update={"title": title}), *t.artifacts[1:]]}
+    )
+    readme = render_readme(task, _contract_with_list(), JAVA)
+    spec = SpecView.from_task(task)
+    assert f"  - {title}" in readme.content
+    assert not _has(readme_flags(readme, spec=spec, seed=seed), "숨은 요구")
+    # 승인된 자료 제목이 아니면 같은 줄도 표시한다
+    assert _has(
+        readme_flags(readme, spec=replace(spec, artifact_titles=()), seed=seed), "숨은 요구", "왕복"
+    )

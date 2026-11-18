@@ -2621,7 +2621,8 @@ def readme_flags(
     #232: 운영 빌드(builder/steps.py)는 README 를 렌더만 하고 검사하지 않아 그 칸이 늘 비어 있었다 — 평가 러너의
     static_check(…, readme=…)와 같은 문장을 이 함수 하나가 만든다.
     '진행 방식' 의 자료 목록 줄(명세의 1단계 자료 제목 그대로 — spec.artifact_titles)은 명세 검사와 같은 허용으로 본다
-    (spec/feature.title_allowed_text — 재료의 업무 요구·자료 종류 이름에 나온 말). 2026-11-18: 이 허용을 몰라 명세가 통과시킨
+    — 운영 조건 낱말(trigger_terms)이 재료의 업무 요구·자료 종류 이름에 나왔으면 괜찮다 (spec/feature.title_allowed_text).
+    숨은 요구·원인 낱말·먼저 말할 개념은 명세 검사처럼 자료 제목에서도 표시한다. 2026-11-18: 이 허용을 몰라 명세가 통과시킨
     자료 제목을 '명세 수정 필요'로 표시했다 — 알파 README 49개 중 33개, 걸린 44줄이 모두 자료 목록 줄."""
     terms = hidden_terms(seed, spec)
     titles = set(spec.artifact_titles)
@@ -2629,7 +2630,12 @@ def readme_flags(
     rest: list[str] = []
     for line in readme.content.splitlines():
         (listed if line.strip().removeprefix("-").strip() in titles else rest).append(line)
-    allowed = title_allowed_text(seed) if seed is not None else ""
+    # 명세 검사와 같은 허용 — 운영 조건 낱말만. 숨은 요구·원인 낱말·먼저 말할 개념은 자료 제목에서도 안 된다
+    exempt: set[str] = set()
+    if seed is not None:
+        strict = {*spec.concepts, *seed.leak_terms, *seed.stage2_cause_terms}
+        allowed = title_allowed_text(seed)
+        exempt = {t for t in seed.trigger_terms if t not in strict and find_terms([t], allowed)}
     shown = [
         *(
             s
@@ -2640,7 +2646,7 @@ def readme_flags(
             s
             for _, hit in _leaks(
                 [GeneratedFile(path=readme.path, content="\n".join(listed))],
-                [t for t in terms if not find_terms([t], allowed)],
+                [t for t in terms if t not in exempt],
             )
             for s in hit
         ),
