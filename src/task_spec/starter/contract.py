@@ -2278,30 +2278,38 @@ def _ui_form_fields(contract: TaskContract) -> list[str]:
         forms = [el for el in sc.elements if el.role == "form"]
         if not forms:
             continue
-        roles = {el.role for el in sc.elements}
-        missing = [
-            w
-            for w, ok in (("입력란", bool(roles & _FIELD_ROLES)), ("제출 버튼", "button" in roles))
-            if not ok
-        ]
-        if not missing:
-            continue
-        sent = [(f, e) for f in forms if (e := _form_endpoint(contract, f)) is not None]
-        if sent:
-            how = "; ".join(
-                f"{f.test_id} 는 {e.method} {e.path} 를 보낸다 — 요청 칸 {'·'.join(x.name for x in e.request) or '없음'} 중 사용자가 입력하는 칸마다"
-                for f, e in sent
+        # 폼마다 그 폼의 요소로 — fit_forms 와 같은 소속 (폼이 하나면 화면 전체, 여럿이면 test id 접두). #248: 화면 전체의 역할을
+        # 한데 모아 완전한 폼(login-form) 옆의 입력란·버튼 없는 폼(profile-form)을 놓쳤다. 빠진 것이 같은 폼끼리 한 문장
+        broken: dict[tuple[str, ...], list[UiElement]] = {}
+        for form in forms:
+            roles = {el.role for el in sc.elements if len(forms) == 1 or _owned(form, el)}
+            missing = tuple(
+                w
+                for w, ok in (
+                    ("입력란", bool(roles & _FIELD_ROLES)),
+                    ("제출 버튼", "button" in roles),
+                )
+                if not ok
             )
-            advice = f"{how} 입력란(textbox 등)을, 그리고 제출 버튼을 각각 test id 가 있는 요소로 적고 조작(action)을 쓴다"
-        else:
-            advice = (
-                "폼 요소의 조작(action)에 제출할 때 나가는 요청을 메서드·경로로 적고 (예: '제출 버튼을 누르면 POST /api/auth/login'), "
-                "그 요청 칸 중 사용자가 입력하는 칸마다 입력란(textbox 등)과 제출 버튼을 각각 test id 가 있는 요소로 적는다"
+            if missing:
+                broken.setdefault(missing, []).append(form)
+        for missing, bad in broken.items():
+            sent = [(f, e) for f in bad if (e := _form_endpoint(contract, f)) is not None]
+            if sent:
+                how = "; ".join(
+                    f"{f.test_id} 는 {e.method} {e.path} 를 보낸다 — 요청 칸 {'·'.join(x.name for x in e.request) or '없음'} 중 사용자가 입력하는 칸마다"
+                    for f, e in sent
+                )
+                advice = f"{how} 입력란(textbox 등)을, 그리고 제출 버튼을 각각 test id 가 있는 요소로 적고 조작(action)을 쓴다"
+            else:
+                advice = (
+                    "폼 요소의 조작(action)에 제출할 때 나가는 요청을 메서드·경로로 적고 (예: '제출 버튼을 누르면 POST /api/auth/login'), "
+                    "그 요청 칸 중 사용자가 입력하는 칸마다 입력란(textbox 등)과 제출 버튼을 각각 test id 가 있는 요소로 적는다"
+                )
+            out.append(
+                f"화면 {sc.route} 의 폼({', '.join(f.test_id for f in bad)})에 {'·'.join(missing)} 요소가 없음 — {advice} "
+                "(테스트는 test id 로만 찾는다). 입력란이 필요 없는 폼이면 form 대신 button 하나로 적는다"
             )
-        out.append(
-            f"화면 {sc.route} 의 폼({', '.join(f.test_id for f in forms)})에 {'·'.join(missing)} 요소가 없음 — {advice} "
-            "(테스트는 test id 로만 찾는다). 입력란이 필요 없는 폼이면 form 대신 button 하나로 적는다"
-        )
     return out
 
 

@@ -842,6 +842,67 @@ def test_form_without_its_fields_is_sent_back() -> None:
     assert _ui_form_fields(TaskContract.model_validate(base)) == []
 
 
+def test_each_form_on_a_screen_needs_its_own_fields_and_button() -> None:
+    """#248: 화면 전체의 요소 역할을 한데 모아, 완전한 폼(login-form) 옆의 입력란·버튼 없는 폼(profile-form)을 놓쳤다 —
+    fit_forms 와 같은 소속(폼이 여럿이면 test id 접두)으로 폼마다 본다."""
+    from task_spec.starter.contract import _ui_form_fields, fit_forms
+
+    def write(eid: str, path: str, field: str) -> dict[str, Any]:
+        return {
+            "endpoint_id": eid,
+            "method": "POST",
+            "path": path,
+            "summary": "저장",
+            "request": [_field(field)],
+            "responses": [{"status": 200, "description": "저장", "body": [_field("id")]}],
+            "refs": ["r1"],
+        }
+
+    def el(test_id: str, role: str, action: str) -> dict[str, Any]:
+        return {
+            "test_id": test_id,
+            "role": role,
+            "description": test_id,
+            "action": action,
+            "refs": ["r1"],
+        }
+
+    login = [
+        el("login-form", "form", "제출하면 POST /api/auth/login"),
+        el("login-form-username", "textbox", "값을 입력한다"),
+        el("login-form-submit", "button", "클릭하면 POST /api/auth/login"),
+    ]
+    profile = el("profile-form", "form", "제출하면 프로필을 저장한다")
+    base = _contract().model_dump()
+    base["endpoints"] += [
+        write("e2", "/api/auth/login", "username"),
+        write("e3", "/api/profile", "nickname"),
+    ]
+    base["screens"][0] |= {"route": "/account", "elements": [*login, profile]}
+    c = TaskContract.model_validate(base)
+    # 조작에 메서드·경로가 없고 본문을 받는 변경 API 가 둘 — fit_forms 가 고치지 못해 검사가 물어야 한다
+    assert fit_forms(c) == (c, [])
+    [msg] = _ui_form_fields(c)
+    assert msg.startswith("화면 /account 의 폼(profile-form)에 입력란·제출 버튼 요소가 없음 — ")
+    assert "login-form" not in msg
+    # 완전한 폼만 빼면 예전과 같은 문장 (폼이 하나면 화면 전체가 그 폼의 것)
+    alone = base | {"screens": [base["screens"][0] | {"elements": [profile]}]}
+    assert _ui_form_fields(TaskContract.model_validate(alone)) == [msg]
+    # 빠진 것이 다른 폼은 따로 — 버튼만 없는 폼에 입력란이 없다고 하지 않는다
+    mixed = base | {"screens": [base["screens"][0] | {"elements": [*login[:2], profile]}]}
+    got = _ui_form_fields(TaskContract.model_validate(mixed))
+    assert len(got) == 2 and got[1] == msg
+    assert got[0].startswith(
+        "화면 /account 의 폼(login-form)에 제출 버튼 요소가 없음 — login-form 는 POST /api/auth/login 를 보낸다"
+    )
+    # 둘째 폼에도 제 입력란·버튼(접두 profile-)이 있으면 문제 없음
+    base["screens"][0]["elements"] += [
+        el("profile-nickname", "textbox", "값을 입력한다"),
+        el("profile-save", "button", "클릭하면 POST /api/profile"),
+    ]
+    assert _ui_form_fields(TaskContract.model_validate(base)) == []
+
+
 def _login_contract(
     action: str | None, request: list[dict[str, Any]], extra: list[dict[str, Any]] = ()
 ) -> TaskContract:
