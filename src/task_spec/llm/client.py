@@ -24,6 +24,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -202,6 +203,7 @@ class LLMClient:
         retries: list[str] = []
         total = Usage()
         started = time.monotonic()
+        called_at = datetime.now(UTC)  # 단가 적용일 기준 (llm/pricing.PRICE_CHANGES)
         schema_retry_used = False
         empty_retry_used = False
         # 빈 응답 (이미 low) → 같은 설정으로 MAX_RESAMPLES 회까지 (추론 설정을 못 바꾸는 모델은 MAX_FIXED_RESAMPLES)
@@ -224,7 +226,7 @@ class LLMClient:
                 ),
                 latency_ms=latency_ms,
                 cost_usd=cost_usd(
-                    prompt.model, total.input, total.output
+                    prompt.model, total.input, total.output, at=called_at
                 ),  # output 에 추론 토큰 포함 (OpenAI 호환 usage)
             )
 

@@ -31,7 +31,10 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
   실제 백엔드는 `OpenAICompatBackend`(ChatOpenAI, SDK 재시도 0), 조립은 `llm/factory.py` 의 `build_llm_client(settings)`.
 - 프로바이더별 허용 파라미터: `ALLOWED_PARAMS` (`llm/client.py`). 걸러진 키는 provenance `params.dropped`.
 - 키는 `Settings` 가 `.env` 에서 로드. 키 값을 로그·provenance·예외 메시지·`/healthz` 에 넣지 않는다.
-- 비용 계산용 단가는 `llm/pricing.py` 표 하나 (모르는 모델은 `cost_usd: null`).
+- 비용 계산용 단가는 `llm/pricing.py` 표 하나 (모르는 모델은 `cost_usd: null`). 출처·확인일을 함께 적고 추측해서 넣지 않는다.
+  값이 정해진 날 바뀌면 `PRICE_CHANGES` 에 적용 시작일을 둔다 — 호출 시작 시각(UTC)으로 고른다.
+  단가를 모르는 모델은 프로세스당 한 번 WARNING `llm price unknown model=…` (모델 이름만), CURRENT 프롬프트 모델은 테스트가 단가를 요구한다
+  [2026-11-18 #237 — Gemini 관문·gpt-4.1-mini 단가가 없어 빌드 예산이 그 비용을 0 으로 셌다].
 
 ## 재시도
 
