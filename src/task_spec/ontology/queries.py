@@ -39,6 +39,19 @@ async def posting_exists(repo: OntologyRepository, posting_id: str) -> bool:
     return bool(rows)
 
 
+async def position_companies(repo: OntologyRepository, posting_ids: list[str]) -> dict[str, str]:
+    """공고 id → 공고에 적힌 회사 표기 (없는 id 는 빠진다)."""
+    if not posting_ids:
+        return {}
+    rows = await repo.fetch("SELECT id, company FROM position WHERE id = ANY(%s)", (posting_ids,))
+    return {str(r["id"]): str(r["company"]) for r in rows if r["company"]}
+
+
+async def company_names(repo: OntologyRepository) -> list[str]:
+    """온톨로지 company 표의 회사 이름 (기본 키)."""
+    return [str(r["name"]) for r in await repo.fetch("SELECT name FROM company ORDER BY name")]
+
+
 async def search_positions(
     repo: OntologyRepository, terms: list[SearchTerm], *, pilot_only: bool, limit: int
 ) -> list[dict[str, object]]:

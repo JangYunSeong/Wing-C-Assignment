@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from langgraph.checkpoint.base import empty_checkpoint
@@ -306,11 +307,15 @@ async def test_list_runs_newest_first_with_status_filter(client: httpx.AsyncClie
         "current_node",
         "revision",
         "posting_id",
+        "company_id",
+        "company",
+        "company_known",
         "started_at",
         "updated_at",
     }
     assert rows[0]["posting_id"] == "posting-fake-001" and rows[0]["revision"] == 1
     assert rows[0]["current_node"] == "approval"
+    assert rows[0]["company_id"] is None  # 온톨로지·공고 저장소가 없으면 회사를 모른다
     assert rows[1]["started_at"] < rows[0]["started_at"] <= rows[0]["updated_at"]
 
     pending = (await client.get("/runs", params={"status": "awaiting_approval"})).json()
@@ -320,3 +325,64 @@ async def test_list_runs_newest_first_with_status_filter(client: httpx.AsyncClie
     assert [r["run_id"] for r in (await client.get("/runs?limit=1")).json()] == [second]
     assert (await client.get("/runs", params={"status": "가상"})).status_code == 422
     assert (await client.get("/runs", params={"limit": 0})).status_code == 422
+
+
+class _FakeOntology:
+    """회사 질의만 답하는 가상 온톨로지 (position.company·company 표)."""
+
+    def __init__(self, positions: dict[str, str], companies: list[str]) -> None:
+        self.positions, self.companies = positions, companies
+
+    async def fetch(self, query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
+        if "FROM company" in query:
+            return [{"name": n} for n in self.companies]
+        ids = params[0] if params else []
+        return [{"id": i, "company": self.positions[i]} for i in ids if i in self.positions]  # type: ignore[attr-defined]
+
+
+class _FakeProvisional:
+    def __init__(self, companies: dict[str, str | None]) -> None:
+        self.companies = companies
+
+    async def get_provisional(self, pid: str) -> dict[str, object] | None:
+        return {"id": pid, "company": self.companies[pid]} if pid in self.companies else None
+
+
+async def test_list_runs_by_company_including_companies_not_in_ontology(
+    client: httpx.AsyncClient,
+) -> None:
+    """회사로 묶고 거르기 — 회사 id 는 표기에서 공백·법인 표기를 뺀 값. 임시 공고의 표기가 온톨로지 회사와 같으면 같은 회사,
+    온톨로지에 없는 새 회사도 id 가 생긴다 (company_known=false). limit 이 없으면 회사의 실행을 전부."""
+    app = client._transport.app  # type: ignore[attr-defined]
+    app.state.postings = SimpleNamespace(
+        store=_FakeProvisional({"prov-fake0001": "(주) 가상 회사", "prov-fake0002": "New  Corp"})
+    )
+    ids = {}
+    for pid in ("posting-fake-001", "prov-fake0001", "prov-fake0002", "posting-fake-003"):
+        resp = await client.post("/runs", data={"posting_id": pid}, files=[("resumes", FAKE_FILE)])
+        assert resp.status_code == 202, resp.text
+        ids[pid] = resp.json()["run_id"]
+        await wait_status(client, ids[pid], "awaiting_approval")
+    app.state.ontology = _FakeOntology({"posting-fake-001": "가상회사"}, ["가상회사", "다른회사"])
+
+    rows = {r["posting_id"]: r for r in (await client.get("/runs")).json()}
+    assert len(rows) == 4
+    pick = ("company_id", "company", "company_known")
+    assert [rows[p][k] for p in ("posting-fake-001", "prov-fake0001") for k in pick] == [
+        "가상회사",
+        "가상회사",
+        True,
+    ] * 2  # 임시 공고도 온톨로지 표기로
+    assert [rows["prov-fake0002"][k] for k in pick] == ["newcorp", "New  Corp", False]
+    assert [rows["posting-fake-003"][k] for k in pick] == [None, None, None]  # 회사를 모르는 공고
+
+    async def by(company: str) -> list[str]:
+        return [
+            r["run_id"] for r in (await client.get("/runs", params={"company": company})).json()
+        ]
+
+    same = [ids["prov-fake0001"], ids["posting-fake-001"]]  # 최근 것부터
+    assert await by("가상회사") == same
+    assert await by("㈜가상 회사") == same  # 표기로 줘도 같은 규칙으로 맞춘다
+    assert await by("newcorp") == [ids["prov-fake0002"]]
+    assert await by("다른회사") == []

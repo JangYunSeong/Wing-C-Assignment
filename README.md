@@ -170,7 +170,7 @@ uv run python -m task_spec.builder --once    # 작업 하나만 처리하고 끝
 | `GET` | `/postings` | 공고 검색 (`q`, `pilot_only`, `limit`) |
 | `GET` | `/postings/{posting_id}` | 임시 공고 프로필 |
 | `POST` | `/runs` | 실행 생성 (multipart: `posting_id`, `resumes[]`) → `202` + `run_id` |
-| `GET` | `/runs?status=&limit=` | 실행 목록 — 최근에 시작한 것부터, 상태·공고·시작/마지막 시각만 (`status` 여러 번 가능) |
+| `GET` | `/runs?status=&company=&limit=` | 실행 목록 — 최근에 시작한 것부터, `limit` 이 없으면 전부. 상태·공고·회사(id·표기·온톨로지 회사인지)·시작/마지막 시각만. `status` 여러 번 가능, `company` 는 회사 id 또는 표기 |
 | `GET` | `/runs/{run_id}` | 실행 상태 (`running` · `awaiting_approval` · `done` · `rejected` · `failed`), 승인 대기 초안·요약 |
 | `GET` | `/runs/{run_id}/events` | 진행 상황 SSE |
 | `POST` | `/runs/{run_id}/approve` | 승인 결정으로 그래프 resume |
