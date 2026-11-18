@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,7 +17,7 @@ from task_spec.llm import (
 )
 from task_spec.llm.client import MAX_RESAMPLES, EmptyResponse, OutputTruncated
 from task_spec.nodes.pseudonymize import mint_pseudonymized
-from task_spec.prompting import PromptRegistry, assemble
+from task_spec.prompting import AssembledPrompt, PromptRegistry, assemble
 from task_spec.schemas import ClaimExtractionInput, ClaimExtractionOutput
 
 PROMPTS = PromptRegistry(Path(__file__).resolve().parents[2] / "prompts")
@@ -163,7 +165,6 @@ def test_unknown_model_has_no_cost_and_reasoning_model_drops_temperature() -> No
 
 
 async def test_timeout_is_retried_only_once_and_logged(caplog) -> None:  # type: ignore[no-untyped-def]
-    import logging
 
     fake = FakeBackend().push(
         TransientLLMError("APITimeoutError"),
@@ -331,3 +332,144 @@ async def test_empty_response_says_how_the_last_call_ended() -> None:
     with pytest.raises(EmptyResponse) as ei:
         await _client(fake).call(_prompt(), ClaimExtractionOutput)
     assert ei.value.finish_reason == "length" and "empty_truncated->resample" in str(ei.value)
+
+
+# --- #236: 재시도에서 reasoning_effort 를 넣을 수 있는 공급자·모델만 ---
+
+# CURRENT 머리말 그대로 — Gemini: gen_variant v3·gen_trap v2 (reasoning_effort 를 받지 않음),
+# gpt-4.1-mini: segment_posting v1 (비추론 모델 — 넣으면 요청 오류)
+NO_EFFORT_MODELS = [
+    ("gemini:gemini-3.8-flash", {"temperature": 0.2, "max_tokens": 12000}),
+    ("openai:gpt-4.1-mini", {"temperature": 0, "max_tokens": 4096}),
+]
+NO_EFFORT_IDS = ["gemini", "gpt-4.1-mini"]
+EMPTY_STOP = Completion("", Usage(500, 10, 0), "stop")
+
+
+def _prompt_as(model: str, params: dict[str, Any]) -> AssembledPrompt:
+    """같은 조립 결과를 다른 모델·설정으로 (머리말 model 이 백엔드를 고른다)."""
+    base = _prompt()
+    meta = base.template.meta.model_copy(update={"model": model, "params": params})
+    return base.model_copy(
+        update={
+            "template": base.template.model_copy(update={"meta": meta}),
+            "params": dict(params),
+        }
+    )
+
+
+def _client_for(model: str, fake: FakeBackend) -> LLMClient:
+    return LLMClient({model.partition(":")[0]: fake}, sleep=_no_sleep)
+
+
+@pytest.mark.parametrize(("model", "params"), NO_EFFORT_MODELS, ids=NO_EFFORT_IDS)
+@pytest.mark.parametrize("finish", ["stop", "length"])
+async def test_empty_retry_keeps_settings_when_reasoning_effort_cannot_be_set(
+    model: str, params: dict[str, Any], finish: str
+) -> None:
+    # 2026-11-18 #236: 예전엔 reasoning_effort=low 를 넣어 다시 불렀다 — Gemini 관문은 400 으로 빌드 실패,
+    # gpt-4.1-mini(/postings/suggest)는 500. 같은 설정으로 1회 다시 부른다 (빌드 생성기 reasoning_off_last 여도)
+    fake = FakeBackend().push(Completion("", Usage(500, 10, 0), finish), Completion(GOOD))
+    r = await _client_for(model, fake).call(
+        _prompt_as(model, params), ClaimExtractionOutput, reasoning_off_last=True
+    )
+    assert len(r.parsed.claims) == 1
+    assert [c[1] for c in fake.calls] == [params, params]
+    assert r.provenance.retries == 1 and "reasoning_effort" not in r.provenance.params
+
+
+@pytest.mark.parametrize(("model", "params"), NO_EFFORT_MODELS, ids=NO_EFFORT_IDS)
+async def test_empty_retry_without_reasoning_control_gives_up_after_one(
+    model: str, params: dict[str, Any]
+) -> None:
+    fake = FakeBackend().push(*[EMPTY_STOP] * (MAX_RESAMPLES + 2))
+    with pytest.raises(EmptyResponse) as ei:
+        await _client_for(model, fake).call(
+            _prompt_as(model, params), ClaimExtractionOutput, reasoning_off_last=True
+        )
+    assert type(ei.value) is EmptyResponse
+    assert [c[1] for c in fake.calls] == [params, params]  # 같은 설정으로 1회만 다시
+    assert "재시도 empty_resample->resample)" in str(ei.value)
+    assert ei.value.provenance is not None and ei.value.provenance.retries == 1
+
+
+@pytest.mark.parametrize(("model", "params"), NO_EFFORT_MODELS, ids=NO_EFFORT_IDS)
+async def test_split_mode_without_reasoning_control(model: str, params: dict[str, Any]) -> None:
+    # 빈+잘림: 같은 설정으로 1회 다시 → 그래도 비면 OutputTruncated (호출자가 입력을 나눈다)
+    fake = FakeBackend().push(TRUNC_EMPTY, TRUNC_EMPTY)
+    with pytest.raises(OutputTruncated):
+        await _client_for(model, fake).call(
+            _prompt_as(model, params), ClaimExtractionOutput, split_on_truncation=True
+        )
+    assert [c[1] for c in fake.calls] == [params, params]
+    # 내용이 있는 잘림은 같은 설정이면 같은 곳에서 다시 잘린다 — 바로 OutputTruncated
+    fake = FakeBackend().push(TRUNC_BROKEN, Completion(GOOD))
+    with pytest.raises(OutputTruncated):
+        await _client_for(model, fake).call(
+            _prompt_as(model, params), ClaimExtractionOutput, split_on_truncation=True
+        )
+    assert [c[1] for c in fake.calls] == [params]
+
+
+async def test_openai_reasoning_model_still_lowers_effort_on_empty() -> None:
+    # 추론 모델(gpt-5 계열 — solve_select·solve_task 머리말 medium)은 예전처럼 low 로 1회
+    params = {"max_tokens": 8000, "reasoning_effort": "medium"}
+    fake = FakeBackend().push(Completion("", Usage(500, 8000, 8000), "length"), Completion(GOOD))
+    r = await _client_for("openai:gpt-5.5", fake).call(
+        _prompt_as("openai:gpt-5.5", params), ClaimExtractionOutput
+    )
+    assert [c[1] for c in fake.calls] == [params, {**params, "reasoning_effort": "low"}]
+    assert r.provenance.params["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize(
+    ("model", "params"),
+    [("opencode:qwen3.8-flash", {"temperature": 0}), *NO_EFFORT_MODELS],
+    ids=["qwen-no-effort", *NO_EFFORT_IDS],
+)
+async def test_content_filter_is_never_retried(model: str, params: dict[str, Any]) -> None:
+    # #236: 추론 설정을 low 로 바꾸는 첫 재시도 갈래도 내용 필터를 다시 불렀다 — 같은 입력엔 같은 결정
+    fake = FakeBackend().push(Completion("", Usage(500, 0, 0), "content_filter"), Completion(GOOD))
+    with pytest.raises(EmptyResponse) as ei:
+        await _client_for(model, fake).call(_prompt_as(model, params), ClaimExtractionOutput)
+    assert len(fake.calls) == 1
+    assert ei.value.finish_reason == "content_filter" and "재시도 없음" in str(ei.value)
+
+
+async def test_qwen_retry_ladder_is_pinned(caplog: pytest.LogCaptureFixture) -> None:
+    # 운영 주력(opencode:qwen3.8-flash)의 재시도 사다리 — params 순서·retries 문자열까지 #236 고침 전과 같다
+    def seen(fake: FakeBackend) -> list[list[tuple[str, Any]]]:
+        return [list(c[1].items()) for c in fake.calls]
+
+    base = [("temperature", 0), ("max_tokens", 4096)]
+    low = [*base, ("reasoning_effort", "low")]
+    no_effort = _prompt().model_copy(update={"params": dict(base)})
+    # 추론 설정 없음 → low 로 1회 → 같은 설정으로 MAX_RESAMPLES 회 → EmptyResponse
+    fake = FakeBackend().push(*[EMPTY_STOP] * (MAX_RESAMPLES + 2))
+    with pytest.raises(EmptyResponse) as ei:
+        await _client(fake).call(no_effort, ClaimExtractionOutput)
+    assert seen(fake) == [base, *[low] * (MAX_RESAMPLES + 1)]
+    assert str(ei.value).endswith(
+        "재시도 empty_response->reasoning_effort=low,"
+        + ",".join(["empty_resample->resample"] * MAX_RESAMPLES)
+        + ")"
+    )
+    # CURRENT 머리말(low) + 빌드 생성기: 마지막 한 번은 추론 끔
+    fake = FakeBackend().push(*[TRUNC_EMPTY] * (MAX_RESAMPLES + 1))
+    with pytest.raises(EmptyResponse) as ei:
+        await _client(fake).call(_prompt(), ClaimExtractionOutput, reasoning_off_last=True)
+    assert seen(fake) == [*[low] * MAX_RESAMPLES, [*base, ("reasoning_effort", "none")]]
+    assert str(ei.value).endswith(
+        "재시도 "
+        + ",".join(["empty_truncated->resample"] * (MAX_RESAMPLES - 1))
+        + ",empty_truncated->reasoning_effort=none)"
+    )
+    # split 모드: 잘림 → low 로 1회 → 빈+잘림 같은 설정 1회 → 성공
+    fake = FakeBackend().push(TRUNC_BROKEN, TRUNC_EMPTY, Completion(GOOD))
+    with caplog.at_level(logging.INFO, logger="task_spec.llm.client"):
+        r = await _client(fake).call(no_effort, ClaimExtractionOutput, split_on_truncation=True)
+    assert seen(fake) == [base, low, low]
+    assert list(r.provenance.params.items()) == low and r.provenance.retries == 2
+    assert (
+        "reasons=output_truncated->reasoning_effort=low,empty_truncated->resample " in caplog.text
+    )
