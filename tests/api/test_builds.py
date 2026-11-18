@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -20,7 +21,7 @@ from task_spec.schemas.domain import (
 )
 from task_spec.schemas.package import CaseResult, VerifySummary, flag_id
 from task_spec.starter.store import InMemoryBuildStore, TaskLabel
-from tests.api.conftest import make_settings
+from tests.api.conftest import FakeOntology, FakeProvisional, make_settings
 from tests.starter.test_build_store import AT, FLAG, H_NEW, H_OLD, _artifact, _outcome
 
 CID = "ct-0123456789ab"
@@ -96,6 +97,42 @@ async def test_recent_builds_without_common_id_have_titles(tmp_path: Path) -> No
             detail["title"] == "가상 과제 제목"
             and detail["template_ref"] == "data/python-duckdb@v1"
         )
+
+
+async def test_builds_by_company(tmp_path: Path) -> None:
+    """선택한 회사의 빌드만 — 공통 과제 → 공고 → 회사 (GET /runs 와 같은 규칙: 표기에서 공백·법인 표기를 뺀 id,
+    온톨로지에 없는 새 회사도 id). limit 이 없으면 그 회사의 빌드를 전부."""
+    store = InMemoryBuildStore()
+    a1 = await store.new_build(CID, "onto-test", AT)
+    a2 = await store.new_build("ct-aaaaaaaaaaaa", "onto-test", AT)
+    b1 = await store.new_build("ct-bbbbbbbbbbbb", "onto-test", AT)
+    unknown = await store.new_build("ct-cccccccccccc", "onto-test", AT)
+    store.labels[CID] = TaskLabel(title="가상 과제 1", posting_id="가상_공고#001")
+    store.labels["ct-aaaaaaaaaaaa"] = TaskLabel(title="가상 과제 2", posting_id="prov-fake0001")
+    store.labels["ct-bbbbbbbbbbbb"] = TaskLabel(title="가상 과제 3", posting_id="prov-fake0002")
+    async with await _client(tmp_path, store) as c:
+        app = c._transport.app  # type: ignore[attr-defined]
+        app.state.ontology = FakeOntology({"가상_공고#001": "가상회사"}, ["가상회사"])
+        app.state.postings = SimpleNamespace(
+            store=FakeProvisional({"prov-fake0001": "㈜ 가상 회사", "prov-fake0002": "New Corp"})
+        )
+        rows = {r["build_id"]: r for r in (await c.get("/builds")).json()}
+        assert len(rows) == 4
+        pick = ("company_id", "company", "company_known")
+        assert [rows[a2.build_id][k] for k in pick] == ["가상회사", "가상회사", True]
+        assert [rows[b1.build_id][k] for k in pick] == ["newcorp", "New Corp", False]
+        assert [rows[unknown.build_id][k] for k in pick] == [None, None, None]
+
+        async def by(company: str, **extra: object) -> set[str]:
+            got = await c.get("/builds", params={"company": company, **extra})
+            return {r["build_id"] for r in got.json()}
+
+        assert await by("가상회사") == await by("(주)가상 회사") == {a1.build_id, a2.build_id}
+        assert await by("newcorp") == {b1.build_id}
+        assert await by("다른회사") == set()
+        assert len(await by("가상회사", limit=1)) == 1
+        detail = (await c.get(f"/builds/{a1.build_id}")).json()
+        assert (detail["company_id"], detail["company"]) == ("가상회사", "가상회사")
 
 
 async def test_missing_and_malformed_ids(tmp_path: Path) -> None:

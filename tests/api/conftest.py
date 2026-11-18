@@ -95,3 +95,26 @@ async def make_client(tmp_path: Path) -> AsyncIterator[AppFactory]:
 @pytest.fixture
 async def client(make_client: AppFactory) -> httpx.AsyncClient:
     return await make_client()
+
+
+class FakeOntology:
+    """회사 질의만 답하는 가상 온톨로지 (position.company·company 표) — 실행·빌드 목록의 회사 칸."""
+
+    def __init__(self, positions: dict[str, str], companies: list[str]) -> None:
+        self.positions, self.companies = positions, companies
+
+    async def fetch(self, query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
+        if "FROM company" in query:
+            return [{"name": n} for n in self.companies]
+        ids = params[0] if params else []
+        return [{"id": i, "company": self.positions[i]} for i in ids if i in self.positions]  # type: ignore[attr-defined]
+
+
+class FakeProvisional:
+    """임시 공고 저장소 대신 — 회사 칸만."""
+
+    def __init__(self, companies: dict[str, str | None]) -> None:
+        self.companies = companies
+
+    async def get_provisional(self, pid: str) -> dict[str, object] | None:
+        return {"id": pid, "company": self.companies[pid]} if pid in self.companies else None

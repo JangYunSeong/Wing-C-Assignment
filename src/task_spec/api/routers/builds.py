@@ -40,12 +40,12 @@ from collections import Counter
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Path, Query, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from task_spec.api.deps import BuildApprovalDep, BuildsDep, DeliveryDep
+from task_spec.api.deps import BuildApprovalDep, BuildsDep, DeliveryDep, OntologyDep
 from task_spec.api.errors import (
     BuildApprovalInvalid,
     BuildNotFound,
@@ -58,6 +58,7 @@ from task_spec.api.errors import (
     ReadmeNotAvailable,
 )
 from task_spec.graph.build_approval import outcome_key, thread_id
+from task_spec.postings.company import PostingCompany, company_id, posting_companies
 from task_spec.schemas.build import BuildStatus
 from task_spec.schemas.build_approval import BuildApprovalDecision, BuildApprovalState
 from task_spec.schemas.build_record import (
@@ -98,6 +99,10 @@ class BuildSummary(BaseModel):
     template_ref: str | None = None
     title: str | None = None  # 공통 과제 제목 (명세 본문은 넣지 않는다)
     posting_id: str | None = None
+    # 회사 — GET /runs 와 같은 규칙 (postings/company.py). 공고·회사를 모르면 셋 다 null
+    company_id: str | None = None
+    company: str | None = None
+    company_known: bool | None = None
     # 큐 (#128) — 생성 요청으로 만든 빌드만 채워진다
     requested_by: str | None = None
     requested_at: datetime | None = None
@@ -192,7 +197,9 @@ class TargetIn(BaseModel):
     role: ArtifactRole
 
 
-def _summary(b: BuildRecord, label: TaskLabel | None = None) -> BuildSummary:
+def _summary(
+    b: BuildRecord, label: TaskLabel | None = None, company: PostingCompany | None = None
+) -> BuildSummary:
     return BuildSummary(
         build_id=b.build_id,
         common_id=b.common_id,
@@ -205,6 +212,9 @@ def _summary(b: BuildRecord, label: TaskLabel | None = None) -> BuildSummary:
         template_ref=b.outcome.template_ref if b.outcome else None,
         title=label.title if label else None,
         posting_id=label.posting_id if label else None,
+        company_id=company.company_id if company else None,
+        company=company.name if company else None,
+        company_known=company.known if company else None,
         requested_by=b.requested_by,
         requested_at=b.requested_at,
         stage=b.stage,
@@ -225,15 +235,41 @@ async def _build(store: BuildRepo, build_id: str) -> BuildRecord:
     return b
 
 
+async def _companies(
+    request: Request, ontology: OntologyDep, labels: dict[str, TaskLabel]
+) -> dict[str, PostingCompany]:
+    """공통 과제 id → 회사 (공통 과제가 가리키는 공고의 회사)."""
+    ctx = getattr(request.app.state, "postings", None)
+    found = await posting_companies(
+        {lb.posting_id for lb in labels.values()},
+        ontology=ontology,
+        store=ctx.store if ctx else None,
+    )
+    return {cid: found[lb.posting_id] for cid, lb in labels.items() if lb.posting_id in found}
+
+
 @router.get("/builds")
 async def list_builds(
+    request: Request,
     store: BuildsDep,
+    ontology: OntologyDep,
     common_id: Annotated[str | None, Query(pattern=COMMON_ID)] = None,
-    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    company: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    limit: Annotated[int | None, Query(ge=1)] = None,
 ) -> list[BuildSummary]:
-    builds = await store.builds(common_id) if common_id else await store.recent(limit)
+    """최근 빌드부터, limit 이 없으면 전부. `company` 는 회사 id 또는 표기 (GET /runs 와 같은 규칙)."""
+    if common_id:
+        builds = await store.builds(common_id)
+    else:
+        builds = await store.recent(None if company else limit)
     labels = await store.task_labels({b.common_id for b in builds})
-    return [_summary(b, labels.get(b.common_id)) for b in builds]
+    companies = await _companies(request, ontology, labels)
+    if company:
+        wanted = company_id(company)
+        builds = [
+            b for b in builds if (c := companies.get(b.common_id)) and c.company_id == wanted
+        ][:limit]
+    return [_summary(b, labels.get(b.common_id), companies.get(b.common_id)) for b in builds]
 
 
 def _pending(snapshot: Any) -> dict[str, Any] | None:
@@ -349,7 +385,9 @@ async def request_build(
 
 
 @router.get("/builds/{build_id}")
-async def get_build(build_id: BuildIdPath, store: BuildsDep) -> BuildDetail:
+async def get_build(
+    build_id: BuildIdPath, request: Request, store: BuildsDep, ontology: OntologyDep
+) -> BuildDetail:
     b = await _build(store, build_id)
     o = b.outcome
     verdicts = {d.flag_id: d.verdict for d in b.review_decisions}
@@ -358,9 +396,10 @@ async def get_build(build_id: BuildIdPath, store: BuildsDep) -> BuildDetail:
         for f in (o.review_flags if o else [])
     ]
     kinds = Counter[str](f.kind for f in await store.files(build_id))
-    label = (await store.task_labels([b.common_id])).get(b.common_id)
+    labels = await store.task_labels([b.common_id])
+    companies = await _companies(request, ontology, labels)
     return BuildDetail(
-        **_summary(b, label).model_dump(),
+        **_summary(b, labels.get(b.common_id), companies.get(b.common_id)).model_dump(),
         tree_sha256=o.tree_sha256 if o else None,
         grader_sha256=o.grader_sha256 if o else None,
         verification=o.verification if o else {},

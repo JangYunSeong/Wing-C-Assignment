@@ -495,7 +495,9 @@ class BuildRepo(Protocol):
 
     async def builds(self, common_id: str) -> list[BuildRecord]: ...
 
-    async def recent(self, limit: int) -> list[BuildRecord]: ...
+    async def recent(self, limit: int | None) -> list[BuildRecord]:
+        """최근 빌드부터. limit=None 이면 전부."""
+        ...
 
     async def task_labels(self, common_ids: Iterable[str]) -> dict[str, TaskLabel]: ...
 
@@ -663,7 +665,7 @@ class InMemoryBuildStore:
             (b for b in self._builds.values() if b.common_id == common_id), key=lambda b: b.seq
         )
 
-    async def recent(self, limit: int) -> list[BuildRecord]:
+    async def recent(self, limit: int | None) -> list[BuildRecord]:
         rows = sorted(self._builds.values(), key=lambda b: (b.created_at, b.build_id), reverse=True)
         return rows[:limit]
 
@@ -1175,9 +1177,9 @@ class PgBuildStore:
             rows = await cur.fetchall()
         return [self._build(r) for r in rows]
 
-    async def recent(self, limit: int) -> list[BuildRecord]:
+    async def recent(self, limit: int | None) -> list[BuildRecord]:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
+            await cur.execute(  # LIMIT NULL = 전부
                 "SELECT * FROM public.common_task_build ORDER BY created_at DESC, id DESC LIMIT %s",
                 (limit,),
             )
