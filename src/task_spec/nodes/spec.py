@@ -122,7 +122,8 @@ def make_draft_spec(
     """공통 과제 = 결정적 골격 + 서술(LLM). 공고·온톨로지만 쓴다 — 지원자 문서·주장을 읽지 않는다 (불변식 3).
 
     공고 단위 저장소(store)가 있으면 같은 (공고, 온톨로지 버전, 프롬프트) 의 판을 재사용한다 — 승인된 판 우선.
-    revise 로 돌아오면 재사용하지 않고 승인자 수정 요청을 넣어 새 판을 만든다. 경험 검증 과제는 PR-4b.
+    revise 로 돌아오면 재사용하지 않고 승인자 수정 요청을 넣어 새 판을 만든다. 경험 검증만 다시 만들면
+    (revise_target=verification) 저장소를 다시 보지 않고 명세의 공통 과제를 그대로 쓴다 (#234).
     """
     drafter_ready = llm is not None and prompts is not None
     # 기능형 서술(draft_feature_task) — 프롬프트가 있으면 승인자 지정·승인된 판에 쓴다.
@@ -216,10 +217,20 @@ def make_draft_spec(
                 note, note_flags = safe_reviewer_note(revise.comment if revise else None)
                 flags = [*flags, *note_flags]  # 수정 요청을 보내지 못했으면 명세 단위로 알린다
                 redo_verify = revise is None or revise.revise_target != "common"
+                # 경험 검증만 다시 만들면 명세의 공통 과제를 그대로 쓴다 (#234) — 저장소에서 다시 고르면
+                # 그 사이 승인된 판·다른 실행의 새 판·바뀐 프롬프트의 새 판으로 바뀌어 승인자가 본 과제가 사라진다
+                prev = state.spec if revise is not None and not redo_common else None
+                kept = prev.common_tasks[0] if prev is not None and prev.common_tasks else None
                 reused = (
-                    await store.reusable(key) if store is not None and not redo_common else None
+                    await store.reusable(key)
+                    if store is not None and not redo_common and kept is None
+                    else None
                 )
-                if reused is not None:
+                if kept is not None and prev is not None:
+                    # 이 판에서 공통 과제를 만들지 않는다 (LLM 호출 없음) — provenance 는 이미 State 에 있다
+                    task = kept
+                    refs.extend(r.model_copy(update={"reused": True}) for r in prev.common_refs)
+                elif reused is not None:
                     task = reused.task
                     if reused.status != "approved":
                         task = task.model_copy(

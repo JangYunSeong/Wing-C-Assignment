@@ -231,7 +231,8 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
   검사: 원문 베끼기(가명화 토큰·인용 수치·12자 겹침), 연결 문구 수치·과제 정답 개념. 1회 재요청.
 - 명세 `slot_assignments`(모든 고른 주장 — 슬롯 없으면 면접 질문만) + `verification_tasks`(슬롯이 배정된 주장만:
   `slot_id`·`parent_task_id`·`link_text`·`follow_up_questions`, 시간·역량은 슬롯 것). 승인 전 슬롯이면 review_flags.
-- revise: `revise_target` = common(공통 과제·슬롯 새 판, 배정 유지) / verification(공통 과제·슬롯 재사용, 배정·질문만 다시 + `reassign` 반영) / all.
+- revise: `revise_target` = common(공통 과제·슬롯 새 판, 배정 유지) / verification(명세의 공통 과제·슬롯 그대로 — 저장소에서 판을 다시 고르지 않음 #234,
+  배정·질문만 다시 + `reassign` 반영) / all.
   `reassign {주장 id: 슬롯 id | null}` 은 revise 에서만.
 - 지원자별 확장 문항 서술(`verify_task`)은 폐기 — 서면 문항이 경험을 가리지 못함 (AI 단독 풀이 테스트 22/22 수준 3 이상).
 
@@ -240,7 +241,9 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 같은 공고 지원자는 같은 공통 과제를 받는다 (context.md §3). 키 = (posting_id, ontology_version, draft_task@N | skeleton).
 - draft_spec: revise 가 아니면 저장소에서 **승인된 최신 판 → 없으면 최신 초안**을 재사용 (LLM 호출 없음, 저장된 provenance 를 State 에 싣는다).
   없으면 생성 후 초안으로 저장. task_id = 저장 id(`ct-…`). 명세 `common_refs` 에 판 번호·재사용 여부를 남긴다.
-- revise: 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.
+- revise(common·all): 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.
+  revise(verification): 저장소를 보지 않고 명세가 가리키는 판을 그대로 둔다 (LLM 호출 없음, `common_refs` 의 `reused`=true) —
+  다시 고르면 그 사이 승인된 판·다른 실행의 새 판·배포로 바뀐 프롬프트의 새 판으로 바뀌었다 (#234).
 - finalize: 그 판을 approved 로, 같은 키의 이전 approved 판은 superseded 로 (이미 그 판을 받은 지원자의 명세는 그대로).
 - 승인 payload: `summary`(`schemas/summary.py ApprovalSummary` — 과제별 review_flags·시간 합계·공통 과제 판·대조 요약·검증 후보 claim_id·점수·사유) + `spec` + `provenance`.
   대조 요약의 `posting_checks` = 공고 역량마다 대조 결과·출처·확인 판정·근거 주장 id·역할·낮춤 여부 (`check_status` 함께).
