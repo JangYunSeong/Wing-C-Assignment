@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import timedelta
+import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -229,6 +230,78 @@ async def test_heartbeat_during_packaging_keeps_the_lease(tmp_path: Path) -> Non
     assert got is not None and got.status == "review"
     assert seen == ["verifying"]  # 묶음을 쓰는 동안은 아직 진행 중 상태
     assert [a.role for a in await store.artifacts(b.build_id)] == ["candidate", "grader"]
+
+
+async def test_a_heartbeat_store_error_is_logged_and_retried_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#245: heartbeat 가 저장소 예외(DB 일시 오류)를 내면 그 태스크가 예외로 끝나(이후 lease 를 늘리지 않음), 작업이 끝난 뒤
+    finally 의 await 가 그 예외를 다시 던졌다 — 결과는 이미 저장됐는데 worker 프로세스가 끝났다. 이제 기록하고 다음 차례에 다시."""
+    store, b = await _claimed(worker="w1")
+    real = store.heartbeat
+    calls: list[str] = []
+
+    async def flaky(build_id: str, worker: str, lease_s: float, at: datetime | None = None) -> bool:
+        calls.append(build_id)
+        if len(calls) == 1:  # 메시지(접속 정보·SQL 이 섞일 수 있음)는 로그에 남기지 않는다
+            raise RuntimeError("가상 DB 오류 SECRET-DSN")
+        return await real(build_id, worker, lease_s, at)
+
+    class SlowPackaging(FakeSteps):
+        async def register(
+            self, store: BuildRepo, job: Job, c: ContractResult, b: BuildResult, i: ImagesResult
+        ) -> None:
+            for _ in range(5):  # 묶음을 쓰는 동안 heartbeat 가 여러 번 돈다
+                await asyncio.sleep(0)
+            await super().register(store, job, c, b, i)
+
+    async def instant(_: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(store, "heartbeat", flaky)
+    log = logging.getLogger("task_spec.builder.runner")
+    log.addHandler(caplog.handler)  # task_spec 로거가 전파를 꺼도(configure_logging) 잡게
+    try:
+        got = await run_with_lease(
+            store, SlowPackaging(tmp_path), _cfg(tmp_path), b, worker="w1", sleep=instant
+        )
+    finally:
+        log.removeHandler(caplog.handler)
+    assert got is not None and got.status == "review"
+    assert len(calls) >= 2  # 다음 차례에 다시 불렀다
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(b.build_id in m and "RuntimeError" in m for m in msgs)  # 빌드 id·예외 종류만
+    assert not any("SECRET-DSN" in m for m in msgs)
+
+
+async def test_a_build_in_review_is_not_cancelled_while_cleaning_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#221 그대로: review 로 바꾼 뒤 정리(이미지 지우기) 중에는 heartbeat 가 '진행 중 아님'(False)이어도 이 worker 의 빌드면
+    작업을 취소하지 않는다 — #245 에서 heartbeat 를 다시 짜도 같아야 한다."""
+    store, b = await _claimed(worker="w1")
+    real = store.heartbeat
+    seen: list[bool] = []
+
+    async def spy(build_id: str, worker: str, lease_s: float, at: datetime | None = None) -> bool:
+        seen.append(await real(build_id, worker, lease_s, at))
+        return seen[-1]
+
+    class SlowCleanup(FakeSteps):
+        async def cleanup(self, images: list[str]) -> None:
+            for _ in range(5):  # 빌드는 이미 review — 그사이 heartbeat 가 돈다
+                await asyncio.sleep(0)
+            await super().cleanup(images)
+
+    async def instant(_: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(store, "heartbeat", spy)
+    steps = SlowCleanup(tmp_path)
+    got = await run_with_lease(store, steps, _cfg(tmp_path), b, worker="w1", sleep=instant)
+    assert got is not None and got.status == "review"
+    assert False in seen  # review 뒤 heartbeat 가 실제로 False 를 받았다
+    assert steps.cleaned == [["localhost/task/가상-candidate"]]  # 정리를 끝까지 했다
 
 
 async def test_a_build_that_died_while_packaging_is_not_retried(tmp_path: Path) -> None:

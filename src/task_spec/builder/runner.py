@@ -7,6 +7,7 @@
 - 비용: 단계마다 provenance 비용을 `record_stage` 로 쌓고, 작업당 상한을 넘으면 다음 단계로 가지 않는다 (단계 중간에는 끊지 않음 —
   수리 루프는 MAX_ROUNDS 가 막는다). 하루 상한은 `claim` 이 막는다.
 - lease: heartbeat 를 lease 의 1/3 마다. lease 를 잃으면(다른 worker 가 복구했거나 실패로 바뀜) 이 작업을 멈추고 상태를 건드리지 않는다.
+  heartbeat 의 저장소 오류(DB 일시 오류)는 빌드 id·예외 종류만 기록하고 다음 차례에 다시 (#245).
 - 실패: 사유는 짧게 (단계 + 원인 요약 또는 예외 종류) — 생성 코드·명세 원문·예외 메시지는 저장소·로그에 넣지 않는다.
   예외 전문은 작업 폴더의 error.txt 에만 (git 밖, 실패 작업 폴더를 남길 때).
 """
@@ -320,7 +321,8 @@ async def run_with_lease(
     worker: str,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> BuildRecord | None:
-    """lease 를 heartbeat 로 붙든 채 run_job. lease 를 잃으면 작업을 취소하고 None."""
+    """lease 를 heartbeat 로 붙든 채 run_job. lease 를 잃으면 작업을 취소하고 None.
+    heartbeat 의 저장소 오류(DB 일시 오류)는 기록하고 다음 차례에 다시 — 작업을 멈추거나 worker 를 끝내지 않는다 (#245)."""
     job = asyncio.create_task(run_job(store, steps, cfg, build))
 
     async def beat() -> None:
@@ -328,12 +330,24 @@ async def run_with_lease(
             await sleep(cfg.lease_seconds / 3)
             if job.done():
                 return
-            if not await store.heartbeat(build.build_id, worker, cfg.lease_seconds):
+            try:
+                if await store.heartbeat(build.build_id, worker, cfg.lease_seconds):
+                    continue
                 # 이 작업이 묶음까지 등록하고 review 로 바꿨으면 lease 가 더 필요 없다 — 남은 정리(이미지·작업 폴더)는 끝까지
                 now = await store.get(build.build_id)
-                if now is None or now.status != "review" or now.worker != worker:
-                    job.cancel()
-                return
+            except Exception as e:
+                # DB 일시 오류 — 기록하고 다음 차례에 다시. 예전에는 이 태스크가 예외로 끝나 lease 를 더 늘리지 않았고,
+                # 작업이 끝난 뒤 아래 finally 가 그 예외를 다시 던져 worker 가 끝났다 (#245)
+                logger.warning(
+                    "빌드 %s heartbeat 실패 (%s) — 다음 차례에 다시",
+                    build.build_id,
+                    type(e).__name__,  # 메시지는 남기지 않는다 (접속 정보·SQL 이 섞일 수 있음)
+                    extra={"build_id": build.build_id},
+                )
+                continue
+            if now is None or now.status != "review" or now.worker != worker:
+                job.cancel()
+            return
 
     hb = asyncio.create_task(beat())
     try:
@@ -344,8 +358,18 @@ async def run_with_lease(
         raise
     finally:
         hb.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await hb
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            # beat 가 잡지 못한 예외도 작업 결과를 덮거나 worker 를 끝내지 않게 — 기록만 (#245)
+            logger.warning(
+                "빌드 %s heartbeat 실패 (%s)",
+                build.build_id,
+                type(e).__name__,
+                extra={"build_id": build.build_id},
+            )
 
 
 @dataclass
