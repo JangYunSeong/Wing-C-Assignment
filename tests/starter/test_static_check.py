@@ -328,6 +328,55 @@ def test_identifier_words() -> None:
         identifier_words("int connectionPoolSize; long max_pool; String id;")
         == "connection pool size\nmax pool"
     )
+    # 케밥 표기도 낱말로 — 파일 이름·CSS 클래스·설정 키·경로 (#241)
+    assert identifier_words("retry-queue /api/retry-queue") == "retry queue"
+    assert identifier_words("shop.order.batch-size: 50") == "batch size"
+
+
+def test_kebab_and_snake_names_reveal_multi_word_hidden_terms() -> None:
+    """#241: 식별자 → 낱말이 '-' 를 나누지 않고 공용 _phrase 가 낱말 사이에 공백만 받아, 케밥 표기('race-condition'·'out-of-order')로
+    쓴 여러 낱말 숨은 낱말을 못 찾았다 (camel·snake 면 잡힘). 거꾸로 붙임표가 든 재료 낱말('single-flight')은 camel·snake 표기를 못 찾았다."""
+    from task_spec.schemas import PublicIncident
+    from task_spec.spec.feature import find_terms
+    from tests.starter.test_contract import ROOT
+    from tests.starter.test_frontend_template import FE
+    from tests.starter.test_frontend_template import _plan as fe_plan
+
+    assert find_terms(
+        ["race condition", "batch size"], "shop.order.batch-size · race_condition"
+    ) == [
+        "race condition",
+        "batch size",
+    ]
+    assert find_terms(["single-flight"], "같은 갱신을 single flight 로") == ["single-flight"]
+    # 밑줄이 든 재료 낱말은 식별자 그대로 — 낱말로 풀지 않는다 ('requires new' 는 흔한 영어)
+    assert find_terms(["REQUIRES_NEW"], "this requires new rows") == []
+    assert find_terms(["REQUIRES_NEW"], "propagation = REQUIRES_NEW") == ["REQUIRES_NEW"]
+
+    def leaks(material: str, *files: GeneratedFile) -> list[str]:
+        raw = (ROOT / "incidents" / "public_v1" / f"{material}.json").read_text("utf-8")
+        res = static_check(
+            [Overlay(kind="starter", files=files)],
+            template=FE,
+            plan=fe_plan(),
+            spec=SpecView.from_task(_task()),
+            seed=PublicIncident.model_validate_json(raw).feature,
+        )
+        return [m for m in res.for_target("gen_starter") if "숨은 요구" in m]
+
+    found = leaks(
+        "sw.frontend.stale-response",
+        _f("src/hooks/race-condition-guard.ts", "export const ready = true;\n"),
+        _f("src/components/List.tsx", 'export const L = () => <li className="out-of-order" />;\n'),
+    )
+    assert _has(found, "race-condition-guard.ts", "race condition")
+    assert _has(found, "List.tsx", "out of order")
+    for name in ("singleFlight", "single_flight"):
+        found = leaks(
+            "sw.frontend.token-refresh",
+            _f("src/auth/refresh.ts", f"export const {name} = new Map();\n"),
+        )
+        assert _has(found, "refresh.ts", "single-flight"), name
 
 
 def test_duplicate_reason_labels_in_one_case_file() -> None:

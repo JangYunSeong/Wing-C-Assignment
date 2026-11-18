@@ -120,7 +120,7 @@ _URL = re.compile(r"https?://([A-Za-z0-9.\-]+)")
 _LOCAL_HOSTS = re.compile(
     r"^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|(?:[\w-]+\.)*example\.(?:com|org|net)|[\w-]+\.test|[\w-]+\.invalid)$"
 )
-_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]*")  # 케밥 표기도 한 이름 (#241)
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _CONFIG_SUFFIX = (".yml", ".yaml", ".properties")
 
@@ -166,10 +166,10 @@ class StaticResult:
 
 
 def identifier_words(text: str) -> str:
-    """코드 식별자를 낱말로 푼 글 — connectionPoolSize · max_pool → "connection pool size" · "max pool"."""
+    """코드 식별자를 낱말로 푼 글 — connectionPoolSize · max_pool · retry-queue → "connection pool size" · "max pool" · "retry queue"."""
     words = []
     for ident in set(_IDENT.findall(text)):
-        spaced = _CAMEL.sub(" ", ident).replace("_", " ").strip().lower()
+        spaced = _CAMEL.sub(" ", ident).replace("_", " ").replace("-", " ").strip().lower()
         if " " in spaced:
             words.append(spaced)
     return "\n".join(sorted(words))
