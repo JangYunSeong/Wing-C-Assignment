@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from task_spec.nodes.spec import make_draft_spec
-from task_spec.schemas import ApprovalDecision, TaskItem, VerifyTarget
+from task_spec.schemas import ApprovalDecision, Claim, SlotAssignment, TaskItem, VerifyTarget
 from task_spec.spec.store import InMemoryCommonStore
 from task_spec.spec.verify import copied, item_difficulty, pick_targets
 from tests.spec.test_store import _state
@@ -76,6 +76,34 @@ async def test_revise_common_only_keeps_verification_items() -> None:
     assert s2.common_refs[0].revision == 2  # 공통 과제는 새 판
     assert [v.claims_to_verify for v in s2.verification_tasks] == [["c1"]]  # 확장 문항 유지
     assert s2.verification_tasks[0].parent_task_id == s2.common_tasks[0].task_id
+
+
+async def test_reassign_ignored_when_only_common_is_rebuilt() -> None:
+    """공통 과제만 다시 만들면 배정은 그대로 — 함께 온 슬롯 배정 바꾸기는 반영하지 않고 reassign_ignored 로 남긴다
+    (#249). 예전에는 errors·flags 모두 빈 채로 버렸다. 승인자 입력이라 모르는 주장 id 는 ref_id 에 남기지 않는다."""
+    draft = make_draft_spec(None, store=InMemoryCommonStore())
+    s1 = (await draft(_state("run-a")))["spec"]
+    kept = SlotAssignment(claim_id="c1", competency_ids=["comp:a"], basis="맞는 슬롯 없음")
+    s1 = s1.model_copy(update={"slot_assignments": [kept]})
+    decision = ApprovalDecision(
+        status="revise",
+        reviewer="reviewer-fake",
+        comment="공통 과제 자료를 줄여 주세요",
+        revise_target="common",
+        reassign={"c1": "s1", "c-가상-없음": None},
+        at=datetime(2026, 11, 3, tzinfo=UTC),
+    )
+    claims = [Claim(claim_id="c1", doc_id="d1", action="가상 행동", quote=QUOTE)]
+    out = await draft(_state("run-a", spec=s1, approval=decision, claims=claims))
+    assert out["spec"].slot_assignments == [kept]  # 배정 그대로
+    assert [(e.node, e.code, e.ref_id) for e in out.get("errors", [])] == [
+        ("draft_spec", "reassign_ignored", "c1"),
+        ("draft_spec", "reassign_ignored", None),
+    ]
+    # 경험 검증까지 다시 만들면 그대로 반영 경로 (기록 없음)
+    again = decision.model_copy(update={"revise_target": "all"})
+    out2 = await draft(_state("run-a", spec=s1, approval=again, claims=claims))
+    assert not [e for e in out2.get("errors", []) if e.code == "reassign_ignored"]
 
 
 async def test_revise_verification_only_reuses_common() -> None:

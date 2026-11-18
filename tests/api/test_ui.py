@@ -90,6 +90,17 @@ def test_ui_sends_the_revision_it_shows_with_a_decision() -> None:
     assert "/approve${rev}`" in js
 
 
+def test_ui_hides_and_does_not_send_reassign_when_only_common_is_rebuilt() -> None:
+    """공통 과제만 다시 만들면 배정은 그대로 — 배정 바꾸기를 숨기고 보내지 않는다 (#249)."""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
+        "utf-8"
+    )
+    assert '$("#reassign").hidden = v !== "revise" || $("#revise-target").value === "common";' in js
+    assert 'if (body.revise_target !== "common") {\n        const reassign = {};' in js
+
+
 def test_ui_shows_two_tier_clarification_answers() -> None:
     from pathlib import Path
 

@@ -235,7 +235,11 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
   `slot_id`·`parent_task_id`·`link_text`·`follow_up_questions`, 시간·역량은 슬롯 것). 승인 전 슬롯이면 review_flags.
 - revise: `revise_target` = common(공통 과제·슬롯 새 판, 배정 유지) / verification(명세의 공통 과제·슬롯 그대로 — 저장소에서 판을 다시 고르지 않음 #234,
   배정·질문만 다시 + `reassign` 반영) / all.
-  `reassign {주장 id: 슬롯 id | null}` 은 revise 에서만.
+  `reassign {주장 id: 슬롯 id | null}` 은 revise 의 verification·all 에서만 반영 — common 은 직전 배정을 그대로 두므로
+  함께 오면 반영하지 않고 `reassign_ignored`(주장마다, 아는 주장 id 만 ref_id)를 남긴다. 화면은 common 일 때 배정 바꾸기를
+  숨기고 보내지 않는다. 예전에는 기록 없이 버렸다 (#249). 결정 검증기로 막지 않는 이유: 노드 입력(State)을 만들 때
+  `ApprovalDecision` 의 mode="after" 검증기가 인스턴스에도 다시 돌아, 이미 저장된 체크포인트의 결정이 깨진다
+  (LangGraph 역직렬화의 model_construct 대체로는 못 피함 — `tests/schemas/test_approval.py`).
 - 지원자별 확장 문항 서술(`verify_task`)은 폐기 — 서면 문항이 경험을 가리지 못함 (AI 단독 풀이 테스트 22/22 수준 3 이상).
 
 ## 공고 단위 공통 과제 재사용 [확정: 2026-11-03] (`spec/store.py`, task_db `public.common_task`)

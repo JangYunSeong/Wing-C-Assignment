@@ -347,6 +347,17 @@ def make_draft_spec(
                         "provenance": [*update.get("provenance", []), *vprov],
                         "errors": [*update.get("errors", []), *verrs],
                     }
+        d = state.approval
+        if (
+            d is not None
+            and d.status == "revise"
+            and d.revise_target == "common"
+            and d.reassign
+            and state.spec is not None
+        ):
+            # 공통 과제만 다시 만들면 직전 배정을 그대로 둔다 — 함께 온 슬롯 배정 바꾸기는 반영하지 않고
+            # 기록만 (#249, 예전에는 기록 없이 버렸다). 공통 과제를 못 만든 판도 배정을 바꾸지 않으므로 같다
+            update["errors"] = [*update.get("errors", []), *_reassign_ignored(state, d)]
         spec = TaskSpec(
             spec_id=spec_id,
             run_id=state.run_id,
@@ -366,6 +377,25 @@ def make_draft_spec(
         return out
 
     return draft_spec
+
+
+def _reassign_ignored(state: RunState, d: ApprovalDecision) -> list[NodeError]:
+    """공통 과제만 다시 만드는(revise_target=common) 수정 요청의 슬롯 배정 바꾸기 → 반영하지 않았다는 기록 (#249).
+
+    결정 검증기로 막지 않는다 — 저장된 체크포인트의 결정은 노드 입력(State)을 만들 때 mode="after" 검증기가
+    다시 돌아 깨진다. 화면은 common 일 때 배정 바꾸기를 숨긴다. 승인자 입력이므로 아는 주장 id 만 ref_id 로 남긴다.
+    """
+    known = {c.claim_id for c in state.claims}
+    return [
+        NodeError(
+            node="draft_spec",
+            code="reassign_ignored",
+            message="공통 과제만 다시 만드는 수정 요청이라 슬롯 배정 바꾸기를 반영하지 않음 (배정 유지) — "
+            "경험 검증만 또는 전부로 다시 요청하세요",
+            ref_id=cid if cid in known else None,
+        )
+        for cid in d.reassign
+    ]
 
 
 def _apply_downgrade(
