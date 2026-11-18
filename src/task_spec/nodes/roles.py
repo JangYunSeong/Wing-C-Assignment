@@ -5,7 +5,7 @@
 | 칸                     | 역할          |
 | 과정 · 담당업무         | 참여 participate |
 | 기여한 점               | 주도 lead      |
-| 기여한 점·담당업무 + 설계 표현 | 설계 design (덮어씀) |
+| 기여한 점·담당업무 + 원문 인용에 설계 표현 | 설계 design (덮어씀) |
 | 문제 정의 · 성과 · 사용 기술 · 칸 밖 | 판정 안 함 (None) |
 
 판정 근거(role_basis)를 주장마다 남긴다 — 승인자가 "왜 주도인지" 따라갈 수 있게.
@@ -74,9 +74,9 @@ def decide_role(claim: Claim) -> tuple[Role | None, str]:
         return None, "no_field"
     role = _FIELD_ROLE.get(claim.field)
     basis = f"field:{claim.field}"
-    if claim.field in _DESIGN_FIELDS and DESIGN_TERMS.search(
-        f"{claim.action} {SECTION_MARKER.sub(' ', claim.quote)}"
-    ):
+    # 설계 표현은 원문 인용(quote — 원문 대조를 거친 글)에서만 찾는다. 행동 요약(action)은 LLM 이 쓴 글이라
+    # 같은 인용도 요약 문구에 따라 설계가 됐다 (#239, 불변식 6)
+    if claim.field in _DESIGN_FIELDS and DESIGN_TERMS.search(SECTION_MARKER.sub(" ", claim.quote)):
         return "design", basis + "+design_term"
     return role, basis
 
