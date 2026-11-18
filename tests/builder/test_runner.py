@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,13 @@ from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import BuildFailure, BuildRecord
 from task_spec.schemas.package import VerifySummary
 from task_spec.starter.static_check import Overlay
-from task_spec.starter.store import BuildRepo, CommonRef, InMemoryBuildStore, TaskLabel
+from task_spec.starter.store import (
+    LEASE_EXPIRED,
+    BuildRepo,
+    CommonRef,
+    InMemoryBuildStore,
+    TaskLabel,
+)
 from task_spec.starter.templates import load_template
 from tests.starter.test_build_store import H_OLD, _artifact
 from tests.starter.test_data_template import _contract, _plan
@@ -221,6 +229,44 @@ async def test_heartbeat_during_packaging_keeps_the_lease(tmp_path: Path) -> Non
     assert got is not None and got.status == "review"
     assert seen == ["verifying"]  # 묶음을 쓰는 동안은 아직 진행 중 상태
     assert [a.role for a in await store.artifacts(b.build_id)] == ["candidate", "grader"]
+
+
+async def test_a_build_that_died_while_packaging_is_not_retried(tmp_path: Path) -> None:
+    """#244: 응시용 묶음을 등록한 직후 builder 가 죽으면(SIGKILL·OOM) 복구가 묶음 행을 남긴 채 다시 대기열에 넣어, 재시도가
+    생성·검증을 처음부터 다 하고(LLM 비용) 묶음 단계에서 '이미 등록된 묶음'으로 실패했다 (failed, package: BuildRuleError).
+    이제 복구가 failed + lease_expired 로 두고 다시 가져가지 않는다 — 사람이 다시 요청한다."""
+    store, b = await _claimed()
+    registered = asyncio.Event()
+
+    class DiesWhilePackaging(FakeSteps):
+        async def register(
+            self, store: BuildRepo, job: Job, c: ContractResult, b: BuildResult, i: ImagesResult
+        ) -> None:
+            await store.put_artifact(_artifact(job.build.build_id, "candidate", H_OLD))
+            registered.set()
+            await asyncio.Event().wait()  # 채점용을 등록하기 전에 프로세스가 죽는다
+
+    first = asyncio.create_task(run_job(store, DiesWhilePackaging(tmp_path), _cfg(tmp_path), b))
+    await registered.wait()
+    first.cancel()  # 죽은 것처럼 — 상태·lease 는 그대로 남는다
+    with contextlib.suppress(asyncio.CancelledError):
+        await first
+    assert b.lease_until is not None
+    await store.recover_expired(b.lease_until + timedelta(seconds=1), max_attempts=2)
+    steps = FakeSteps(tmp_path)
+    w = Worker(
+        store=store,
+        steps=steps,
+        cfg=_cfg(tmp_path),
+        name="w2",
+        daily_budget_usd=5.0,
+        poll_seconds=0.01,
+        max_attempts=2,
+    )
+    got = await w.once()
+    now = await store.get(b.build_id)
+    assert now is not None and (now.status, now.error) == ("failed", LEASE_EXPIRED)
+    assert got is None and steps.calls == []  # 생성·검증을 다시 하지 않았다
 
 
 async def test_losing_the_lease_stops_the_job_without_touching_the_build(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ from task_spec.starter.store import (
 )
 from tests.postings.test_postings_pg import _Urls
 from tests.spec.test_store_pg import _task
+from tests.starter.test_build_queue import run_lease_expiry_while_packaging
 from tests.starter.test_build_store import H_OLD, _artifact, _rewritten
 
 pytestmark = pytest.mark.pg
@@ -163,6 +164,16 @@ async def test_lease_heartbeat_stage_and_recovery(env: Env) -> None:
     assert (dead.status, dead.error) == ("failed", LEASE_EXPIRED) and dead.finished_at is not None
 
 
+async def test_lease_expiry_while_packaging_is_failed_not_retried(env: Env) -> None:
+    """#244 — 메모리 구현과 같은 계약 (run_lease_expiry_while_packaging)."""
+    cid = await env.feature_task()
+    await env.store.request_build(cid, "가상승인자")
+    await _queue_only(env, cid)
+    b = await env.store.claim("w1", 60, T0)
+    assert b is not None and b.common_id == cid
+    await run_lease_expiry_while_packaging(env.store, b)
+
+
 async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: Env) -> None:
     """builder 전용 DB 역할(docker/builder/db-role.sql) — 큐·빌드 표는 쓰고, DDL·체크포인트(지원자 파생물)는 못 한다 (#129).
     시험 DB 에 임시 역할로 같은 SQL 을 적용해 본다 (역할은 클러스터 단위라 시험 뒤 지운다)."""
@@ -212,6 +223,21 @@ async def test_builder_role_can_run_the_queue_but_not_ddl_or_checkpoints(env: En
             again = await store.get(b.build_id)
             assert again is not None and again.outcome is None and again.failure is not None
             assert again.failure.repairs == [rec] and again.failure.review_flags == ["가상 표시"]
+            # 죽은 작업 복구 (#244) — builder 역할로: 묶음 행은 읽기만(지우지 않음), 반쯤 쓴 파일은 지우고 다시 대기열로
+            cid2 = await env.feature_task(prompt=8)
+            await env.store.request_build(cid2, "가상승인자")
+            await _queue_only(env, cid2)
+            b2 = await store.claim("w-role", 60, T0)
+            assert b2 is not None and b2.common_id == cid2
+            await store.put_files(
+                b2.build_id, [StarterFile.of(b2.build_id, "starter", "a.py", "x")]
+            )
+            (back,) = [
+                x
+                for x in await store.recover_expired(T0 + timedelta(seconds=61))
+                if x.build_id == b2.build_id
+            ]
+            assert back.status == "pending" and await store.files(b2.build_id) == []
             # 묶음 확정 (#130) — 승인은 API(표 주인)가, 확정은 builder 역할이
             appr = await _approved_request(env, await env.feature_task(prompt=9))
             assert appr in [x.build_id for x in await store.pending_finalize()]

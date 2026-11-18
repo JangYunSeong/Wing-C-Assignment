@@ -28,7 +28,9 @@
 - builder 는 `claim()` 으로 요청된 pending 빌드를 하나씩 가져간다 (Postgres: FOR UPDATE SKIP LOCKED). 가져갈 때 공통 과제가 더는
   approved 가 아니면(새 판이 승인됨) 빌드하지 않고 failed + `superseded`. lease 는 `heartbeat()` 로 늘린다.
 - `recover_expired()`: lease 가 지난 generating·verifying 빌드는 시도가 남았으면 파일·결과를 지우고 pending 으로(인프라 오류
-  1회 자동 재시도), 아니면 failed + `lease_expired`. 생성 실패는 사람이 다시 요청한다.
+  1회 자동 재시도), 아니면 failed + `lease_expired`. 묶음 행이 있으면(묶음 등록 중에 멈춤) 시도가 남아도 failed + `lease_expired` —
+  묶음은 한 번 등록하면 바꾸지 않고 builder 역할은 묶음 행을 지우지 못해서(docker/builder/db-role.sql), 다시 하면 생성·검증을 다 하고
+  묶음 단계에서 '이미 등록'으로 실패했다 (#244). 생성 실패는 사람이 다시 요청한다.
 - eval 적재(`new_build`)로 만든 빌드는 요청 시각이 없어 builder 가 가져가지 않는다.
 """
 
@@ -261,7 +263,7 @@ class BuildRuleError(ValueError):
 
 # 큐 실패 사유 (error 칸) — 원문 없이 짧은 코드
 SUPERSEDED = "superseded"  # 대기 중에 공고의 새 판이 승인됨
-LEASE_EXPIRED = "lease_expired"  # builder 가 heartbeat 없이 사라짐 (시도를 다 씀)
+LEASE_EXPIRED = "lease_expired"  # builder 가 heartbeat 없이 사라짐 (시도를 다 썼거나 묶음 등록 중)
 _RUNNING = ("generating", "verifying")  # builder 가 lease 를 쥐고 있는 상태
 _FINISHED = ("review", "failed")  # finished_at 을 적는 상태
 
@@ -601,7 +603,9 @@ class BuildRepo(Protocol):
 
     async def recover_expired(
         self, at: datetime | None = None, max_attempts: int = 2
-    ) -> list[BuildRecord]: ...
+    ) -> list[BuildRecord]:
+        """lease 가 지난 진행 중 빌드 — 시도가 남았고 묶음 행이 없으면 pending, 아니면 failed + lease_expired (#244)."""
+        ...
 
     # ── 묶음 확정 (#130 ③ A) ──
     async def pending_finalize(self, limit: int = 20) -> list[BuildRecord]:
@@ -939,7 +943,9 @@ class InMemoryBuildStore:
         for b in list(self._builds.values()):
             if b.status not in _RUNNING or b.lease_until is None or b.lease_until >= now:
                 continue
-            if b.attempt < max_attempts:  # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다
+            packaged = any(k[0] == b.build_id for k in self._artifacts)  # 묶음 등록 중에 멈춤
+            # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다. 묶음 행이 있으면 다시 하지 않는다 (모듈 설명 recover_expired, #244)
+            if b.attempt < max_attempts and not packaged:
                 for key in [k for k in self._files if k[0] == b.build_id]:
                     del self._files[key]
                 out.append(
@@ -1691,7 +1697,13 @@ class PgBuildStore:
             expired = await cur.fetchall()
             out: list[BuildRecord] = []
             for r in expired:
-                if r["attempt"] < max_attempts:  # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다
+                # 묶음 등록 중에 멈춤 — 빌드 행을 잠갔으므로 그사이 묶음 행이 더 생기지 않는다 (put_artifact 도 빌드 행부터 잠근다)
+                await cur.execute(
+                    "SELECT 1 FROM public.build_artifact WHERE build_id = %s LIMIT 1", (r["id"],)
+                )
+                packaged = await cur.fetchone() is not None
+                # 처음부터 다시 — 반쯤 쓴 파일·결과를 지운다. 묶음 행이 있으면 다시 하지 않는다 (모듈 설명 recover_expired, #244)
+                if r["attempt"] < max_attempts and not packaged:
                     await cur.execute(
                         "DELETE FROM public.starter_file WHERE build_id = %s", (r["id"],)
                     )

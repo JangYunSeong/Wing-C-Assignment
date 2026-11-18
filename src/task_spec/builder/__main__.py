@@ -1,7 +1,7 @@
 """builder 진입점 — `uv run python -m task_spec.builder [--once]`.
 
 설정은 BuilderSettings (.env·환경 변수). SIGTERM·SIGINT 를 받으면 지금 작업을 끝까지 두고(컨테이너가 기다려 주는 동안) 다음 작업을
-가져가지 않는다 — 도중에 죽으면 lease 가 지나 다른 worker 의 recover_expired 가 다시 대기열에 넣는다.
+가져가지 않는다 — 도중에 죽으면 lease 가 지나 다른 worker 의 recover_expired 가 다시 대기열에 넣는다 (묶음 등록 중이었으면 실패로).
 """
 
 from __future__ import annotations

@@ -11,15 +11,16 @@ from datetime import timedelta
 import pytest
 
 from task_spec.schemas.build import RepairRecord
-from task_spec.schemas.build_record import BuildFailure, StarterFile, next_stage_log
+from task_spec.schemas.build_record import BuildFailure, BuildRecord, StarterFile, next_stage_log
 from task_spec.starter.store import (
     LEASE_EXPIRED,
     SUPERSEDED,
+    BuildRepo,
     BuildRuleError,
     CommonRef,
     InMemoryBuildStore,
 )
-from tests.starter.test_build_store import AT, H_OLD, _outcome
+from tests.starter.test_build_store import AT, H_OLD, _artifact, _outcome
 
 CID = "ct-0123456789ab"
 CID2 = "ct-ba9876543210"
@@ -210,6 +211,43 @@ async def test_expired_lease_is_retried_once_then_failed() -> None:
     (dead,) = await s.recover_expired(AT + timedelta(seconds=200))
     assert (dead.status, dead.error) == ("failed", LEASE_EXPIRED)
     assert dead.finished_at is not None
+
+
+async def run_lease_expiry_while_packaging(store: BuildRepo, b: BuildRecord) -> None:
+    """#244 — 두 구현이 같은 계약 (Postgres 는 test_build_queue_pg.py). b: 막 가져간(generating, 시도 1) 생성 요청 빌드.
+
+    응시용 묶음을 등록한 직후 builder 가 사라지면(SIGKILL·OOM·업그레이드 정지 초과) 시도가 남아도 다시 대기열에 넣지 않고
+    failed + lease_expired. 묶음 행은 한 번 등록하면 바꾸지 않고 builder 역할은 지우지 못해서(build_artifact DELETE 권한 없음),
+    다시 하면 생성·검증을 처음부터 다 하고(LLM 비용) 묶음 단계에서 '이미 등록된 묶음'으로 실패했다."""
+    assert b.status == "generating" and b.attempt == 1 and b.lease_until is not None
+    bid = b.build_id
+    await store.put_files(bid, [StarterFile.of(bid, "starter", "a.py", "x = 1")])
+    await store.set_status(bid, "verifying")
+    await store.save_outcome(bid, _outcome(H_OLD))
+    await store.put_artifact(_artifact(bid, "candidate", H_OLD))  # 채점용을 등록하기 전에 멈춤
+    later = b.lease_until + timedelta(seconds=1)
+    (dead,) = [x for x in await store.recover_expired(later, max_attempts=2) if x.build_id == bid]
+    assert (dead.status, dead.error, dead.worker, dead.lease_until) == (
+        "failed",
+        LEASE_EXPIRED,
+        None,
+        None,
+    )
+    assert dead.finished_at is not None and dead.attempt == 1
+    assert dead.outcome == _outcome(H_OLD)  # 시도를 다 쓴 실패와 같이 결과는 그대로
+    got = await store.get(bid)
+    assert got is not None and got.status == "failed"
+    # 묶음 행은 그대로 남는다 — 실패 빌드는 승인·전달되지 않는다 (승인은 review, 전달은 approved·published 만)
+    assert [a.role for a in await store.artifacts(bid)] == ["candidate"]
+
+
+async def test_expired_lease_while_packaging_is_failed_not_retried() -> None:
+    s = _store()
+    await s.request_build(CID, "a", AT)
+    b = await s.claim("w1", 60, AT)
+    assert b is not None
+    await run_lease_expiry_while_packaging(s, b)
+    assert await s.claim("w2", 60, AT + timedelta(seconds=70)) is None  # 다시 가져가지 않는다
 
 
 def test_next_stage_log_starts_a_new_line_per_attempt() -> None:

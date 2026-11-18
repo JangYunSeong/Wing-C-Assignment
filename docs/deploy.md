@@ -257,7 +257,8 @@ podman exec task-api ls /srv/task-spec/images/<build_id>/candidate   # (배포 �
   알파 실행 폴더의 overlays/ 와 같은 모양), `error.txt` = 예상 못 한 예외. builder 사용자 폴더라 볼 때는
   `sudo cp -r /srv/task-spec/builder/work/<build_id> <내 폴더> && sudo chown -R <나>: <내 폴더>/<build_id>`. 일주일 지난 것 정리 [제안]:
   `find /srv/task-spec/builder/work -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} +`
-- 업그레이드: `podman stop task-builder` (지금 작업 뒤 멈춤, 60초 넘으면 강제 — lease 가 지나 다음 기동 때 다시 대기열로) → `podman rm task-builder` → 새 이미지 `podman load` → `run.sh`.
+- 업그레이드: `podman stop task-builder` (지금 작업 뒤 멈춤, 60초 넘으면 강제 — lease 가 지나 다음 기동 때 다시 대기열로. 묶음을 등록하던
+  중이었으면 다시 하지 않고 실패 `lease_expired` — 다시 요청) → `podman rm task-builder` → 새 이미지 `podman load` → `run.sh`.
 - 비용 상한(작업당·하루)과 모델은 builder 설정 파일 — 모델을 바꾸면 상한도 같이 올린다.
 - 승인된 빌드의 묶음 확정(descriptor approved·평가 키트 `eval_kit/`)도 builder 가 한다 (#130) — 새 작업을 가져가기 전마다, 몇 초.
   빌드 화면에 "묶음 확정 대기"가 오래 남으면 builder 로그와 빌드의 사유(`finalize: …`)를 본다. 전달은 확정된 빌드만.
@@ -313,7 +314,8 @@ docker/builder/deliver.sh    # 이미지 빌드·금지 파일 검사 → 받는
 ```
 
 - 정지는 builder 가 **지금 작업을 끝낼 때까지** 기다린다 (SIGTERM → 새 작업을 잡지 않고 지금 것만 끝냄, 최대 60분). 넘으면 강제 정지하고,
-  끊긴 빌드는 임대가 지나면 다시 대기열로 간다 (시도가 남았을 때 — `build_max_attempts`). 기다리는 동안 새 빌드 요청은 대기로 쌓였다가 새 builder 가 처리한다.
+  끊긴 빌드는 임대가 지나면 다시 대기열로 간다 (시도가 남았을 때 — `build_max_attempts`. 묶음을 등록하던 중에 끊겼으면 다시 하지 않고
+  실패 `lease_expired` — 다시 요청, #244). 기다리는 동안 새 빌드 요청은 대기로 쌓였다가 새 builder 가 처리한다.
   컨테이너의 `--stop-timeout 60`(`run.sh`)은 재부팅 같은 평소 정지용이라 그대로 둔다 (2026-11-13: 60초만 기다려 시작 코드 단계 빌드가 끊겼다).
 
 - 실패하면 `last-upgrade.json` 의 `message` (체크섬·불러오기·기동 실패·되돌림). 자세한 건 task-builder 로 `journalctl --user -u task-builder-upgrade`·`podman logs task-builder`.
