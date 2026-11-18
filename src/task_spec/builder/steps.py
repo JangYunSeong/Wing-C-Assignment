@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
 from task_spec.builder.runner import (
@@ -45,11 +46,24 @@ from task_spec.starter.layers import Podman
 from task_spec.starter.loader import ImageRef, PackageInputs, register_packages
 from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.repair import STARTER
+from task_spec.starter.static_check import Overlay
 from task_spec.starter.store import BuildRepo
 from task_spec.starter.templates import select_template
 from task_spec.starter.verify import verifier_for
+from task_spec.starter.verify.workspace import write_overlay
 
 PENDING_NOTE = "승인 전 묶음 — 시작 코드 승인(#130) 뒤에만 전달한다"
+# 수리 루프가 실패한 빌드의 마지막 생성물 (작업 폴더 안, 실패 작업 폴더는 남는다 — runner.keep_failed_work).
+# 2026-11-18 ct-10eb910705dd-b2: 검증 폴더는 실행마다 지워져 로그만 남아, 허용 구현이 왜 숨은 케이스에 떨어졌는지 코드로 확인하지 못했다
+FAILED_OVERLAYS = "overlays"
+
+
+def keep_overlays(overlays: Mapping[str, Overlay], root: Path) -> list[str]:
+    """오버레이를 `root/<키>/<경로>` 로 쓴다 (알파 실행 폴더의 overlays/ 와 같은 모양 — 경로는 GeneratedFile 이 `..`·절대 경로를 막는다).
+    쓴 키 목록."""
+    for key, o in overlays.items():
+        write_overlay(o, root / key)
+    return list(overlays)
 
 
 def _cost(provenance: list[object]) -> float:
@@ -167,6 +181,7 @@ class RealSteps:
             compiler=g,  # 채점 코드를 먼저 컴파일 — 오류는 쓴 생성기에 (build.compile_and_fix)
         )
         if out.status != "review" or STARTER not in out.overlays or HIDDEN not in out.overlays:
+            await asyncio.to_thread(keep_overlays, out.overlays, job.work / FAILED_OVERLAYS)
             last = out.repairs[-1] if out.repairs else None
             # 수리 사유(reason)에는 숨은 테스트 단언 문구가 올 수 있다 — 관문·대상·결과만
             why = (
