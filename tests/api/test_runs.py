@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import httpx
+from langgraph.checkpoint.base import empty_checkpoint
 
 from tests.api.conftest import (
     FAKE_FILE,
@@ -275,3 +276,47 @@ async def test_promote_overlap_via_approve(client: httpx.AsyncClient) -> None:
             if body["spec"]["revision"] == 2:
                 break
             await asyncio.sleep(0.02)
+
+
+async def test_list_runs_newest_first_with_status_filter(client: httpx.AsyncClient) -> None:
+    """실행 목록 (2026-11-18 — 관리 화면을 Wing admin-fe 로 옮기며 '최근 실행'을 브라우저 저장소 대신 서버에서).
+    상태·공고·시각만 — 명세 초안·승인 요약은 GET /runs/{id}. 같은 체크포인터의 빌드 승인 thread 는 빠진다."""
+    first = await _create(client)
+    await wait_status(client, first, "awaiting_approval")
+    await client.post(f"/runs/{first}/approve", json=reviewer_decision("rejected"))
+    await wait_status(client, first, "rejected")
+    second = await _create(client)
+    await wait_status(client, second, "awaiting_approval")
+    saver = client._transport.app.state.graph.checkpointer  # type: ignore[attr-defined]
+    await saver.aput(
+        {"configurable": {"thread_id": "build-ct-0123456789ab-b1-가상", "checkpoint_ns": ""}},
+        empty_checkpoint(),
+        {"source": "input", "step": -1, "parents": {}},
+        {},
+    )
+
+    rows = (await client.get("/runs")).json()
+    assert [(r["run_id"], r["status"]) for r in rows] == [
+        (second, "awaiting_approval"),
+        (first, "rejected"),
+    ]
+    assert set(rows[0]) == {
+        "run_id",
+        "status",
+        "current_node",
+        "revision",
+        "posting_id",
+        "started_at",
+        "updated_at",
+    }
+    assert rows[0]["posting_id"] == "posting-fake-001" and rows[0]["revision"] == 1
+    assert rows[0]["current_node"] == "approval"
+    assert rows[1]["started_at"] < rows[0]["started_at"] <= rows[0]["updated_at"]
+
+    pending = (await client.get("/runs", params={"status": "awaiting_approval"})).json()
+    assert [r["run_id"] for r in pending] == [second]
+    both = await client.get("/runs", params=[("status", "rejected"), ("status", "running")])
+    assert [r["run_id"] for r in both.json()] == [first]
+    assert [r["run_id"] for r in (await client.get("/runs?limit=1")).json()] == [second]
+    assert (await client.get("/runs", params={"status": "가상"})).status_code == 422
+    assert (await client.get("/runs", params={"limit": 0})).status_code == 422

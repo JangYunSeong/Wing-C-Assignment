@@ -35,6 +35,9 @@ async def test_create_approve_done_on_postgres(test_db_url: str, tmp_path: Path)
                 assert resp.status_code == 202
                 await wait_status(client, run_id, "done")
                 assert (await client.get(f"/runs/{run_id}/spec")).status_code == 200
+                # 실행 목록 — Postgres 체크포인터의 메타데이터 거르기(source=input)로 찾는다. 테스트 DB 는 다른 실행과 같이 쓴다
+                rows = (await client.get("/runs", params={"status": "done", "limit": 200})).json()
+                assert [r["status"] for r in rows if r["run_id"] == run_id] == ["done"]
                 health = (await client.get("/healthz")).json()
                 assert health["database"] == "ok"
         finally:

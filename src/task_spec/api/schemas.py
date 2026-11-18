@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -35,6 +36,18 @@ class RunView(BaseModel):
     # done·rejected = 저장된 State 에서 다시 계산 (확정 뒤에도 대조·배정을 보게). 주장 인용 없음.
     approval_summary: ApprovalSummary | None = None
     errors: list[NodeError] = []
+
+
+class RunListItem(BaseModel):
+    """실행 목록 한 줄 (GET /runs) — 상태·공고·시각만. 명세 초안·승인 요약은 GET /runs/{id} 로."""
+
+    run_id: str
+    status: RunStatus
+    current_node: str | None = None
+    revision: int | None = None
+    posting_id: str | None = None
+    started_at: datetime | None = None  # thread 의 첫 체크포인트
+    updated_at: datetime | None = None  # 마지막 체크포인트
 
 
 class RunEvent(BaseModel):

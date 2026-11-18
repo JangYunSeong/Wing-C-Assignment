@@ -7,7 +7,7 @@ import uuid
 from collections.abc import AsyncIterable
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langgraph.types import Command
 
@@ -27,8 +27,15 @@ from task_spec.api.errors import (
     RunNotFound,
     SpecNotFound,
 )
-from task_spec.api.run_view import load_run_view
-from task_spec.api.schemas import TERMINAL_STATUSES, RunAccepted, RunEvent, RunView
+from task_spec.api.run_view import list_runs, load_run_view
+from task_spec.api.schemas import (
+    TERMINAL_STATUSES,
+    RunAccepted,
+    RunEvent,
+    RunListItem,
+    RunStatus,
+    RunView,
+)
 from task_spec.api.uploads import store_uploads
 from task_spec.ontology.queries import posting_exists
 from task_spec.postings.store import is_provisional
@@ -37,6 +44,17 @@ from task_spec.schemas import ApprovalDecision, DocumentKind, RunInput, TaskSpec
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 _ERRORS = {404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}
+
+
+@router.get("")
+async def get_runs(
+    graph: GraphDep,
+    launcher: LauncherDep,
+    status: Annotated[list[RunStatus] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[RunListItem]:
+    """최근에 시작한 실행부터. `status` 를 여러 번 주면 그 상태들만 (예: ?status=running&status=awaiting_approval)."""
+    return await list_runs(graph, launcher, limit=limit, statuses=frozenset(status or ()))
 
 
 @router.post("", status_code=202, responses={413: {"model": ErrorResponse}})
