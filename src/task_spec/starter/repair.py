@@ -18,7 +18,9 @@ verifier 결과(`VerifyReport`)를 보고 "어느 산출물 탓인가"를 정해
    ③·④ 도 같은 생각 — 흔한 구현이 통과하면 흔한 구현부터, 허용 구현이 흔한 구현과 같은 메시지로 실패하면 허용 구현 탓으로 보지 않음.
 5. ③ 흔한 구현: 놓친 숨은 요구의 케이스는 의도한 사유로 실패해야 한다 (숨은 요구마다 따로 판정 — #242). 통과 → 흔한 구현을 ③ 으로 아직 다시 만들지 않았으면(다른 게이트의 재생성과 따로 셈) `gen_naive`
    (설명을 안 따랐을 수 있음 — 그 회차에는 그 대상의 다른 ③ 배정을 미룸), 이미 다시 만들었으면 `gen_hidden`(약함). 다른 사유·사유 없음 → `gen_hidden`
-   (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`). ③' 지킨 요구의 케이스에서 실패 → `gen_hidden`.
+   (2026-11-07 스모크: "실패 기록 있음"을 "성공 기록 없음"보다 먼저 확인해 의도한 사유 대신 `record_missing`).
+   흔한 구현은 모든 숨은 요구를 놓친 판(naive-all) 하나다 — 하나만 놓친 판과 그 ③'(지킨 요구의 케이스는 통과해야 함)은 만드는 곳이
+   없어 지웠다 (#243, 숨은 요구 여러 개를 지원할 때 다시 설계).
 6. ④ 허용 구현: 허용 구현이 둘 이상이고 모두 같은 케이스에서 실패 → `gen_hidden`(너무 엄격). 일부만 실패, 또는 허용 구현이 하나뿐이면
    그 구현을 먼저 (`gen_accepted`) — 이미 다시 만들었는데 또 실패하면: 흔한 구현이 그 케이스에서 의도한 사유로 실패하면(테스트는 제 몫) 설계를 못 따른 것(사람 확인),
    아니고 허용 구현이 하나뿐이면 `gen_hidden`, 그 밖은 설계 조건 부족(배정 못 함).
@@ -120,7 +122,7 @@ SAME_KIND_ALL_FILES = (
 class RepairAction:
     generator: GeneratorName
     label: str  # 오버레이 라벨 — 시작 코드·숨은 테스트는 "", 참조 구현은 naive-all · d1 …
-    gate: str  # ① ② ③ ③' ④ ⑤ ⑨ setup
+    gate: str  # ① ② ③ ④ ⑤ ⑨ setup
     reason: str  # 짧은 사유 (RepairRecord.reason, 승인 화면)
     note: str  # 생성기에 붙일 수정 요청
     pool: Pool = GENERAL  # 재생성 예산 풀 (POOLS)
@@ -197,7 +199,7 @@ _GATE = re.compile(r"[①-⑳]'?|[a-z]+")
 
 
 def gates_of(gate: str) -> list[str]:
-    """수리의 게이트 — `_merge` 가 사유를 합치며 이어 붙인 게이트(예: "③③'")를 나눈다."""
+    """수리의 게이트 — `_merge` 가 사유를 합치며 이어 붙인 게이트(예: "③④")를 나눈다. ②' 처럼 ' 가 붙은 게이트는 하나로 본다."""
     return _GATE.findall(gate)
 
 
@@ -1152,17 +1154,6 @@ def _gate3(
                         note,
                     )
                 )
-        elif r.result != "PASS":  # ③' 지킨 숨은 요구의 케이스는 통과해야 한다
-            out.append(
-                RepairAction(
-                    "gen_hidden",
-                    "",
-                    "③'",
-                    f"{run.target} 가 지킨 요구의 {c.case_id} 에서 실패",
-                    f"숨은 요구 {c.trap_id} 를 지킨 구현({run.target})이 {c.case_id} 에서 실패했다: {_short(r.message)} "
-                    "— 케이스가 다른 숨은 요구에 기대지 않게 한다.",
-                )
-            )
     for cid, trap, want, got in substituted:
         # 의도한 사유를 본 케이스는 같은 숨은 요구에서만 센다 (#242)
         seen = {r.reason for _, r in asserted(trap) if r.reason}

@@ -359,25 +359,6 @@ def test_compile_repair_asks_to_fix_the_same_kind_in_every_file() -> None:
     assert hidden.compile and "모든 파일" in hidden.note and "IOException" in hidden.note
 
 
-def test_gate3_prime_kept_requirement_must_pass() -> None:
-    plan2 = PLAN2.model_copy(
-        update={"cases": [PLAN2.cases[0], PLAN2.cases[1].model_copy(update={"trap_id": "t2"})]}
-    )
-    miss_t1 = _run(
-        "naive-miss-t1",
-        "ref_naive",
-        GOOD_NAIVE[0],
-        _t("hidden", "hc2", "ASSERT", "record_missing", "x"),
-    )
-    plan = assign(
-        _report(miss_t1, _run("d1", "ref_accepted", *GOOD_ACC)),
-        plan2,
-        OVERLAYS,
-        {"naive-miss-t1": {"t1"}},
-    )
-    assert _keys(plan) == ["gen_hidden"] and plan.actions[0].gate == "③'"
-
-
 def test_regenerated_design_alone_stuck_in_a_hidden_case_suspects_the_test_once() -> None:
     """2026-11-11 fe8 오프라인 hc2: 숨은 테스트가 첫 요청을 붙잡은 채 두 번째를 기다려, 하나씩 보내는 허용 설계만 시간 초과(HARNESS_ERR)로
     떨어질 수 있었다 — 게이트 ④ 는 단언 실패만 봐서 그 구현을 계속 다시 만들었다. 다시 만든 뒤에도 혼자면 테스트를 한 번 의심한다."""
@@ -1155,12 +1136,15 @@ def test_budget_pools_are_one_table_with_the_old_limits() -> None:
 
 
 def test_merged_gates_are_split_before_comparing() -> None:
-    """#183: KEEP_GATES 가 글자 집합이라 우연히 맞던 비교 — 합친 수리의 이어 붙은 게이트("③③'")는 나눠 비교한다."""
+    """#183: KEEP_GATES 가 글자 집합이라 우연히 맞던 비교 — 합친 수리의 이어 붙은 게이트("③④")는 나눠 비교한다.
+    ' 가 붙은 게이트(②')는 글자로 쪼개지 않고 하나로 본다."""
     from task_spec.nodes.starter.build import KEEP_GATES
     from task_spec.starter.repair import gates_of
 
-    assert gates_of("③③'") == ["③", "③'"] and set(gates_of("③③'")) <= KEEP_GATES
+    assert gates_of("③④") == ["③", "④"] and gates_of("②'③") == ["②'", "③"]
+    assert set(gates_of("③")) <= KEEP_GATES
     assert not set(gates_of("③④")) <= KEEP_GATES and not set(gates_of("setup")) <= KEEP_GATES
+    assert not set(gates_of("②'③")) <= KEEP_GATES
 
 
 def test_regenerated_design_that_regressed_is_rebuilt_not_the_test() -> None:
