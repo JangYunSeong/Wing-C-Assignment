@@ -9,7 +9,8 @@
 2. 숨은 요구·운영 조건 낱말(재료 leak·trigger·원인 개념·먼저 말할 개념)·숨은 테스트 이름이 공개 파일(시작 코드·README·주는 공개 테스트)에
    — 코드 식별자는 낱말로 풀어서 본다 (connectionPool → connection pool). 미끼 코드(해법·문제 지점을 가리키는 주석·설정)도 이 낱말로 잡는다.
 3. 운영 값이 시작 코드 설정에 박힘 — 템플릿 `harness_params[].config_keys` 의 값만 대조 (아무 숫자나 비교하면 8·32 같은 값이 오탐).
-4. 비밀 값 · 외부 네트워크 주소 · 실존 회사·제품 이름(원 사례 고유어).
+4. 비밀 값 · 외부 네트워크 주소 · 실존 회사·제품 이름(원 사례 고유어). 비밀 값은 실제 형식(AWS 키·개인 키·sk-/ghp-/xox- 토큰)만
+   재생성 사유이고, 이름 = 값 추정(password·access_token 뒤 12자 이상)은 review_flags — 계약 fixture 의 시험용 토큰을 생성기가 못 바꾼다 (2026-11-18).
 5. 숨은 테스트: 지원자 구현 내부를 import (게이트 ⑥ 사전 확인), 실패 사유 코드가 템플릿 목록 밖, 케이스 id 가 HiddenPlan 과 1:1 이 아님,
    조절값 파일을 손으로 씀(코드가 HiddenPlan 에서 쓴다 — `render.render_params`).
    공개 계약에 없는 API 를 부름 (manifest `hidden_rules.http_calls` 로 찾은 호출의 경로를 `{}` 자리로 정규화해 대조),
@@ -104,14 +105,17 @@ KIND_TARGET = {
     "ref_variant": "gen_variant",
 }
 
+# 실제 비밀의 정해진 형식 — 걸리면 생성기에 다시 쓰게 한다
 _SECRETS = [
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\b(?:sk|ghp|gho|xox[abp])[-_][A-Za-z0-9]{20,}"),
-    re.compile(
-        r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token)\b\s*[:=]\s*['\"]?(?=[^\s'\"]*\d)(?=[^\s'\"]*[A-Za-z])[^\s'\"]{12,}"
-    ),
 ]
+# 이름과 길이만 보는 추정 — 승인자 표시로만. 2026-11-18 ct-10eb910705dd-b1: 계약 fixture 의 시험용 토큰
+# (access_token: 'test-token-001')을 공개 테스트가 그대로 써야 하는데 이 규칙이 막아, 재요청으로 못 고치고 빌드가 실패했다
+_SECRET_HINT = re.compile(
+    r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token)\b\s*[:=]\s*['\"]?(?=[^\s'\"]*\d)(?=[^\s'\"]*[A-Za-z])[^\s'\"]{12,}"
+)
 _URL = re.compile(r"https?://([A-Za-z0-9.\-]+)")
 _LOCAL_HOSTS = re.compile(
     r"^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|(?:[\w-]+\.)*example\.(?:com|org|net)|[\w-]+\.test|[\w-]+\.invalid)$"
@@ -297,6 +301,18 @@ def _hygiene(
         named = find_terms(avoid_terms, f.content)
         if named:
             out.append(f"{where} 에 원 사례의 실존 이름·고유어: {', '.join(named)}")
+    return out
+
+
+def _secret_hints(o: Overlay | None, files: Iterable[GeneratedFile]) -> list[str]:
+    """비밀 값처럼 보이는 이름 = 값 — 시험용 값(계약 fixture 의 토큰 등)일 수 있어 승인자가 본다."""
+    out: list[str] = []
+    for f in files:
+        if m := _SECRET_HINT.search(f.content):
+            where = f"{o.name} 파일 {f.path}" if o else f.path
+            out.append(
+                f"{where} 에 비밀 값처럼 보이는 문자열 ({m.group(0)[:60]}) — 시험용 값인지 확인"
+            )
     return out
 
 
@@ -2538,6 +2554,7 @@ def static_check(
     for o in overlays:
         res.problems += _paths(o, template)
         res.problems += [StaticProblem(o.target, msg) for msg in _hygiene(o, o.files, avoid_terms)]
+        res.review_flags += _secret_hints(o, o.files)
         # 공개 테스트는 지원자에게 주지 않아도 숨은 요구 낱말이 있으면 안 된다 (게이트 ⑤ 누설 사전 확인)
         public = o.kind in ("starter", "public_test")
         if public:
@@ -2593,6 +2610,7 @@ def static_check(
                 f"{README} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(shown)} — 승인된 명세 문장에서 나옴, 명세 수정 필요"
             )
         res.review_flags += _hygiene(None, [readme], avoid_terms)
+        res.review_flags += _secret_hints(None, [readme])
     res.review_flags = list(dict.fromkeys(res.review_flags))
     return res
 

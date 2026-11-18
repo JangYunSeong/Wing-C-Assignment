@@ -266,7 +266,8 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | 숨은 요구 핵심어(`leak_terms`·`trigger_terms`·`stage2_cause_terms`)·숨은 테스트 이름이 공개 파일(코드·주석·README·공개 테스트)에 있음 | `starter`, README | `gen_starter` (README 면 명세 문제 → review_flags) |
 | 미끼 코드 — 숨은 요구 쪽 해법·문제 지점을 가리키는 주석·설정이 시작 코드에 있음 (배송 감사 r1 교훈: 풀·스레드 설정과 `REQUIRES_NEW` 가 늘 보였음) | `starter` | `gen_starter` |
 | `HiddenPlan` 의 운영 수치가 시작 코드 설정에 박혀 있음 (운영 값은 하네스가 채점 때 덮어쓴다 — 시작 코드에는 개발용 값만). **`harness_params` 의 설정 키에 든 값만** 대조한다 — 코드·주석의 아무 숫자와 비교하면 우연히 같은 값(8·32 등)이 오탐된다. `gen_starter` 는 `HiddenPlan` 을 보지 않으므로 걸리면 대개 템플릿 기본값이 운영 값과 같은 경우 → 템플릿 기본값을 바꿀 신호 | `starter` 설정 파일 | `gen_starter` (템플릿 기본값이면 review_flags) |
-| 비밀 값·네트워크 호출·실존 회사·제품 이름 | 모든 산출물 | 그 생성기 |
+| 비밀 값(실제 형식 — AWS 키·개인 키·`sk-`/`ghp-`/`xox-` 토큰)·네트워크 호출·실존 회사·제품 이름 | 모든 산출물 | 그 생성기 |
+| 비밀 값처럼 보이는 이름 = 값 (`password`·`access_token` 등 뒤 숫자 섞인 12자 이상 — 추정). 계약 fixture 의 시험용 토큰을 생성기가 바꿀 수 없어 재생성으로 못 고친다 (2026-11-18 `ct-10eb910705dd-b1` 공개 테스트 생성 실패) | 모든 산출물·README | review_flags |
 | 템플릿 기술 밖 언어·새 의존성 | 모든 산출물 | 그 생성기 |
 | 숨은 테스트가 내부 클래스·메서드를 import (게이트 ⑥ 사전 확인) | `hidden` | `gen_hidden` |
 | 숨은 테스트가 공개 계약에 없는 API 를 부름 — manifest `hidden_rules.http_calls` 로 찾은 호출의 경로 식을 `/orders/{}/status` 꼴로 정규화해 계약 method·path 와 대조 (첫 조각이 문자열이 아니면 판단 안 함). 5단계 스모크에서 계약에 없는 `GET /deliveries/{id}` 로 상태를 읽어 늘 404 | `hidden` | `gen_hidden` |
