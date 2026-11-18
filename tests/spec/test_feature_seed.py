@@ -13,6 +13,7 @@ import pytest
 from task_spec.llm import Completion, FakeBackend
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import DraftFeatureOutput, DraftFeatureOutputV2
+from task_spec.schemas.incident import PublicIncident
 from task_spec.spec.feature import (
     FLAG_NO_SEED,
     FLAG_NO_STARTER,
@@ -628,17 +629,37 @@ def test_v5_prompt_uses_compact_schema_with_hint_source() -> None:
 # ── 재료 결함·재요청 사유 (2026-11-06 v5 비교 뒤) ──
 
 
+def _all_incidents() -> list[PublicIncident]:
+    """직군 기본 사례 + 추가 사례(기능형 재료) — 빌드에 쓰는 재료는 대부분 추가 사례다 (INCIDENTS.items() 는 기본 사례만)."""
+    return [*INCIDENTS.values(), *(i for v in INCIDENTS.alternates.values() for i in v)]
+
+
 def test_seed_artifact_kinds_have_no_leak_terms() -> None:
     """재료의 자료 종류 이름은 생성 모델이 자료 제목으로 그대로 쓴다 — 금지어를 품으면 늘 재요청에 걸린다."""
     from task_spec.spec.feature import _term_rx
 
-    for sub, inc in INCIDENTS.items():
+    for inc in _all_incidents():
         f = inc.feature
         if f is None:
             continue
         terms = [*f.leak_terms, *f.stage2_cause_terms]
         for kind in [*f.discoverable_by, *f.stage2_evidence]:
-            assert not [t for t in terms if _term_rx(t).search(kind)], (sub, kind)
+            assert not [t for t in terms if _term_rx(t).search(kind)], (inc.incident_id, kind)
+
+
+def test_seed_artifact_kind_names_have_no_title_tells() -> None:
+    """2026-11-18 데이터 기준점: 재료 이름 '정산 대사 차이 목록' 을 생성기가 자료 제목으로 그대로 써 제목 검사(결론 암시 — 차이)에 걸리고,
+    재요청해도 같은 제목이 나와 명세 3건이 섰다. 이름(괄호 앞)에는 제목 검사 낱말을 쓰지 않는다 — 괄호 안 설명은 내용 안내라 허용
+    (제목으로 옮기면 발견을 드러내므로 검사가 다시 묻는 것이 맞다)."""
+    from task_spec.spec.draft import _TITLE_TELLS
+
+    for inc in _all_incidents():
+        f = inc.feature
+        if f is None:
+            continue
+        for kind in [*f.discoverable_by, *f.stage2_evidence]:
+            name = kind.split("(")[0].lower()
+            assert not [w for w in _TITLE_TELLS if w.lower() in name], (inc.incident_id, kind)
 
 
 def test_non_clue_hint_may_equal_answer() -> None:
