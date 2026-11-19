@@ -1,0 +1,271 @@
+{
+ "split": "test",
+ "part": "all",
+ "versions": {
+  "interview_feature_seed": 1,
+  "interview_targeted_answer": 2
+ },
+ "summary": {
+  "seed_samples": 6,
+  "answer_samples": 6,
+  "seed_valid": 0.833,
+  "seed_reason_hit": 1.0,
+  "seed_concept_hit": 1.0,
+  "seed_harness_ok": 1.0,
+  "seed_need_leak": 0,
+  "seed_designs_ok": 1.0,
+  "seed_blocked": 0,
+  "answer_valid": 1.0,
+  "answer_solution_leak": 0,
+  "answer_artifact_id": 0,
+  "answer_invented_numbers": 0,
+  "answer_too_long": 0,
+  "answer_pointer_hit": 1.0,
+  "seconds_mean": 27.3,
+  "tokens": {
+   "in": 32500,
+   "out": 19746,
+   "reasoning": 14833
+  },
+  "cost_usd": 0.0142,
+  "criteria": {
+   "seed_valid": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_reason_hit": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_concept_hit": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_harness_ok": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_need_leak": {
+    "rule": "<= 0",
+    "pass": true
+   },
+   "seed_designs_ok": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_blocked": {
+    "rule": "<= 0",
+    "pass": true
+   },
+   "answer_valid": {
+    "rule": ">= 0.9",
+    "pass": true
+   },
+   "answer_solution_leak": {
+    "rule": "<= 0",
+    "pass": true
+   },
+   "answer_artifact_id": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "answer_invented_numbers": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "answer_too_long": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "answer_pointer_hit": {
+    "rule": ">= 0.6",
+    "pass": true
+   }
+  },
+  "passed": true
+ },
+ "seeds": [
+  {
+   "id": "seed-test-01",
+   "valid": true,
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 37.6,
+   "tokens": {
+    "in": 6463,
+    "out": 3318,
+    "reasoning": 2472
+   },
+   "cost_usd": 0.002529
+  },
+  {
+   "id": "seed-test-02",
+   "valid": true,
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 66.9,
+   "tokens": {
+    "in": 6463,
+    "out": 4011,
+    "reasoning": 3096
+   },
+   "cost_usd": 0.002855
+  },
+  {
+   "id": "seed-test-03",
+   "valid": true,
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 59.6,
+   "tokens": {
+    "in": 6066,
+    "out": 3637,
+    "reasoning": 2755
+   },
+   "cost_usd": 0.002619
+  },
+  {
+   "id": "seed-test-04",
+   "valid": false,
+   "reason_hit": false,
+   "concept_hit": false,
+   "harness_ok": false,
+   "designs": 0,
+   "blocked": 0,
+   "seconds": 34.0,
+   "tokens": {
+    "in": 0,
+    "out": 0,
+    "reasoning": 0
+   },
+   "cost_usd": 0.0
+  },
+  {
+   "id": "seed-test-05",
+   "valid": true,
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 56.2,
+   "tokens": {
+    "in": 4865,
+    "out": 3402,
+    "reasoning": 2476
+   },
+   "cost_usd": 0.002329
+  },
+  {
+   "id": "seed-test-06",
+   "valid": true,
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 34.8,
+   "tokens": {
+    "in": 4881,
+    "out": 2600,
+    "reasoning": 1684
+   },
+   "cost_usd": 0.001954
+  }
+ ],
+ "answers": [
+  {
+   "id": "ans-test-01",
+   "valid": true,
+   "artifact_id": false,
+   "length": 106,
+   "pointer_hit": true,
+   "seconds": 7.8,
+   "tokens": {
+    "in": 630,
+    "out": 417,
+    "reasoning": 342
+   },
+   "cost_usd": 0.00029
+  },
+  {
+   "id": "ans-test-02",
+   "valid": true,
+   "artifact_id": false,
+   "length": 157,
+   "pointer_hit": true,
+   "seconds": 9.6,
+   "tokens": {
+    "in": 628,
+    "out": 502,
+    "reasoning": 411
+   },
+   "cost_usd": 0.00033
+  },
+  {
+   "id": "ans-test-03",
+   "valid": true,
+   "artifact_id": false,
+   "length": 127,
+   "pointer_hit": true,
+   "seconds": 6.9,
+   "tokens": {
+    "in": 623,
+    "out": 345,
+    "reasoning": 278
+   },
+   "cost_usd": 0.000256
+  },
+  {
+   "id": "ans-test-04",
+   "valid": true,
+   "artifact_id": false,
+   "length": 110,
+   "pointer_hit": true,
+   "seconds": 7.5,
+   "tokens": {
+    "in": 628,
+    "out": 468,
+    "reasoning": 398
+   },
+   "cost_usd": 0.000314
+  },
+  {
+   "id": "ans-test-05",
+   "valid": true,
+   "artifact_id": false,
+   "length": 135,
+   "pointer_hit": true,
+   "seconds": 7.0,
+   "tokens": {
+    "in": 628,
+    "out": 561,
+    "reasoning": 490
+   },
+   "cost_usd": 0.000358
+  },
+  {
+   "id": "ans-test-06",
+   "valid": true,
+   "artifact_id": false,
+   "length": 104,
+   "pointer_hit": true,
+   "seconds": 6.9,
+   "tokens": {
+    "in": 625,
+    "out": 485,
+    "reasoning": 431
+   },
+   "cost_usd": 0.000322
+  }
+ ]
+}
