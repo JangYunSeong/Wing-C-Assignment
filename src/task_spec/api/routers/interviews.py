@@ -1,7 +1,7 @@
 """채용담당자 사례 인터뷰 API (#262 D1). 업무는 interview/service.py — 이 라우터는 요청 모델과 응답만.
 
 요청 모델은 Wing-C-Interview 포크(9ef2f50)의 D1 부분과 같다 (화면 호환). 기존 공고에서만 시작한다 —
-채용 방향 문답·공고 초안(포크 ①)과 역량·과제·승인은 D2·D3. 인증이 없으니 회사 범위 확인은 앞단(Wing 서버)이 한다.
+역량·과제(D2a)까지. 승인 그래프는 D2b, 채용 방향 문답·공고 초안(포크 ①)은 D3. 인증이 없으니 회사 범위 확인은 앞단(Wing 서버)이 한다.
 """
 
 from __future__ import annotations
@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field, StrictBool, StrictStr, model_validator
 
 from task_spec.api.deps import InterviewsDep
 from task_spec.interview.errors import InterviewError
-from task_spec.schemas import PublicIncident
+from task_spec.schemas import PublicIncident, TaskItem
+from task_spec.schemas.interview_state import ANSWER_MAX, GeneralQuestion, TargetedQuestion
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,34 @@ class IncidentConfirmRequest(IncidentValidateRequest):
 
 
 class RevisionRequest(BaseModel):
-    target: Literal["project", "incident", "trap", "success"]
+    target: Literal["project", "incident", "trap", "success", "common", "questions"]
     revision: int = Field(ge=1)
     note: str = Field(min_length=1, max_length=1000)
     text: str | None = Field(default=None, max_length=20000)
+    task: TaskItem | None = None  # target=common — 고친 공통 과제
+    general_questions: list[GeneralQuestion] | None = Field(default=None, max_length=10)
+    targeted_questions: list[TargetedQuestion] | None = Field(default=None, max_length=10)
+
+
+class SelectionRequest(BaseModel):
+    competency_ids: list[str] = Field(min_length=2, max_length=3)
+    revision: int = Field(ge=1)
+
+
+class AnswersRequest(BaseModel):
+    # 짚은 질문 id → 답 (원문 — 서비스가 가명화한 뒤 다시 길이를 본다)
+    answers: dict[
+        Annotated[str, Field(pattern=r"^q\d{1,2}$")],
+        Annotated[str, Field(min_length=1, max_length=ANSWER_MAX)],
+    ] = Field(min_length=1, max_length=20)
+    revision: int = Field(ge=1)
+
+
+class TargetedAnswerDraftRequest(BaseModel):
+    revision: int = Field(ge=1)
+    question: str = Field(
+        min_length=1, max_length=ANSWER_MAX
+    )  # 지원자가 물을 법한 질문 (담당자 예시)
 
 
 DraftText = Annotated[StrictStr, Field(max_length=40000)]
@@ -245,7 +270,56 @@ async def revise(
     interview_id: str, body: RevisionRequest, interviews: InterviewsDep
 ) -> dict[str, Any]:
     return await interviews.revise(
-        interview_id, revision=body.revision, target=body.target, note=body.note, text=body.text
+        interview_id,
+        revision=body.revision,
+        target=body.target,
+        note=body.note,
+        text=body.text,
+        task=body.task,
+        general_questions=body.general_questions,
+        targeted_questions=body.targeted_questions,
+    )
+
+
+@router.get("/{interview_id}/competencies")
+async def competency_preview(interview_id: str, interviews: InterviewsDep) -> dict[str, Any]:
+    """고를 수 있는 공고 역량(수행준거 근거 있음)·권하는 역량·직군 기본 코딩 템플릿 (#266 D2a)."""
+    return await interviews.competency_preview(interview_id)
+
+
+@router.post("/{interview_id}/competencies")
+async def select_competencies(
+    interview_id: str, body: SelectionRequest, interviews: InterviewsDep
+) -> dict[str, Any]:
+    return await interviews.select_competencies(
+        interview_id, revision=body.revision, competency_ids=body.competency_ids
+    )
+
+
+@router.post("/{interview_id}/generate")
+async def generate(
+    interview_id: str, body: SelectionRequest, interviews: InterviewsDep
+) -> dict[str, Any]:
+    """확인된 사례로 공고 공통 과제(기능형)와 지원자 질문을 만든다. interview_feature_seed CURRENT 가 없으면 503."""
+    return await interviews.generate(
+        interview_id, revision=body.revision, competency_ids=body.competency_ids
+    )
+
+
+@router.post("/{interview_id}/answers")
+async def set_answers(
+    interview_id: str, body: AnswersRequest, interviews: InterviewsDep
+) -> dict[str, Any]:
+    return await interviews.set_answers(interview_id, revision=body.revision, answers=body.answers)
+
+
+@router.post("/{interview_id}/answers/{question_id}/draft")
+async def draft_targeted_answer(
+    interview_id: str, question_id: str, body: TargetedAnswerDraftRequest, interviews: InterviewsDep
+) -> dict[str, Any]:
+    """짚은 질문에 줄 답의 초안 (저장하지 않음). interview_targeted_answer CURRENT 가 없으면 503."""
+    return await interviews.draft_targeted_answer(
+        interview_id, question_id, revision=body.revision, question=body.question
     )
 
 

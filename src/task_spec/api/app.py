@@ -25,6 +25,7 @@ from task_spec.graph.incident_share import incident_share_graph
 from task_spec.interview.postings import PostingSource
 from task_spec.interview.service import InterviewService, sweep_forever
 from task_spec.interview.store import PgInterviewStore
+from task_spec.interview.task import OntologyTaskMaker
 from task_spec.llm.factory import build_llm_client
 from task_spec.logging_setup import configure_logging
 from task_spec.nodes.ingest import FileIngestor
@@ -107,6 +108,8 @@ def create_app(
             llm=llm,
             prompts=prompts,
             ontology_version=lists.version,
+            tasks=OntologyTaskMaker(ontology=app.state.ontology, llm=llm, prompts=prompts),
+            common_store=common_store,
             mapping_ttl=timedelta(days=app.state.settings.interview_mapping_ttl_days),
             draft_ttl=timedelta(hours=app.state.settings.interview_draft_ttl_hours),
         )

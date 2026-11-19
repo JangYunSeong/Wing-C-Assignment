@@ -86,6 +86,9 @@ class DraftContext:
     sub: str | None = (
         None  # 공고 직군 id (sw.backend …) — 기능형의 다른 계열 역량 판단 (cross_family_targets)
     )
+    # 채용담당자 인터뷰 공고 자신의 과제 생성만 True (#266) — 사례의 기준 답안(known_incident_cases)을 기능형 재료 블록에 넣는다.
+    # 회사 사례 모음으로 다른 공고가 같은 사례를 쓰면 False 라 채점 근거가 생성 프롬프트로 가지 않는다
+    with_known_answers: bool = False
 
     @property
     def criterion_ids(self) -> set[str]:

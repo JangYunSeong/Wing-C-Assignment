@@ -170,9 +170,15 @@ from task_spec.schemas.interview_answer import (
     InterviewAnswerGroundedOutput,
     InterviewAnswerInput,
     InterviewAnswerOutput,
+    TargetedAnswerDraftInput,
+    TargetedAnswerDraftOutput,
 )
 from task_spec.schemas.interview_case import KnownIncidentCase
-from task_spec.schemas.interview_incident import IncidentInterviewInput, IncidentInterviewOutput
+from task_spec.schemas.interview_incident import (
+    IncidentInterviewInput,
+    IncidentInterviewOutput,
+    InterviewFeatureSeedInput,
+)
 from task_spec.schemas.judge_overlap import JudgeOverlapInput, JudgeOverlapOutput, OverlapVerdict
 from task_spec.schemas.package import ReviewDecision
 from task_spec.schemas.pilot import (
@@ -397,6 +403,9 @@ __all__ = [
     "AnswerRuleCheck",
     "AnswerProbeResult",
     "AnswerValidationRecord",
+    "InterviewFeatureSeedInput",
+    "TargetedAnswerDraftInput",
+    "TargetedAnswerDraftOutput",
     "DraftTaskOutput",
     "DraftTaskOutputV3",
     "Artifact",

@@ -23,13 +23,24 @@ from task_spec.nodes.pseudonymize import InterviewPseudonymizer
 from task_spec.nodes.pseudonymize.dictionaries import load_dictionaries
 from task_spec.nodes.pseudonymize.engine import Detectors
 from task_spec.prompting import Message, PromptRegistry
-from task_spec.schemas import PostingProfile, PublicIncident
+from task_spec.schemas import PostingCompetency, PostingProfile, PublicIncident
 from task_spec.schemas.interview_answer import InterviewAnswerCheckOutput, InterviewAnswerOutput
 from task_spec.schemas.interview_incident import IncidentInterviewOutput
 from tests.api.conftest import make_settings
 
 REPO = Path(__file__).resolve().parents[2]
-PROMPTS = ("interview_incident_extended", "interview_answer", "interview_answer_check")
+COMPETENCIES = (
+    ("comp:api", "가상 API 설계"),
+    ("comp:retry", "가상 재시도 처리"),
+    ("comp:test", "가상 검증 설계"),
+)
+PROMPTS = (
+    "interview_incident_extended",
+    "interview_answer",
+    "interview_answer_check",
+    "interview_feature_seed",
+    "interview_targeted_answer",
+)
 POSTING_ID = "prov-0123456789ab"
 TEAM_LINES = [
     ("팀 맥락", "90일 기대 성과: 상태 기록 API 의 중복 저장 0건"),
@@ -199,6 +210,7 @@ class CapturingBackend(FakeBackend):
 @dataclass
 class FakePostings:
     company_name: str | None = "(주)가상테크"
+    sub: str = "sw.backend"
     posting_lines: list[tuple[str, str]] = field(default_factory=lambda: [*JD_LINES, *TEAM_LINES])
 
     async def profile(self, posting_id: str) -> PostingProfile | None:
@@ -210,7 +222,11 @@ class FakePostings:
             source="provisional",
             company="가상테크",
             position_name="백엔드 개발자",
-            sub="sw.backend",
+            sub=self.sub,
+            competencies=[
+                PostingCompetency(competency_id=cid, label=label, primary=True)
+                for cid, label in COMPETENCIES
+            ],
         )
 
     async def lines(self, posting_id: str) -> list[tuple[str, str]]:
@@ -278,7 +294,12 @@ def detectors() -> Detectors:
 
 
 def make_service(
-    tmp: Path, detectors: Detectors, *, prompts: PromptRegistry | None = None
+    tmp: Path,
+    detectors: Detectors,
+    *,
+    prompts: PromptRegistry | None = None,
+    tasks: Any = None,
+    common_store: Any = None,
 ) -> tuple[InterviewService, CapturingBackend, MemoryInterviewStore, FakePostings, Clock]:
     clock = Clock()
     backend = CapturingBackend()
@@ -291,6 +312,8 @@ def make_service(
         llm=LLMClient({"opencode": backend}),
         prompts=prompts or prompts_with_current(tmp),
         ontology_version="onto-test",
+        tasks=tasks,
+        common_store=common_store,
         now=clock,
     )
     return service, backend, store, postings, clock
