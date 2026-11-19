@@ -1,0 +1,394 @@
+{
+ "split": "dev",
+ "versions": {
+  "interview_incident_extended": 4,
+  "interview_answer": 4,
+  "interview_answer_check": 2
+ },
+ "model": "opencode:qwen3.8-flash",
+ "summary": {
+  "samples": 5,
+  "completion": 1.0,
+  "reasks": 0,
+  "leading": 0,
+  "unavailable_ratio": 0.1,
+  "targeted": 1.0,
+  "incident_turns_mean": 2.2,
+  "clarify_rounds": 1,
+  "step_seconds_mean": 40.5,
+  "step_seconds_p90": 94.0,
+  "tokens": {
+   "in": 100368,
+   "out": 78844,
+   "reasoning": 47755
+  },
+  "cost_usd": 0.0521,
+  "criteria": {
+   "completion": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "reasks": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "leading": {
+    "rule": "<= 0",
+    "pass": true
+   },
+   "unavailable_ratio": {
+    "rule": "<= 0.2",
+    "pass": true
+   }
+  },
+  "passed": true
+ },
+ "results": [
+  {
+   "id": "dev-01-payment-duplicate",
+   "tags": [
+    "이름",
+    "재시도"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 2,
+   "reasks": [],
+   "leading": [],
+   "targeted": [
+    true,
+    true
+   ],
+   "llm_steps": 5,
+   "unavailable": 0,
+   "clarify_rounds": 0,
+   "validation_passed": true,
+   "issues": [],
+   "failure": "",
+   "step_seconds": [
+    6.5,
+    7.1,
+    26.3,
+    11.6,
+    76.7
+   ],
+   "tokens": {
+    "in": 16844,
+    "out": 11190,
+    "reasoning": 7206
+   },
+   "cost_usd": 0.007785,
+   "transcript": [
+    {
+     "role": "assistant",
+     "text": "선택한 공고의 업무 중 이번 과제로 다룰 실제 문제 한 가지를 알려주세요. 공고와 앞선 답변에 없는 사례 내용을 보태 주세요."
+    },
+    {
+     "role": "user",
+     "text": "결제팀 [PERSON_1] 대리가 처음 알렸는데, 결제 대행사 응답이 늦을 때 같은 주문이 두 번 결제되는 일이 있었습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "PG 응답 지연 시 동일 주문이 중복 결제된 현상을 확인했습니다. 그 중복 결제가 코드나 시스템의 어떤 동작 때문에 발생하는지, 확인한 근거와 함께 알려주세요."
+    },
+    {
+     "role": "user",
+     "text": "결제 로그에서 같은 주문 번호로 승인이 두 번 기록된 것을 확인했고, 결제 요청에 요청 식별 키가 없어서 재시도가 새 결제로 처리된 것이 원인이었습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "결제 요청에 식별 키가 없어 재시도가 새 결제로 처리된 것을 원인으로 확인했습니다. 이 문제를 해결하기 위해 실제로 어떤 조치를 취했고, 그 결과 중복 결제가 사라졌는지 알려주세요."
+    },
+    {
+     "role": "user",
+     "text": "주문 번호로 요청 식별 키를 만들어 같은 키로 다시 오면 처음 결과를 돌려주게 바꿨고, 그 뒤로 같은 조건에서 중복 승인이 생기지 않았습니다."
+    }
+   ]
+  },
+  {
+   "id": "dev-02-stale-search",
+   "tags": [
+    "고정 질문",
+    "모름"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 2,
+   "reasks": [],
+   "leading": [],
+   "targeted": [
+    true,
+    true
+   ],
+   "llm_steps": 7,
+   "unavailable": 1,
+   "clarify_rounds": 1,
+   "validation_passed": true,
+   "issues": [],
+   "failure": "",
+   "step_seconds": [
+    12.7,
+    11.8,
+    45.8,
+    63.0,
+    110.5,
+    105.0
+   ],
+   "tokens": {
+    "in": 26695,
+    "out": 24981,
+    "reasoning": 14642
+   },
+   "cost_usd": 0.015745000000000002,
+   "transcript": [
+    {
+     "role": "assistant",
+     "text": "입사 후 90일 안에 어떤 결과가 나오면 채용을 잘했다고 판단하나요? 개인·고객 정보 없이 확인할 산출물이나 지표를 알려주세요. 미정이면 미정이라고 답해도 됩니다."
+    },
+    {
+     "role": "user",
+     "text": "입사 90일 안에 검색 화면의 잘못된 결과 표시 문의를 없애는 것입니다."
+    },
+    {
+     "role": "assistant",
+     "text": "새 팀원이 맡을 일 중 팀에서 실제로 판단이 갈렸던 상황 한 가지를 알려주세요. 어떤 선택지가 있었고, 시간·인력·권한 등 어떤 제약 아래 무엇을 기준으로 결정했나요? 실명과 고객 정보는 빼 주세요. 공유할 사례가 없으면 미정이라고 답해도 됩니다."
+    },
+    {
+     "role": "user",
+     "text": "미정"
+    },
+    {
+     "role": "assistant",
+     "text": "선택한 공고의 업무 중 이번 과제로 다룰 실제 문제 한 가지를 알려주세요. 공고와 앞선 답변에 없는 사례 내용을 보태 주세요."
+    },
+    {
+     "role": "user",
+     "text": "검색창에 글자를 빠르게 바꿔 입력하면 화면에 엉뚱한 검색 결과가 뜨는 문제가 있었습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "빠르게 입력하면 엉뚱한 결과가 뜬다는 증상을 확인하셨군요. 그 원인을 어떻게 확인하셨는지, 어떤 작업 기록이나 코드를 보고 판단하셨는지 알려주세요."
+    },
+    {
+     "role": "user",
+     "text": "네트워크 탭에서 요청과 응답을 나란히 비교해 보니 먼저 보낸 검색 요청의 응답이 나중에 도착해 최신 결과를 덮어쓰고 있었습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "네트워크 탭에서 먼저 보낸 요청의 응답이 나중에 도착해 최신 결과를 덮어쓴 것을 확인하셨군요. 그 문제를 실제로 해결한 조치는 무엇이었나요?"
+    },
+    {
+     "role": "user",
+     "text": "검색 요청마다 번호를 붙여 가장 마지막 요청의 응답만 화면에 반영하게 바꿨고, 같은 조건에서 다시 확인했을 때 항상 마지막 검색어 결과가 보였습니다."
+    }
+   ]
+  },
+  {
+   "id": "dev-03-batch-rerun",
+   "tags": [
+    "데이터"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 2,
+   "reasks": [],
+   "leading": [],
+   "targeted": [
+    true,
+    true
+   ],
+   "llm_steps": 5,
+   "unavailable": 0,
+   "clarify_rounds": 0,
+   "validation_passed": true,
+   "issues": [],
+   "failure": "",
+   "step_seconds": [
+    6.9,
+    13.3,
+    27.6,
+    90.0,
+    94.0
+   ],
+   "tokens": {
+    "in": 20284,
+    "out": 15088,
+    "reasoning": 8600
+   },
+   "cost_usd": 0.010133999999999999,
+   "transcript": [
+    {
+     "role": "assistant",
+     "text": "선택한 공고의 업무 중 이번 과제로 다룰 실제 문제 한 가지를 알려주세요. 공고와 앞선 답변에 없는 사례 내용을 보태 주세요."
+    },
+    {
+     "role": "user",
+     "text": "일 매출 집계 표에서 어떤 날 매출이 평소의 두 배로 나온 적이 있습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "매출이 평소의 두 배로 나온 현상을 확인하셨군요. 그 원인을 어떻게 파악하셨나요? 예를 들어 집계 로직이나 입력 데이터를 비교해서 특정 부분을 지목하셨을 것 같은데, 확인 과정을 알려주세요."
+    },
+    {
+     "role": "user",
+     "text": "작업 실행 이력에서 그날 배치가 실패 알림 뒤 수동으로 한 번 더 실행된 것을 찾았고, 집계 작업이 같은 날짜 데이터를 지우지 않고 계속 덧붙여 넣는 구조였습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "실패 후 수동 재실행과 지우지 않는 append 구조가 원인임을 확인하셨군요. 그 이후 집계 작업 자체를 어떻게 고치셨나요?"
+    },
+    {
+     "role": "user",
+     "text": "날짜 단위로 그날 결과를 비운 뒤 다시 쓰도록 바꿨고, 같은 날짜를 두 번 돌려도 합계가 원장과 같았습니다."
+    }
+   ]
+  },
+  {
+   "id": "dev-04-deleted-open-log",
+   "tags": [
+    "고정 질문",
+    "연락처"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 3,
+   "reasks": [],
+   "leading": [],
+   "targeted": [
+    true,
+    true,
+    true
+   ],
+   "llm_steps": 8,
+   "unavailable": 2,
+   "clarify_rounds": 0,
+   "validation_passed": true,
+   "issues": [],
+   "failure": "",
+   "step_seconds": [
+    15.0,
+    19.0,
+    44.2,
+    71.8,
+    0.0,
+    98.8
+   ],
+   "tokens": {
+    "in": 19931,
+    "out": 17703,
+    "reasoning": 11119
+   },
+   "cost_usd": 0.01131,
+   "transcript": [
+    {
+     "role": "assistant",
+     "text": "입사 후 90일 안에 어떤 결과가 나오면 채용을 잘했다고 판단하나요? 개인·고객 정보 없이 확인할 산출물이나 지표를 알려주세요. 미정이면 미정이라고 답해도 됩니다."
+    },
+    {
+     "role": "user",
+     "text": "입사 90일 안에 디스크 관련 장애 알림을 없애는 것입니다."
+    },
+    {
+     "role": "assistant",
+     "text": "새 팀원이 맡을 일 중 팀에서 실제로 판단이 갈렸던 상황 한 가지를 알려주세요. 어떤 선택지가 있었고, 시간·인력·권한 등 어떤 제약 아래 무엇을 기준으로 결정했나요? 실명과 고객 정보는 빼 주세요. 공유할 사례가 없으면 미정이라고 답해도 됩니다."
+    },
+    {
+     "role": "user",
+     "text": "디스크 정리를 자동으로 할지 수동으로 할지 판단이 갈렸고, 서비스 중단 없이 되돌릴 수 있는지를 기준으로 정했습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "선택한 공고의 업무 중 이번 과제로 다룰 실제 문제 한 가지를 알려주세요. 공고와 앞선 답변에 없는 사례 내용을 보태 주세요."
+    },
+    {
+     "role": "user",
+     "text": "로그를 지웠는데도 서버 디스크 사용량이 줄지 않아 서비스가 멈춘 적이 있습니다. 당시 연락은 [CONTACT_1] 으로 받았습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "로그를 지웠는데도 디스크 사용량이 줄지 않아 서비스가 멈쳤다고 하셨습니다. 당시 디스크 사용량이 줄지 않은 원인을 어떻게 확인하셨나요?"
+    },
+    {
+     "role": "user",
+     "text": "프로세스가 연 파일 목록을 확인해 보니 지운 로그 파일을 애플리케이션이 계속 붙잡고 있어서 공간이 반환되지 않았습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "프로세스가 파일을 붙잡고 있어서 공간이 반환되지 않았다고 확인하셨네요. 그 상태에서 실제로 어떤 조치를 취해서 서비스가 복구되었나요?"
+    },
+    {
+     "role": "user",
+     "text": "로그 순환 뒤 애플리케이션이 로그 파일을 새로 열도록 신호를 보내게 바꿨고, 그 뒤 로그를 순환하면 사용량이 바로 줄었습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "문제가 생긴 경우와 정상인 경우를 비교하면 어떤 조건이 달랐나요? 동시에 처리한 작업이나 재시도 여부처럼 확인한 범위를 알려주세요."
+    },
+    {
+     "role": "user",
+     "text": "로그를 손으로 지웠을 때와 로그 순환 설정이 파일 이름만 바꿀 때 생겼습니다."
+    }
+   ]
+  },
+  {
+   "id": "dev-05-cache-expiry",
+   "tags": [
+    "처음 대응 모름"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 2,
+   "reasks": [],
+   "leading": [],
+   "targeted": [
+    true,
+    true
+   ],
+   "llm_steps": 5,
+   "unavailable": 0,
+   "clarify_rounds": 0,
+   "validation_passed": true,
+   "issues": [],
+   "failure": "",
+   "step_seconds": [
+    8.2,
+    12.6,
+    13.2,
+    26.5,
+    76.6
+   ],
+   "tokens": {
+    "in": 16614,
+    "out": 9882,
+    "reasoning": 6188
+   },
+   "cost_usd": 0.007137,
+   "transcript": [
+    {
+     "role": "assistant",
+     "text": "선택한 공고의 업무 중 이번 과제로 다룰 실제 문제 한 가지를 알려주세요. 공고와 앞선 답변에 없는 사례 내용을 보태 주세요."
+    },
+    {
+     "role": "user",
+     "text": "이벤트를 시작한 직후 상품 목록 API가 몇 분 동안 아주 느려진 적이 있습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "이벤트 시작 직후 상품 목록 API가 몇 분간 느려진 증상을 확인했습니다. 그 느려짐의 원인으로 실제로 확인된 것이 무엇인지, 어떤 기록이나 비교를 통해 확인했는지 알려주세요."
+    },
+    {
+     "role": "user",
+     "text": "캐시 기록을 보니 이벤트 직전에 채운 인기 상품 캐시들이 같은 시각에 함께 만료되어 그 순간 요청이 한꺼번에 DB로 몰렸습니다."
+    },
+    {
+     "role": "assistant",
+     "text": "캐시 기록에서 인기 상품 캐시들이 같은 시각에 만료되어 요청이 DB로 몰린 것을 확인하셨군요. 그 상황에서 실제로 어떤 조치를 취했고, 이후 같은 문제가 다시 발생하지 않았는지 알려주세요."
+    },
+    {
+     "role": "user",
+     "text": "캐시 만료 시각을 항목마다 조금씩 다르게 흩뜨렸고, 다음 이벤트 때는 DB 사용률이 평소와 같았습니다."
+    }
+   ]
+  }
+ ]
+}
