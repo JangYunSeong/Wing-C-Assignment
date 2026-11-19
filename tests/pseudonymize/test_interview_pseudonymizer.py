@@ -14,6 +14,7 @@ from task_spec.nodes.pseudonymize import (
     InterviewPseudonymizer,
     InterviewTextRejected,
 )
+from task_spec.nodes.pseudonymize.detectors import detect_patterns
 from task_spec.nodes.pseudonymize.dictionaries import load_dictionaries
 from task_spec.nodes.pseudonymize.engine import Detectors
 from task_spec.schemas.pseudo_text import PseudonymizedText
@@ -136,3 +137,20 @@ def test_dict_keys_are_checked_too(pseudo: InterviewPseudonymizer) -> None:
     mapping = pseudo.new_mapping(IID, "가상테크")
     with pytest.raises(InterviewTextRejected):
         pseudo.stored_json({"ops@example.com": "값"}, mapping)
+
+
+def test_system_ids_that_look_like_phone_numbers_are_not_rejected(
+    pseudo: InterviewPseudonymizer,
+) -> None:
+    """uuid4 의 약 0.7% 가 전화번호 패턴에 걸린다 — 사례 항목 id 가 걸리면 그 인터뷰는 매번 같은 id 로 거절돼 멈췄다."""
+    mapping = pseudo.new_mapping(IID, "가상테크")
+    case_id = "66b54d53-5915-4071-92cd-50ac4fcf7f9b"  # '53-5915-4071' 이 유선 전화 모양
+    incident_id = "co:sw.backend:1783903502ab"  # '1783903502' 가 휴대 전화 모양
+    assert detect_patterns(case_id) and detect_patterns(
+        incident_id
+    )  # 탐지기는 그대로 — 가리는 쪽이 막는다
+    cases = {"incident_id": incident_id, "known_incident_cases": [{"case_id": case_id}]}
+    assert json.loads(pseudo.stored_json(cases, mapping)) == cases
+    assert pseudo.derived(f"사례 {incident_id} 의 항목 {case_id}", mapping)
+    with pytest.raises(InterviewTextRejected):  # id 옆의 진짜 연락처는 그대로 막는다
+        pseudo.derived(f"{case_id} 담당 010-1234-5678", mapping)
