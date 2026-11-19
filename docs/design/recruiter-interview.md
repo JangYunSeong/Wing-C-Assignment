@@ -131,7 +131,7 @@ P1 쪽 (구현됨)
 | D2a | 역량 2~3개 → 기능형 공통 과제 생성(`interview:{id}` 초안) → 지원자 질문에 답할 범위 → 과제·질문 수정 | 구현 (#266) — 새 프롬프트 2개는 판 파일만 |
 | D2b | 승인 interrupt 그래프(반려, 위 §2) → 그 순간의 사례를 `co:` 로 등록(공유 대기) → 공통 과제 승인(위 §1) → 대응표 삭제. 빌드는 따로 요청 | 구현 (#266) |
 | D2c | 회사 사례 모음(공유 승인된 같은 회사 사례)·공개 사례에서 고르기 | 구현 (#266) |
-| D2 평가 | `interview_feature_seed`·`interview_targeted_answer` 가상 표본 평가 → CURRENT | 뒤 (#266) |
+| D2 평가 | `interview_feature_seed`·`interview_targeted_answer` 가상 표본 평가 → CURRENT (`eval/interview_task/`) | 구현 (#266) — feature_seed v1, targeted_answer v2 (v1 은 dev 해법 누설로 미달) |
 | D3 | 채용 방향 문답 → 공고 초안, 성공 기준 ↔ 실제 채점 결과 연결, `/evaluation`(결정 3), 내장 화면 여부 | 뒤 |
 
 가져오지 않는 것: 공용 프롬프트·템플릿 판 변경(gen_hidden v10·gen_starter v11·plan_contract v32·java 템플릿 v4 — 대화와 무관, 따로 평가),

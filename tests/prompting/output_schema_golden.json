@@ -139,10 +139,20 @@
   "schema_style": "json",
   "sha256": "5dc2a1c3a97a825028f88642e0fd10bd23cb7f0741c424e0a3894754a18d7285"
  },
+ "interview_feature_seed": {
+  "output_schema": "FeatureSeed",
+  "schema_style": "json",
+  "sha256": "3b412e502cb34a5902c42968e9bde81aa47ce74dde198294bd0f0f51005a20c6"
+ },
  "interview_incident_extended": {
   "output_schema": "IncidentInterviewOutput",
   "schema_style": "compact",
   "sha256": "739a4ad9624d87eedf8a276100898654623100b5e45e17b2e21a79f63c88bbe2"
+ },
+ "interview_targeted_answer": {
+  "output_schema": "TargetedAnswerDraftOutput",
+  "schema_style": "json",
+  "sha256": "da2c89fe7d5f019df406c39122ad5e9e5aec762e8e8c7ea22fbeb89958dbc9fb"
  },
  "judge_draft_task": {
   "output_schema": "JudgeDraftOutput",

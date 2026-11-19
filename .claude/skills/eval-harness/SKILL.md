@@ -101,6 +101,28 @@ uv run python -m eval.interview.run_eval --split test --save      # 숨김 — �
 CURRENT 승격(첫 판) 근거 — 각 `prompts/interview_*/PROMOTIONS.md`. dev 1회 리포트의 입력 토큰 0 은 집계 버그(provenance 키 `in_`), 2회부터 고침.
 다음: test-03(처음 대응 단계 503 3번으로 미완)의 원인을 새 dev 표본으로 — 한글 숫자 표기('아홉 시간')와 서버 숫자 검사(숫자만 셈)의 어긋남이 의심.
 
+## 사례 인터뷰 과제 프롬프트 평가 (`eval/interview_task/`, #266 D2)
+
+D2 의 새 프롬프트 2개를 표본마다 한 번씩 실제 qwen 으로 부른다 (첫 응답의 질). 입력은 서비스와 같다 — 가상 원문을 실제 탐지기로 가명화한 뒤
+기능형 재료는 `prepare_coding_incident`(템플릿 실패 사유·실행 조건 대조 포함), 답할 범위 초안은 저장 전 검사(derived)까지.
+- 표본(`samples.py`): 기능형 재료 = 백엔드·프런트엔드·데이터 가상 사례(확인된 사례·처음 대응·기준 답안) + 심은 실패 사유·숨은 요구 개념·업무 목적 금지 낱말.
+  답할 범위 = 가상 과제 글·짚은 조건·담당자 예시 질문(가상 이름 포함) + 심은 해법 낱말(나오면 누설)·가리킬 자료 제목. dev 6·test 6씩.
+- 기준(`run_eval.CRITERIA`, 실행 전 고정): 재료 — 서비스 검사 통과 ≥ 0.8·사유 적중 ≥ 0.8·개념 ≥ 0.8·harness 비움 ≥ 0.8·업무 목적 누설 0·인정 설계 ≥ 0.8·등록 막힘 0.
+  초안 — 형식 통과 ≥ 0.9·해법 누설 0·자료 id ≤ 1·지어낸 수치 ≤ 1·300자 초과 ≤ 1·자료 가리킴 ≥ 0.6.
+- 채점기 자기 검증: `tests/eval/test_interview_task_eval.py`. 한계: harness 지표는 '성능 사례가 아니면 비움'이라 동시성 시험의 concurrency 도 어긋남으로 센다.
+- 실행: .env 가 있는 레포 루트에서 (셸로 .env 를 열지 않는다 — Settings 가 읽는다). 워크트리면 그 스크립트를 경로로 부른다:
+  `PYTHONPATH=<worktree> uv run --project <worktree> python <worktree>/eval/interview_task/run_eval.py --split dev --show --save`
+
+| 2026-11-19 | dev 1회 (seed v1·answer v1) | dev (answer v2) | dev 2회 (seed v1·answer v2) | test (숨김) |
+|---|---|---|---|---|
+| 재료 서비스 검사 통과 | 1.0 | - | 1.0 | 0.833 |
+| 재료 사유·개념·인정 설계 | 1.0·1.0·1.0 | - | 1.0·1.0·1.0 | 1.0·1.0·1.0 |
+| 초안 해법 누설 | **1 (미달)** | 0 | 0 | 0 |
+| 초안 자료 가리킴 | 1.0 | 0.667 | 1.0 | 1.0 |
+| 비용 | $0.0136 | $0.0022 | $0.0164 | $0.0142 |
+
+승격 근거 — 각 `prompts/interview_feature_seed|interview_targeted_answer/PROMOTIONS.md`. test 재료 1건 실패는 열지 않았다 → 반복되면 새 dev 표본으로.
+
 ## 주장 추출 평가 (`eval/claims/`)
 
 `generate.py`: 가명화 끝난 형태(토큰·⟦칸⟧)의 가상 이력서·자기소개서, 문장마다 정답(행동 수·칸·역할, 뽑으면 안 되는 문장).

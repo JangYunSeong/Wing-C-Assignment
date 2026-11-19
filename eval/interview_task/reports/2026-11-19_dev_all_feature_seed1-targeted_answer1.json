@@ -1,0 +1,652 @@
+{
+ "split": "dev",
+ "part": "all",
+ "versions": {
+  "interview_feature_seed": 1,
+  "interview_targeted_answer": 1
+ },
+ "summary": {
+  "seed_samples": 6,
+  "answer_samples": 6,
+  "seed_valid": 1.0,
+  "seed_reason_hit": 1.0,
+  "seed_concept_hit": 1.0,
+  "seed_harness_ok": 0.833,
+  "seed_need_leak": 0,
+  "seed_designs_ok": 1.0,
+  "seed_blocked": 0,
+  "answer_valid": 1.0,
+  "answer_solution_leak": 1,
+  "answer_artifact_id": 0,
+  "answer_invented_numbers": 0,
+  "answer_too_long": 0,
+  "answer_pointer_hit": 1.0,
+  "seconds_mean": 20.8,
+  "tokens": {
+   "in": 38101,
+   "out": 16749,
+   "reasoning": 11083
+  },
+  "cost_usd": 0.0136,
+  "criteria": {
+   "seed_valid": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_reason_hit": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_concept_hit": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_harness_ok": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_need_leak": {
+    "rule": "<= 0",
+    "pass": true
+   },
+   "seed_designs_ok": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "seed_blocked": {
+    "rule": "<= 0",
+    "pass": true
+   },
+   "answer_valid": {
+    "rule": ">= 0.9",
+    "pass": true
+   },
+   "answer_solution_leak": {
+    "rule": "<= 0",
+    "pass": false
+   },
+   "answer_artifact_id": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "answer_invented_numbers": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "answer_too_long": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "answer_pointer_hit": {
+    "rule": ">= 0.6",
+    "pass": true
+   }
+  },
+  "passed": false
+ },
+ "seeds": [
+  {
+   "id": "seed-dev-01",
+   "valid": true,
+   "failure": "",
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "need_leak": [],
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 25.5,
+   "tokens": {
+    "in": 6525,
+    "out": 2391,
+    "reasoning": 1605
+   },
+   "cost_usd": 0.002103,
+   "output": {
+    "business_need": "모바일 앱에서 고객이 상품을 주문하고 결제를 승인받는 주문 등록 API(POST /orders)를 제공한다. 요청 본문에는 고객 식별자, 상품 목록, 결제 수단이 포함된다.",
+    "naive_impl": "POST /orders 요청을 받을 때마다 주문 테이블에 새 행을 삽입하고 결제 승인 테이블에도 새 행을 삽입한 뒤 주문 번호와 승인 결과를 응답한다. 요청을 구별하는 추가 확인 없이 매 요청을 새 주문으로 처리한다.",
+    "hidden_requirement": "같은 요청을 여러 번 받아도 주문과 결제 기록은 한 건만 남는다. 실제 통신 실패 뒤 재시도로 주문을 완료할 수 있어야 한다 — 재시도 자체를 금지하면 안 된다. 같은 요청을 두 번 보내고 주문·결제 기록 수를 대조해 한 건임을 확인한다.",
+    "trigger": "결제 승인 응답이 네트워크에서 유실되어 클라이언트가 같은 주문 요청을 다시 보낸다.",
+    "why_naive_breaks": "서버가 요청을 구별하지 못해 재전송을 새 주문으로 처리하고, 주문과 결제 기록이 중복 생성된다.",
+    "discoverable_by": [
+     "같은 요청을 두 번 보내고 주문·결제 기록 수를 대조한다",
+     "같은 요청을 동시에 두 번 보내고 결과 건수를 확인한다"
+    ],
+    "accepted_designs": [
+     "[설계] 요청 식별자(멱등 키)로 이미 처리된 주문이면 이전 결과를 그대로 돌려준다 — 조건: 클라이언트가 같은 요청에 같은 식별자를 보내고 서버가 그 식별자로 기존 주문을 조회할 수 있어야 한다",
+     "[설계] 주문 번호 유일 제약으로 두 번째 생성을 DB 수준에서 막고 충돌 시 기존 주문을 조회해 반환한다 — 조건: 두 번째 요청에 첫 주문의 결과를 돌려주어야 한다"
+    ],
+    "stage2_symptom": "배포 뒤 고객 한 명의 주문 내역에 같은 상품 주문이 두 건 생기고 결제 승인 기록도 두 건이었다.",
+    "stage2_evidence": [
+     "주문 테이블에서 같은 고객·같은 상품·같은 시각 부근에 두 행이 존재한다",
+     "결제 승인 테이블에도 같은 주문에 해당하는 두 건의 승인 기록이 있다",
+     "앱 로그에서 응답 유실 뒤 같은 요청이 재전송된 기록이 확인된다"
+    ],
+    "stage2_cause_terms": [
+     "요청 식별자 없이 매 요청을 새 주문으로 처리",
+     "승인 응답 유실 구간에서 클라이언트 재시도가 중복 생성을 유발"
+    ],
+    "leak_terms": [
+     "멱등 키",
+     "idempotency key",
+     "요청 식별자",
+     "유일 제약",
+     "unique constraint",
+     "이미 처리된 주문이면 이전 결과"
+    ],
+    "trigger_terms": [
+     "승인 응답이 네트워크에서 유실",
+     "같은 주문 요청을 다시 보낸다"
+    ],
+    "fix_markers": [
+     "idempotency",
+     "request_id",
+     "unique",
+     "duplicate"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [],
+    "reasons": [
+     "duplicate_record"
+    ],
+    "harness": [],
+    "harness_notes": {},
+    "harness_rules": {},
+    "fault_by": null
+   }
+  },
+  {
+   "id": "seed-dev-02",
+   "valid": true,
+   "failure": "",
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": false,
+   "need_leak": [],
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 43.5,
+   "tokens": {
+    "in": 6480,
+    "out": 2523,
+    "reasoning": 1597
+   },
+   "cost_usd": 0.002158,
+   "output": {
+    "business_need": "한정 수량 상품의 주문 접수 API를 구현한다. 주문이 들어오면 해당 상품의 재고 수량을 1 줄이고 주문 성공 여부를 응답한다. 재고 조회와 주문 처리를 위한 HTTP 엔드포인트를 제공한다.",
+    "naive_impl": "주문 요청이 들어오면 먼저 해당 상품의 현재 재고 수량을 조회하고, 앱 코드에서 1을 뺀 값을 계산한 뒤 그 결과를 DB에 저장한다. 재고 조회 결과를 응답 속도를 높이기 위해 캐시할 수도 있다.",
+    "hidden_requirement": "같은 상품에 동시에 여러 주문이 들어와도 차감이 하나도 빠지지 않아야 한다. 남은 재고는 처음 수량에서 성공한 주문 수를 뺀 값과 같아야 한다. 주문이 하나뿐일 때의 처리 결과는 바뀌지 않는다. 재고 조회 캐시는 오래된 값을 더 오래 보여 줘 덮어쓰기를 늘리므로 허용되지 않는다.",
+    "trigger": "행사나 한정 판매처럼 같은 상품에 주문이 몰린 시각에 동시 주문이 들어온다.",
+    "why_naive_breaks": "두 요청이 같은 재고 값을 읽고 각각 1을 빼서 저장하면 마지막 쓰기가 앞 쓰기를 덮어써서 한쪽 차감이 사라진다. 캐시를 추가하면 오래된 값을 더 오래 읽어 덮어쓰기 확률이 더 늘어난다.",
+    "discoverable_by": [
+     "같은 상품에 주문을 동시에 여러 번 보내고 남은 재고가 처음 수량에서 성공 응답 수를 뺀 값과 같은지 대조한다.",
+     "동시 주문이 몰린 시각에만 재고가 실제 판매보다 많게 남는 증상을 관찰한다."
+    ],
+    "accepted_designs": [
+     "[설계] @Version 컬럼으로 낙관적 락을 적용해 갱신 충돌을 감지하고 재시도한다 — 조건: 충돌 시 재시도 로직이 있어 최종 재고 값이 정확할 것",
+     "[설계] UPDATE 문에서 재고를 원자적으로 차감한다 (예: SET stock = stock - 1) — 조건: 차감을 잃지 않을 것, 단일 주문 시 동작이 기존과 같을 것"
+    ],
+    "stage2_symptom": "동시 주문 뒤 남은 재고가 처음 수량에서 성공한 주문 수를 뺀 값보다 크다. 일부 차감이 사라져 실제 판매 수량보다 재고가 많이 남아 있다.",
+    "stage2_evidence": [
+     "같은 상품에 동시에 보낸 주문들이 모두 200 성공을 반환했지만 조회 API의 재고 값이 기대치보다 높다.",
+     "성공 응답 수와 실제 차감 횟수가 맞지 않는다."
+    ],
+    "stage2_cause_terms": [
+     "read-modify-write 경쟁 조건",
+     "마지막 쓰기가 앞 쓰기를 덮어씀",
+     "동시 갱신에서 차감 손실"
+    ],
+    "leak_terms": [
+     "버전 컬럼으로 갱신 충돌을 감지",
+     "갱신 문에서 재고를 원자적으로 뺀다",
+     "SET stock = stock - 1"
+    ],
+    "trigger_terms": [
+     "같은 상품에 주문이 몰린 시각에만 어긋났다",
+     "두 요청이 같은 재고 값을 읽고 각각 1을 빼서 저장"
+    ],
+    "fix_markers": [
+     "@Version",
+     "OptimisticLockException",
+     "stock = stock -",
+     "UPDATE ... SET"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [
+     {
+      "kind": "stateful_target",
+      "note": "재고 수량을 가진 상품 엔티티 — 동시 주문이 같은 행의 stock 필드를 수정한다"
+     }
+    ],
+    "reasons": [
+     "lost_update"
+    ],
+    "harness": [
+     "concurrency"
+    ],
+    "harness_notes": {},
+    "harness_rules": {},
+    "fault_by": "item"
+   }
+  },
+  {
+   "id": "seed-dev-03",
+   "valid": true,
+   "failure": "",
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "need_leak": [],
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 24.9,
+   "tokens": {
+    "in": 6080,
+    "out": 1939,
+    "reasoning": 1080
+   },
+   "cost_usd": 0.001823,
+   "output": {
+    "business_need": "검색 입력창에 키워드를 치면 외부 검색 API를 호출하고 결과를 화면에 보여 주는 기능. 입력이 바뀔 때마다 API를 부르고, 응답으로 받은 목록을 렌더링한다.",
+    "naive_impl": "입력값에 디바운스를 걸고, 디바운스된 값으로 fetch를 보낸다. 응답이 도착하면 그대로 setState하여 화면에 렌더링한다. 이전 요청의 응답을 무시하거나 취소하는 로직이 없다.",
+    "hidden_requirement": "응답이 요청 순서와 다른 순서로 도착해도 화면에는 가장 마지막에 보낸 요청의 결과만 보여야 한다. 이전 요청의 응답(성공·실패 모두)이 최신 입력의 화면을 덮으면 안 된다. 입력을 지운 뒤 늦게 도착한 이전 응답이 결과를 다시 띄우면 안 된다. 디바운스 지연을 늘리는 것만으로는 이 조건을 만족할 수 없다 — 네트워크 응답 순서는 지연으로 보장되지 않기 때문이다.",
+    "trigger": "느린 회선에서 사용자가 검색어를 빠르게 바꾸어 첫 요청의 응답이 두 번째 요청의 응답보다 늦게 도착한다.",
+    "why_naive_breaks": "naive 구현은 응답이 도착한 순서대로 화면을 갱신한다. 첫 요청의 응답이 늦게 오면 그 응답이 최신 입력의 결과를 덮어 화면에 낡은 검색어의 결과가 남는다. 디바운스를 늘려도 이미 보낸 요청의 응답 순서는 네트워크에 달려 있어 해결되지 않는다.",
+    "discoverable_by": [
+     "검색어를 바꿔 입력한 뒤 화면에 이전 검색어의 결과가 남아 있는 것을 관찰한다",
+     "느린 네트워크에서 검색을 반복하면 빈번히 재현된다"
+    ],
+    "accepted_designs": [
+     "[설계] 요청 순번 추적 — 조건: 각 요청에 단조 증가하는 식별자(순번·타임스탬프)를 부여하고, 응답의 식별자가 현재 최신 식별자보다 작으면 그 응답(성공·실패 모두)을 무시한다",
+     "[설계] 이전 요청 취소 — 조건: 새 요청을 보내기 전에 이전 요청의 AbortController.abort()를 호출하여 응답 자체가 도착하지 않게 한다"
+    ],
+    "stage2_symptom": "검색어를 '가방'에서 '모자'로 바꿨는데 화면에 가방 결과가 남아 있다.",
+    "stage2_evidence": [
+     "화면의 결과 목록이 현재 입력된 검색어와 일치하지 않는다",
+     "네트워크 탭에서 늦게 도착한 이전 요청의 응답이 최신 상태를 덮는 것을 볼 수 있다"
+    ],
+    "stage2_cause_terms": [
+     "응답 순서가 요청 순서와 다름",
+     "낡은 응답이 최신 화면을 덮음",
+     "이전 요청을 취소하거나 무시하지 않음"
+    ],
+    "leak_terms": [
+     "요청 순번",
+     "AbortController.abort",
+     "stale response",
+     "요청 취소",
+     "순번 비교"
+    ],
+    "trigger_terms": [
+     "첫 검색 응답을 늦게 오게 하고 검색어를 바꾼다",
+     "응답 순서를 뒤바꿔 보내고 화면 결과를 대조한다"
+    ],
+    "fix_markers": [
+     "stale_response_shown"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [],
+    "reasons": [
+     "stale_response_shown",
+     "stale_error_shown",
+     "cleared_result_reappears"
+    ],
+    "harness": [],
+    "harness_notes": {},
+    "harness_rules": {},
+    "fault_by": null
+   }
+  },
+  {
+   "id": "seed-dev-04",
+   "valid": true,
+   "failure": "",
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "need_leak": [],
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 35.7,
+   "tokens": {
+    "in": 6083,
+    "out": 2089,
+    "reasoning": 1261
+   },
+   "cost_usd": 0.001894,
+   "output": {
+    "business_need": "게시물 목록에서 좋아요 버튼을 누르면 눌린 상태와 수가 즉시 화면에 반영되어야 한다.",
+    "naive_impl": "버튼을 누르면 화면 상태를 먼저 바꾼(낙관적 갱신) 뒤 서버에 요청을 보내지만, 서버가 오류를 반환했을 때 화면을 원래 상태로 되돌리는 경로가 없다.",
+    "hidden_requirement": "성공 시 눌린 상태가 즉시 보여야 하고, 실패 시 버튼과 수가 누르기 전으로 돌아와야 한다. 실패 뒤 눌린 상태를 남기지 않는 것이 반드시 지켜야 할 조건이다.",
+    "trigger": "좋아요 요청이 서버에서 거절되어 실패 응답이 돌아온다.",
+    "why_naive_breaks": "낙관적으로 바꾼 화면 상태를 실패 응답 뒤 되돌리지 않아, 화면에는 눌린 상태가 남아 있지만 실제 서버 수와 어긋난다.",
+    "discoverable_by": [
+     "실패 응답을 주입한 뒤 화면의 버튼 상태와 수가 누르기 전으로 돌아왔는지 대조한다",
+     "성공 응답에서는 눌린 상태가 즉시 보이는지 확인한다"
+    ],
+    "accepted_designs": [
+     "[설계] 실패 시 이전 상태로 되돌리기 — 조건: 서버 실패 응답을 받았을 때 낙관적으로 반영한 변경을 취소하고 원래 값으로 복원하며 사용자에게 알린다",
+     "[설계] 서버 결과로 다시 맞추기 — 조건: 실패 응답 뒤 서버에서 현재 상태를 재조회하여 화면을 서버 값으로 동기화한다"
+    ],
+    "stage2_symptom": "장애 시간대 문의에서 좋아요 수와 실제 수가 다른 것을 확인했다. 서버가 오류를 냈는데 화면의 좋아요는 눌린 채로 남았다.",
+    "stage2_evidence": [
+     "실패 응답 뒤 화면의 좋아요 버튼이 눌린 상태로 남아 있다",
+     "서버의 실제 좋아요 수와 화면 표시 수가 어긋난다"
+    ],
+    "stage2_cause_terms": [
+     "낙관적 갱신 뒤 실패 경로의 복구 누락",
+     "실패 응답 뒤 화면 상태 미복원"
+    ],
+    "leak_terms": [
+     "낙관적 갱신 뒤 되돌리기",
+     "실패 응답 뒤 상태 복구",
+     "이전 상태로 복원",
+     "서버 값으로 재동기화"
+    ],
+    "trigger_terms": [
+     "좋아요 요청이 서버에서 거절될 때",
+     "낙관적으로 반영한 상태에 대한 서버 응답이 오류일 때"
+    ],
+    "fix_markers": [
+     "rollback",
+     "revert",
+     "onError",
+     "re-sync",
+     "refetch"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [
+     {
+      "kind": "stateful_target",
+      "note": "게시물의 좋아요 수·상태는 이미 존재하는 레코드를 수정한다"
+     },
+     {
+      "kind": "mutation_endpoint",
+      "note": "좋아요 버튼이 POST 요청을 보낸다"
+     },
+     {
+      "kind": "result_screen",
+      "note": "버튼 눌림 상태와 수가 화면에 즉시 보여야 판정할 수 있다"
+     }
+    ],
+    "reasons": [
+     "optimistic_not_rolled_back"
+    ],
+    "harness": [],
+    "harness_notes": {},
+    "harness_rules": {},
+    "fault_by": null
+   }
+  },
+  {
+   "id": "seed-dev-05",
+   "valid": true,
+   "failure": "",
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "need_leak": [],
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 35.7,
+   "tokens": {
+    "in": 4898,
+    "out": 2077,
+    "reasoning": 1188
+   },
+   "cost_usd": 0.001711,
+   "output": {
+    "business_need": "매일 주문 원장(JSONL)을 읽어 날짜별 매출 합계·주문 수를 집계한 결과 파일(Parquet)을 날짜 폴더에 쓴다. 운영에서 실패한 날짜의 배치를 다시 실행하는 일이 잦다.",
+    "naive_impl": "주문 JSONL을 DuckDB로 집계한 뒤 결과 Parquet 파일에 INSERT(덧붙이기)로 쓴다. 같은 날짜를 다시 실행하면 기존 행 위에 새 행이 추가되어 합계와 행 수가 늘어난다.",
+    "hidden_requirement": "같은 날짜 입력으로 두 번 이상 실행해도 출력 파일의 매출 합계·주문 수·행 수가 첫 실행과 동일해야 한다(멱등성). 다른 날짜의 출력 파일은 바뀌지 않아야 한다. 사람이 수동으로 결과 파일을 지우는 단계에 의존하면 안 된다.",
+    "trigger": "새벽 배치가 실패한 뒤 아침에 같은 날짜로 다시 실행한다.",
+    "why_naive_breaks": "INSERT는 기존 행을 건드리지 않고 덧붙이기만 하므로, 같은 날짜를 두 번 돌리면 같은 주문이 두 번 집계되어 합계가 두 배가 된다. 수동 삭제는 빠뜨리거나 일부만 지워 더 큰 불일치를 만든다.",
+    "discoverable_by": [
+     "같은 날짜 입력으로 두 번 실행한 뒤 출력 파일의 합계와 행 수를 첫 실행과 대조한다",
+     "다른 날짜의 출력 파일이 바뀌지 않았는지 확인한다"
+    ],
+    "accepted_designs": [
+     "[설계] 날짜 단위로 기존 출력 파일을 지우고 다시 쓴다 — 조건: 같은 날짜를 다시 실행해도 합계·행 수가 첫 실행과 같고 다른 날짜 출력은 불변",
+     "[설계] 주문 키 기준으로 기존 행을 덮어쓴다(UPSERT) — 조건: 같은 키가 다시 들어와도 중복 행이 생기지 않고 합계가 변하지 않는다"
+    ],
+    "stage2_symptom": "재실행한 날의 매출 합계가 두 배이고 행 수가 첫 실행의 두 배로 늘었다.",
+    "stage2_evidence": [
+     "같은 날짜 입력으로 두 번 실행한 뒤 출력 Parquet의 sum(revenue)와 count(*)를 첫 실행과 비교하면 두 배",
+     "다른 날짜 출력 파일은 첫 실행과 동일 (문제는 재실행한 날짜에만 국한)"
+    ],
+    "stage2_cause_terms": [
+     "결과 파일에 INSERT(덧붙이기)만 수행",
+     "같은 날짜 재실행 시 기존 행이 남아 중복 집계",
+     "멱등성(idempotency) 부재"
+    ],
+    "leak_terms": [
+     "멱등",
+     "idempotent",
+     "DELETE 후 INSERT",
+     "date-level replace",
+     "UPSERT",
+     "overwrite"
+    ],
+    "trigger_terms": [
+     "실패한 일 배치를 다시 돌린다",
+     "같은 날짜를 두 번 실행"
+    ],
+    "fix_markers": [
+     "같은 날짜 재실행 후 합계·행 수가 첫 실행과 동일",
+     "다른 날짜 출력 불변"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [
+     {
+      "kind": "dated_input_folders",
+      "note": "입력이 <raw>/YYYY-MM-DD/*.jsonl 형태로 날짜별 폴더에 쌓이고, 명령은 상위 폴더와 --run-date 옵션을 받는다"
+     }
+    ],
+    "reasons": [
+     "rerun_not_idempotent"
+    ],
+    "harness": [],
+    "harness_notes": {},
+    "harness_rules": {},
+    "fault_by": null
+   }
+  },
+  {
+   "id": "seed-dev-06",
+   "valid": true,
+   "failure": "",
+   "reason_hit": true,
+   "concept_hit": true,
+   "harness_ok": true,
+   "need_leak": [],
+   "designs": 2,
+   "blocked": 0,
+   "seconds": 44.3,
+   "tokens": {
+    "in": 4904,
+    "out": 3295,
+    "reasoning": 2369
+   },
+   "cost_usd": 0.002284,
+   "output": {
+    "business_need": "매일 주문 레코드를 날짜별 폴더에서 읽어 일별 매출 합계를 산출하는 배치 CLI. 입력은 raw/YYYY-MM-DD/*.jsonl 구조, 출력은 daily_sales/date=YYYY-MM-DD/*.parquet.",
+    "naive_impl": "--run-date 옵션에 해당하는 입력 폴더만 읽고 그 폴더 안의 모든 레코드를 합산하여 해당 날짜의 매출 결과를 작성한다. 주문 날짜와 폴더 날짜가 항상 일치한다고 가정한다.",
+    "hidden_requirement": "늦게 도착한 레코드(예: 주문 날짜 2024-01-15인데 2024-01-16 폴더에 들어온 행)도 주문 날짜의 매출 합계에 반영되어야 한다. 이미 올바른 합계를 가진 날짜의 출력은 재실행 시 바뀌지 않는다. 시각을 늦추는 방식으로는 임의로 늦게 도착하는 주문을 처리할 수 없다.",
+    "trigger": "한 매장의 데이터 동기화가 지연되어 전날 주문 일부가 다음 날 입력 폴더에 도착한다. 전날 배치는 이미 실행을 마쳤다.",
+    "why_naive_breaks": "배치가 실행 시점에 존재하는 폴더만 읽기 때문에, 그 이후 다른 날짜 폴더에 도착한 앞 날짜 주문은 어떤 배치도 다시 보지 않는다. 배치 시작 시각을 늦춰도 그 시각보다 더 늦게 오는 주문은 계속 빠진다.",
+    "discoverable_by": [
+     "일별 매출 출력과 주문 시스템의 실제 합계를 같은 날짜에서 대조하면 차이가 발생한다",
+     "다음 날 입력 폴더를 열어 보면 주문 날짜가 폴더 날짜와 다른 레코드가 존재한다"
+    ],
+    "accepted_designs": [
+     "[설계] 최근 N일 재집계 — 조건: lookback 기간 내 모든 입력 폴더를 읽고 주문 날짜 기준으로 그룹화하여 해당 날짜 출력을 갱신하되, 늦은 주문을 빠뜨리지 않을 것",
+     "[설계] 늦은 행만 골라 해당 날짜 결과 갱신 — 조건: 주문 날짜가 실행 날짜보다 이전인 행을 식별하여 그 날짜의 합계에 반영하되, 늦은 주문을 빠뜨리지 않을 것"
+    ],
+    "stage2_symptom": "전날 매출 합계가 주문 시스템의 실제 합계보다 적다.",
+    "stage2_evidence": [
+     "전날 날짜의 출력 parquet 합계와 주문 시스템 대조에서 차이 발생",
+     "다음 날 입력 폴더(jsonl)에 전날 주문 날짜를 가진 레코드가 존재"
+    ],
+    "stage2_cause_terms": [
+     "배치가 실행 시점까지 들어온 행만 집계",
+     "늦게 도착한 앞 날짜 주문을 다시 보지 않음"
+    ],
+    "leak_terms": [
+     "주문 날짜 기준으로 늦게 온 행을 다시 반영",
+     "최근 며칠을 다시 집계",
+     "늦게 온 행만 골라 그 날짜 결과를 고친다"
+    ],
+    "trigger_terms": [
+     "매장 동기화 지연으로 전날 주문이 다음 날 폴더에 도착"
+    ],
+    "fix_markers": [
+     "여러 날짜 폴더를 순회하는 루프",
+     "주문 날짜 필드 기준 그룹화",
+     "lookback 또는 재집계 기간 옵션"
+    ],
+    "task_shape": "code",
+    "starter": null,
+    "reviewed": false,
+    "contract_needs": [
+     {
+      "kind": "dated_input_folders",
+      "note": "입력이 raw/YYYY-MM-DD/*.jsonl 구조로 날짜별 폴더에 쌓이고, 늦은 레코드가 다른 날짜 폴더에 도착하는 것이 문제의 핵심"
+     },
+     {
+      "kind": "stateful_target",
+      "note": "일별 매출 출력(daily_sales)은 이전 실행에서 생성된 결과를 늦은 데이터 도착 시 갱신해야 하는 대상"
+     }
+    ],
+    "reasons": [
+     "late_data_missed"
+    ],
+    "harness": [],
+    "harness_notes": {},
+    "harness_rules": {},
+    "fault_by": null
+   }
+  }
+ ],
+ "answers": [
+  {
+   "id": "ans-dev-01",
+   "valid": true,
+   "failure": "",
+   "solution_leak": [],
+   "artifact_id": false,
+   "invented_numbers": [],
+   "length": 122,
+   "pointer_hit": true,
+   "seconds": 5.6,
+   "tokens": {
+    "in": 527,
+    "out": 343,
+    "reasoning": 269
+   },
+   "cost_usd": 0.00024,
+   "answer": "과제 자료의 '주문 요청 기록'과 '주문 표 스냅숏'에서 같은 내용의 요청이 반복되고, 동일 상품 주문이 두 건 저장된 상태가 확인됩니다. 이 상황에서 중복 요청을 어떻게 처리할지 지원자의 판단 근거를 확인해야 합니다."
+  },
+  {
+   "id": "ans-dev-02",
+   "valid": true,
+   "failure": "",
+   "solution_leak": [],
+   "artifact_id": false,
+   "invented_numbers": [],
+   "length": 126,
+   "pointer_hit": true,
+   "seconds": 11.1,
+   "tokens": {
+    "in": 525,
+    "out": 637,
+    "reasoning": 555
+   },
+   "cost_usd": 0.000378,
+   "answer": "자료에서 '행사 시간대 주문 기록'은 같은 초에 동일 상품 주문이 여러 건 발생함을, '재고 표'는 판매 수보다 재고가 많이 남는 상태를 보여줍니다. 요구사항상 동시 요청 시에도 수량만큼 차감·부족 시 거절이 지켜져야 합니다."
+  },
+  {
+   "id": "ans-dev-03",
+   "valid": true,
+   "failure": "",
+   "solution_leak": [],
+   "artifact_id": false,
+   "invented_numbers": [],
+   "length": 117,
+   "pointer_hit": true,
+   "seconds": 6.8,
+   "tokens": {
+    "in": 523,
+    "out": 365,
+    "reasoning": 299
+   },
+   "cost_usd": 0.00025,
+   "answer": "『네트워크 기록』에서 응답 도착 순서가 요청 순서와 다른 현상이 확인됩니다. 『느린 회선 화면 녹화 메모』에도 검색어와 결과가 다른 순간이 있다고 적혀 있어, 말씀하신 조건과 일치하는 상황이 실제로 관찰됩니다."
+  },
+  {
+   "id": "ans-dev-04",
+   "valid": true,
+   "failure": "",
+   "solution_leak": [],
+   "artifact_id": false,
+   "invented_numbers": [],
+   "length": 125,
+   "pointer_hit": true,
+   "seconds": 3.8,
+   "tokens": {
+    "in": 526,
+    "out": 248,
+    "reasoning": 179
+   },
+   "cost_usd": 0.000195,
+   "answer": "배치 실행 기록에서 같은 날짜가 두 번 실행된 사례가 확인됩니다. 월말 보고 메모에도 하루 매출이 다른 날의 두 배로 나타난 경우가 있어, 동일 날짜 재실행이 결과에 영향을 줄 수 있는 상황은 과제 자료에서 직접 관찰됩니다."
+  },
+  {
+   "id": "ans-dev-05",
+   "valid": true,
+   "failure": "",
+   "solution_leak": [
+    "롤백"
+   ],
+   "artifact_id": false,
+   "invented_numbers": [],
+   "length": 157,
+   "pointer_hit": true,
+   "seconds": 6.6,
+   "tokens": {
+    "in": 516,
+    "out": 511,
+    "reasoning": 420
+   },
+   "cost_usd": 0.000318,
+   "answer": "현재 요구사항에는 좋아요 요청 실패 시 화면 동작이 명시되어 있지 않습니다. '오류 시간대 문의 메모'와 '서버 응답 기록'에서 문제 발생 사실은 확인되나, 복구 후 UI 상태에 대한 요구는 정의되지 않았습니다. 실패 시 롤백 동작을 요구사항에 포함할지 담당자와 확인이 필요합니다."
+  },
+  {
+   "id": "ans-dev-06",
+   "valid": true,
+   "failure": "",
+   "solution_leak": [],
+   "artifact_id": false,
+   "invented_numbers": [],
+   "length": 120,
+   "pointer_hit": true,
+   "seconds": 5.5,
+   "tokens": {
+    "in": 514,
+    "out": 331,
+    "reasoning": 261
+   },
+   "cost_usd": 0.000233,
+   "answer": "동기화 기록에는 일부 매장 주문이 다음 날 오전에 들어온 것으로만 적혀 있어, 몇 시간 지연되는지 구체적인 수치는 확인되지 않습니다. 정산 대조표에서도 전날 매출이 주문 시스템보다 적다는 사실만 확인할 수 있습니다."
+  }
+ ]
+}
