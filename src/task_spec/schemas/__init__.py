@@ -159,6 +159,20 @@ from task_spec.schemas.ingest import (
     ExtractedSection,
     SectionHeader,
 )
+from task_spec.schemas.interview_answer import (
+    AnswerClaimCheck,
+    AnswerProbeResult,
+    AnswerRuleCheck,
+    AnswerValidationRecord,
+    InterviewAnswerCheckInput,
+    InterviewAnswerCheckOutput,
+    InterviewAnswerGroundedInput,
+    InterviewAnswerGroundedOutput,
+    InterviewAnswerInput,
+    InterviewAnswerOutput,
+)
+from task_spec.schemas.interview_case import KnownIncidentCase
+from task_spec.schemas.interview_incident import IncidentInterviewInput, IncidentInterviewOutput
 from task_spec.schemas.judge_overlap import JudgeOverlapInput, JudgeOverlapOutput, OverlapVerdict
 from task_spec.schemas.package import ReviewDecision
 from task_spec.schemas.pilot import (
@@ -370,6 +384,19 @@ __all__ = [
     "DraftTaskInput",
     "DraftTaskInputV2",
     "PublicIncident",
+    "KnownIncidentCase",
+    "IncidentInterviewInput",
+    "IncidentInterviewOutput",
+    "InterviewAnswerInput",
+    "InterviewAnswerGroundedInput",
+    "InterviewAnswerOutput",
+    "InterviewAnswerGroundedOutput",
+    "InterviewAnswerCheckInput",
+    "InterviewAnswerCheckOutput",
+    "AnswerClaimCheck",
+    "AnswerRuleCheck",
+    "AnswerProbeResult",
+    "AnswerValidationRecord",
     "DraftTaskOutput",
     "DraftTaskOutputV3",
     "Artifact",

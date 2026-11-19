@@ -14,6 +14,7 @@ from task_spec.api.run_view import load_run_view
 from task_spec.api.schemas import RunView
 from task_spec.config import Settings
 from task_spec.delivery.sender import DeliverySender
+from task_spec.interview.service import InterviewService
 from task_spec.llm import LLMClient
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
@@ -140,3 +141,14 @@ def get_incident_share(request: Request) -> CompiledStateGraph:
 
 
 IncidentShareDep = Annotated[CompiledStateGraph, Depends(get_incident_share)]
+
+
+def get_interviews(request: Request) -> InterviewService:
+    """채용담당자 사례 인터뷰 (#262) — lifespan 이 만든다 (테스트는 app.state.interviews 에)."""
+    service = getattr(request.app.state, "interviews", None)
+    if service is None:
+        raise ServiceUnavailable("인터뷰 서비스가 준비되지 않았습니다")
+    return service
+
+
+InterviewsDep = Annotated[InterviewService, Depends(get_interviews)]

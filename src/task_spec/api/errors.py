@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from task_spec.interview.errors import InterviewError
+
 logger = logging.getLogger(__name__)
 
 
@@ -334,6 +336,11 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(DomainError)
     async def _domain(_: Request, exc: DomainError) -> JSONResponse:
         return _response(exc.status_code, exc.code, exc.message, exc.run_id)
+
+    @app.exception_handler(InterviewError)
+    async def _interview(_: Request, exc: InterviewError) -> JSONResponse:
+        # 인터뷰 패키지는 API 를 import 하지 않으려고 같은 모양(code·status_code·message)의 오류를 따로 둔다 (#262)
+        return _response(exc.status_code, exc.code, exc.message, None)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:

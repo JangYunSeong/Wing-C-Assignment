@@ -54,6 +54,11 @@ class RulePseudonymizer:
         self._detectors = Detectors(dicts or load_dictionaries(), use_kiwi=use_kiwi)
         self._lock = threading.Lock()  # 같은 run 의 mapping.json 동시 갱신 방지
 
+    @property
+    def detectors(self) -> Detectors:
+        """채용담당자 인터뷰 가명화기(#262)와 같은 탐지기를 쓴다 — Kiwi 모델을 프로세스에 하나만 올린다."""
+        return self._detectors
+
     async def warm_up(self) -> None:
         """탐지기를 한 번 돌려 Kiwi 모델을 미리 올린다."""
         await asyncio.to_thread(self._detectors.detect, "가상 데이터 워밍업")

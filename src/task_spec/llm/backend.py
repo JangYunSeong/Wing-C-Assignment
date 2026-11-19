@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from task_spec.prompting import Message
+
+TextCallback = Callable[[str | None], Awaitable[None]]
 
 
 class TransientLLMError(Exception):
@@ -29,5 +32,10 @@ class Completion:
 
 class ChatBackend(Protocol):
     async def complete(
-        self, model: str, messages: list[Message], params: dict[str, Any]
+        self,
+        model: str,
+        messages: list[Message],
+        params: dict[str, Any],
+        *,
+        on_delta: TextCallback | None = None,
     ) -> Completion: ...
