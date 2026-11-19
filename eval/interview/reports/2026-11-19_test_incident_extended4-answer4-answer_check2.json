@@ -1,0 +1,198 @@
+{
+ "split": "test",
+ "versions": {
+  "interview_incident_extended": 4,
+  "interview_answer": 4,
+  "interview_answer_check": 2
+ },
+ "model": "opencode:qwen3.8-flash",
+ "summary": {
+  "samples": 5,
+  "completion": 0.8,
+  "reasks": 0,
+  "leading": 1,
+  "unavailable_ratio": 0.107,
+  "targeted": 0.909,
+  "incident_turns_mean": 2.2,
+  "clarify_rounds": 1,
+  "step_seconds_mean": 32.9,
+  "step_seconds_p90": 88.5,
+  "tokens": {
+   "in": 87717,
+   "out": 65021,
+   "reasoning": 41826
+  },
+  "cost_usd": 0.0437,
+  "criteria": {
+   "completion": {
+    "rule": ">= 0.8",
+    "pass": true
+   },
+   "reasks": {
+    "rule": "<= 1",
+    "pass": true
+   },
+   "leading": {
+    "rule": "<= 0",
+    "pass": false
+   },
+   "unavailable_ratio": {
+    "rule": "<= 0.2",
+    "pass": true
+   }
+  },
+  "passed": false
+ },
+ "results": [
+  {
+   "id": "test-01-stock-lost-update",
+   "tags": [],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 2,
+   "targeted": [
+    true,
+    true
+   ],
+   "llm_steps": 5,
+   "unavailable": 0,
+   "clarify_rounds": 0,
+   "validation_passed": true,
+   "step_seconds": [
+    9.2,
+    9.2,
+    22.3,
+    48.5,
+    72.2
+   ],
+   "tokens": {
+    "in": 20059,
+    "out": 14760,
+    "reasoning": 9030
+   },
+   "cost_usd": 0.009946
+  },
+  {
+   "id": "test-02-token-refresh",
+   "tags": [
+    "고정 질문",
+    "이름",
+    "연락처",
+    "모름"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 3,
+   "targeted": [
+    true,
+    true,
+    true
+   ],
+   "llm_steps": 6,
+   "unavailable": 0,
+   "clarify_rounds": 0,
+   "validation_passed": true,
+   "step_seconds": [
+    8.4,
+    8.9,
+    31.8,
+    12.8,
+    17.6,
+    88.5
+   ],
+   "tokens": {
+    "in": 19826,
+    "out": 13144,
+    "reasoning": 8856
+   },
+   "cost_usd": 0.009151
+  },
+  {
+   "id": "test-03-timezone-boundary",
+   "tags": [],
+   "completed": false,
+   "end_stage": "trap_interview",
+   "incident_turns": 2,
+   "targeted": [
+    false,
+    true
+   ],
+   "llm_steps": 6,
+   "unavailable": 3,
+   "clarify_rounds": 0,
+   "validation_passed": null,
+   "step_seconds": [
+    8.6,
+    16.0,
+    11.2
+   ],
+   "tokens": {
+    "in": 7852,
+    "out": 3146,
+    "reasoning": 2655
+   },
+   "cost_usd": 0.002657
+  },
+  {
+   "id": "test-04-pool-exhaustion",
+   "tags": [
+    "처음 대응 모름"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 2,
+   "targeted": [
+    true,
+    true
+   ],
+   "llm_steps": 5,
+   "unavailable": 0,
+   "clarify_rounds": 0,
+   "validation_passed": true,
+   "step_seconds": [
+    13.1,
+    9.7,
+    19.3,
+    29.1,
+    57.6
+   ],
+   "tokens": {
+    "in": 16352,
+    "out": 9607,
+    "reasoning": 5986
+   },
+   "cost_usd": 0.006968
+  },
+  {
+   "id": "test-05-pagination-drift",
+   "tags": [
+    "고정 질문"
+   ],
+   "completed": true,
+   "end_stage": "competencies",
+   "incident_turns": 2,
+   "targeted": [
+    true,
+    true
+   ],
+   "llm_steps": 6,
+   "unavailable": 0,
+   "clarify_rounds": 1,
+   "validation_passed": true,
+   "step_seconds": [
+    5.9,
+    7.8,
+    88.8,
+    0.0,
+    113.7,
+    113.3
+   ],
+   "tokens": {
+    "in": 23628,
+    "out": 24364,
+    "reasoning": 15299
+   },
+   "cost_usd": 0.014995000000000001
+  }
+ ]
+}

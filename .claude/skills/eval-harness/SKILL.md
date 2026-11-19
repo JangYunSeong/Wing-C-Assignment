@@ -76,6 +76,31 @@ uv run python -m eval.postings.run_eval --split test --llm --unknown-sample 40 -
 
 절 분리는 표기를 재구성한 것이라 낙관적. 직군·역량은 실제 공고 문장 기준. suggest_field v1→v2 승격 기록: `prompts/suggest_field/PROMOTIONS.md`.
 
+## 사례 인터뷰 평가 (`eval/interview/`, #263)
+
+가상 대화 표본(`samples.py`, dev 5 · test 5 — 백엔드·프런트엔드·데이터·인프라, 고정 질문·'모름'·처음 대응 모름·가명화 토큰 포함)마다
+담당자 대본이 실제 `InterviewService`(탐지기 가명화·저장 전 검사 포함)를 D1 흐름 끝까지 돈다. 실제 LLM 호출(비용 발생, 한 세트 약 $0.05).
+담당자는 질문 낱말로 묻는 칸을 짐작해 그 칸의 사실로 답한다. 정답은 표본에 심은 값.
+지표: 완성률 · 재질문(답한 칸을 다시 '빠짐'으로 봄) · 유도(담당자가 말하기 전 원인 낱말 — 낱말 일치라 오탐 가능) · 503 비율 · targeted(참고) · 지연·토큰·비용.
+통과 기준은 `run_eval.CRITERIA`(실행 전 고정). 채점기 자기 검증: `tests/eval/test_interview_eval.py`.
+
+```bash
+# .env 가 있는 레포 루트에서. 워크트리면: PYTHONPATH=<워크트리> uv run --project <워크트리> python <워크트리>/eval/interview/run_eval.py …
+uv run python -m eval.interview.run_eval --split dev --show-transcripts --save
+uv run python -m eval.interview.run_eval --split test --save      # 숨김 — 대화 내용·실패 사유를 보지 않는다
+```
+
+| 2026-11-19 qwen3.8-flash · 포크 판(incident v4 · answer v4 · check v2) | dev 1회 | dev 2회 | test (숨김) |
+|---|---|---|---|
+| 완성 (≥ 0.8) | 1.0 | 1.0 | 0.8 |
+| 재질문 (≤ 1) | 0 | 0 | 0 |
+| 유도 (0) | 0 | 0 | 1 — 사용자 결정으로 판정 제외 |
+| 503 비율 (≤ 0.2) | 0.103 | 0.1 | 0.107 |
+| LLM 단계 평균 · p90 | 29.7초 · 59.8초 | 40.5초 · 94.0초 | 32.9초 · 88.5초 |
+
+CURRENT 승격(첫 판) 근거 — 각 `prompts/interview_*/PROMOTIONS.md`. dev 1회 리포트의 입력 토큰 0 은 집계 버그(provenance 키 `in_`), 2회부터 고침.
+다음: test-03(처음 대응 단계 503 3번으로 미완)의 원인을 새 dev 표본으로 — 한글 숫자 표기('아홉 시간')와 서버 숫자 검사(숫자만 셈)의 어긋남이 의심.
+
 ## 주장 추출 평가 (`eval/claims/`)
 
 `generate.py`: 가명화 끝난 형태(토큰·⟦칸⟧)의 가상 이력서·자기소개서, 문장마다 정답(행동 수·칸·역할, 뽑으면 안 되는 문장).

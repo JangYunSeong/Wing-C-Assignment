@@ -234,10 +234,18 @@ async def test_stage_and_revision_guards(session: Session) -> None:
     )
 
 
+def _without_current(tmp: Path) -> PromptRegistry:
+    """인터뷰 프롬프트 판 파일만 (CURRENT 없음) — 평가 전 상태."""
+    root = tmp / "prompts-no-current"
+    for task in ("interview_incident_extended", "interview_answer", "interview_answer_check"):
+        (root / task).mkdir(parents=True)
+        for f in (REPO / "prompts" / task).glob("v*.md"):
+            (root / task / f.name).write_text(f.read_text("utf-8"), "utf-8")
+    return PromptRegistry(root)
+
+
 async def test_not_ready_without_current_prompts(tmp_path: Path, detectors) -> None:
-    service, backend, *_ = make_service(
-        tmp_path, detectors, prompts=PromptRegistry(REPO / "prompts")
-    )
+    service, backend, *_ = make_service(tmp_path, detectors, prompts=_without_current(tmp_path))
     assert not service.ready()
     app = create_app(settings=make_settings(tmp_path))
     app.state.interviews = service

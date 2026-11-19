@@ -129,6 +129,21 @@
   "schema_style": "json",
   "sha256": "a928e9a84de5bf34c6da00172ff00c1db4d8910f0366aab255942bdd86fb87f8"
  },
+ "interview_answer": {
+  "output_schema": "InterviewAnswerGroundedOutput",
+  "schema_style": "json",
+  "sha256": "f253daa2a712d56eaa7ceeeaecf38766f41c020bd84cd488df0b8d5cdd50a98b"
+ },
+ "interview_answer_check": {
+  "output_schema": "InterviewAnswerCheckOutput",
+  "schema_style": "json",
+  "sha256": "5dc2a1c3a97a825028f88642e0fd10bd23cb7f0741c424e0a3894754a18d7285"
+ },
+ "interview_incident_extended": {
+  "output_schema": "IncidentInterviewOutput",
+  "schema_style": "compact",
+  "sha256": "739a4ad9624d87eedf8a276100898654623100b5e45e17b2e21a79f63c88bbe2"
+ },
  "judge_draft_task": {
   "output_schema": "JudgeDraftOutput",
   "schema_style": "json",
