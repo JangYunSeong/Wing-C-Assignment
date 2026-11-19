@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS public.posting_company (
     set_by text NOT NULL,
     set_at timestamptz NOT NULL DEFAULT now()
 );
+-- 같은 공고 묶음 (docs/design/posting-link.md) — 공고(임시·온톨로지)를 기준 공고 하나에 잇는다. 한 단계만 (기준 공고는 다른
+-- 공고에 이어지지 않는다). 공통 과제·사례·빌드는 옮기지 않고, 실행 만들 때 묶음의 승인된 문제에서 고른다
+CREATE TABLE IF NOT EXISTS public.posting_link (
+    posting_id text PRIMARY KEY,
+    linked_to text NOT NULL,
+    linked_by text NOT NULL,
+    linked_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (posting_id <> linked_to)
+);
 """
 
 PROVISIONAL_PREFIX = "prov-"
@@ -316,6 +325,44 @@ class PostingStore:
                 (digest, COMPANY_NOISE, company_key, key),
             )
             return [r[0] for r in await cur.fetchall()]
+
+    async def linked_to(self, posting_id: str) -> str | None:
+        """이 공고가 이어진 기준 공고 (없으면 None)."""
+        r = await self._one(
+            "SELECT linked_to FROM public.posting_link WHERE posting_id = %s", (posting_id,)
+        )
+        return r["linked_to"] if r else None
+
+    async def linked_from(self, posting_id: str) -> list[str]:
+        """이 공고(기준 공고)에 이어진 공고 — 이은 순."""
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT posting_id FROM public.posting_link WHERE linked_to = %s ORDER BY linked_at, posting_id",
+                (posting_id,),
+            )
+            return [r[0] for r in await cur.fetchall()]
+
+    async def posting_group(self, posting_id: str) -> list[str]:
+        """같은 공고 묶음 — 기준 공고, 그다음 이어진 공고 (이은 순). 잇지 않은 공고는 자기 하나."""
+        anchor = await self.linked_to(posting_id) or posting_id
+        return [anchor, *await self.linked_from(anchor)]
+
+    async def link(self, posting_id: str, linked_to: str, linked_by: str) -> bool:
+        """잇는다 — 이미 다른 공고에 이어져 있으면 False (바꾸려면 먼저 푼다). 같은 기준이면 그대로 True.
+        사슬 검사(기준 공고가 이어져 있음·이 공고에 이어진 공고가 있음)는 부르는 쪽 (api/routers/postings.py)."""
+        await self._exec(
+            "INSERT INTO public.posting_link (posting_id, linked_to, linked_by) VALUES (%s, %s, %s) "
+            "ON CONFLICT (posting_id) DO NOTHING",
+            (posting_id, linked_to, linked_by),
+        )
+        return await self.linked_to(posting_id) == linked_to
+
+    async def unlink(self, posting_id: str) -> bool:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "DELETE FROM public.posting_link WHERE posting_id = %s", (posting_id,)
+            )
+            return cur.rowcount == 1
 
     async def search_provisional(
         self, terms: list[SearchTerm], limit: int | None, company: CompanyFilter | None = None

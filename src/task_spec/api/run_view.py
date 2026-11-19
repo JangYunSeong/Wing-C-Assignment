@@ -119,6 +119,7 @@ def run_view(
         "run_id": run_id,
         "current_node": current,
         "ontology_version": values.get("ontology_version"),
+        "common_id": values.get("common_id"),
         "errors": list(values.get("errors") or []),
     }
     spec: TaskSpec | None = values.get("spec")

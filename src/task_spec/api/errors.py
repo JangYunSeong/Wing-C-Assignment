@@ -269,6 +269,27 @@ class PostingDuplicate(DomainError):
         )
 
 
+class PostingLinkConflict(DomainError):
+    """공고를 이을 수 없다 — 사슬(기준 공고가 이어져 있음·이 공고에 이어진 공고가 있음)·이미 다른 공고에 이어짐·회사가 다름
+    (docs/design/posting-link.md)."""
+
+    code = "posting_link_conflict"
+    status_code = 409
+
+
+class CommonTaskNotChoosable(DomainError):
+    """실행 만들 때 고른 문제(common_id)가 이 공고(이어진 공고 포함)에 실행 온톨로지 판으로 승인된 공통 과제가 아니다 —
+    고를 수 있는 문제는 GET /postings/{id}/tasks."""
+
+    code = "common_task_not_choosable"
+    status_code = 422
+
+    def __init__(self, posting_id: str, common_id: str) -> None:
+        super().__init__(
+            f"{common_id} 는 공고 {posting_id}(이어진 공고 포함)에 승인된 문제가 아닙니다 — GET /postings/{posting_id}/tasks 에서 고르세요"
+        )
+
+
 class IncidentNotFound(DomainError):
     code = "incident_not_found"
     status_code = 404

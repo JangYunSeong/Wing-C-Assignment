@@ -13,17 +13,26 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from task_spec.api.deps import OntologyDep, PostingsContext, PostingsDep, SettingsDep, get_postings
+from task_spec.api.deps import (
+    CommonStoreDep,
+    OntologyDep,
+    PostingsContext,
+    PostingsDep,
+    SettingsDep,
+    get_postings,
+)
 from task_spec.api.errors import (
     InvalidUpload,
     PostingCompanyInvalid,
     PostingDuplicate,
+    PostingLinkConflict,
     PostingNotFound,
     ServiceUnavailable,
     UnsupportedFileType,
@@ -31,6 +40,7 @@ from task_spec.api.errors import (
 from task_spec.api.uploads import ALLOWED_EXTENSIONS, _read_limited
 from task_spec.nodes.ingest.extractors import OcrError, UnsupportedFormat, extract_raw
 from task_spec.ontology.queries import posting_exists, posting_profile, search_positions
+from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.career import PostingCareer, estimate_career, posting_careers
 from task_spec.postings.company import CompanySource, company_id, posting_companies
 from task_spec.postings.search import CompanyFilter, PostingHit, search_terms
@@ -49,7 +59,9 @@ from task_spec.schemas import (
     CareerSource,
     PostingLineIn,
     PostingProfile,
+    TaskKind,
 )
+from task_spec.spec.store import is_interview_ref
 
 router = APIRouter(prefix="/postings", tags=["postings"])
 
@@ -428,3 +440,113 @@ async def set_company(
         company_known=found_company.known,
         company_source=found_company.source,
     )
+
+
+# ---------------------------------------------------------------- 같은 공고 묶음 (docs/design/posting-link.md)
+class LinkIn(BaseModel):
+    linked_to: str = Field(min_length=1, max_length=200)  # 기준 공고 (보통 실제 공고)
+    linked_by: str = Field(min_length=1, max_length=200)  # TODO(auth)
+
+
+class LinkOut(BaseModel):
+    posting_id: str
+    linked_to: str | None = None
+    group: list[str]  # 같은 공고 묶음 — 기준 공고, 그다음 이어진 공고 (이은 순)
+
+
+class PostingTaskView(BaseModel):
+    """실행 만들 때 고를 수 있는 문제 — 공고 묶음에 실행 온톨로지 판으로 승인된 공통 과제."""
+
+    common_id: str
+    posting_id: str  # 그 과제가 승인된 공고 (이어진 공고일 수 있다)
+    title: str | None = None
+    task_kind: TaskKind
+    source_incident: str | None = None
+    interview: bool  # 채용담당자 인터뷰로 만든 과제
+    revision: int
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+
+
+async def _found(
+    posting_id: str, postings: PostingsContext, ontology: OntologyRepository | None
+) -> bool:
+    if is_provisional(posting_id):
+        return await postings.store.get_provisional(posting_id) is not None
+    return ontology is not None and await posting_exists(ontology, posting_id)
+
+
+@router.put("/{posting_id}/link")
+async def link_posting(
+    posting_id: str, req: LinkIn, postings: PostingsDep, ontology: OntologyDep
+) -> LinkOut:
+    """같은 공고로 잇는다 — 임시 공고를 나중에 올라온 실제 공고에, 같은 공고로 따로 만든 임시 공고끼리. 공통 과제·사례·빌드는
+    옮기지 않는다 (승인 이력을 지킨다). 묶음 어느 공고로 실행을 만들든 묶음의 승인된 문제에서 고른다 [확정: 2026-11-20 사용자]."""
+    store = postings.store
+    for pid in (posting_id, req.linked_to):
+        if not await _found(pid, postings, ontology):
+            raise PostingNotFound(pid)
+    if posting_id == req.linked_to:
+        raise PostingLinkConflict("공고를 자기 자신에게 잇지 않습니다")
+    if (anchor := await store.linked_to(req.linked_to)) is not None:
+        raise PostingLinkConflict(
+            f"{req.linked_to} 는 {anchor} 에 이어진 공고입니다 — 기준 공고 {anchor} 에 이어 주세요 (한 단계만)"
+        )
+    if members := await store.linked_from(posting_id):
+        raise PostingLinkConflict(
+            f"{posting_id} 에 이어진 공고가 있습니다({', '.join(members)}) — 기준 공고는 다른 공고에 잇지 않습니다"
+        )
+    companies = await posting_companies([posting_id, req.linked_to], ontology=ontology, store=store)
+    a, b = companies.get(posting_id), companies.get(req.linked_to)
+    if a is not None and b is not None and a.company_id != b.company_id:
+        raise PostingLinkConflict(
+            f"회사가 다릅니다 ({a.name} · {b.name}) — 같은 회사 공고만 잇습니다"
+        )
+    if not await store.link(posting_id, req.linked_to, req.linked_by):
+        raise PostingLinkConflict(
+            f"{posting_id} 는 이미 {await store.linked_to(posting_id)} 에 이어져 있습니다 — 바꾸려면 먼저 "
+            f"DELETE /postings/{posting_id}/link"
+        )
+    return LinkOut(
+        posting_id=posting_id, linked_to=req.linked_to, group=await store.posting_group(posting_id)
+    )
+
+
+@router.delete("/{posting_id}/link")
+async def unlink_posting(posting_id: str, postings: PostingsDep) -> LinkOut:
+    """잇기를 푼다 (없으면 그대로). 그 사이 만든 실행은 받은 문제 그대로."""
+    await postings.store.unlink(posting_id)
+    return LinkOut(posting_id=posting_id, group=await postings.store.posting_group(posting_id))
+
+
+@router.get("/{posting_id}/tasks")
+async def posting_tasks(
+    posting_id: str,
+    request: Request,
+    settings: SettingsDep,
+    ontology: OntologyDep,
+    common_store: CommonStoreDep,
+) -> list[PostingTaskView]:
+    """실행 만들 때 고를 수 있는 문제 — 이 공고와 이어진 공고에 실행 온톨로지 판으로 승인된 공통 과제, 최근 승인 순.
+    같은 공고에 문제가 여럿이면 실행 만들 때(POST /runs 의 common_id) 담당자가 고른다 [확정: 2026-11-20 사용자]."""
+    ctx = getattr(request.app.state, "postings", None)
+    if ctx is not None and not await _found(posting_id, ctx, ontology):
+        raise PostingNotFound(posting_id)
+    if common_store is None:
+        return []
+    group = await ctx.store.posting_group(posting_id) if ctx is not None else [posting_id]
+    version = ontology.version.version if ontology else settings.ontology_version
+    return [
+        PostingTaskView(
+            common_id=c.id,
+            posting_id=pid,
+            title=c.task.title,
+            task_kind=c.task.task_kind,
+            source_incident=c.task.source_incident,
+            interview=is_interview_ref(c.prompt_ref),
+            revision=c.revision,
+            approved_by=c.approved_by,
+            approved_at=c.approved_at,
+        )
+        for pid, c in await common_store.approved_tasks(group, version)
+    ]

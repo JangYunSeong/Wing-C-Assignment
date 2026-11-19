@@ -29,6 +29,9 @@ class RunView(BaseModel):
     status: RunStatus
     current_node: str | None = None
     ontology_version: str | None = None
+    common_id: str | None = (
+        None  # 실행 만들 때 담당자가 고른 문제 (POST /runs 의 common_id) — 없으면 공고 기본 과제
+    )
     revision: int | None = None
     spec: TaskSpec | None = None  # awaiting_approval 일 때만 (승인 대기 초안)
     approval_error: str | None = None  # 직전 결정이 거부된 사유 (interrupt payload.error)

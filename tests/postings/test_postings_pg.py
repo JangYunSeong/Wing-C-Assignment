@@ -490,3 +490,100 @@ async def test_same_posting_check_and_insert_are_atomic() -> None:
             )
             await conn.execute("DELETE FROM public.posting_suggestion WHERE id = %s", (sid,))
         await store.close()
+
+
+async def test_posting_link_group_and_choosable_tasks(ctx, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """같은 공고 묶음 (docs/design/posting-link.md) — 잇기·사슬·회사 검사, 묶음의 승인된 문제에서 고른다
+    [확정: 2026-11-20 사용자]. 공통 과제·사례·빌드는 옮기지 않는다."""
+    from datetime import UTC, datetime
+
+    from task_spec.spec.store import CommonKey, InMemoryCommonStore
+    from tests.spec.test_interview_common import _task
+
+    url, repo, lists = ctx
+    store = await PostingStore.open(url)
+    tag = uuid.uuid4().hex[:6]
+    company = f"가상잇기{tag}"
+    sid = await store.create_suggestion(
+        text=f"t{tag}",
+        company=company,
+        title="t",
+        method="test",
+        lines=[],
+        subs=[],
+        industries=[],
+        meta={},
+        ontology_version=VERSION,
+    )
+
+    async def make(name: str) -> str:
+        return await store.create_provisional(
+            suggestion_id=sid,
+            company=name,
+            title="백엔드",
+            sub="sw.backend",
+            secondary_sub=None,
+            industry_id="it",
+            confirmed_by="tester",
+            ontology_version=VERSION,
+            rules_sha256="x",
+            lines=[],
+        )
+
+    a, b, other = await make(company), await make(f"(주) {company}"), await make(f"다른{tag}")
+    common = InMemoryCommonStore()
+    version = repo.version.version
+    approved: dict[str, str] = {}
+    for pid, title in ((a, "가상 문제 A"), (b, "가상 문제 B")):
+        row = await common.save_draft(
+            CommonKey(pid, version, f"draft_feature_task@11+{title}"), _task(title), []
+        )
+        await common.approve(row.id, "reviewer-fake", datetime(2026, 11, 20, tzinfo=UTC))
+        approved[pid] = row.id
+    try:
+        app = create_app(settings=make_settings(tmp_path))
+        app.state.ontology = repo
+        app.state.postings = PostingsContext(store=store, lists=lists, llm=None, prompts=PROMPTS)  # type: ignore[arg-type]
+        app.state.common_store = common
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as client:
+
+            async def link(pid: str, to: str) -> httpx.Response:
+                return await client.put(
+                    f"/postings/{pid}/link", json={"linked_to": to, "linked_by": "tester"}
+                )
+
+            async def tasks(pid: str) -> list[str]:
+                return [t["common_id"] for t in (await client.get(f"/postings/{pid}/tasks")).json()]
+
+            assert await tasks(b) == [approved[b]]  # 잇기 전 — 자기 공고 문제만
+            r = await link(b, a)
+            assert r.status_code == 200, r.text
+            assert r.json()["group"] == [a, b]
+            assert (await link(b, a)).status_code == 200  # 같은 기준이면 그대로
+            assert sorted(await tasks(b)) == sorted(approved.values())  # 묶음의 문제 모두
+            assert sorted(await tasks(a)) == sorted(approved.values())
+            # 사슬·회사가 다른 공고·자기 자신·없는 공고
+            for pid, to, code in (
+                (a, b, 409),  # b 는 a 에 이어진 공고 — 기준 공고에 잇는다
+                (other, b, 409),
+                (other, a, 409),  # 회사가 다르다
+                (a, a, 409),
+                (b, "prov-000000000000", 404),
+            ):
+                assert (await link(pid, to)).status_code == code, (pid, to)
+            gone = await client.delete(f"/postings/{b}/link")
+            assert gone.status_code == 200 and gone.json()["group"] == [b]
+            assert await tasks(b) == [approved[b]]
+    finally:
+        async with await psycopg.AsyncConnection.connect(url, autocommit=True) as conn:
+            await conn.execute(
+                "DELETE FROM public.posting_link WHERE posting_id = ANY(%s) OR linked_to = ANY(%s)",
+                ([a, b, other], [a, b, other]),
+            )
+            await conn.execute(
+                "DELETE FROM public.provisional_posting WHERE suggestion_id = %s", (sid,)
+            )
+            await conn.execute("DELETE FROM public.posting_suggestion WHERE id = %s", (sid,))
+        await store.close()

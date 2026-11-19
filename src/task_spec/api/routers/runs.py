@@ -25,6 +25,7 @@ from task_spec.api.errors import (
     CareerLevelConflict,
     CareerLevelRequired,
     CommonTaskGone,
+    CommonTaskNotChoosable,
     CommonTaskReplaced,
     ErrorResponse,
     InterviewTaskLocked,
@@ -151,6 +152,9 @@ async def create_run(
     career_level: Annotated[CareerLevel | None, Form()] = None,
     # 공고의 회사 — 공고에 회사가 없을 때 정한다 (있으면 비우거나 같은 회사). 회사 사례를 고르는 데 쓴다
     company: Annotated[str | None, Form(min_length=1, max_length=200)] = None,
+    # 담당자가 고른 문제 — 이 공고·이어진 공고에 실행 판으로 승인된 공통 과제 (GET /postings/{id}/tasks). 비우면 공고의
+    # 인터뷰 과제·재사용·생성 [확정: 2026-11-20 사용자 — 같은 공고에 문제가 여럿이면 실행 만들 때 고른다]
+    common_id: Annotated[str | None, Form(min_length=1, max_length=100)] = None,
 ) -> RunAccepted:
     ctx = getattr(request.app.state, "postings", None)
     if is_provisional(posting_id):
@@ -160,7 +164,16 @@ async def create_run(
         raise PostingNotFound(posting_id)
     version = ontology.version.version if ontology else settings.ontology_version
     # 지원서를 저장하기 전에 — 거절되는 요청이 지원서 파일을 남기지 않게
-    if common_store is not None:
+    if common_id is not None:
+        group = await ctx.store.posting_group(posting_id) if ctx is not None else [posting_id]
+        choosable = (
+            {c.id for _, c in await common_store.approved_tasks(group, version)}
+            if common_store is not None
+            else set()
+        )
+        if common_id not in choosable:
+            raise CommonTaskNotChoosable(posting_id, common_id)
+    elif common_store is not None:
         # 인터뷰 과제가 다른 판에만 있으면 ① 에서 멈출 실행 — 만들지 않는다 (그래프도 같은 검사, nodes/posting_profile.py)
         versions = await common_store.interview_versions(posting_id)
         if versions and version not in versions:
@@ -186,6 +199,7 @@ async def create_run(
         # 실제로 쓰는 온톨로지 버전 (dev 별칭이 아니라 적재 버전 문자열 — 불변식 4)
         ontology_version=version,
         posting_id=posting_id,
+        common_id=common_id,
         documents=documents,
     )
     if level is not None and ctx is not None:
@@ -256,7 +270,7 @@ async def approve_run(
         if gone:
             raise CommonTaskGone(gone, run_id=run_id)
         # 공고에 인터뷰 과제가 승인·교체됐으면 그 과제만 쓴다 — 다른 과제를 가리키는 명세는 확정하지 않는다 (finalize 도 확인)
-        stale = await replaced_common(common_store, view.spec)
+        stale = await replaced_common(common_store, view.spec, view.common_id)
         if stale:
             raise CommonTaskReplaced(stale, run_id=run_id)
     # 인터뷰 과제는 지원자 명세에서 고치지 않는다 — 공통 과제를 다시 만드는 수정 요청(common·all, 유형 바꾸기 포함)은 막는다
@@ -266,7 +280,7 @@ async def approve_run(
         and common_store is not None
         and view.spec is not None
     ):
-        locked = await interview_lock(common_store, view.spec)
+        locked = await interview_lock(common_store, view.spec, view.common_id)
         if locked is not None:
             raise InterviewTaskLocked(locked, run_id=run_id)
     try:

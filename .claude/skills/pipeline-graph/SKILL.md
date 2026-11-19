@@ -95,6 +95,7 @@ class RunState(BaseModel):
     run_id: str
     ontology_version: str                 # 실행 시작 때 고정, 이후 불변
     posting_id: str
+    common_id: str | None = None          # 실행 만들 때 담당자가 고른 문제(승인된 공통 과제) — 없으면 공고 기본 과제
     documents: list[DocumentRef] = []     # 경로·종류(resume|cover_letter)·해시. 원문 텍스트는 State 에 넣지 않는다
     posting_profile: PostingProfile | None = None
     pseudo_docs: list[PseudoDocRef] = []  # 가명화본 저장 위치 + 검사 결과. 매핑 테이블은 State 밖(data/ 암호화 저장)
@@ -275,6 +276,10 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 ## 공고 단위 공통 과제 재사용 [확정: 2026-11-03] (`spec/store.py`, task_db `public.common_task`)
 
 - 같은 공고 지원자는 같은 공통 과제를 받는다 (context.md §3). 키 = (posting_id, ontology_version, draft_task@N | skeleton).
+- 같은 공고에 승인된 문제가 여럿이면 **실행 만들 때 담당자가 고른다** [확정: 2026-11-20 사용자] — `POST /runs` 의 `common_id`
+  (고를 수 있는 것: `GET /postings/{id}/tasks` = 그 공고와 이어진 공고(`posting_link`, docs/design/posting-link.md)에 실행 판으로
+  승인된 과제). draft_spec 은 고른 과제를 인터뷰 과제처럼 그대로 쓰고(만들지도 고치지도 않음, 공고의 인터뷰 과제보다 먼저),
+  finalize 는 다시 승인하지 않는다. 고른 과제가 저장소에서 사라졌으면 다른 과제로 바꾸지 않고 공통 과제 없는 명세 + 오류.
 - draft_spec: revise 가 아니면 저장소에서 **승인된 최신 판 → 없으면 최신 초안**을 재사용 (LLM 호출 없음, 저장된 provenance 를 State 에 싣는다).
   없으면 생성 후 초안으로 저장. task_id = 저장 id(`ct-…`). 명세 `common_refs` 에 판 번호·재사용 여부를 남긴다.
 - revise(common·all): 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.
