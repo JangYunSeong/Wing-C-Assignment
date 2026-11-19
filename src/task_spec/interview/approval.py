@@ -60,8 +60,10 @@ def approval_problems(
     stored: StoredCommon | None,
     company_id: str | None,
     blocked: list[Finding],
+    source_problem: str | None = None,
 ) -> list[str]:
-    """승인할 수 없는 사유 (비면 승인 가능). 포크 approve 의 검사 + 회사 사례 등록 검사. 사유는 고정 문구·칸 이름만."""
+    """승인할 수 없는 사유 (비면 승인 가능). 포크 approve 의 검사 + 회사 사례 등록 검사. 사유는 고정 문구·칸 이름만.
+    인터뷰 사례(known_problem)만 기준 답안 검증·회사 사례 등록 검사를 본다 — 공개·회사 사례는 고른 사례가 아직 쓸 수 있는지(source_problem)."""
     spec = state.spec
     if spec is None:
         return ["과제를 먼저 생성해 주세요"]
@@ -76,15 +78,22 @@ def approval_problems(
         problems.append("기능형 과제·템플릿·기능형 재료가 맞지 않습니다. 과제를 다시 생성해 주세요")
     if stored is None or stored.id != task.task_id or stored.status != "draft":
         problems.append("공통 과제 저장본이 지금 과제와 다릅니다. 과제를 다시 생성해 주세요")
+    interview = state.incident_source == "known_problem"
     incident = state.incident_confirmed
     if (
         incident is None
         or state.incident_confirmation is None
         or state.incident_confirmation.sha256 != incident_digest(incident)
         or spec.incident != incident
+        or spec.incident_source != state.incident_source
         or spec.incident_confirmation != state.incident_confirmation
-        or spec.answer_validation != state.answer_validation
-        or not validation_current(incident, state)
+        or (
+            interview
+            and (
+                spec.answer_validation != state.answer_validation
+                or not validation_current(incident, state)
+            )
+        )
     ):
         problems.append("확인한 사례·기준 답안으로 과제를 다시 생성해 주세요")
     if not all(q.answer for q in spec.targeted_questions):
@@ -96,11 +105,14 @@ def approval_problems(
         or not spec.evaluation_criteria
     ):
         problems.append("자료 질문·숨은 요구·평가 기준을 모두 확인해야 합니다")
-    if company_id is None:
+    if interview and company_id is None:
         problems.append(
             "공고에 회사가 없어 사례를 회사 사례로 등록할 수 없습니다. 공고의 회사를 입력해 주세요"
         )
-    problems.extend(f"회사 사례로 등록할 수 없는 내용 — {f.text()}" for f in blocked)
+    if interview:
+        problems.extend(f"회사 사례로 등록할 수 없는 내용 — {f.text()}" for f in blocked)
+    if source_problem:
+        problems.append(source_problem)
     return problems
 
 
@@ -111,8 +123,10 @@ class ApprovalCommit:
     interview_id: str
     revision: int
     state: InterviewState
-    company_id: str
-    incident: PublicIncident  # 기능형 재료를 붙인 확인된 사례 (co:…)
+    company_id: str | None
+    incident: (
+        PublicIncident | None
+    )  # 새로 등록할 인터뷰 사례 (co:…) — 공개·회사 사례에서 골랐으면 None
     common_id: str
     reviewer: str
     at: datetime
@@ -152,9 +166,11 @@ class PgApprovalCommitter:
             async with self._pool.connection() as conn, conn.transaction():
                 if not await save_in(conn, c.interview_id, c.revision, c.state):
                     raise _Stale
-                await insert_incident(
-                    conn, c.company_id, c.incident, source=c.source, created_by=c.reviewer
-                )
+                if c.incident is not None:
+                    assert c.company_id is not None
+                    await insert_incident(
+                        conn, c.company_id, c.incident, source=c.source, created_by=c.reviewer
+                    )
                 await approve_interview_task(
                     conn, c.common_id, c.reviewer, c.at, replaces=c.replaces
                 )
@@ -181,9 +197,11 @@ class MemoryApprovalCommitter:
             return False
         saved = (copy.deepcopy(self.common.rows), dict(self.incidents.rows), row)
         try:
-            await self.incidents.submit(
-                c.company_id, c.incident, source=c.source, created_by=c.reviewer
-            )
+            if c.incident is not None:
+                assert c.company_id is not None
+                await self.incidents.submit(
+                    c.company_id, c.incident, source=c.source, created_by=c.reviewer
+                )
             await self.common.approve_interview(c.common_id, c.reviewer, c.at, replaces=c.replaces)
             await self.common.drop_interview_drafts(interview_ref(c.interview_id), keep=c.common_id)
             if (

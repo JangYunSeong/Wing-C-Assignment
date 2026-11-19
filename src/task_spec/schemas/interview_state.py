@@ -33,6 +33,8 @@ Stage = Literal[
     "discarded",  # 폐기 (담당자 폐기·방치 30일) — 대응표를 지웠으므로 더 이상 LLM 을 부르지 않는다
 ]
 ScopeField = Literal["expected_outcome_90_days", "decision_situation"]
+# 사례 출처 (#266 D2c) — 인터뷰로 만든 사례 · 공개 사례(git 파일, 포크의 public_fixed) · 같은 회사의 공유 승인된 사례(co:)
+IncidentSource = Literal["known_problem", "public_fixed", "company"]
 
 
 class _State(BaseModel):
@@ -133,7 +135,10 @@ class InterviewApprovalRecord(Schema):
     at: str  # ISO 시각
     revision: int  # 승인한 인터뷰 판본
     common_id: str  # 승인한 공통 과제 (interview:{id})
-    incident_id: str  # co: 로 등록한 사례 (공유 승인 대기)
+    incident_id: str  # 과제가 쓴 사례 — 인터뷰 사례면 이때 co: 로 등록(공유 승인 대기), 공개·회사 사례면 그 id
+    incident_registered: bool = (
+        True  # 이 승인이 회사 사례를 새로 등록했는가 (공개·회사 사례에서 고르면 False)
+    )
     replaced: str | None = None  # 교체한 이전 인터뷰 과제
     comment: str | None = None  # 가명화한 글
 
@@ -150,7 +155,7 @@ class InterviewSpec(Schema):
     competency_ids: list[str] = Field(min_length=2, max_length=3)
     template_id: str
     project: ProjectTags
-    incident_source: Literal["known_problem"] = "known_problem"
+    incident_source: IncidentSource = "known_problem"
     incident: PublicIncident
     coding_incident: PublicIncident
     incident_confirmation: IncidentConfirmation | None = None
@@ -181,7 +186,7 @@ class InterviewState(_State):
     scope_messages: list[ChatMessage] = Field(default_factory=list)
     project: ProjectTags = Field(default_factory=ProjectTags)
     incident_messages: list[ChatMessage] = Field(default_factory=list)
-    incident_source: Literal["known_problem"] = "known_problem"  # D2: 회사 사례 모음에서 고르기
+    incident_source: IncidentSource = "known_problem"  # D2c: 공개·회사 사례에서 고르기
     # 이 인터뷰가 만드는 사례의 회사 사례 id (co:<직군>:<12자>) — 첫 초안 때 정하고 인터뷰 동안 고정, D2 에서 그대로 등록
     incident_id: str | None = None
     incident_draft: PublicIncident | None = None
