@@ -55,6 +55,12 @@ _SECRET = re.compile(
     )
 )
 _INTERVIEW_ID = re.compile(r"^int-[0-9a-f]{32}$")
+# 시스템이 만든 id 는 패턴 탐지 전에 가린다 — 무작위 16진수가 전화번호 모양이 되기도 한다 (uuid4 의 약 0.7% 가 유선·휴대
+# 전화 패턴에 걸림, 2026-11-19 측정). 사례 항목 id(case_id)가 걸리면 같은 id 로 매번 거절돼 그 인터뷰가 기준 답안 단계에서 멈췄다.
+_SYSTEM_ID = re.compile(
+    r"(?<![0-9A-Za-z])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9A-Za-z])"
+    r"|(?<![0-9A-Za-z])(?:pub|co):[a-z_.]+:[a-z0-9-]+"  # 사례 id (schemas/incident.py)
+)
 _CORP_MARK = re.compile(r"\(\s*주\s*\)|㈜|주식회사")
 # 엔진을 거치는 동안 살릴 토큰의 자리표시 (유니코드 사용 영역 — 입력에서 미리 지운다)
 _KEEP_OPEN, _KEEP_CLOSE = "", ""
@@ -151,8 +157,9 @@ class InterviewPseudonymizer:
 
     # ------------------------------------------------------------------ 저장된 가명화 글·LLM 글
     def derived(self, text: str, mapping: RunMapping) -> str:
-        """LLM 이 가명화 입력으로 쓴 글을 저장·표시 전에 검사한다. 통과하면 그대로 돌려준다."""
-        if detect_patterns(text):
+        """LLM 이 가명화 입력으로 쓴 글을 저장·표시 전에 검사한다. 통과하면 그대로 돌려준다.
+        시스템 id(uuid·사례 id)는 가린 뒤 패턴을 본다 — id 는 개인정보가 아니고, 우연히 전화번호 모양이 될 뿐이다."""
+        if detect_patterns(_SYSTEM_ID.sub("ID", text)):
             raise InterviewTextRejected("생성한 글에 연락처·링크 같은 개인정보 형식이 있습니다")
         if any(m.group(0) not in mapping.tokens for m in TOKEN_RE.finditer(text)):
             raise InterviewTextRejected("생성한 글에 인터뷰에 없는 가명화 토큰이 있습니다")
