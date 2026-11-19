@@ -199,6 +199,14 @@ class PostingStore:
             (pid, level, set_by),
         )
 
+    async def init_career_level(self, pid: str, level: CareerLevel, set_by: str) -> None:
+        """정한 값이 없을 때만 넣는다 (실행 만들기 — 그 사이 누가 정했으면 그 값을 덮지 않는다)."""
+        await self._exec(
+            "INSERT INTO public.posting_meta (posting_id, career_level, set_by) VALUES (%s, %s, %s) "
+            "ON CONFLICT (posting_id) DO NOTHING",
+            (pid, level, set_by),
+        )
+
     async def _exec(self, query: str, params: tuple[Any, ...]) -> None:
         async with self._pool.connection() as conn:
             await conn.execute(query, params)  # type: ignore[arg-type]

@@ -118,6 +118,31 @@ class ApprovalRevisionMismatch(DomainError):
         )
 
 
+class CareerLevelRequired(DomainError):
+    """실행 만들기 전에 공고의 신입·경력이 정해져 있어야 한다 [확정: 2026-11-19 사용자] — 정한 값이 없으면 career_level 을 함께."""
+
+    code = "career_level_required"
+    status_code = 422
+
+    def __init__(self, posting_id: str) -> None:
+        super().__init__(
+            f"공고 {posting_id} 의 신입·경력이 정해지지 않았습니다 — career_level(신입·경력)을 함께 보내세요"
+        )
+
+
+class CareerLevelConflict(DomainError):
+    """공고에 정한 값과 다른 career_level — 같은 공고 지원자는 공통 과제를 같이 쓰므로 실행마다 바꾸지 않는다."""
+
+    code = "career_level_conflict"
+    status_code = 409
+
+    def __init__(self, posting_id: str, current: str, asked: str) -> None:
+        super().__init__(
+            f"공고 {posting_id} 는 이미 '{current}' 로 정해져 있습니다 ('{asked}' 를 보냄) — "
+            "바꾸려면 PUT /postings/{id}/career-level"
+        )
+
+
 class UnsupportedFileType(DomainError):
     code = "unsupported_file_type"
     status_code = 415

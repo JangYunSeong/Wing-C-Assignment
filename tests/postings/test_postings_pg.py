@@ -249,17 +249,27 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                         "confirmed_by": "reviewer-fake",
                     },
                 )
-                r = await client.post("/runs", data={"posting_id": r.json()["posting_id"]})
+                pid2 = r.json()["posting_id"]
+                # 신입·경력을 고르지 않고 확인한 공고는 공고 문구 추정 — 실행을 만들려면 정해야 한다
+                prof2 = (await client.get(f"/postings/{pid2}")).json()
+                assert (prof2["career_level"], prof2["career_level_source"]) == (
+                    "경력",
+                    "posting_text",
+                )
+                need = await client.post("/runs", data={"posting_id": pid2})
+                assert need.status_code == 422
+                assert need.json()["error"]["code"] == "career_level_required"
+                r = await client.post("/runs", data={"posting_id": pid2, "career_level": "경력"})
+                assert r.status_code == 202, r.text
                 await wait_status(client, r.json()["run_id"], "awaiting_approval", "failed")
                 st2 = (
                     await graph.aget_state({"configurable": {"thread_id": r.json()["run_id"]}})
                 ).values
                 assert "posting_cell_unseen" in [e.code for e in st2["errors"]]
-                # 신입·경력을 고르지 않고 확인한 공고는 공고 문구 추정
-                prof2 = (await client.get(f"/postings/{st2['posting_id']}")).json()
+                prof2 = (await client.get(f"/postings/{pid2}")).json()
                 assert (prof2["career_level"], prof2["career_level_source"]) == (
                     "경력",
-                    "posting_text",
+                    "confirmed",
                 )
                 units = [u for e in st2["evidence"] for u in e.ncs_units]
                 assert units and {u.scope for u in units} == {"sub_fallback"}

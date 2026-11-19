@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterable
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.sse import EventSourceResponse, ServerSentEvent
@@ -22,6 +22,8 @@ from task_spec.api.deps import (
 from task_spec.api.errors import (
     ApprovalNotPending,
     ApprovalRevisionMismatch,
+    CareerLevelConflict,
+    CareerLevelRequired,
     CommonTaskGone,
     ErrorResponse,
     PostingNotFound,
@@ -43,7 +45,7 @@ from task_spec.ontology.queries import posting_exists
 from task_spec.postings.career import PostingCareer, posting_careers
 from task_spec.postings.company import PostingCompany, posting_companies
 from task_spec.postings.store import is_provisional
-from task_spec.schemas import ApprovalDecision, DocumentKind, RunInput, TaskSpec
+from task_spec.schemas import ApprovalDecision, CareerLevel, DocumentKind, RunInput, TaskSpec
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -81,7 +83,33 @@ async def get_runs(
     )
 
 
-@router.post("", status_code=202, responses={413: {"model": ErrorResponse}})
+async def _career_to_set(
+    ctx: Any, posting_id: str, asked: CareerLevel | None
+) -> CareerLevel | None:
+    """실행 만들기 전에 공고의 신입·경력이 정해져 있어야 한다 [확정: 2026-11-19 사용자 (가) — 명세 전에 받기]. 값은 공고 단위
+    (postings/career.py — 같은 공고 지원자는 공통 과제를 같이 쓴다). 정한 값이 없으면 career_level 을 받아 돌려주고(실행을 띄우기
+    직전에 저장), 있으면 career_level 은 비우거나 같은 값. 공고 저장소가 없는 앱(테스트)은 보지 않는다."""
+    if ctx is None:
+        return None
+    current = (await ctx.store.career_levels([posting_id])).get(posting_id)
+    if current is None:
+        if asked is None:
+            raise CareerLevelRequired(posting_id)
+        return asked
+    if asked is not None and asked != current:
+        raise CareerLevelConflict(posting_id, current, asked)
+    return None
+
+
+@router.post(
+    "",
+    status_code=202,
+    responses={
+        409: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
 async def create_run(
     request: Request,
     settings: SettingsDep,
@@ -91,13 +119,17 @@ async def create_run(
     # 문서 종류는 필드 이름으로 구분한다: resumes / cover_letters (각 0개 이상).
     resumes: Annotated[list[UploadFile] | None, File()] = None,
     cover_letters: Annotated[list[UploadFile] | None, File()] = None,
+    # 공고의 신입·경력 — 공고에 정한 값이 없을 때만 필요 (있으면 비우거나 같은 값). 받은 값은 공고에 저장된다
+    career_level: Annotated[CareerLevel | None, Form()] = None,
 ) -> RunAccepted:
+    ctx = getattr(request.app.state, "postings", None)
     if is_provisional(posting_id):
-        ctx = getattr(request.app.state, "postings", None)
         if ctx is None or await ctx.store.get_provisional(posting_id) is None:
             raise PostingNotFound(posting_id)
     elif ontology is not None and not await posting_exists(ontology, posting_id):
         raise PostingNotFound(posting_id)
+    # 지원서를 저장하기 전에 — 거절되는 요청이 지원서 파일을 남기지 않게
+    level = await _career_to_set(ctx, posting_id, career_level)
     run_id = uuid.uuid4().hex
     # 자기소개서를 쓰지 않으면 저장하지도 않는다 (개인정보 최소 처리) [확정: 2026-11-03]
     use_cl = settings.use_cover_letters
@@ -119,6 +151,8 @@ async def create_run(
         posting_id=posting_id,
         documents=documents,
     )
+    if level is not None and ctx is not None:
+        await ctx.store.init_career_level(posting_id, level, f"run:{run_id}")
     launcher.launch(run_id, graph_input.model_dump(mode="json"))
     return RunAccepted(run_id=run_id, status="running", ignored=ignored)
 
