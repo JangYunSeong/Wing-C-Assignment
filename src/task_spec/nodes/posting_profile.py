@@ -4,6 +4,8 @@
 - 경로 2: 임시 공고 `prov-…` (자동 분석 + 요청자 확인, 미검수, source=provisional).
   분석 당시 온톨로지 버전이 실행 버전과 다르면 멈춘다 (불변식 4 — 다른 버전 규칙의 분석과 근거를 섞지 않는다).
 - 찾지 못하면 오류(posting_not_found) → 그래프 END. 역량 0개·셀 없음은 경고만 남기고 진행.
+- 공고의 채용담당자 인터뷰 과제가 다른 온톨로지 판으로만 승인돼 있으면 멈춘다 (interview_task_version_mismatch) —
+  그 과제를 이 판 실행에 쓸 수 없고, 공개 사례 과제로 바꿔 만들지도 않는다 [확정: 2026-11-19 사용자].
 온톨로지가 없으면(테스트·골격) 빈 프로필.
 """
 
@@ -17,6 +19,7 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore, is_provisional, provisional_profile
 from task_spec.postings.suggest import OntologyLists
 from task_spec.schemas import NodeError, PostingProfile, RunState
+from task_spec.spec.store import CommonTaskRepo
 
 NODE = "posting_profile"
 
@@ -29,9 +32,23 @@ def make_posting_profile(
     ontology: OntologyRepository | None,
     store: PostingStore | None = None,
     lists: OntologyLists | None = None,
+    common: CommonTaskRepo | None = None,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     async def posting_profile(state: RunState) -> dict[str, Any]:
         pid = state.posting_id
+        if common is not None:
+            versions = await common.interview_versions(pid)
+            if versions and state.ontology_version not in versions:
+                return {
+                    "errors": [
+                        _err(
+                            "interview_task_version_mismatch",
+                            f"공고의 인터뷰 과제가 다른 온톨로지 판({', '.join(versions)})으로만 승인됨 — "
+                            "인터뷰에서 실행 판으로 다시 승인해야 함",
+                            pid,
+                        )
+                    ]
+                }
         if ontology is None:
             return {
                 "posting_profile": PostingProfile(

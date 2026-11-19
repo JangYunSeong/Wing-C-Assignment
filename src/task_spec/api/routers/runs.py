@@ -25,7 +25,10 @@ from task_spec.api.errors import (
     CareerLevelConflict,
     CareerLevelRequired,
     CommonTaskGone,
+    CommonTaskReplaced,
     ErrorResponse,
+    InterviewTaskLocked,
+    InterviewTaskVersionMismatch,
     PostingNotFound,
     RunNotFound,
     SpecNotFound,
@@ -46,6 +49,7 @@ from task_spec.postings.career import PostingCareer, posting_careers
 from task_spec.postings.company import PostingCompany, posting_companies
 from task_spec.postings.store import is_provisional
 from task_spec.schemas import ApprovalDecision, CareerLevel, DocumentKind, RunInput, TaskSpec
+from task_spec.spec.store import interview_lock, replaced_common
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -115,6 +119,7 @@ async def create_run(
     settings: SettingsDep,
     ontology: OntologyDep,
     launcher: LauncherDep,
+    common_store: CommonStoreDep,
     posting_id: Annotated[str, Form(min_length=1, max_length=200)],
     # 문서 종류는 필드 이름으로 구분한다: resumes / cover_letters (각 0개 이상).
     resumes: Annotated[list[UploadFile] | None, File()] = None,
@@ -128,7 +133,13 @@ async def create_run(
             raise PostingNotFound(posting_id)
     elif ontology is not None and not await posting_exists(ontology, posting_id):
         raise PostingNotFound(posting_id)
+    version = ontology.version.version if ontology else settings.ontology_version
     # 지원서를 저장하기 전에 — 거절되는 요청이 지원서 파일을 남기지 않게
+    if common_store is not None:
+        # 인터뷰 과제가 다른 판에만 있으면 ① 에서 멈출 실행 — 만들지 않는다 (그래프도 같은 검사, nodes/posting_profile.py)
+        versions = await common_store.interview_versions(posting_id)
+        if versions and version not in versions:
+            raise InterviewTaskVersionMismatch(posting_id, versions, version)
     level = await _career_to_set(ctx, posting_id, career_level)
     run_id = uuid.uuid4().hex
     # 자기소개서를 쓰지 않으면 저장하지도 않는다 (개인정보 최소 처리) [확정: 2026-11-03]
@@ -147,7 +158,7 @@ async def create_run(
     graph_input = RunInput(
         run_id=run_id,
         # 실제로 쓰는 온톨로지 버전 (dev 별칭이 아니라 적재 버전 문자열 — 불변식 4)
-        ontology_version=ontology.version.version if ontology else settings.ontology_version,
+        ontology_version=version,
         posting_id=posting_id,
         documents=documents,
     )
@@ -216,6 +227,20 @@ async def approve_run(
         gone = await common_store.missing([r.common_id for r in view.spec.common_refs])
         if gone:
             raise CommonTaskGone(gone, run_id=run_id)
+        # 공고에 인터뷰 과제가 승인·교체됐으면 그 과제만 쓴다 — 다른 과제를 가리키는 명세는 확정하지 않는다 (finalize 도 확인)
+        stale = await replaced_common(common_store, view.spec)
+        if stale:
+            raise CommonTaskReplaced(stale, run_id=run_id)
+    # 인터뷰 과제는 지원자 명세에서 고치지 않는다 — 공통 과제를 다시 만드는 수정 요청(common·all, 유형 바꾸기 포함)은 막는다
+    if (
+        decision.status == "revise"
+        and decision.revise_target != "verification"
+        and common_store is not None
+        and view.spec is not None
+    ):
+        locked = await interview_lock(common_store, view.spec)
+        if locked is not None:
+            raise InterviewTaskLocked(locked, run_id=run_id)
     try:
         launcher.launch(run_id, Command(resume=decision.model_dump(mode="json")), after=seen)
     except RunBusy:

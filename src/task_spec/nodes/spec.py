@@ -2,11 +2,13 @@
 
 승인은 approval 노드의 interrupt() 로만 받는다 (불변식 9). 자동 승인 경로 없음.
 공통 과제: 결정적 골격(spec/common.py) → 서술(spec/draft.py, draft_task LLM). 입력은 공고·온톨로지만.
+공고에 채용담당자 인터뷰로 승인된 공통 과제가 있으면 만들지 않고 그 과제를 쓴다 [확정: 2026-11-19 사용자].
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from langgraph.graph import END
@@ -23,6 +25,7 @@ from task_spec.schemas import (
     CommonRef,
     NodeError,
     PostingProfile,
+    Provenance,
     PublicIncident,
     RunState,
     SlotAssignment,
@@ -43,7 +46,13 @@ from task_spec.spec.questions import TASK as Q_TASK
 from task_spec.spec.questions import build_slot_verifications
 from task_spec.spec.slots import TASK as SLOT_TASK
 from task_spec.spec.slots import build_slots
-from task_spec.spec.store import CommonKey, CommonTaskRepo
+from task_spec.spec.store import (
+    CommonKey,
+    CommonTaskRepo,
+    StoredCommon,
+    is_interview_ref,
+    replaced_common,
+)
 from task_spec.spec.summary import approval_summary
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
@@ -59,6 +68,13 @@ FLAG_FEATURE_DEFERRED = (
 FLAG_FEATURE_SKELETON = (
     "기능 개발형 — 서술(draft_feature_task) 미연결, 결정적 골격만 "
     "(공개 요구·숨은 요구·2단계 디버깅 없음)"
+)
+FLAG_INTERVIEW_COMMON = (
+    "채용담당자 인터뷰로 승인된 이 공고의 공통 과제를 그대로 씀 — 과제를 고치려면 인터뷰 화면에서 "
+    "(이 명세에서는 경험 검증만 다시 만들 수 있음)"
+)
+FLAG_INTERVIEW_SWITCHED = (
+    "이 공고의 공통 과제가 바뀌어(인터뷰 과제 승인·교체) 지금 인터뷰 과제로 다시 만듦 — 이전 과제: "
 )
 
 
@@ -146,6 +162,43 @@ def make_draft_spec(
                 state.approval if state.approval and state.approval.status == "revise" else None
             )
             redo_common = revise is not None and revise.revise_target != "verification"
+            interview = (
+                await store.interview_task(state.posting_id, state.ontology_version)
+                if store is not None
+                else None
+            )
+            if interview is not None:
+                picked = _interview_common(state, interview, revise)
+                common.append(picked.task)
+                # 경험 검증(슬롯 배정·면접 질문)은 주장과 과제 슬롯만 쓴다 — P1 골격의 서술 입력(ctx)이 없어도 만든다
+                refs.append(picked.ref)
+                flags = picked.flags
+                update = picked.update
+                made = await _verification(
+                    state,
+                    picked.task,
+                    spec_id=spec_id,
+                    redo=picked.redo_verify,
+                    llm=llm if drafter_ready else None,
+                    prompts=prompts,
+                    rel=rel,
+                    revise=revise,
+                    slots_approved=True,
+                )
+                verification, assignments = made.tasks, made.assignments
+                update = made.merged(update)
+                return _out(
+                    state,
+                    spec_id=spec_id,
+                    revision=revision,
+                    common=common,
+                    verification=verification,
+                    refs=refs,
+                    assignments=assignments,
+                    flags=flags,
+                    update=update,
+                    lowered=lowered,
+                )
             # v2 기능형은 그 직군 공개 사례에 기능형 재료(feature)가 있어야 한다 — 없으면 기본값 규칙에서 뺀다
             seed_ok = bool(
                 (inc0 := feature_incident(incidents, p.sub or "", p.posting_id)) and inc0.feature
@@ -319,64 +372,185 @@ def make_draft_spec(
                             )
                         )
                 common.append(task)
-                # 경험 검증 = 검증할 주장 → 확장 슬롯 배정(규칙) + 면접 질문(LLM) [확정: 2026-11-03].
-                # revise_target=common 이면 직전 배정·질문을 유지 (공통 과제 id 만 갱신)
-                if not redo_verify and state.spec is not None:
-                    verification = [
-                        v.model_copy(update={"parent_task_id": task.task_id})
-                        for v in state.spec.verification_tasks
-                    ]
-                    assignments = list(state.spec.slot_assignments)
-                elif (
-                    llm_ready
-                    and llm is not None
-                    and prompts is not None
-                    and _has_prompt(prompts, Q_TASK)
-                ):
-                    assignments, verification, vprov, verrs = await build_slot_verifications(
-                        state,
-                        task,
-                        spec_id=spec_id,
-                        llm=llm,
-                        prompts=prompts,
-                        rel=rel,
-                        reassign=revise.reassign if revise is not None else None,
-                        slots_approved=(refs[-1].status == "approved") if refs else True,
-                    )
-                    update = {
-                        "provenance": [*update.get("provenance", []), *vprov],
-                        "errors": [*update.get("errors", []), *verrs],
-                    }
-        d = state.approval
-        if (
-            d is not None
-            and d.status == "revise"
-            and d.revise_target == "common"
-            and d.reassign
-            and state.spec is not None
-        ):
-            # 공통 과제만 다시 만들면 직전 배정을 그대로 둔다 — 함께 온 슬롯 배정 바꾸기는 반영하지 않고
-            # 기록만 (#249, 예전에는 기록 없이 버렸다). 공통 과제를 못 만든 판도 배정을 바꾸지 않으므로 같다
-            update["errors"] = [*update.get("errors", []), *_reassign_ignored(state, d)]
-        spec = TaskSpec(
+                made = await _verification(
+                    state,
+                    task,
+                    spec_id=spec_id,
+                    redo=redo_verify,
+                    llm=llm if llm_ready else None,
+                    prompts=prompts,
+                    rel=rel,
+                    revise=revise,
+                    slots_approved=(refs[-1].status == "approved") if refs else True,
+                )
+                verification, assignments = made.tasks, made.assignments
+                update = made.merged(update)
+        return _out(
+            state,
             spec_id=spec_id,
-            run_id=state.run_id,
-            posting_id=state.posting_id,
-            ontology_version=state.ontology_version,
             revision=revision,
-            common_tasks=common,
-            verification_tasks=verification,
-            common_refs=refs,
-            slot_assignments=assignments,
-            review_flags=flags,
+            common=common,
+            verification=verification,
+            refs=refs,
+            assignments=assignments,
+            flags=flags,
+            update=update,
+            lowered=lowered,
         )
-        out: dict[str, Any] = {"spec": spec, "approval": None, **update}
-        if lowered is not None:
-            out["comparison"] = state.comparison
-            out["errors"] = [*lowered, *out.get("errors", [])]
-        return out
 
     return draft_spec
+
+
+def _out(
+    state: RunState,
+    *,
+    spec_id: str,
+    revision: int,
+    common: list[TaskItem],
+    verification: list[TaskItem],
+    refs: list[CommonRef],
+    assignments: list[SlotAssignment],
+    flags: list[str],
+    update: dict[str, Any],
+    lowered: list[NodeError] | None,
+) -> dict[str, Any]:
+    """draft_spec 출력 — 명세 + State 갱신 (공통 과제 경로마다 같다)."""
+    d = state.approval
+    if (
+        d is not None
+        and d.status == "revise"
+        and d.revise_target == "common"
+        and d.reassign
+        and state.spec is not None
+    ):
+        # 공통 과제만 다시 만들면 직전 배정을 그대로 둔다 — 함께 온 슬롯 배정 바꾸기는 반영하지 않고
+        # 기록만 (#249, 예전에는 기록 없이 버렸다). 공통 과제를 못 만든 판도 배정을 바꾸지 않으므로 같다
+        update["errors"] = [*update.get("errors", []), *_reassign_ignored(state, d)]
+    spec = TaskSpec(
+        spec_id=spec_id,
+        run_id=state.run_id,
+        posting_id=state.posting_id,
+        ontology_version=state.ontology_version,
+        revision=revision,
+        common_tasks=common,
+        verification_tasks=verification,
+        common_refs=refs,
+        slot_assignments=assignments,
+        review_flags=flags,
+    )
+    out: dict[str, Any] = {"spec": spec, "approval": None, **update}
+    if lowered is not None:
+        out["comparison"] = state.comparison
+        out["errors"] = [*lowered, *out.get("errors", [])]
+    return out
+
+
+@dataclass(frozen=True)
+class _Verification:
+    tasks: list[TaskItem]
+    assignments: list[SlotAssignment]
+    provenance: list[Provenance] | None = (
+        None  # None = 새로 만들지 않음 (update 를 건드리지 않는다)
+    )
+    errors: list[NodeError] = field(default_factory=list)
+
+    def merged(self, update: dict[str, Any]) -> dict[str, Any]:
+        if self.provenance is None:
+            return update
+        return {
+            **update,
+            "provenance": [*update.get("provenance", []), *self.provenance],
+            "errors": [*update.get("errors", []), *self.errors],
+        }
+
+
+async def _verification(
+    state: RunState,
+    task: TaskItem,
+    *,
+    spec_id: str,
+    redo: bool,
+    llm: LLMClient | None,
+    prompts: PromptRegistry | None,
+    rel: Relatedness | None,
+    revise: ApprovalDecision | None,
+    slots_approved: bool,
+) -> _Verification:
+    """경험 검증 = 검증할 주장 → 확장 슬롯 배정(규칙) + 면접 질문(LLM) [확정: 2026-11-03].
+
+    다시 만들지 않으면(revise_target=common) 직전 배정·질문을 유지 (공통 과제 id 만 갱신). llm=None 이면 만들지 않는다.
+    """
+    if not redo and state.spec is not None:
+        kept = [
+            v.model_copy(update={"parent_task_id": task.task_id})
+            for v in state.spec.verification_tasks
+        ]
+        return _Verification(kept, list(state.spec.slot_assignments))
+    if llm is not None and prompts is not None and _has_prompt(prompts, Q_TASK):
+        assignments, tasks, vprov, verrs = await build_slot_verifications(
+            state,
+            task,
+            spec_id=spec_id,
+            llm=llm,
+            prompts=prompts,
+            rel=rel,
+            reassign=revise.reassign if revise is not None else None,
+            slots_approved=slots_approved,
+        )
+        return _Verification(tasks, assignments, vprov, verrs)
+    return _Verification([], [])
+
+
+@dataclass(frozen=True)
+class _Picked:
+    task: TaskItem
+    ref: CommonRef
+    flags: list[str]
+    update: dict[str, Any]
+    redo_verify: bool
+
+
+def _interview_common(
+    state: RunState, interview: StoredCommon, revise: ApprovalDecision | None
+) -> _Picked:
+    """채용담당자 인터뷰로 승인된 공고 공통 과제를 그대로 쓴다 [확정: 2026-11-19 사용자] — 만들지도 고치지도 않는다.
+
+    - 유형·본문·슬롯은 그 과제 것 (승인자 유형 지정·수정 요청의 공통 과제 부분은 반영하지 않고 기록만 — API 가 먼저 막는다).
+    - 경험 검증만 다시 만드는 수정 요청(#234)도 저장소를 다시 본다: 인터뷰 과제는 채용담당자가 명시적으로 교체할 때만
+      바뀌고, 바뀐 뒤에는 이전 과제를 가리키는 명세를 승인할 수 없다 (API 409·finalize). 과제가 바뀌었으면 배정·질문도 다시.
+    - 이전 과제는 명세의 저장 참조(common_refs)로 비교한다. provenance 는 과제가 이 실행에 새로 들어올 때, State 에 아직 없는
+      것만 싣는다 (State 는 누적).
+    """
+    prev = state.spec.common_refs[0].common_id if state.spec and state.spec.common_refs else None
+    new_to_run = prev != interview.id  # 첫 초안·공통 과제가 없던 명세·다른 과제를 가리키던 명세
+    flags = [FLAG_INTERVIEW_COMMON]
+    if prev is not None and new_to_run:
+        flags.append(FLAG_INTERVIEW_SWITCHED + prev)
+    seen = {p.provenance_id for p in state.provenance}
+    prov = [p for p in interview.provenance if p.provenance_id not in seen] if new_to_run else []
+    update: dict[str, Any] = {"provenance": prov} if prov else {}
+    redo_common = revise is not None and revise.revise_target != "verification"
+    if redo_common:
+        assert revise is not None
+        update["errors"] = [
+            NodeError(
+                node="draft_spec",
+                code="interview_common_locked",
+                message="인터뷰로 승인된 공통 과제는 지원자 명세에서 고치지 않음 — 수정 요청의 공통 과제 부분"
+                f"({revise.revise_target}{', 유형 바꾸기' if revise.task_kind else ''})은 반영하지 않음. "
+                "과제는 인터뷰 화면에서 고친다",
+                ref_id=interview.id,
+            )
+        ]
+    redo_verify = revise is None or revise.revise_target != "common" or new_to_run
+    ref = CommonRef(
+        common_id=interview.id,
+        revision=interview.revision,
+        status=interview.status,
+        reused=True,
+        prompt_ref=interview.prompt_ref,
+    )
+    return _Picked(interview.task, ref, flags, update, redo_verify)
 
 
 def _reassign_ignored(state: RunState, d: ApprovalDecision) -> list[NodeError]:
@@ -506,7 +680,11 @@ async def approval(state: RunState) -> Command[ApprovalRoute]:
 def make_finalize(
     store: CommonTaskRepo | None = None,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
-    """승인된 명세 확정. 공통 과제 판도 승인 상태로 바꾼다 (이전 승인 판은 superseded)."""
+    """승인된 명세 확정. 공통 과제 판도 승인 상태로 바꾼다 (이전 승인 판은 superseded).
+
+    인터뷰 과제는 다시 승인하지 않는다 — 채용담당자 승인 기록을 덮지 않고, 교체된 과제를 되살리지 않게 [확정: 2026-11-19 사용자].
+    대신 명세의 공통 과제가 그 공고의 지금 인터뷰 과제인지 확인한다 (API 가 승인 전에 409 로 막는다).
+    """
 
     async def finalize(state: RunState) -> dict[str, Any]:
         if state.spec is None or state.approval is None or state.approval.status != "approved":
@@ -516,14 +694,29 @@ def make_finalize(
             gone = await store.missing(ids)
             if gone:  # API 가 승인 전에 막지만 (409), 그 사이 지워진 경우에도 사유를 남긴다
                 raise CommonTaskMissing(gone)
-            for cid in ids:
-                await store.approve(cid, state.approval.reviewer, state.approval.at)
+            stale = await replaced_common(store, state.spec)
+            if stale:  # API 가 승인 전에 막는다 (409). 확인 뒤 확정 전에 교체되면 교체 직전에 확정된 명세와 같다
+                raise CommonTaskNotCurrent(stale)
+            for r in state.spec.common_refs:
+                if not is_interview_ref(r.prompt_ref):
+                    await store.approve(r.common_id, state.approval.reviewer, state.approval.at)
         return {"spec": state.spec.model_copy(update={"approval": state.approval})}
 
     return finalize
 
 
 finalize = make_finalize()
+
+
+class CommonTaskNotCurrent(RuntimeError):
+    """명세가 가리키는 공통 과제를 이 공고가 이제 쓰지 않는다 (인터뷰 과제 승인·교체) — 경험 검증 다시 만들기로 명세를 새로 만든다."""
+
+    def __init__(self, common_ids: list[str]) -> None:
+        self.common_ids = common_ids
+        super().__init__(
+            f"이 공고의 공통 과제가 바뀌었습니다 (이 명세의 과제: {', '.join(common_ids)}) — "
+            "경험 검증 다시 만들기(revise_target=verification)로 지금 과제를 반영한 명세를 만드세요"
+        )
 
 
 class CommonTaskMissing(RuntimeError):
