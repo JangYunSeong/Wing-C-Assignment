@@ -19,7 +19,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from task_spec.api.deps import OntologyDep, PostingsDep, SettingsDep, get_postings
+from task_spec.api.deps import OntologyDep, PostingsContext, PostingsDep, SettingsDep, get_postings
 from task_spec.api.errors import (
     InvalidUpload,
     PostingCompanyInvalid,
@@ -32,7 +32,7 @@ from task_spec.nodes.ingest.extractors import OcrError, UnsupportedFormat, extra
 from task_spec.ontology.queries import posting_exists, posting_profile, search_positions
 from task_spec.postings.career import PostingCareer, estimate_career, posting_careers
 from task_spec.postings.company import CompanySource, company_id, posting_companies
-from task_spec.postings.search import PostingHit, search_terms
+from task_spec.postings.search import CompanyFilter, PostingHit, search_terms
 from task_spec.postings.sections import segment
 from task_spec.postings.store import is_provisional, provisional_profile, rules_fingerprint
 from task_spec.postings.suggest import analyze, suggest
@@ -238,23 +238,43 @@ async def confirm_posting(req: ConfirmRequest, postings: PostingsDep) -> Confirm
     )
 
 
+DEFAULT_SEARCH_LIMIT = 20
+
+
+async def _company_filter(company: str | None, ctx: PostingsContext | None) -> CompanyFilter | None:
+    key = company_id(company)
+    if key is None:
+        return None
+    entered = await ctx.store.all_entered_companies() if ctx is not None else {}
+    mine = tuple(sorted(p for p, c in entered.items() if company_id(c) == key))
+    others = tuple(sorted(p for p, c in entered.items() if company_id(c) != key))
+    return CompanyFilter(key=key, include=mine, exclude=others)
+
+
 @router.get("")
 async def search_postings(
     request: Request,
     ontology: OntologyDep,
     q: Annotated[str, Query(max_length=100)] = "",
     pilot_only: bool = True,
-    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    limit: Annotated[int | None, Query(ge=1, le=50)] = None,
+    company: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
 ) -> list[PostingHit]:
-    """회사·직무명·id 로 공고 찾기. 임시 공고(최근 것부터) 다음에 온톨로지 공고. 검색어가 비면 앞에서부터."""
+    """회사·직무명·id 로 공고 찾기. 임시 공고(최근 것부터) 다음에 온톨로지 공고. 검색어가 비면 앞에서부터.
+    `company`(회사 id 또는 표기, GET /runs 와 같은 규칙)를 주면 그 회사 공고만 — 사람이 정한 회사가 먼저다. 이때 limit 이
+    없으면 전부 (채용담당자 인터뷰가 자기 회사 공고를 모두 보고 고른다 [2026-11-20 사용자]). company 없이는 limit 기본 20."""
     ctx = getattr(request.app.state, "postings", None)
     if ontology is None and ctx is None:
         raise ServiceUnavailable("공고 찾기가 준비되지 않았습니다 (온톨로지·저장소 미연결)")
     labels = {k: str(v.get("label", "")) for k, v in ctx.lists.subs.items()} if ctx else None
     terms = search_terms(q, labels)
+    only = await _company_filter(company, ctx)
+    if company is not None and only is None:
+        return []
+    cap = limit if limit is not None or company is not None else DEFAULT_SEARCH_LIMIT
     hits: list[PostingHit] = []
     if ctx is not None:
-        for r in await ctx.store.search_provisional(terms, limit):
+        for r in await ctx.store.search_provisional(terms, cap, only):
             hits.append(
                 PostingHit(
                     posting_id=r["id"],
@@ -265,9 +285,13 @@ async def search_postings(
                     industry_id=r["industry_id"],
                 )
             )
-    if ontology is not None and len(hits) < limit:
+    if ontology is not None and (cap is None or len(hits) < cap):
         for r in await search_positions(
-            ontology, terms, pilot_only=pilot_only, limit=limit - len(hits)
+            ontology,
+            terms,
+            pilot_only=pilot_only,
+            limit=None if cap is None else cap - len(hits),
+            company=only,
         ):
             hits.append(
                 PostingHit(

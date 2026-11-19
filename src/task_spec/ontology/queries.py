@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from task_spec.ontology.repository import OntologyRepository
-from task_spec.postings.search import SearchTerm
+from task_spec.postings.search import CompanyFilter, SearchTerm
 from task_spec.schemas import (
     CompetencyEvidence,
     EscoRef,
@@ -76,11 +76,20 @@ async def company_names(repo: OntologyRepository) -> list[str]:
 
 
 async def search_positions(
-    repo: OntologyRepository, terms: list[SearchTerm], *, pilot_only: bool, limit: int
+    repo: OntologyRepository,
+    terms: list[SearchTerm],
+    *,
+    pilot_only: bool,
+    limit: int | None,
+    company: CompanyFilter | None = None,
 ) -> list[dict[str, object]]:
-    """회사·직무·원 표기·id·직군에 검색어가 모두 들어 있는 공고 (postings/search.search_terms)."""
+    """회사·직무·원 표기·id·직군에 검색어가 모두 들어 있는 공고 (postings/search.search_terms). limit None = 전부."""
     where = ["(NOT %s OR in_pilot)"]
     params: list[object] = [pilot_only]
+    if company is not None:
+        clause, extra = company.sql()
+        where.append(clause)
+        params += extra
     for t in terms:
         where.append(
             "(company ILIKE %s ESCAPE '\\' OR job ILIKE %s ESCAPE '\\' OR position_name ILIKE %s ESCAPE '\\'"

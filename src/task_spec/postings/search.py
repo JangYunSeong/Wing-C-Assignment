@@ -27,6 +27,26 @@ def like_patterns(q: str) -> list[str]:
     return out
 
 
+COMPANY_NOISE = r"\(주\)|㈜|주식회사|\(유\)|유한회사|\s"  # postings/company.company_id 와 같은 규칙 (SQL regexp_replace 용)
+
+
+@dataclass(frozen=True)
+class CompanyFilter:
+    """한 회사 공고만 (GET /postings?company=). 사람이 정한 회사(posting_company)가 공고 데이터보다 먼저다 —
+    include 는 정한 회사가 이 회사인 공고, exclude 는 다른 회사로 정한 공고."""
+
+    key: str  # company_id 값
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+
+    def sql(self, company_col: str = "company", id_col: str = "id") -> tuple[str, list[object]]:
+        clause = (
+            f"((lower(regexp_replace(coalesce({company_col}, ''), %s, '', 'g')) = %s OR {id_col} = ANY(%s))"
+            f" AND NOT {id_col} = ANY(%s))"
+        )
+        return clause, [COMPANY_NOISE, self.key, list(self.include), list(self.exclude)]
+
+
 @dataclass(frozen=True)
 class SearchTerm:
     pattern: str  # LIKE 패턴 (ESCAPE '\\')

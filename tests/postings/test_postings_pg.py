@@ -19,6 +19,7 @@ from task_spec.api.deps import PostingsContext
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.llm import Completion, FakeBackend, LLMClient
 from task_spec.ontology.repository import OntologyNotLoaded, OntologyRepository, resolve_version
+from task_spec.postings.search import CompanyFilter
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import OntologyLists, load_lists, suggest
 from task_spec.prompting import PromptRegistry
@@ -173,6 +174,30 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                 pid = r.json()["posting_id"]
                 assert pid.startswith("prov-") and r.json()["competencies"] > 0
 
+                r = await client.get(
+                    "/postings", params={"company": "(주) 가상테크", "pilot_only": "false"}
+                )
+                assert r.status_code == 200, r.text
+                assert pid in {h["posting_id"] for h in r.json()}
+                assert {h["company"] for h in r.json()} == {"가상테크"}
+                r = await client.put(
+                    f"/postings/{pid}/company",
+                    json={"company": "다른회사", "set_by": "reviewer-fake"},
+                )
+                assert r.status_code == 200, r.text
+                r = await client.get(
+                    "/postings", params={"company": "가상테크", "pilot_only": "false"}
+                )
+                assert pid not in {h["posting_id"] for h in r.json()}
+                r = await client.get(
+                    "/postings", params={"company": "다른회사", "pilot_only": "false"}
+                )
+                assert pid in {h["posting_id"] for h in r.json()}
+                await client.put(
+                    f"/postings/{pid}/company", json={"company": None, "set_by": "reviewer-fake"}
+                )
+                assert (await client.get("/postings", params={"company": "(주)"})).json() == []
+
                 prof = (await client.get(f"/postings/{pid}")).json()
                 assert (
                     prof["source"] == "provisional"
@@ -306,4 +331,63 @@ async def test_posting_company_set_clear_and_init() -> None:
     finally:
         async with store._pool.connection() as conn:
             await conn.execute("DELETE FROM public.posting_company WHERE posting_id = %s", (pid,))
+        await store.close()
+
+
+async def test_search_provisional_company_filter() -> None:
+    """한 회사 공고만 (GET /postings?company=) [2026-11-20 사용자] — 법인 표기·공백은 무시, 사람이 정한 회사가 먼저."""
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await PostingStore.open(u.get_secret_value())
+    tag = uuid.uuid4().hex[:6]
+    mine, other = f"인터뷰회사{tag}", f"다른회사{tag}"
+    sid = await store.create_suggestion(
+        text="t",
+        company=mine,
+        title="t",
+        method="test",
+        lines=[],
+        subs=[],
+        industries=[],
+        meta={},
+        ontology_version=VERSION,
+    )
+
+    async def make(company: str | None) -> str:
+        return await store.create_provisional(
+            suggestion_id=sid,
+            company=company,
+            title="백엔드",
+            sub="sw.backend",
+            secondary_sub=None,
+            industry_id="it",
+            confirmed_by="tester",
+            ontology_version=VERSION,
+            rules_sha256="x",
+            lines=[],
+        )
+
+    by_data = await make(f"(주) {mine}")
+    by_hand = await make(None)
+    moved = await make(mine)
+    elsewhere = await make(other)
+    try:
+        await store.set_company(by_hand, f"주식회사{mine}", "tester")
+        await store.set_company(moved, other, "tester")
+        entered = await store.all_entered_companies()
+        assert entered[by_hand] == f"주식회사{mine}" and entered[moved] == other
+        only = CompanyFilter(key=mine.casefold(), include=(by_hand,), exclude=(moved,))
+        rows = await store.search_provisional([], None, only)
+        assert {r["id"] for r in rows} == {by_data, by_hand}
+        assert elsewhere not in {r["id"] for r in await store.search_provisional([], None, only)}
+        assert len(await store.search_provisional([], 1, only)) == 1
+    finally:
+        ids = [by_data, by_hand, moved, elsewhere]
+        async with store._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM public.posting_company WHERE posting_id = ANY(%s)", (ids,)
+            )
+            await conn.execute("DELETE FROM public.provisional_posting WHERE id = ANY(%s)", (ids,))
+            await conn.execute("DELETE FROM public.posting_suggestion WHERE id = %s", (sid,))
         await store.close()
