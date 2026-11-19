@@ -1480,6 +1480,17 @@ def _fault_calls(
     return out
 
 
+_CODE_NAME = re.compile(r"[A-Za-z_]\w*")  # 코드의 이름 (케밥 표기 없음 — 도우미 상수·함수 이름)
+
+
+def _case_names(helper: str, ids: Collection[str]) -> set[str]:
+    """계약 도우미에서 그 케이스들의 이름 — 케이스 id 를 대소문자와 상관없이 품은 이름(HC2_FIRST·failHc2 …).
+    케이스 id 패턴(`\\bhc\\d{1,2}\\b`)은 소문자·단어 경계라 도우미 상수를 못 본다. 2026-11-19 운영 ct-d367bb7b2d4c-b2: hc1 파일이
+    HC2_FIRST 의 행에 실패를 주입하고 정상 요청까지 보내, 뒤에 도는 hc2 가 남은 SUCCESS 기록으로 모든 구현에서 떨어졌다."""
+    rx = [re.compile(rf"(?i)(?<![0-9]){re.escape(c)}(?![0-9])") for c in ids]
+    return {n for n in _CODE_NAME.findall(helper) if any(r.search(n) for r in rx)}
+
+
 def _hidden_cases(
     o: Overlay,
     t: Template,
@@ -1498,6 +1509,11 @@ def _hidden_cases(
     helper = render_contract_case(contract, plan, m) if contract is not None else None
     helper_path = m.hidden_helper.path if m.hidden_helper else None
     plan_ids = {c.case_id for c in plan.cases}
+    foreign = (
+        _case_names(helper.content, plan_ids - set(only))
+        if helper is not None and only is not None
+        else set()
+    )
     seen_ids: Counter[str] = Counter()
     used_codes: set[str] = set()
     for f in o.files:
@@ -1534,6 +1550,11 @@ def _hidden_cases(
             out.append(
                 f"숨은 테스트 {f.path} 에 다른 케이스 id 가 나옴: {', '.join(others)} — 이 파일은 {', '.join(sorted(only))} 만 다룬다"
                 " (다른 케이스 id 는 주석·이름에도 쓰지 않는다 — 합치면 한 케이스가 여러 파일에 나온다)"
+            )
+        if used := sorted(foreign & set(_CODE_NAME.findall(f.content))):
+            out.append(
+                f"숨은 테스트 {f.path} 가 다른 케이스의 도우미 이름을 씀: {', '.join(used)} — 이 파일은 {', '.join(sorted(only or ()))} 의 "
+                "행·실패 지정만 쓴다 (다른 케이스의 행을 바꾸면 그 케이스가 모든 구현에서 떨어진다)"
             )
     cases = [f for f in o.files if f.path not in (params_path, helper_path)]
     if helper is not None:
