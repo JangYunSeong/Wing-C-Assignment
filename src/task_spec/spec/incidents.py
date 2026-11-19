@@ -143,6 +143,23 @@ def incident_block(inc: PublicIncident | None) -> str:
     return "\n".join(lines)
 
 
+def known_cases_block(inc: PublicIncident) -> str:
+    """채용담당자 인터뷰가 확인한 사건·실패한 첫 시도와 기준 답안 (#266) — 인터뷰 공고 자신의 기능형 생성에만 넣는다.
+
+    이슈형 생성(incident_block)에는 넣지 않는다 — 회사 사례 모음으로 다른 공고가 이 사례를 써도 기준 답안이 생성 프롬프트로 가지 않게.
+    기준 답안은 채점 근거라 지원자에게 보이는 글로 새는지 결정적으로 검사한다 (interview/task.answer_leak_flags).
+    """
+    if not inc.known_incident_cases:
+        return ""
+    lines = ["확인된 인터뷰·기준 답안 (내부 근거이며 지원자에게 복사하지 않음):"]
+    for case in inc.known_incident_cases:
+        label = "실패한 첫 시도(함정 근거)" if case.is_trap else "확인된 사례 인터뷰"
+        lines.append(f"{label}: {case.interview_text}")
+        if case.answer_text:
+            lines.append(f"기준 답안 (채점자용): {case.answer_text}")
+    return "\n".join(lines)
+
+
 def incident_ref(inc: PublicIncident) -> str:
     """공통 과제 저장 키에 붙이는 사례 지문 — 사례 내용이 바뀌면 새 판을 만든다 (이전 초안을 다시 쓰지 않게).
 

@@ -26,6 +26,13 @@ class IncidentInterviewInput(Schema):
     conversation_json: PseudoTextField
 
 
+class InterviewFeatureSeedInput(Schema):
+    """확인된 사례·기준 답안 → 직군 템플릿의 기능형 재료 (#266 D2a). interview 는 가명화한 사례 블록, template_json 은 템플릿 메타(코드 값)."""
+
+    interview: PseudoTextField
+    template_json: str
+
+
 class IncidentInterviewOutput(Schema):
     incident: PublicIncident | None = None
     conditions: str = ""

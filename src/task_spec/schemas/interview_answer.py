@@ -2,7 +2,7 @@
 
 Wing-C-Interview 포크(9ef2f50)에서 옮김 (#262). 출력 모델은 프롬프트 본문에 렌더되므로 클래스 이름·상속·필드·제약을
 포크와 같게 둔다. 입력의 글 칸은 PseudoTextField (가명화 모듈이 만든 글만 — 불변식 2, 결정 4).
-지원자 질문 답변 범위(TargetedAnswerDraft*)는 D2 에서 옮긴다.
+지원자 질문 답변 범위(TargetedAnswerDraft*)는 D2a(#266)에서 옮겼다.
 """
 
 from __future__ import annotations
@@ -94,3 +94,15 @@ class AnswerValidationRecord(InterviewAnswerCheckOutput):
 
 class InterviewAnswerGroundedOutput(InterviewAnswerOutput):
     source_ids: list[str] = Field(default_factory=list, max_length=12)
+
+
+class TargetedAnswerDraftInput(Schema):
+    """지원자 질문에 답할 범위 초안 (#266 D2a, 포크 그대로) — 질문은 담당자 글(가명화), 나머지는 과제에서 나온 글."""
+
+    question: PseudoTextField
+    hidden_condition: PseudoTextField
+    task_json: PseudoTextField
+
+
+class TargetedAnswerDraftOutput(Schema):
+    answer: str = Field(min_length=1, max_length=4000)

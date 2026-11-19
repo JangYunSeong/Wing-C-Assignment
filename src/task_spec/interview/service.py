@@ -26,6 +26,8 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any, Literal, Protocol, TypeVar
 
+from pydantic import BaseModel, RootModel, ValidationError
+
 from task_spec.interview.answers import (
     ANSWER_PROMPT,
     CHECK_PROMPT,
@@ -57,6 +59,24 @@ from task_spec.interview.incident import (
 )
 from task_spec.interview.store import CLOSED_STAGES, InterviewRepo, InterviewRow
 from task_spec.interview.stream import QuestionStream
+from task_spec.interview.task import (
+    FEATURE_SEED_PROMPT,
+    TARGETED_PROMPT,
+    CompetencyChoice,
+    TaskGenerationFailed,
+    TaskMaker,
+    coding_template,
+    copies_answer,
+    evaluation_criteria,
+    hidden_requirements,
+    mentions_artifact_id,
+    prepare_coding_incident,
+    pseudonymize_changes,
+    questions_for,
+    task_frame,
+    with_content_flags,
+    with_interview_flag,
+)
 from task_spec.interview.text import (
     CASE_OPENING,
     SCOPE_QUESTIONS,
@@ -76,20 +96,31 @@ from task_spec.nodes.pseudonymize import (
 )
 from task_spec.nodes.pseudonymize.engine import RunMapping
 from task_spec.prompting import PromptRegistry, assemble
-from task_spec.schemas import PostingProfile, PublicIncident
-from task_spec.schemas.interview_answer import AnswerValidationRecord
+from task_spec.schemas import PostingProfile, PublicIncident, TaskItem
+from task_spec.schemas.interview_answer import (
+    AnswerValidationRecord,
+    TargetedAnswerDraftInput,
+    TargetedAnswerDraftOutput,
+)
 from task_spec.schemas.interview_incident import IncidentInterviewInput, IncidentInterviewOutput
 from task_spec.schemas.interview_state import (
+    ANSWER_MAX,
     ChatMessage,
+    GeneralQuestion,
     IncidentConfirmation,
+    InterviewSpec,
     InterviewState,
     PostingContext,
     Stage,
     SuccessAnswers,
+    TargetedQuestion,
     TrapAnswers,
 )
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.spec.company_incidents import new_incident_id
+from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID
+from task_spec.spec.incidents import incident_block, known_cases_block
+from task_spec.spec.store import CommonKey, CommonTaskRepo
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +129,34 @@ D1_PROMPTS = (INCIDENT_PROMPT, ANSWER_PROMPT, CHECK_PROMPT)
 _LLM_ERRORS = (SchemaViolation, EmptyResponse, TransientLLMError, ValueError)
 # 화면의 9단계 번호 (포크 DESIGN.md) — 그 단계를 제출하면 그 단계의 원문 임시 저장을 지운다
 STEP_CHAT, STEP_TRAP, STEP_SUCCESS, STEP_REVIEW = "3", "4", "5", "6"
+STEP_COMPETENCIES, STEP_TASK = "7", "8"
 SUCCESS_FIELDS = ("reproduction", "expected_result", "invariants", "verification", "alternatives")
 TRAP_FIELDS = ("attempted_fix", "observed_result", "why_failed")
-RevisionTarget = Literal["project", "incident", "trap", "success"]
+RevisionTarget = Literal["project", "incident", "trap", "success", "common", "questions"]
 _STALE = "인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요"
 NOTE_TRAP_UNKNOWN = "실제 실패 시도는 확인되지 않음. 흔한 대응은 가상 함정 후보입니다."
 T = TypeVar("T")
+M = TypeVar("M", bound=BaseModel)
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+
+class _GeneralQuestions(RootModel[list[GeneralQuestion]]):
+    pass
+
+
+class _TargetedQuestions(RootModel[list[TargetedQuestion]]):
+    pass
+
+
+def _error_locations(exc: ValidationError) -> str:
+    """검증 오류의 칸 위치만 — 값·입력 글은 싣지 않는다. 모르는 칸은 담당자가 만든 키라 이름도 싣지 않는다."""
+    out: list[str] = []
+    for err in exc.errors(include_url=False, include_input=False)[:5]:
+        parts = [str(p) for p in err["loc"]]
+        if err["type"] == "extra_forbidden" and parts:
+            parts[-1] = "(모르는 칸)"
+        out.append(".".join(parts) or "(전체)")
+    return ", ".join(dict.fromkeys(out))
 
 
 class _KeyedLocks:
@@ -146,6 +198,8 @@ class InterviewService:
     ontology_version: str  # 프롬프트 provenance 의 온톨로지 판 (공고 목록의 판)
     mapping_ttl: timedelta = timedelta(days=30)
     draft_ttl: timedelta = timedelta(days=1)
+    tasks: TaskMaker | None = None  # 과제 생성기 묶음 (D2a — 온톨로지·LLM)
+    common_store: CommonTaskRepo | None = None  # 공통 과제 저장소 (interview:{id} 초안)
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     _locks: _KeyedLocks = field(default_factory=_KeyedLocks)
 
@@ -810,6 +864,465 @@ class InterviewService:
             state.stage = "competencies"
             return await self._save(row, revision, state, mapping, steps=(STEP_REVIEW,))
 
+    # ================================================================ ⑦·⑧ 역량·과제 (D2a, #266)
+    def _require_step(self, prompt: str, what: str) -> tuple[LLMClient, PromptRegistry]:
+        llm, prompts = self._require_ready()
+        if not prompts.has_current(prompt):
+            raise InterviewNotReady(
+                f"{what}는 {prompt} 프롬프트 평가를 통과한 뒤 열립니다 (CURRENT 없음)"
+            )
+        return llm, prompts
+
+    def _require_tasks(self) -> tuple[TaskMaker, CommonTaskRepo]:
+        if self.tasks is None or self.common_store is None:
+            raise InterviewNotReady("과제 생성기가 준비되지 않았습니다")
+        return self.tasks, self.common_store
+
+    async def _competencies(self, tasks: TaskMaker, profile: PostingProfile) -> CompetencyChoice:
+        """공고 역량의 수행준거 근거 (온톨로지 조회). 조회 오류는 원인을 싣지 않고 503."""
+        try:
+            return await tasks.competencies(profile)
+        except Exception as exc:
+            logger.error("interview_competencies_failed type=%s", type(exc).__name__)
+            raise InterviewUnavailable(
+                "공고 역량 근거를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요"
+            ) from None
+
+    async def _apply_edit(self, model: type[M], new: Any, old: Any, mapping: RunMapping) -> M:
+        """담당자가 고친 구조 → 바뀐 글만 가명화해 모델로. 형식 오류는 칸 위치만 알린다."""
+        try:
+            data = await asyncio.to_thread(pseudonymize_changes, new, old, self._plain(mapping))
+            return model.model_validate(data)
+        except InterviewTextRejected as exc:  # 화면에 보여도 되는 고정 문구
+            raise InterviewInvalid(str(exc)) from None
+        except ValidationError as exc:
+            raise InterviewInvalid(f"형식을 확인해 주세요: {_error_locations(exc)}") from None
+
+    async def _profile(self, posting_id: str) -> PostingProfile:
+        profile = await self.postings.profile(posting_id)
+        if profile is None or not profile.sub:
+            raise PostingMissing("공고를 찾을 수 없습니다")
+        return profile
+
+    async def competency_preview(self, interview_id: str) -> dict[str, Any]:
+        """고를 수 있는 공고 역량(수행준거 근거가 있는 것)과 규칙이 권하는 역량, 직군 기본 코딩 템플릿."""
+        row = await self._load(interview_id)
+        self._require(row.state, "competencies", "task_review")
+        tasks, _ = self._require_tasks()
+        profile = await self._profile(row.state.posting_id)
+        choice = await self._competencies(tasks, profile)
+        try:
+            template_id = coding_template(profile.sub or "").manifest.template_id
+        except TaskGenerationFailed as exc:
+            raise InterviewInvalid(str(exc)) from None
+        return {
+            "ontology_version": profile.ontology_version,
+            "template_id": template_id,
+            "competencies": [
+                {
+                    "competency_id": c.competency_id,
+                    "label": c.label,
+                    "primary": c.primary,
+                    "ncs_units": [
+                        u.model_dump()
+                        for e in choice.matches
+                        if e.competency_id == c.competency_id
+                        for u in e.ncs_units
+                        if u.n_criteria
+                    ],
+                }
+                for c in choice.available
+            ],
+            "suggested_ids": choice.suggested,
+        }
+
+    async def select_competencies(
+        self, interview_id: str, *, revision: int, competency_ids: list[str]
+    ) -> dict[str, Any]:
+        async with self._lock(interview_id):
+            row = await self._load(interview_id)
+            self._expect_revision(row, revision)
+            state = row.state.model_copy(deep=True)
+            self._require(state, "competencies", "task_review")
+            if state.spec is not None and state.competency_ids == competency_ids:
+                # 같은 선택을 다시 보냄(두 번 누름 등) — 만든 과제를 지우지 않는다
+                return self.view(row)
+            tasks, _ = self._require_tasks()
+            profile = await self._profile(state.posting_id)
+            choice = await self._competencies(tasks, profile)
+            available = {c.competency_id for c in choice.available}
+            if (
+                not 2 <= len(competency_ids) <= 3
+                or len(set(competency_ids)) != len(competency_ids)
+                or not set(competency_ids) <= available
+            ):
+                raise InterviewInvalid("수행준거 근거가 있는 공고 역량 2~3개를 고르세요")
+            try:
+                template = coding_template(profile.sub or "")
+            except TaskGenerationFailed as exc:
+                raise InterviewInvalid(str(exc)) from None
+            state.competency_ids = list(competency_ids)
+            state.template_id = template.manifest.template_id
+            state.spec = None
+            state.stage = "competencies"
+            return await self._save(row, revision, state, None, steps=(STEP_COMPETENCIES,))
+
+    def _reviewer_note(self, state: InterviewState) -> str | None:
+        """포크 generate 와 같은 수정 요청 — 확인된 사례·기준 답안을 유지하며 팀 맥락을 소재·산출물에 반영."""
+        note = state.review_note or ""
+        scope = state.team_context.model_dump(exclude_none=True)
+        if scope:
+            labels = {
+                "expected_outcome_90_days": "90일 내 기대 성과",
+                "decision_situation": "평가할 판단 상황과 기준",
+            }
+            lines = "\n".join(f"{labels[k]}: {v}" for k, v in scope.items())
+            note = (
+                "확인된 사례와 기준 답안을 유지하며 아래 채용 맥락을 과제의 소재와 산출물에 반영하세요.\n"
+                f"{lines}\n{note}"
+            ).strip()
+        return note or None
+
+    async def generate(
+        self, interview_id: str, *, revision: int, competency_ids: list[str]
+    ) -> dict[str, Any]:
+        """확인된 사례 → 기능형 재료 → 공고 공통 과제(interview:{id} 초안) → 지원자 질문. 승인은 D2b 그래프."""
+        async with self._lock(interview_id):
+            row = await self._load(interview_id)
+            self._expect_revision(row, revision)
+            state = row.state.model_copy(deep=True)
+            self._require(state, "competencies", "task_review")
+            if not state.competency_ids or state.competency_ids != competency_ids:
+                raise InterviewInvalid("먼저 고른 역량과 생성 요청이 다릅니다")
+            llm, prompts = self._require_step(FEATURE_SEED_PROMPT, "과제 생성")
+            tasks, common_store = self._require_tasks()
+            incident = state.incident_confirmed
+            if (
+                incident is None
+                or state.incident_confirmation is None
+                or state.incident_confirmation.sha256 != incident_digest(incident)
+            ):
+                raise InterviewInvalid("사례·답안 확인 단계를 먼저 완료해 주세요")
+            if not validation_current(incident, state):
+                raise InterviewInvalid("기준 답안 검증을 완료하고 다시 확인해 주세요")
+            mapping = self._mapping(interview_id)
+            profile = await self._profile(state.posting_id)
+            choice = await self._competencies(tasks, profile)
+            selected = set(competency_ids)
+            chosen = profile.model_copy(
+                update={
+                    "competencies": [c for c in profile.competencies if c.competency_id in selected]
+                }
+            )
+            matches = [e for e in choice.matches if e.competency_id in selected]
+            try:
+                template = coding_template(profile.sub or "")
+                interview_text = self.pseudo.stored(
+                    "\n".join([incident_block(incident), known_cases_block(incident)]), mapping
+                )
+                coding_incident, seed_provenance = await self._llm(
+                    prepare_coding_incident(
+                        incident,
+                        template,
+                        interview=interview_text,
+                        llm=llm,
+                        prompts=prompts,
+                        ontology_version=profile.ontology_version,
+                    )
+                )
+                made = await self._llm(
+                    tasks.make(
+                        chosen,
+                        matches,
+                        coding_incident,
+                        template,
+                        task_id=f"{interview_id}-common-{row.revision}",
+                        reviewer_note=self._reviewer_note(state),
+                    )
+                )
+                task = with_interview_flag(made.task, coding_incident)
+                general, targeted = questions_for(task)
+            except (
+                TaskGenerationFailed
+            ) as exc:  # 고른 역량·직군으로는 만들 수 없음 — 고정 문구, 선택을 바꿔야 함
+                logger.warning("interview_generate_invalid type=%s", type(exc).__name__)
+                raise InterviewInvalid(str(exc)) from None
+            except (SchemaViolation, EmptyResponse, TransientLLMError, ValueError) as exc:
+                # 모델 출력을 쓰지 못함 (OutputRejected·형식 검증·저장 글 검사 포함) — 사유는 고정 문구일 때만 로그에
+                logger.warning(
+                    "interview_generate_rejected type=%s reason=%s",
+                    type(exc).__name__,
+                    str(exc) if isinstance(exc, OutputRejected | InterviewTextRejected) else "-",
+                )
+                raise InterviewUnavailable("과제를 만들지 못했습니다. 다시 시도해 주세요") from None
+            if not general or not targeted:
+                logger.warning("interview_generate_rejected type=no_questions")
+                raise InterviewUnavailable(
+                    "자료와 숨은 조건에 연결된 질문을 만들지 못했습니다. 다시 시도해 주세요"
+                )
+            saved = await common_store.save_draft(
+                CommonKey(state.posting_id, profile.ontology_version, f"interview:{interview_id}"),
+                task,
+                [*seed_provenance, *made.provenance],
+            )
+            task = saved.task
+            state.spec = InterviewSpec(
+                posting_id=state.posting_id,
+                ontology_version=profile.ontology_version,
+                competency_ids=list(competency_ids),
+                template_id=template.manifest.template_id,
+                project=state.project,
+                incident=incident,
+                coding_incident=coding_incident,
+                incident_confirmation=state.incident_confirmation,
+                answer_validation=state.answer_validation,
+                team_context=state.team_context
+                if state.team_context.model_dump(exclude_none=True)
+                else None,
+                common_task=task,
+                extension_slots=task.slots,
+                general_questions=general,
+                targeted_questions=targeted,
+                hidden_requirements=hidden_requirements(task, targeted),
+                evaluation_intent=[
+                    f"{c.label}: 근거 자료를 요청하고 AI의 답을 검증하는 과정"
+                    for c in chosen.competencies
+                ],
+                evaluation_criteria=evaluation_criteria(task),
+                generation_provenance=[*seed_provenance, *made.provenance],
+                review_flags=with_content_flags(
+                    [*made.flags, *task.review_flags], task, coding_incident
+                ),
+            )
+            state.stage = "task_review"
+            state.review_note = None
+            return await self._save(row, revision, state, mapping, steps=(STEP_TASK,))
+
+    async def set_answers(
+        self, interview_id: str, *, revision: int, answers: dict[str, str]
+    ) -> dict[str, Any]:
+        """지원자가 숨은 조건을 직접 짚어 물을 때 줄 답 — 담당자 글이라 가명화한다."""
+        async with self._lock(interview_id):
+            row = await self._load(interview_id)
+            self._expect_revision(row, revision)
+            state = row.state.model_copy(deep=True)
+            self._require(state, "task_review")
+            spec = state.spec
+            if spec is None:
+                raise InterviewInvalid("과제를 먼저 생성해 주세요")
+            ids = {q.question_id for q in spec.targeted_questions}
+            if not answers or set(answers) - ids or any(not a.strip() for a in answers.values()):
+                raise InterviewInvalid("질문 ID와 답을 확인해 주세요")
+            mapping = self._mapping(interview_id)
+            done = {k: await self._pseudonymize(v, mapping) for k, v in answers.items()}
+            try:
+                targeted = [
+                    TargetedQuestion.model_validate(
+                        {**q.model_dump(), "answer": done[q.question_id]}
+                    )
+                    if q.question_id in done
+                    else q
+                    for q in spec.targeted_questions
+                ]
+            except ValidationError:
+                raise InterviewInvalid(f"답은 {ANSWER_MAX}자 이내로 적어 주세요") from None
+            state.spec = spec.model_copy(
+                update={
+                    "targeted_questions": targeted,
+                    # 답은 지원자가 정확히 물으면 그대로 준다 — 기준 답안을 옮겨 적었는지·토큰이 남았는지 다시 본다
+                    "review_flags": with_content_flags(
+                        spec.review_flags, spec.common_task, spec.coding_incident, targeted
+                    ),
+                }
+            )
+            return await self._save(row, revision, state, mapping, steps=(STEP_TASK,))
+
+    async def draft_targeted_answer(
+        self, interview_id: str, question_id: str, *, revision: int, question: str
+    ) -> dict[str, Any]:
+        """짚은 질문에 줄 답의 편집용 초안 (저장하지 않음). 내부 자료 id 가 들어가거나 기준 답안을 옮겨 적거나
+        너무 길면 한 번 더 받는다 — 두 번 다 걸리면 503 (담당자는 직접 적을 수 있다)."""
+        async with self._lock(interview_id):
+            row = await self._load(interview_id)
+            self._expect_revision(row, revision)
+            self._require(row.state, "task_review")
+            spec = row.state.spec
+            if spec is None:
+                raise InterviewInvalid("과제를 먼저 생성해 주세요")
+            target = next(
+                (q for q in spec.targeted_questions if q.question_id == question_id), None
+            )
+            if target is None:
+                raise InterviewInvalid("현재 과제의 짚은 질문을 선택해 주세요")
+            llm, prompts = self._require_step(TARGETED_PROMPT, "답할 범위 초안")
+            mapping = self._mapping(interview_id)
+            text = await self._pseudonymize(question, mapping)
+            if not text:
+                raise InterviewInvalid("질문을 입력해 주세요")
+            task_json = spec.common_task.model_dump_json(
+                include={
+                    "scenario": True,
+                    "requirements": {"__all__": {"text"}},
+                    "facts": {"__all__": {"topic", "ask_when", "answer", "answer_hint"}},
+                    "clarifications": {
+                        "__all__": {"topic", "ask_when", "match_terms", "answer", "answer_hint"}
+                    },
+                    "artifacts": {"__all__": {"title", "content"}},
+                }
+            )
+            check = self._check(mapping)
+            try:
+                prompt = assemble(
+                    prompts.get(TARGETED_PROMPT),
+                    TargetedAnswerDraftInput(
+                        question=self.pseudo.stored(text, mapping),
+                        hidden_condition=self.pseudo.stored(target.hidden_condition, mapping),
+                        task_json=self.pseudo.stored(task_json, mapping),
+                    ),
+                    ontology_version=spec.ontology_version,
+                )
+                for _ in range(2):
+                    result = await self._llm(llm.call(prompt, TargetedAnswerDraftOutput))
+                    answer = check(result.parsed.answer)
+                    if mentions_artifact_id(answer):
+                        reason = "artifact_id"
+                    elif copies_answer(answer, spec.coding_incident):
+                        reason = "answer_copy"
+                    elif len(answer) > ANSWER_MAX:
+                        reason = "too_long"
+                    else:
+                        await asyncio.to_thread(self.pseudo.save, interview_id, mapping)
+                        return {"question_id": question_id, "answer": answer}
+                    logger.info("interview_targeted_retry reason=%s", reason)
+            except _LLM_ERRORS as exc:
+                logger.warning("interview_targeted_rejected type=%s", type(exc).__name__)
+            raise InterviewUnavailable("답할 범위 초안을 만들지 못했습니다. 다시 시도해 주세요")
+
+    async def _revise_task(
+        self,
+        state: InterviewState,
+        mapping: RunMapping,
+        *,
+        task: TaskItem | None,
+        general: list[GeneralQuestion] | None,
+        targeted: list[TargetedQuestion] | None,
+        target: Literal["common", "questions"],
+        interview_id: str,
+    ) -> None:
+        """⑧ 과제 검토에서 고치기.
+        common: 공통 과제 JSON — 뼈대(task_frame)는 고정, 바뀐 글만 가명화해 새 초안 판으로 저장. 자료·숨은 조건이 그대로면
+          담당자가 다듬은 질문·정한 답을 두고, 바뀌었으면 질문을 다시 만든다(답은 비움). 평가 기준·글 표시를 다시 계산한다.
+        questions: 일반·짚은 질문 — 짚은 질문의 답은 지운다(의도). 답은 /answers 로만 넣어 누설 검사를 거친다."""
+        spec = state.spec
+        if target == "common" and (task is None or spec is None):
+            state.spec = None
+            state.stage = "competencies"
+            return
+        if spec is None:
+            raise InterviewInvalid("질문 목록을 먼저 생성해 주세요")
+        if target == "common":
+            assert task is not None
+            old = spec.common_task
+            if task_frame(task) != task_frame(old):
+                raise InterviewInvalid(
+                    "공통 과제의 트랙·유형·측정 역량·사례·기술 환경·확장 슬롯 구성은 바꿀 수 없습니다"
+                )
+            if task.behavioral_anchors is None:
+                raise InterviewInvalid("평가 행동 기준은 비울 수 없습니다")
+            _, common_store = self._require_tasks()
+            edited = await self._apply_edit(
+                TaskItem, task.model_dump(mode="json"), old.model_dump(mode="json"), mapping
+            )
+            new_general, new_targeted = questions_for(edited)
+            if not new_general or not new_targeted:
+                raise InterviewInvalid(
+                    "자료와 숨은 조건(관찰할 개념 또는 함정)이 있어야 지원자 질문을 만들 수 있습니다"
+                )
+            artifact_ids = {a.artifact_id for a in edited.artifacts}
+            general_q = (
+                spec.general_questions
+                if all(set(q.artifact_ids) <= artifact_ids for q in spec.general_questions)
+                else new_general
+            )
+            same_hidden = [q.hidden_condition for q in new_targeted] == [
+                q.hidden_condition for q in questions_for(old)[1]
+            ]
+            targeted_q = spec.targeted_questions if same_hidden else new_targeted
+            saved = await common_store.save_draft(
+                CommonKey(spec.posting_id, spec.ontology_version, f"interview:{interview_id}"),
+                edited,
+                spec.generation_provenance,
+            )
+            new_task = saved.task
+            old_flags = {*old.review_flags, *(f for slot in old.slots for f in slot.review_flags)}
+            new_flags = [
+                *new_task.review_flags,
+                *(f for slot in new_task.slots for f in slot.review_flags),
+            ]
+            # 생성기 표시(과제 밖)는 두되, 서술 실패·자동 검증 실패 표시는 담당자가 고친 글에 더는 없으면 뺀다
+            kept = [
+                f
+                for f in spec.review_flags
+                if f not in old_flags
+                and not (
+                    f.startswith((FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID)) and f not in new_flags
+                )
+            ]
+            state.spec = spec.model_copy(
+                update={
+                    "common_task": new_task,
+                    "extension_slots": new_task.slots,
+                    "general_questions": general_q,
+                    "targeted_questions": targeted_q,
+                    "hidden_requirements": hidden_requirements(new_task, targeted_q),
+                    "evaluation_criteria": evaluation_criteria(new_task),
+                    "review_flags": with_content_flags(
+                        [*kept, *new_flags], new_task, spec.coding_incident, targeted_q
+                    ),
+                }
+            )
+        else:
+            general = general or spec.general_questions
+            targeted = targeted or spec.targeted_questions
+            artifact_ids = {a.artifact_id for a in spec.common_task.artifacts}
+            if (
+                not general
+                or not targeted
+                or any(not set(q.artifact_ids) <= artifact_ids for q in general)
+            ):
+                raise InterviewInvalid(
+                    "일반 질문은 실제 자료 ID에 연결하고 짚은 질문을 한 개 이상 남겨 주세요"
+                )
+            if len({q.question_id for q in targeted}) != len(targeted):
+                raise InterviewInvalid("짚은 질문 ID가 중복되었습니다")
+            old_general = [q.model_dump() for q in spec.general_questions]
+            edited_general = await self._apply_edit(
+                _GeneralQuestions, [q.model_dump() for q in general], old_general, mapping
+            )
+            before = {q.question_id: q.model_dump() for q in spec.targeted_questions}
+            edited_targeted = await self._apply_edit(
+                _TargetedQuestions,
+                [q.model_copy(update={"answer": None}).model_dump() for q in targeted],
+                [{**q, "answer": None} for q in before.values()],  # question_id 로 짝짓는다
+                mapping,
+            )
+            state.spec = spec.model_copy(
+                update={
+                    "general_questions": edited_general.root,
+                    "targeted_questions": edited_targeted.root,
+                    "hidden_requirements": hidden_requirements(
+                        spec.common_task, edited_targeted.root
+                    ),
+                    "review_flags": with_content_flags(
+                        spec.review_flags,
+                        spec.common_task,
+                        spec.coding_incident,
+                        edited_targeted.root,
+                    ),
+                }
+            )
+        state.stage = "task_review"
+
     # ================================================================ 앞 단계로·임시 저장·폐기
     async def revise(
         self,
@@ -819,6 +1332,9 @@ class InterviewService:
         target: RevisionTarget,
         note: str,
         text: str | None = None,
+        task: TaskItem | None = None,
+        general_questions: list[GeneralQuestion] | None = None,
+        targeted_questions: list[TargetedQuestion] | None = None,
     ) -> dict[str, Any]:
         if target == "project":
             if text is None:
@@ -835,9 +1351,22 @@ class InterviewService:
                 "success_interview",
                 "incident_review",
                 "competencies",
+                "task_review",
             )
             mapping = self._mapping(interview_id)
             state.review_note = await self._pseudonymize(note, mapping)
+            if target in ("common", "questions"):
+                self._require(state, "competencies", "task_review")
+                await self._revise_task(
+                    state,
+                    mapping,
+                    task=task,
+                    general=general_questions,
+                    targeted=targeted_questions,
+                    target=target,
+                    interview_id=interview_id,
+                )
+                return await self._save(row, revision, state, mapping, steps=(STEP_TASK,))
             state.unconfirm()
             if target == "success":
                 state.answer_validation = None

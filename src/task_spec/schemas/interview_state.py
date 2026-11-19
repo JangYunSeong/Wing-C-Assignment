@@ -10,10 +10,12 @@ DB 에 저장되고 API 로 나가는 경계 모델이지만 프롬프트에 렌
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from task_spec.schemas.base import Schema
+from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import PublicIncident
 from task_spec.schemas.interview_answer import AnswerValidationRecord, SuccessField
 from task_spec.schemas.interview_incident import IncidentFact
@@ -25,7 +27,8 @@ Stage = Literal[
     "trap_interview",  # ④ 처음 시도한 대응
     "success_interview",  # ⑤ 성공 기준 → 기준 답안·답안 검증
     "incident_review",  # ⑥ 사례·답안 확인
-    "competencies",  # ⑥ 확인 뒤 — 역량·과제·승인은 D2
+    "competencies",  # ⑦ 역량 고르기 (⑥ 확인 뒤)
+    "task_review",  # ⑧ 생성한 과제·지원자 질문에 답할 범위 검토 — 승인(⑨)은 D2b
     "discarded",  # 폐기 (담당자 폐기·방치 30일) — 대응표를 지웠으므로 더 이상 LLM 을 부르지 않는다
 ]
 ScopeField = Literal["expected_outcome_90_days", "decision_situation"]
@@ -93,6 +96,63 @@ class IncidentConfirmation(_State):
     sha256: str
 
 
+QUESTION_MAX = 300  # 질문 한 개 (담당자가 고칠 수 있다)
+ANSWER_MAX = 1000  # 짚은 질문의 답·숨은 조건 — 추가 요구 답(600)보다 넉넉하게
+
+
+class GeneralQuestion(Schema):
+    """지원자가 자료를 요청하며 던질 일반 질문 — 답은 자료로 직접 판단하게 안내한다 (포크 그대로)."""
+
+    question: str = Field(min_length=1, max_length=QUESTION_MAX)
+    artifact_ids: list[Annotated[str, Field(pattern=r"^a\d{1,2}$")]] = Field(
+        min_length=1, max_length=12
+    )
+    response_rule: str = Field(
+        default="관련 자료를 요청해 직접 판단하도록 안내합니다. 원인이나 정답은 알려주지 않습니다.",
+        min_length=1,
+        max_length=QUESTION_MAX,
+    )
+
+
+class TargetedQuestion(Schema):
+    """지원자가 숨은 조건을 직접 짚어 물을 때 — 담당자가 정한 답만 준다 (answer 가 비면 승인 못 함)."""
+
+    question_id: str = Field(pattern=r"^q\d{1,2}$")
+    # 처음 질문은 숨은 조건을 문장에 담는다 (interview/task.questions_for)
+    question: str = Field(min_length=1, max_length=QUESTION_MAX + ANSWER_MAX)
+    hidden_condition: str = Field(min_length=1, max_length=ANSWER_MAX)
+    answer: str | None = Field(default=None, min_length=1, max_length=ANSWER_MAX)
+
+
+class InterviewSpec(Schema):
+    """확인된 사례로 만든 공고 공통 과제와 평가 맥락 (#266 D2a, 포크 interviews.InterviewSpec).
+
+    coding_incident = 확인된 사례 + 직군 기본 템플릿의 기능형 재료(feature) — D2b 승인 때 이 사례를 co: 로 등록하고,
+    빌더는 공통 과제의 source_incident 로 DB 에서 찾아 재료를 쓴다 (TaskItem 에 재료를 따로 싣지 않는다).
+    """
+
+    posting_id: str
+    ontology_version: str
+    competency_ids: list[str] = Field(min_length=2, max_length=3)
+    template_id: str
+    project: ProjectTags
+    incident_source: Literal["known_problem"] = "known_problem"
+    incident: PublicIncident
+    coding_incident: PublicIncident
+    incident_confirmation: IncidentConfirmation | None = None
+    answer_validation: AnswerValidationRecord | None = None
+    team_context: TeamContext | None = None
+    common_task: TaskItem
+    extension_slots: list[TaskItem] = Field(default_factory=list)
+    general_questions: list[GeneralQuestion]
+    targeted_questions: list[TargetedQuestion]
+    hidden_requirements: list[str] = Field(default_factory=list)
+    evaluation_intent: list[str]
+    evaluation_criteria: list[str] = Field(default_factory=list)
+    generation_provenance: list[Provenance] = Field(default_factory=list)
+    review_flags: list[str] = Field(default_factory=list)
+
+
 class InterviewState(_State):
     stage: Stage
     company: str  # 공고의 회사 (메타데이터, 원문) — 대응표의 ORG 토큰 첫 값
@@ -128,17 +188,20 @@ class InterviewState(_State):
     answer_clarifications: list[AnswerClarification] = Field(default_factory=list)
     answer_validation: AnswerValidationRecord | None = None
     answer_validation_provenance: list[dict] = Field(default_factory=list)
-    review_note: str | None = (
-        None  # 앞 단계로 돌아갈 때 남긴 수정 요청 (가명화) — D2 과제 생성이 쓴다
-    )
+    review_note: str | None = None  # 앞 단계로 돌아갈 때 남긴 수정 요청 (가명화) — 과제 생성이 쓴다
+    competency_ids: list[str] = Field(default_factory=list)  # ⑦ 고른 역량 (2~3)
+    template_id: str | None = None  # 직군 기본 코딩 템플릿
+    spec: InterviewSpec | None = None  # ⑧ 생성한 과제와 평가 맥락
     discarded_at: str | None = None
     discard_reason: Literal["recruiter", "stale"] | None = None
 
     # ---------------------------------------------------------------- 초기화 묶음 (포크는 같은 목록을 여러 곳에 복사했다)
     def unconfirm(self) -> None:
-        """사례·답안 확인을 취소한다 — 앞 단계가 바뀌면 다시 확인해야 한다."""
+        """사례·답안 확인을 취소한다 — 앞 단계가 바뀌면 다시 확인해야 하고, 만든 과제도 버린다."""
         self.incident_confirmed = None
         self.incident_confirmation = None
+        self.spec = None
+        self.competency_ids = []
 
     def reset_answers(self) -> None:
         """기준 답안·답안 검증을 지운다 (사례·처음 시도한 대응이 바뀌면)."""

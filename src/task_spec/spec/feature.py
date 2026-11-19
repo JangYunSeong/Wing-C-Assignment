@@ -65,6 +65,7 @@ from task_spec.spec.draft import (
     incident_copied,
     repair,
 )
+from task_spec.spec.incidents import known_cases_block
 
 TASK = "draft_feature_task"
 SEED_TRAP = "t1"  # v2: 재료의 숨은 요구 하나
@@ -158,7 +159,7 @@ HOWTO_TERMS = (
 _HANGUL = re.compile(r"[가-힣]")
 
 
-def seed_block(inc: PublicIncident) -> str:
+def seed_block(inc: PublicIncident, *, answers: bool = False) -> str:
     """v2 프롬프트에 넣는 기능형 재료 — 원리와 사람이 적은 feature 블록만. 조직명·제목·URL·원문 증상·수치는 넣지 않는다."""
     f = inc.feature
     assert f is not None
@@ -187,6 +188,9 @@ def seed_block(inc: PublicIncident) -> str:
             "(실패 항목은 그중 하나, 실패하지 않는 항목도 남긴다 — 예: items=['메모A','메모B','메모C'], item='메모B'). 기준 글도 항목으로 쓰고 '처음 N건'·'두 번째 요청' 같은 "
             "순번은 쓰지 않는다. 정확한 실패 항목은 숨김 수용 기준에만 — 상황·요구·자료에는 운영 조건 그대로(간헐적 실패) 둔다"
         )
+    # 인터뷰 공고 자신의 생성만 (#266, DraftContext.with_known_answers)
+    if answers and inc.known_incident_cases:
+        lines.append(known_cases_block(inc))
     return "\n".join(lines)
 
 
@@ -1186,7 +1190,10 @@ async def draft_feature_task(
         prompts=prompts,
         reviewer_note=reviewer_note,
         task=TASK,
-        extra_input={**extra_input(), "feature_seed": seed_block(inc)},
+        extra_input={
+            **extra_input(),
+            "feature_seed": seed_block(inc, answers=ctx.with_known_answers),
+        },
         checker=cast(Any, check_feature),
         repairer=cast(Any, repair_feature),
         shuffler=fill_then_shuffle,
