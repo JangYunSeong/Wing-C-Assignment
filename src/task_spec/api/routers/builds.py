@@ -58,7 +58,9 @@ from task_spec.api.errors import (
     ReadmeNotAvailable,
 )
 from task_spec.graph.build_approval import outcome_key, thread_id
+from task_spec.postings.career import PostingCareer, posting_careers
 from task_spec.postings.company import PostingCompany, company_id, posting_companies
+from task_spec.schemas import CareerLevel, CareerSource
 from task_spec.schemas.build import BuildStatus
 from task_spec.schemas.build_approval import BuildApprovalDecision, BuildApprovalState
 from task_spec.schemas.build_record import (
@@ -104,6 +106,10 @@ class BuildSummary(BaseModel):
     company_id: str | None = None
     company: str | None = None
     company_known: bool | None = None
+    # 신입·경력 — 공고에 붙은 값 (postings/career.py, GET /postings 와 같음). 사람이 정한 값(confirmed)이 먼저, 없으면
+    # 공고 문구 추정(posting_text), 둘 다 없으면 null
+    career_level: CareerLevel | None = None
+    career_level_source: CareerSource | None = None
     # 큐 (#128) — 생성 요청으로 만든 빌드만 채워진다
     requested_by: str | None = None
     requested_at: datetime | None = None
@@ -214,7 +220,10 @@ class TargetIn(BaseModel):
 
 
 def _summary(
-    b: BuildRecord, label: TaskLabel | None = None, company: PostingCompany | None = None
+    b: BuildRecord,
+    label: TaskLabel | None = None,
+    company: PostingCompany | None = None,
+    career: PostingCareer | None = None,
 ) -> BuildSummary:
     return BuildSummary(
         build_id=b.build_id,
@@ -231,6 +240,8 @@ def _summary(
         company_id=company.company_id if company else None,
         company=company.name if company else None,
         company_known=company.known if company else None,
+        career_level=career.level if career else None,
+        career_level_source=career.source if career else None,
         requested_by=b.requested_by,
         requested_at=b.requested_at,
         stage=b.stage,
@@ -288,6 +299,19 @@ async def _companies(
     return {cid: found[lb.posting_id] for cid, lb in labels.items() if lb.posting_id in found}
 
 
+async def _careers(
+    request: Request, ontology: OntologyDep, labels: dict[str, TaskLabel]
+) -> dict[str, PostingCareer]:
+    """공통 과제 id → 신입·경력 (공통 과제가 가리키는 공고의 값)."""
+    ctx = getattr(request.app.state, "postings", None)
+    found = await posting_careers(
+        {lb.posting_id for lb in labels.values()},
+        ontology=ontology,
+        store=ctx.store if ctx else None,
+    )
+    return {cid: found[lb.posting_id] for cid, lb in labels.items() if lb.posting_id in found}
+
+
 @router.get("/builds")
 async def list_builds(
     request: Request,
@@ -309,7 +333,11 @@ async def list_builds(
         builds = [
             b for b in builds if (c := companies.get(b.common_id)) and c.company_id == wanted
         ][:limit]
-    return [_summary(b, labels.get(b.common_id), companies.get(b.common_id)) for b in builds]
+    careers = await _careers(request, ontology, labels)
+    return [
+        _summary(b, labels.get(b.common_id), companies.get(b.common_id), careers.get(b.common_id))
+        for b in builds
+    ]
 
 
 def _pending(snapshot: Any) -> dict[str, Any] | None:
@@ -438,8 +466,11 @@ async def get_build(
     kinds = Counter[str](f.kind for f in await store.files(build_id))
     labels = await store.task_labels([b.common_id])
     companies = await _companies(request, ontology, labels)
+    careers = await _careers(request, ontology, labels)
     return BuildDetail(
-        **_summary(b, labels.get(b.common_id), companies.get(b.common_id)).model_dump(),
+        **_summary(
+            b, labels.get(b.common_id), companies.get(b.common_id), careers.get(b.common_id)
+        ).model_dump(),
         tree_sha256=o.tree_sha256 if o else None,
         grader_sha256=o.grader_sha256 if o else None,
         verification=o.verification if o else {},

@@ -98,23 +98,55 @@ async def client(make_client: AppFactory) -> httpx.AsyncClient:
 
 
 class FakeOntology:
-    """회사 질의만 답하는 가상 온톨로지 (position.company·company 표) — 실행·빌드 목록의 회사 칸."""
+    """회사·신입·경력 질의만 답하는 가상 온톨로지 (position.company·company 표, 직무명+자격요건 문장) — 실행·빌드 목록의
+    회사·신입·경력 칸. careers = 공고 id → [직무명, 자격요건 문장…]."""
 
-    def __init__(self, positions: dict[str, str], companies: list[str]) -> None:
+    def __init__(
+        self,
+        positions: dict[str, str],
+        companies: list[str],
+        careers: dict[str, list[str]] | None = None,
+    ) -> None:
         self.positions, self.companies = positions, companies
+        self.careers = careers or {}
 
     async def fetch(self, query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
         if "FROM company" in query:
             return [{"name": n} for n in self.companies]
+        if "SELECT 1" in query:  # posting_exists
+            return [{"ok": 1}] if params[0] in {*self.positions, *self.careers} else []
         ids = params[0] if params else []
+        if "posting_line" in query:  # position_career_texts
+            return [
+                {"id": i, "position_name": self.careers[i][0], "required": self.careers[i][1:]}
+                for i in ids  # type: ignore[attr-defined]
+                if i in self.careers
+            ]
         return [{"id": i, "company": self.positions[i]} for i in ids if i in self.positions]  # type: ignore[attr-defined]
 
 
 class FakeProvisional:
-    """임시 공고 저장소 대신 — 회사 칸만."""
+    """임시 공고 저장소 대신 — 회사 칸, 신입·경력 추정용 제목·문장(rows), 사람이 정한 신입·경력(levels)."""
 
-    def __init__(self, companies: dict[str, str | None]) -> None:
+    def __init__(
+        self,
+        companies: dict[str, str | None],
+        rows: dict[str, dict[str, object]] | None = None,
+    ) -> None:
         self.companies = companies
+        self.rows = rows or {}
+        self.levels: dict[str, str] = {}
 
     async def get_provisional(self, pid: str) -> dict[str, object] | None:
-        return {"id": pid, "company": self.companies[pid]} if pid in self.companies else None
+        if pid not in self.companies:
+            return None
+        return {"id": pid, "company": self.companies[pid], **self.rows.get(pid, {})}
+
+    async def career_levels(self, pids: list[str]) -> dict[str, str]:
+        return {p: self.levels[p] for p in pids if p in self.levels}
+
+    async def set_career_level(self, pid: str, level: str | None, set_by: str) -> None:
+        if level is None:
+            self.levels.pop(pid, None)
+        else:
+            self.levels[pid] = level

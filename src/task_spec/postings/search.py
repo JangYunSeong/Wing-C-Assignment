@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from task_spec.schemas import CareerLevel, CareerSource
+
 MAX_TERMS = 5
 
 
@@ -51,3 +53,6 @@ class PostingHit(BaseModel):
     sub: str | None = None
     industry_id: str | None = None
     in_pilot: bool = False
+    # 신입·경력 (postings/career.py) — 사람이 정한 값(confirmed)이 먼저, 없으면 공고 문구 추정(posting_text), 둘 다 없으면 null
+    career_level: CareerLevel | None = None
+    career_level_source: CareerSource | None = None

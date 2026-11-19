@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from task_spec.api.launcher import RunLauncher
 from task_spec.api.schemas import RunListItem, RunView
+from task_spec.postings.career import PostingCareer
 from task_spec.postings.company import PostingCompany, company_id
 from task_spec.schemas import ApprovalSummary, RunState, TaskSpec
 from task_spec.spec.summary import approval_summary
@@ -38,6 +39,7 @@ async def load_run_view(
 
 
 CompanyResolver = Callable[[set[str]], Awaitable[dict[str, PostingCompany]]]
+CareerResolver = Callable[[set[str]], Awaitable[dict[str, PostingCareer]]]
 
 
 async def list_runs(
@@ -48,6 +50,7 @@ async def list_runs(
     statuses: frozenset[str] | None = None,
     companies: CompanyResolver | None = None,
     company: str | None = None,
+    careers: CareerResolver | None = None,
 ) -> list[RunListItem]:
     """최근에 시작한 실행부터 — limit 이 없으면 전부. 상태·회사(id 또는 표기 — 같은 규칙으로 맞춤)를 고르면 그것만.
     시작 시각·공고 = thread 의 첫 체크포인트(source=input)와 그 그래프 입력 — 회사로 먼저 걸러 상태를 읽는 실행을 줄인다."""
@@ -66,11 +69,13 @@ async def list_runs(
     starts.sort(key=lambda x: x[1], reverse=True)
     found = await companies({p for _, _, p in starts if p}) if companies else {}
     wanted = company_id(company) if company else None
+    if company:
+        starts = [s for s in starts if (c := found.get(s[2] or "")) and c.company_id == wanted]
+    levels = await careers({p for _, _, p in starts if p}) if careers else {}
     out: list[RunListItem] = []
     for run_id, started, posting in starts:
         c = found.get(posting) if posting else None
-        if company and (c is None or c.company_id != wanted):
-            continue
+        lv = levels.get(posting) if posting else None
         snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
         view = run_view(snapshot, launcher, run_id, detail=False)
         if view is None or (statuses and view.status not in statuses):
@@ -85,6 +90,8 @@ async def list_runs(
                 company_id=c.company_id if c else None,
                 company=c.name if c else None,
                 company_known=c.known if c else None,
+                career_level=lv.level if lv else None,
+                career_level_source=lv.source if lv else None,
                 started_at=datetime.fromisoformat(started),
                 updated_at=datetime.fromisoformat(snapshot.created_at)
                 if snapshot.created_at

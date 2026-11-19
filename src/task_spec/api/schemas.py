@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from task_spec.schemas import ApprovalSummary, NodeError, TaskSpec
+from task_spec.schemas import ApprovalSummary, CareerLevel, CareerSource, NodeError, TaskSpec
 
 RunStatus = Literal["running", "awaiting_approval", "done", "rejected", "failed"]
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "rejected", "failed"})
@@ -51,6 +51,9 @@ class RunListItem(BaseModel):
     company_id: str | None = None
     company: str | None = None
     company_known: bool | None = None
+    # 신입·경력 (postings/career.py) — 사람이 정한 값(confirmed)이 먼저, 없으면 공고 문구 추정(posting_text), 둘 다 없으면 null
+    career_level: CareerLevel | None = None
+    career_level_source: CareerSource | None = None
     started_at: datetime | None = None  # thread 의 첫 체크포인트
     updated_at: datetime | None = None  # 마지막 체크포인트
 

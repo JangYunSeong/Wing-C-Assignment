@@ -47,6 +47,29 @@ async def position_companies(repo: OntologyRepository, posting_ids: list[str]) -
     return {str(r["id"]): str(r["company"]) for r in rows if r["company"]}
 
 
+async def position_career_texts(
+    repo: OntologyRepository, posting_ids: list[str]
+) -> dict[str, list[str]]:
+    """공고 id → 신입·경력 추정에 쓰는 글 — 원 표기 직무명과 자격요건 문장 (postings/career.py). 없는 id 는 빠진다."""
+    if not posting_ids:
+        return {}
+    rows = await repo.fetch(
+        """
+        SELECT p.id, p.position_name,
+               array_agg(l.text) FILTER (WHERE l.section = 'required') AS required
+          FROM position p
+          LEFT JOIN posting_line l ON l.position_id = p.id
+         WHERE p.id = ANY(%s)
+         GROUP BY p.id, p.position_name
+        """,
+        (posting_ids,),
+    )
+    return {
+        str(r["id"]): [str(r["position_name"] or ""), *(str(t) for t in r["required"] or [])]  # type: ignore[attr-defined]
+        for r in rows
+    }
+
+
 async def company_names(repo: OntologyRepository) -> list[str]:
     """온톨로지 company 표의 회사 이름 (기본 키)."""
     return [str(r["name"]) for r in await repo.fetch("SELECT name FROM company ORDER BY name")]

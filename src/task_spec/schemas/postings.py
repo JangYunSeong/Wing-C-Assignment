@@ -12,6 +12,9 @@ from pydantic import Field, field_validator
 from task_spec.schemas.base import Schema
 
 LineSection = Literal["duties", "required", "preferred", "other"]
+# 공고의 신입·경력 (postings/career.py) [확정: 2026-11-19 사용자 — 두 값]. 출처: 사람이 정함 / 공고 문구로 추정
+CareerLevel = Literal["신입", "경력"]
+CareerSource = Literal["confirmed", "posting_text"]
 
 
 class PostingLineIn(Schema):

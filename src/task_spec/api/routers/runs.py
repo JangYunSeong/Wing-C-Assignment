@@ -40,6 +40,7 @@ from task_spec.api.schemas import (
 )
 from task_spec.api.uploads import store_uploads
 from task_spec.ontology.queries import posting_exists
+from task_spec.postings.career import PostingCareer, posting_careers
 from task_spec.postings.company import PostingCompany, posting_companies
 from task_spec.postings.store import is_provisional
 from task_spec.schemas import ApprovalDecision, DocumentKind, RunInput, TaskSpec
@@ -66,6 +67,9 @@ async def get_runs(
     async def companies(ids: set[str]) -> dict[str, PostingCompany]:
         return await posting_companies(ids, ontology=ontology, store=ctx.store if ctx else None)
 
+    async def careers(ids: set[str]) -> dict[str, PostingCareer]:
+        return await posting_careers(ids, ontology=ontology, store=ctx.store if ctx else None)
+
     return await list_runs(
         graph,
         launcher,
@@ -73,6 +77,7 @@ async def get_runs(
         statuses=frozenset(status or ()),
         companies=companies,
         company=company,
+        careers=careers,
     )
 
 
