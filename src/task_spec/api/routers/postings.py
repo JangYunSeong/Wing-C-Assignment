@@ -23,6 +23,7 @@ from task_spec.api.deps import OntologyDep, PostingsContext, PostingsDep, Settin
 from task_spec.api.errors import (
     InvalidUpload,
     PostingCompanyInvalid,
+    PostingDuplicate,
     PostingNotFound,
     ServiceUnavailable,
     UnsupportedFileType,
@@ -34,7 +35,12 @@ from task_spec.postings.career import PostingCareer, estimate_career, posting_ca
 from task_spec.postings.company import CompanySource, company_id, posting_companies
 from task_spec.postings.search import CompanyFilter, PostingHit, search_terms
 from task_spec.postings.sections import segment
-from task_spec.postings.store import is_provisional, provisional_profile, rules_fingerprint
+from task_spec.postings.store import (
+    is_provisional,
+    provisional_profile,
+    rules_fingerprint,
+    text_sha256,
+)
 from task_spec.postings.suggest import analyze, suggest
 from task_spec.schemas import (
     Candidate,
@@ -56,6 +62,10 @@ class SuggestResponse(BaseModel):
     llm_used: bool
     # 공고 문구(직무명·자격요건)로 추정한 신입·경력 — 확인 단계 선택 칸의 기본값. 단서가 없거나 둘 다면 null
     career_level_candidate: CareerLevel | None = None
+    # 같은 회사·같은 원문으로 이미 확정된 공고 — 확정은 409, 일부러 따로 등록하려면 allow_duplicate (POST /postings)
+    existing_posting_ids: list[str] = Field(default_factory=list)
+    # 같은 회사·같은 제목인데 원문이 다른 공고 — 막지 않는다. 같은 공고를 고쳐 올린 것인지 확인 화면에서 본다
+    similar_posting_ids: list[str] = Field(default_factory=list)
 
 
 class ConfirmRequest(BaseModel):
@@ -67,6 +77,8 @@ class ConfirmRequest(BaseModel):
     career_level: CareerLevel | None = (
         None  # 확인자가 고른 신입·경력 — 없으면 공고 문구 추정을 보인다
     )
+    # 같은 회사·같은 원문의 공고가 있어도 새로 만든다 — 같은 공고로 다른 문제를 만들 때 (없으면 409 posting_duplicate)
+    allow_duplicate: bool = False
 
 
 class ConfirmResponse(BaseModel):
@@ -178,6 +190,7 @@ async def suggest_posting(
         meta=meta,
         ontology_version=postings.lists.version,
     )
+    key, digest = company_id(company) or "", text_sha256(body)
     return SuggestResponse(
         suggestion_id=sid,
         segment_method=seg.method,
@@ -188,6 +201,8 @@ async def suggest_posting(
         career_level_candidate=estimate_career(
             [title, *(x.text for x in seg.lines if x.section == "required")]
         ),
+        existing_posting_ids=await postings.store.same_postings(key, digest),
+        similar_posting_ids=await postings.store.similar_postings(key, title, digest),
     )
 
 
@@ -214,6 +229,13 @@ async def confirm_posting(req: ConfirmRequest, postings: PostingsDep) -> Confirm
     ]
     if bad:
         raise InvalidUpload(f"온톨로지 목록에 없는 값: {', '.join(bad)}")
+    # 같은 회사·같은 원문의 공고가 있으면 알린다 — 실수로 두 번 올리면 같은 공고 목록에 두 줄이 생긴다 (2026-11-20 운영)
+    if not req.allow_duplicate and (
+        same := await postings.store.same_postings(
+            company_id(sug["company"]) or "", sug["text_sha256"]
+        )
+    ):
+        raise PostingDuplicate(same)
     lines = [PostingLineIn.model_validate(x) for x in sug["lines"]]
     pid_prefix = f"sug:{req.suggestion_id}"
     analyzed = analyze(lists, lines, req.sub, id_prefix=pid_prefix)

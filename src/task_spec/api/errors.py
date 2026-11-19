@@ -255,6 +255,20 @@ class PostingCompanyConflict(DomainError):
         )
 
 
+class PostingDuplicate(DomainError):
+    """같은 회사·같은 원문의 임시 공고가 이미 있다 (POST /postings). 실수로 두 번 올리는 것을 막는다 — 같은 공고로 다른 문제를
+    만들려고 일부러 따로 등록할 때는 allow_duplicate [확정: 2026-11-20 사용자 — 알리고, 확인하면 따로 등록]."""
+
+    code = "posting_duplicate"
+    status_code = 409
+
+    def __init__(self, posting_ids: list[str]) -> None:
+        super().__init__(
+            f"같은 회사·같은 원문의 공고가 이미 있습니다: {', '.join(posting_ids)} — 그 공고를 쓰거나, 다른 문제를 만들려고 "
+            "따로 등록하려면 allow_duplicate 를 true 로 보내 주세요"
+        )
+
+
 class IncidentNotFound(DomainError):
     code = "incident_not_found"
     status_code = 404
