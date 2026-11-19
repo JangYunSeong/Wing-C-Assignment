@@ -76,3 +76,50 @@ async def test_interview_store_revision_drafts_and_retention() -> None:
         async with store._pool.connection() as conn:
             await conn.execute("DELETE FROM public.recruiter_interview WHERE id = %s", (iid,))
         await store.close()
+
+
+async def test_interview_summaries_filter_company_stage_and_stale() -> None:
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await PgInterviewStore.open(u.get_secret_value())
+    tag = uuid.uuid4().hex[:8]
+    mine, other = f"int-{uuid.uuid4().hex}", f"int-{uuid.uuid4().hex}"
+    company = f"가상목록{tag}"
+    now = datetime.now(UTC)
+    try:
+        await store.create(mine, _state().model_copy(update={"company": f"(주) {company}"}))
+        await store.create(other, _state().model_copy(update={"company": f"다른{tag}"}))
+
+        async def ids(**kw: object) -> list[str]:
+            args = {
+                "company": company.casefold(),
+                "stages": None,
+                "stale_before": now - timedelta(days=30),
+                "limit": 50,
+            }
+            return [s.id for s in await store.summaries(**{**args, **kw})]  # type: ignore[arg-type]
+
+        rows = await store.summaries(
+            company=company.casefold(), stages=None, stale_before=now - timedelta(days=30), limit=50
+        )
+        assert [r.id for r in rows] == [mine]
+        r = rows[0]
+        assert r.company == f"(주) {company}" and r.posting_id == "prov-0123456789ab"
+        assert r.stage == "incident_interview" and not r.stale and r.reviewer is None
+        assert await ids(stages=["incident_interview"]) == [mine]
+        assert await ids(stages=["discarded"]) == []
+        # 방치 기준을 지금 뒤로 두면 열린 인터뷰는 discarded 로 읽힌다 (정리 작업 전)
+        stale = await store.summaries(
+            company=company.casefold(),
+            stages=["discarded"],
+            stale_before=now + timedelta(days=1),
+            limit=50,
+        )
+        assert [s.id for s in stale] == [mine] and stale[0].stale
+    finally:
+        async with store._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM public.recruiter_interview WHERE id = ANY(%s)", ([mine, other],)
+            )
+        await store.close()

@@ -23,6 +23,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from task_spec.postings.company import company_id
+from task_spec.postings.search import COMPANY_NOISE
 from task_spec.schemas.interview_state import InterviewState
 
 DDL = """
@@ -91,6 +93,42 @@ class InterviewRow:
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class InterviewSummary:
+    """목록 한 줄 — 공고 메타데이터·단계·시각만. 대화·사례·답안은 읽지 않는다 (목록 SQL 이 state 의 이 칸만 꺼낸다).
+    stage 는 읽은 때의 단계 — 닫히지 않은 채 방치 기간(stale_before)을 넘었으면 정리 작업 전이라도 discarded."""
+
+    id: str
+    revision: int
+    stage: str
+    company: str
+    title: str
+    posting_id: str
+    created_at: datetime
+    updated_at: datetime
+    reviewer: str | None
+    approved_at: str | None
+    discarded_at: str | None
+    discard_reason: str | None
+    stale: bool  # 읽을 때 방치로 본 것 (아직 정리 작업이 닫지 않음)
+
+
+# 목록 — 최근 진행 순. 회사는 postings/company.company_id 와 같은 규칙(법인 표기·공백 빼고 소문자)으로 맞춘다
+_LIST = (
+    "SELECT id, revision, created_at, updated_at, stage, stale, company, title, posting_id, reviewer, approved_at, "
+    "discarded_at, discard_reason FROM (SELECT id, revision, created_at, updated_at, "
+    "state->>'company' AS company, state->>'title' AS title, state->>'posting_id' AS posting_id, "
+    "state->'approval'->>'reviewer' AS reviewer, state->'approval'->>'at' AS approved_at, "
+    "state->>'discarded_at' AS discarded_at, state->>'discard_reason' AS discard_reason, "
+    "(NOT (state->>'stage' = ANY(%(closed)s)) AND updated_at < %(stale_before)s) AS stale, "
+    "CASE WHEN NOT (state->>'stage' = ANY(%(closed)s)) AND updated_at < %(stale_before)s THEN 'discarded' "
+    "ELSE state->>'stage' END AS stage FROM public.recruiter_interview "
+    "WHERE (%(company)s::text IS NULL OR lower(regexp_replace(coalesce(state->>'company', ''), %(noise)s, '', 'g')) "
+    "= %(company)s)) AS t WHERE (%(stages)s::text[] IS NULL OR stage = ANY(%(stages)s)) "
+    "ORDER BY updated_at DESC, id LIMIT %(limit)s"
+)
+
+
 class InterviewRepo(Protocol):
     async def create(self, interview_id: str, state: InterviewState) -> InterviewRow: ...
 
@@ -120,6 +158,17 @@ class InterviewRepo(Protocol):
 
     async def stale(self, before: datetime) -> list[str]:
         """닫히지 않았고 마지막 수정이 before 보다 오래된 인터뷰 id."""
+        ...
+
+    async def summaries(
+        self,
+        *,
+        company: str | None,
+        stages: Sequence[str] | None,
+        stale_before: datetime,
+        limit: int,
+    ) -> list[InterviewSummary]:
+        """최근 진행 순 목록. company 는 회사 id(postings/company.company_id), stages 는 읽은 때의 단계로 거른다."""
         ...
 
     async def close(self) -> None: ...
@@ -240,12 +289,33 @@ class PgInterviewStore:
             )
             return [r[0] for r in await cur.fetchall()]
 
+    async def summaries(
+        self,
+        *,
+        company: str | None,
+        stages: Sequence[str] | None,
+        stale_before: datetime,
+        limit: int,
+    ) -> list[InterviewSummary]:
+        params = {
+            "closed": list(CLOSED_STAGES),
+            "stale_before": stale_before,
+            "company": company,
+            "noise": COMPANY_NOISE,
+            "stages": list(stages) if stages is not None else None,
+            "limit": limit,
+        }
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(_LIST, params)
+            return [InterviewSummary(**r) for r in await cur.fetchall()]
+
 
 class MemoryInterviewStore:
     """테스트·단독 실행용 (PgInterviewStore 와 같은 규칙)."""
 
     def __init__(self, now: Any = None) -> None:
         self.rows: dict[str, InterviewRow] = {}
+        self.created: dict[str, datetime] = {}
         self._now = now or (lambda: datetime.now(UTC))
 
     async def close(self) -> None:
@@ -256,6 +326,7 @@ class MemoryInterviewStore:
             raise ValueError("이미 있는 인터뷰 id")
         row = InterviewRow(interview_id, 1, state.model_copy(deep=True), {}, 0, None, self._now())
         self.rows[interview_id] = row
+        self.created[interview_id] = row.updated_at
         return row
 
     async def get(self, interview_id: str) -> InterviewRow | None:
@@ -328,3 +399,39 @@ class MemoryInterviewStore:
             for k, r in self.rows.items()
             if r.updated_at < before and r.state.stage not in CLOSED_STAGES
         )
+
+    async def summaries(
+        self,
+        *,
+        company: str | None,
+        stages: Sequence[str] | None,
+        stale_before: datetime,
+        limit: int,
+    ) -> list[InterviewSummary]:
+        out: list[InterviewSummary] = []
+        for r in sorted(self.rows.values(), key=lambda r: (-r.updated_at.timestamp(), r.id)):
+            s = r.state
+            if company is not None and company_id(s.company) != company:
+                continue
+            stale = s.stage not in CLOSED_STAGES and r.updated_at < stale_before
+            stage = "discarded" if stale else s.stage
+            if stages is not None and stage not in stages:
+                continue
+            out.append(
+                InterviewSummary(
+                    id=r.id,
+                    revision=r.revision,
+                    stage=stage,
+                    company=s.company,
+                    title=s.title,
+                    posting_id=s.posting_id,
+                    created_at=self.created[r.id],
+                    updated_at=r.updated_at,
+                    reviewer=s.approval.reviewer if s.approval else None,
+                    approved_at=s.approval.at if s.approval else None,
+                    discarded_at=s.discarded_at,
+                    discard_reason=s.discard_reason,
+                    stale=stale,
+                )
+            )
+        return out[:limit]
