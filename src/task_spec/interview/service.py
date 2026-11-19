@@ -19,7 +19,7 @@ import asyncio
 import copy
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -82,6 +82,7 @@ from task_spec.interview.task import (
     prepare_coding_incident,
     pseudonymize_changes,
     questions_for,
+    ready_coding_incident,
     task_frame,
     with_content_flags,
     with_interview_flag,
@@ -119,6 +120,7 @@ from task_spec.schemas.interview_state import (
     ChatMessage,
     GeneralQuestion,
     IncidentConfirmation,
+    IncidentSource,
     InterviewApprovalRecord,
     InterviewSpec,
     InterviewState,
@@ -129,9 +131,15 @@ from task_spec.schemas.interview_state import (
     TrapAnswers,
 )
 from task_spec.schemas.pseudo_text import PseudonymizedText
-from task_spec.spec.company_incidents import Detect, new_incident_id
+from task_spec.spec.company_incidents import (
+    FLAG_COMPANY_REUSED,
+    CompanyIncidentRepo,
+    Detect,
+    feature_fit,
+    new_incident_id,
+)
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID
-from task_spec.spec.incidents import incident_block, known_cases_block
+from task_spec.spec.incidents import incident_block, incident_by_id, known_cases_block
 from task_spec.spec.store import CommonKey, CommonTaskRepo, InterviewTaskConflict, StoredCommon
 from task_spec.starter.store import BuildRepo, BuildRuleError
 
@@ -218,6 +226,9 @@ class InterviewService:
         None  # 승인한 과제의 시작 코드 빌드 요청 (POST /interviews/{id}/builds)
     )
     detect: Detect = pattern_detect  # 회사 사례 등록 검사 (연락처·링크)
+    # 사례 출처 (D2c) — 공개 사례 카탈로그(git 파일)와 같은 회사의 공유 승인된 사례
+    public_incidents: Mapping[str, PublicIncident] | None = None
+    company_incidents: CompanyIncidentRepo | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     _locks: _KeyedLocks = field(default_factory=_KeyedLocks)
 
@@ -451,6 +462,8 @@ class InterviewService:
             self._expect_revision(row, revision)
             state = row.state.model_copy(deep=True)
             self._require(state, "scope_interview", "incident_interview", "incident_review")
+            if state.stage != "scope_interview":
+                self._require_interview_case(state)
             answer = await self._pseudonymize(text, mapping)
             if not answer:
                 raise InterviewInvalid("빈 답변은 저장할 수 없습니다")
@@ -485,6 +498,7 @@ class InterviewService:
             self._expect_revision(row, revision)
             self._require(row.state, "scope_interview", "incident_interview", "incident_review")
             if row.state.stage != "scope_interview":
+                self._require_interview_case(row.state)
                 self._require_ready()
         answer = await self._pseudonymize(text, mapping)
         if not answer:
@@ -630,6 +644,7 @@ class InterviewService:
             self._expect_revision(row, revision)
             state = row.state.model_copy(deep=True)
             self._require(state, "trap_interview", "success_interview", "incident_review")
+            self._require_interview_case(state)
             mapping = self._mapping(interview_id)
             raw = {
                 "attempted_fix": attempted_fix,
@@ -693,6 +708,7 @@ class InterviewService:
             self._expect_revision(row, revision)
             state = row.state.model_copy(deep=True)
             self._require(state, "success_interview", "incident_review")
+            self._require_interview_case(state)
             if state.incident_draft is None or state.trap_answers is None:
                 raise InterviewInvalid("사례와 처음 시도한 대응을 먼저 확인해 주세요")
             llm, prompts = self._require_ready()
@@ -821,6 +837,7 @@ class InterviewService:
             self._expect_revision(row, revision)
             state = row.state.model_copy(deep=True)
             self._require(state, "incident_review")
+            self._require_interview_case(state)
             if state.success_answers is None:
                 raise InterviewInvalid("성공 기준 인터뷰를 먼저 완료해 주세요")
             llm, prompts = self._require_ready()
@@ -861,6 +878,8 @@ class InterviewService:
             self._expect_revision(row, revision)
             state = row.state.model_copy(deep=True)
             self._require(state, "incident_review")
+            if state.incident_source != "known_problem":
+                return await self._confirm_chosen(row, revision, state, incident, reviewer)
             if state.trap_answers is None:
                 raise InterviewInvalid("처음 시도한 대응 스텝을 먼저 확인해 주세요")
             if any(not c.answer_text.strip() for c in incident.known_incident_cases):
@@ -1016,7 +1035,13 @@ class InterviewService:
             self._require(state, "competencies", "task_review")
             if not state.competency_ids or state.competency_ids != competency_ids:
                 raise InterviewInvalid("먼저 고른 역량과 생성 요청이 다릅니다")
-            llm, prompts = self._require_step(FEATURE_SEED_PROMPT, "과제 생성")
+            interview = state.incident_source == "known_problem"
+            # 기능형 재료 정리(interview_feature_seed)는 인터뷰 사례만 — 공개·회사 사례는 재료를 그대로 쓴다
+            llm, prompts = (
+                self._require_step(FEATURE_SEED_PROMPT, "과제 생성")
+                if interview
+                else self._require_ready()
+            )
             tasks, common_store = self._require_tasks()
             incident = state.incident_confirmed
             if (
@@ -1025,8 +1050,10 @@ class InterviewService:
                 or state.incident_confirmation.sha256 != incident_digest(incident)
             ):
                 raise InterviewInvalid("사례·답안 확인 단계를 먼저 완료해 주세요")
-            if not validation_current(incident, state):
+            if interview and not validation_current(incident, state):
                 raise InterviewInvalid("기준 답안 검증을 완료하고 다시 확인해 주세요")
+            if state.incident_source == "company":  # 고른 뒤 보관·반려됐으면 쓰지 않는다
+                await self._company_case(incident.incident_id, state)
             mapping = self._mapping(interview_id)
             profile = await self._profile(state.posting_id)
             choice = await self._competencies(tasks, profile)
@@ -1039,20 +1066,23 @@ class InterviewService:
             matches = [e for e in choice.matches if e.competency_id in selected]
             try:
                 template = coding_template(profile.sub or "")
-                interview_text = self.pseudo.stored(
-                    "\n".join([incident_block(incident), known_cases_block(incident)]), mapping
-                )
-                coding_incident, seed_provenance = await self._llm(
-                    prepare_coding_incident(
-                        incident,
-                        template,
-                        interview=interview_text,
-                        llm=llm,
-                        prompts=prompts,
-                        ontology_version=profile.ontology_version,
+                if interview:
+                    interview_text = self.pseudo.stored(
+                        "\n".join([incident_block(incident), known_cases_block(incident)]), mapping
                     )
-                )
-                self._registrable(coding_incident)
+                    coding_incident, seed_provenance = await self._llm(
+                        prepare_coding_incident(
+                            incident,
+                            template,
+                            interview=interview_text,
+                            llm=llm,
+                            prompts=prompts,
+                            ontology_version=profile.ontology_version,
+                        )
+                    )
+                    self._registrable(coding_incident)
+                else:
+                    coding_incident, seed_provenance = ready_coding_incident(incident, template), []
                 made = await self._llm(
                     tasks.make(
                         chosen,
@@ -1063,7 +1093,8 @@ class InterviewService:
                         reviewer_note=self._reviewer_note(state),
                     )
                 )
-                task = with_interview_flag(made.task, coding_incident)
+                # 인터뷰 사례만 '공유 승인 전' 표시로 바꾼다 — 고른 회사 사례는 공유 승인된 것이라 생성기 표시가 맞다
+                task = with_interview_flag(made.task, coding_incident) if interview else made.task
                 general, targeted = questions_for(task)
             except (
                 TaskGenerationFailed
@@ -1083,6 +1114,15 @@ class InterviewService:
                 raise InterviewUnavailable(
                     "자료와 숨은 조건에 연결된 질문을 만들지 못했습니다. 다시 시도해 주세요"
                 )
+            reuse: list[str] = []
+            if (
+                state.incident_source == "company"
+            ):  # 다른 공고도 쓰는 사례 — 두 공고에 모두 지원한 사람은 함정·정답을 안다
+                used = await common_store.incident_usage(
+                    [coding_incident.incident_id], exclude_posting=state.posting_id
+                )
+                if n := used.get(coding_incident.incident_id, 0):
+                    reuse.append(FLAG_COMPANY_REUSED.format(id=coding_incident.incident_id, n=n))
             saved = await common_store.save_draft(
                 CommonKey(state.posting_id, profile.ontology_version, f"interview:{interview_id}"),
                 task,
@@ -1095,6 +1135,7 @@ class InterviewService:
                 competency_ids=list(competency_ids),
                 template_id=template.manifest.template_id,
                 project=state.project,
+                incident_source=state.incident_source,
                 incident=incident,
                 coding_incident=coding_incident,
                 incident_confirmation=state.incident_confirmation,
@@ -1114,7 +1155,7 @@ class InterviewService:
                 evaluation_criteria=evaluation_criteria(task),
                 generation_provenance=[*seed_provenance, *made.provenance],
                 review_flags=with_content_flags(
-                    [*made.flags, *task.review_flags], task, coding_incident
+                    [*made.flags, *task.review_flags, *reuse], task, coding_incident
                 ),
             )
             state.stage = "task_review"
@@ -1346,6 +1387,180 @@ class InterviewService:
             )
         state.stage = "task_review"
 
+    # ================================================================ 사례 출처 (D2c, #266)
+    @staticmethod
+    def _require_interview_case(state: InterviewState) -> None:
+        """사례 대화·처음 대응·성공 기준·답안 검증은 인터뷰 사례만 — 고른 공개·회사 사례를 바꾸지 않는다 (code review W1·W2)."""
+        if state.incident_source != "known_problem":
+            raise InterviewInvalid(
+                "공개·회사 사례를 고른 상태입니다. 인터뷰 사례로 바꾸려면 사례 출처를 고르세요"
+            )
+
+    def _public_candidates(self, sub: str) -> list[PublicIncident]:
+        catalog = self.public_incidents or {}
+        pool = [
+            *([catalog[sub]] if sub in catalog else []),
+            *getattr(catalog, "alternates", {}).get(sub, []),
+        ]
+        return sorted({i.incident_id: i for i in pool}.values(), key=lambda i: i.incident_id)
+
+    async def _company_case(self, incident_id: str, state: InterviewState) -> PublicIncident:
+        """이 공고 회사·직군의 공유 승인된 사례 — 아니면 InterviewInvalid (다른 회사 사례·공유 승인 전·보관된 사례는 쓰지 않는다)."""
+        company = company_key(await self.postings.company(state.posting_id))
+        rec = (
+            await self.company_incidents.get(incident_id)
+            if self.company_incidents is not None and company is not None
+            else None
+        )
+        if (
+            rec is None
+            or rec.company_id != company
+            or rec.sub != state.incident_sub
+            or rec.status != "shared"
+        ):
+            raise InterviewInvalid("이 공고 회사의 공유 승인된 사례가 아닙니다")
+        return rec.incident
+
+    async def incident_options(self, interview_id: str) -> dict[str, Any]:
+        """고를 수 있는 사례 — 직군의 공개 사례와 같은 회사의 공유 승인된 사례. 기능형 재료가 직군 템플릿에 맞아야 쓸 수 있다(usable).
+        회사 사례는 다른 공고가 쓰는 수를 함께 보인다 (두 공고에 모두 지원한 사람은 함정·정답을 안다)."""
+        row = await self._load(interview_id)
+        state = row.state
+        sub = state.incident_sub
+        company = company_key(await self.postings.company(state.posting_id))
+        shared = (
+            await self.company_incidents.shared(company, sub)
+            if self.company_incidents is not None and company is not None
+            else []
+        )
+        used = (
+            await self.common_store.incident_usage(
+                [r.incident_id for r in shared], exclude_posting=state.posting_id
+            )
+            if self.common_store is not None and shared
+            else {}
+        )
+        return {
+            "interview_id": interview_id,
+            "revision": row.revision,
+            "incident_source": state.incident_source,
+            "sub": sub,
+            "company_id": company,
+            "public": [
+                {
+                    "incident_id": i.incident_id,
+                    "title": i.title,
+                    "tech": i.tech,
+                    "usable": feature_fit(i, sub),
+                }
+                for i in self._public_candidates(sub)
+            ],
+            "company": [
+                {
+                    "incident_id": r.incident_id,
+                    "title": r.incident.title,
+                    "tech": r.incident.tech,
+                    "usable": feature_fit(r.incident, sub),
+                    "from_interview": r.source.get("kind") == "interview",
+                    "used_by_postings": used.get(r.incident_id, 0),
+                }
+                for r in shared
+            ],
+        }
+
+    async def select_incident_source(
+        self,
+        interview_id: str,
+        *,
+        revision: int,
+        source: IncidentSource,
+        incident_id: str | None,
+    ) -> dict[str, Any]:
+        """사례 출처 고르기 (포크 POST /incident/source). 인터뷰 사례면 사례 대화로, 공개·회사 사례면 그 사례를 확인 단계에 올린다.
+        사례·답안·과제는 비우고 대화(메시지)는 둔다 — 인터뷰 사례로 돌아오면 이어서 쓴다."""
+        async with self._lock(interview_id):
+            row = await self._load(interview_id)
+            self._expect_revision(row, revision)
+            state = row.state.model_copy(deep=True)
+            self._require(
+                state,
+                "incident_interview",
+                "trap_interview",
+                "success_interview",
+                "incident_review",
+                "competencies",
+                "task_review",
+            )
+            sub = state.incident_sub
+            chosen: PublicIncident | None = None
+            if source == "known_problem":
+                if incident_id:
+                    raise InterviewInvalid("인터뷰 사례에는 사례 id 를 보내지 않습니다")
+                if state.incident_source == "known_problem":
+                    # 이미 인터뷰 사례 — 진행 중인 입력을 지우지 않는다 (code review W3)
+                    return self.view(row)
+            elif source == "public_fixed":
+                catalog = self.public_incidents or {}
+                chosen = incident_by_id(catalog, incident_id) if incident_id else catalog.get(sub)
+                if chosen is None or chosen.sub != sub or chosen.incident_id.startswith("co:"):
+                    raise InterviewInvalid("이 직군의 공개 사례가 아닙니다")
+            else:
+                if not incident_id:
+                    raise InterviewInvalid("회사 사례를 골라 주세요")
+                chosen = await self._company_case(incident_id, state)
+            if chosen is not None and not feature_fit(chosen, sub):
+                raise InterviewInvalid(
+                    "이 사례에는 직군 코딩 템플릿으로 시험할 기능형 재료가 없습니다. 다른 사례를 골라 주세요"
+                )
+            messages, provenance = state.incident_messages, state.incident_provenance
+            state.reset_incident()
+            state.incident_messages, state.incident_provenance = messages, provenance
+            state.review_note = None  # 앞 사례로 만든 과제의 수정 요청 — 새 사례에 넣지 않는다
+            if chosen is None:
+                state.stage = "incident_interview"
+            else:
+                state.incident_source = source
+                # 다른 공고의 기준 답안이 남아 있어도 싣지 않는다 (회사 사례는 등록 때 이미 뺀다)
+                state.incident_draft = chosen.model_copy(update={"known_incident_cases": []})
+                state.stage = "incident_review"
+            return await self._save(row, revision, state, None)
+
+    async def _confirm_chosen(
+        self,
+        row: InterviewRow,
+        revision: int,
+        state: InterviewState,
+        incident: PublicIncident,
+        reviewer: str | None,
+    ) -> dict[str, Any]:
+        """공개·회사 사례 확인 — 고치지 않는다 (고치려면 인터뷰 사례로). 기준 답안 검증이 없다."""
+        draft = state.incident_draft
+        if draft is None:
+            raise InterviewInvalid("사례를 먼저 골라 주세요")
+        # 저장된 원본(공개 사례 파일·회사 사례 DB)과 비교한다 — 상태의 draft 만 보면 그 draft 가 바뀐 경우를 못 막는다
+        if state.incident_source == "company":
+            original = await self._company_case(draft.incident_id, state)
+        else:
+            found = incident_by_id(self.public_incidents or {}, draft.incident_id)
+            if found is None:
+                raise InterviewInvalid("이 직군의 공개 사례가 아닙니다")
+            original = found
+        if incident != draft or draft != original.model_copy(update={"known_incident_cases": []}):
+            raise InterviewInvalid(
+                "공개·회사 사례는 고치지 않습니다. 고치려면 인터뷰 사례로 다시 작성해 주세요"
+            )
+        if reviewer is not None and not reviewer.strip():
+            raise InterviewInvalid("사례 확인자를 입력해 주세요")
+        state.incident_confirmed = draft
+        state.incident_confirmation = IncidentConfirmation(
+            reviewer=reviewer.strip() if reviewer is not None else None,
+            at=self.now().isoformat(),
+            revision=revision,
+            sha256=incident_digest(draft),
+        )
+        state.stage = "competencies"
+        return await self._save(row, revision, state, None, steps=(STEP_REVIEW,))
+
     # ================================================================ ⑨ 승인 (D2b, #266) — 그래프 graph/interview_approval.py 가 부른다
     def _registrable(self, incident: PublicIncident) -> None:
         """회사 사례로 등록할 수 있는 내용인가 (연락처·링크) — 승인 때 막히지 않게 과제를 만들 때 먼저 본다.
@@ -1371,12 +1586,19 @@ class InterviewService:
             )
             current = await self.common_store.interview_task(spec.posting_id, spec.ontology_version)
         company = company_key(await self.postings.company(state.posting_id))
+        interview = state.incident_source == "known_problem"
         blocked = (
             await asyncio.to_thread(blocked_findings, spec.coding_incident, self.detect)
-            if spec is not None
+            if spec is not None and interview
             else []
         )
-        problems = approval_problems(state, stored, company, blocked)
+        source_problem = None
+        if spec is not None and state.incident_source == "company":
+            try:
+                await self._company_case(spec.coding_incident.incident_id, state)
+            except InterviewInvalid:
+                source_problem = "고른 회사 사례를 더 쓸 수 없습니다(보관·반려). 다른 사례를 골라 과제를 다시 만들어 주세요"
+        problems = approval_problems(state, stored, company, blocked, source_problem)
         if self.approvals is None or self.common_store is None:
             problems.append("승인 저장소가 준비되지 않았습니다")
         return problems, current, company
@@ -1420,7 +1642,13 @@ class InterviewService:
                 return ApprovalOutcome(result="stale")
             problems, _, company = await self._approval_check(row)
             spec = row.state.spec
-            if problems or spec is None or company is None or self.approvals is None:
+            interview = row.state.incident_source == "known_problem"
+            if (
+                problems
+                or spec is None
+                or (interview and company is None)
+                or self.approvals is None
+            ):
                 return ApprovalOutcome(error="승인할 수 없습니다: " + "; ".join(problems[:3]))
             state = row.state.model_copy(deep=True)
             state.stage = "approved"
@@ -1431,6 +1659,7 @@ class InterviewService:
                 revision=revision,
                 common_id=spec.common_task.task_id,
                 incident_id=spec.coding_incident.incident_id,
+                incident_registered=interview,
                 replaced=decision.replaces,
                 comment=decision.comment,
             )
@@ -1438,10 +1667,12 @@ class InterviewService:
                 interview_id=interview_id,
                 revision=revision,
                 state=state,
-                company_id=company,
+                company_id=company if interview else None,
                 # 기준 답안·인터뷰 본문(known_incident_cases)은 회사 사례에 넣지 않는다 — 채점 근거이고, 사례 모음·/incidents 로
                 # 다른 공고 담당자에게 보일 이유가 없다 (빌더·다른 공고 생성은 쓰지 않음). 인터뷰 상태에는 남는다 (privacy-auditor M1)
-                incident=spec.coding_incident.model_copy(update={"known_incident_cases": []}),
+                incident=spec.coding_incident.model_copy(update={"known_incident_cases": []})
+                if interview
+                else None,  # 공개·회사 사례는 이미 있다 — 새로 등록하지 않는다
                 common_id=spec.common_task.task_id,
                 reviewer=decision.reviewer,
                 at=decision.at,
@@ -1590,6 +1821,10 @@ class InterviewService:
                     interview_id=interview_id,
                 )
                 return await self._save(row, revision, state, mapping, steps=(STEP_TASK,))
+            if target in ("trap", "success") and state.incident_source != "known_problem":
+                raise InterviewInvalid(
+                    "공개·회사 사례에는 처음 대응·성공 기준 단계가 없습니다. 인터뷰 사례로 바꾸려면 사례 출처를 고르세요"
+                )
             state.unconfirm()
             if target == "success":
                 state.answer_validation = None

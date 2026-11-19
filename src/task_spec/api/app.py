@@ -101,6 +101,7 @@ def create_app(
         interview_store = await PgInterviewStore.open(
             app.state.settings.database_url.get_secret_value()
         )
+        public_incidents = load_incidents(app.state.settings.incidents_dir)  # 공개 사례 (git 파일)
         app.state.interviews = InterviewService(
             store=interview_store,
             pseudo=InterviewPseudonymizer(
@@ -114,6 +115,9 @@ def create_app(
             common_store=common_store,
             # 승인 확정 — 인터뷰·회사 사례·공통 과제를 같은 연결로 한 트랜잭션에 (D2b)
             approvals=PgApprovalCommitter(interview_store.pool),
+            # 사례 출처 (D2c) — 공개 사례와 같은 회사의 공유 승인된 사례에서 고르기
+            public_incidents=public_incidents,
+            company_incidents=company_incidents,
             builds=app.state.builds,
             mapping_ttl=timedelta(days=app.state.settings.interview_mapping_ttl_days),
             draft_ttl=timedelta(hours=app.state.settings.interview_draft_ttl_hours),
@@ -139,7 +143,7 @@ def create_app(
                 retriever=retriever,
                 relatedness=await load_relatedness(app.state.ontology),
                 common_store=common_store,
-                incidents=load_incidents(app.state.settings.incidents_dir),
+                incidents=public_incidents,
                 use_cover_letters=app.state.settings.use_cover_letters,
                 feature_task_default=app.state.settings.feature_task_default,
                 company_incidents=company_incidents,

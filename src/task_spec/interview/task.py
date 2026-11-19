@@ -161,6 +161,16 @@ async def prepare_coding_incident(
     ]
 
 
+def ready_coding_incident(incident: PublicIncident, template: Template) -> PublicIncident:
+    """공개·회사 사례 (D2c) — 기능형 재료가 이미 있고 이 직군 템플릿이 시험할 수 있어야 한다 (LLM 없이 그대로, 포크 public_fixed 와 같음).
+    기준 답안은 싣지 않는다 — 다른 공고의 인터뷰 사례를 쓰더라도 채점 근거가 생성 입력으로 가지 않게 (회사 사례는 등록 때 이미 뺀다)."""
+    if incident.feature is None or template.manifest.template_id not in incident.templates:
+        raise TaskGenerationFailed(
+            "이 사례에는 직군 코딩 템플릿으로 시험할 기능형 재료가 없습니다. 다른 사례를 골라 주세요"
+        )
+    return incident.model_copy(update={"known_incident_cases": []})
+
+
 def questions_for(task: TaskItem) -> tuple[list[GeneralQuestion], list[TargetedQuestion]]:
     """자료에 걸린 일반 질문 2개와, 숨은 조건마다 담당자가 답할 범위를 정할 짚은 질문 (포크 그대로)."""
     artifacts = task.artifacts

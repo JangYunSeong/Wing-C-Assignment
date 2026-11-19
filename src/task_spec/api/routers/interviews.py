@@ -25,7 +25,12 @@ from task_spec.graph.interview_approval import thread_id as approval_thread
 from task_spec.interview.errors import InterviewConflict, InterviewError, InterviewInvalid
 from task_spec.schemas import InterviewApprovalState, PublicIncident, TaskItem
 from task_spec.schemas.interview_approval import COMMON_ID
-from task_spec.schemas.interview_state import ANSWER_MAX, GeneralQuestion, TargetedQuestion
+from task_spec.schemas.interview_state import (
+    ANSWER_MAX,
+    GeneralQuestion,
+    IncidentSource,
+    TargetedQuestion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +272,31 @@ async def confirm_incident(
 ) -> dict[str, Any]:
     return await interviews.confirm(
         interview_id, revision=body.revision, incident=body.incident, reviewer=body.reviewer
+    )
+
+
+class IncidentSourceRequest(BaseModel):
+    revision: int = Field(ge=1)
+    source: (
+        IncidentSource  # known_problem(인터뷰 사례) · public_fixed(공개 사례) · company(회사 사례)
+    )
+    # 공개 사례는 없으면 직군 기본 사례(포크와 같음), 회사 사례는 필수
+    incident_id: str | None = Field(default=None, pattern=r"^(?:pub|co):[a-z_.]+:[a-z0-9-]+$")
+
+
+@router.get("/{interview_id}/incident/sources")
+async def incident_sources(interview_id: str, interviews: InterviewsDep) -> dict[str, Any]:
+    """고를 수 있는 사례 — 직군의 공개 사례와 같은 회사의 공유 승인된 사례 (D2c)."""
+    return await interviews.incident_options(interview_id)
+
+
+@router.post("/{interview_id}/incident/source")
+async def select_incident_source(
+    interview_id: str, body: IncidentSourceRequest, interviews: InterviewsDep
+) -> dict[str, Any]:
+    """사례 출처 고르기 (포크와 같은 경로). 공개·회사 사례는 확인 단계에 그대로 올라가고 고치지 않는다."""
+    return await interviews.select_incident_source(
+        interview_id, revision=body.revision, source=body.source, incident_id=body.incident_id
     )
 
 
