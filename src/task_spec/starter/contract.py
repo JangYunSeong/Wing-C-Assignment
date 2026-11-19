@@ -349,6 +349,10 @@ def _listed_value_ok(value: HarnessValue, quote: str) -> bool:
 _RULE_SKIP = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?|\d[\d,]*(?:\.\d+)?\s*%")
 # 공백 하나 뒤에 와도 단위로 보는 말 — 그 밖의 말은 다음 항목이다 ('19.8 p95' · '35.1 최대' · '3.1 스크롤')
 _COUNT_UNITS = ("건", "개", "명", "회", "번", "행", "배", "대", "곳", "줄")
+# 개수가 아닌 양의 단위 — 배수·기간·돈·크기 (시간 단위는 _time_word). 개수 조절값의 값에 붙으면 다른 종류이고, 그 밖에 붙은 말(조사·어미)은
+# 단위가 아니다. 2026-11-19 운영 ct-d367bb7b2d4c-b1: 개수 조절값이 '개수 단위나 단위 없음'만 받아 원문 '동시 활성 요청 수가 24로' 의
+# 조사 '로'를 단위로 보고 맞는 근거를 세 번 다 거절했다 — 조사는 열거하지 않고 단위만 알아본다. '만큼'은 배수 '만'이 아니라 조사
+_NON_COUNT = ("만", "억", "천", "시간", "일", "주", "개월", "년", "원", "gb", "mb", "kb", "tb")
 # 수 바로 뒤의 비교 말 — 단위가 아니다 ('동시 요청 50 초과' · '50초과' · '2 이상'). 개수 조절값에서는 단위 없는 수로 보고, 시간 조절값에서는
 # 시간 값이 아니다 (머리 줄 단위가 있으면 그 단위). #238: '초과'를 '초'로 읽어 개수 값 '50 초과'를 wrong_unit 으로 재요청했고(같은 근거뿐이면
 # 계약 실패), 시간 조절값은 개수 문장 '2 초과'를 2초로 받아 통과시켰다
@@ -389,6 +393,13 @@ def _time_word(word: str) -> str | None:
         if w.startswith(t) and _unit_tail(t, w[len(t) :]):
             return t
     return None
+
+
+def _non_count(word: str) -> bool:
+    """붙은 말이 개수가 아닌 양의 단위인가 — 시간 단위, 또는 배수·기간·돈·크기 단위로 시작 ('24만건'·'24시간'·'24GB').
+    '24로'·'24입니다'·'24건으로' 처럼 조사·어미·개수 단위는 아니다."""
+    w = word.lower()
+    return bool(_time_word(word)) or (w.startswith(_NON_COUNT) and not w.startswith("만큼"))
 
 
 def _unit_tail(unit: str, rest: str) -> bool:
@@ -554,7 +565,7 @@ def value_check(
             return "other" if t.compared else "bare"
         if extra:
             return "same" if words and all(w.startswith(extra) for w in words) else "other"
-        return "same" if all(w.startswith(_COUNT_UNITS) for w in words) else "other"
+        return "other" if any(_non_count(w) for w in words) else "same"
 
     same = [t for t in toks if kind(t) == "same"]
     notes: list[str] = []

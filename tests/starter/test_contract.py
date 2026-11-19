@@ -812,6 +812,33 @@ def test_no_evidence_timed_value_matching_material_is_flagged_not_a_gap() -> Non
     assert 1.0 in _converted(line, "s") and 3.0 not in _converted(line, "s")
 
 
+def test_count_value_takes_particles_but_not_other_kind_units() -> None:
+    """2026-11-19 운영 ct-d367bb7b2d4c-b1: 개수 조절값이 '개수 단위나 단위 없음'만 받아 원문 '…24로 측정된…'의 조사 '로'를
+    단위로 보고(wrong_unit) 맞는 근거를 세 번 다 거절했다. 조사·어미는 단위가 아니고, 개수가 아닌 양의 단위만 다른 종류다."""
+    quote = "길드 전쟁 시작 5초 동안 동시 활성 요청 수가 24로 측정된 기록이 있습니다."
+    assert value_check(24, quote, "24", [quote], None).verdict == "ok"
+    for ok in (
+        "요청 처리 스레드 최대값은 24입니다",
+        "동시 요청 24까지",
+        "동시 요청 24에 달했다",
+        "24만큼 늘었다",
+        "동시 요청 24건으로",
+    ):
+        assert value_check(24, ok, "24", [ok], None).verdict == "ok", ok
+    # 배수·기간·크기·시간이 붙은 수는 개수가 아니다 ('24만' 은 24만 건)
+    for other in (
+        "하루 24만 건",
+        "하루 24만건",
+        "피크 24시간",
+        "보관 24일",
+        "기간 24개월",
+        "메모리 24GB",
+        "응답 24ms",
+        "대기 24초",
+    ):
+        assert value_check(24, other, "24", [other], None).verdict == "wrong_unit", other
+
+
 def test_words_that_only_start_like_a_time_unit_are_not_time() -> None:
     """#238: _TIMED 뒤 막기가 한글을 막지 않고 _time_word 가 앞부분만 보아 '50 초과'를 50초, '3분기'를 3분, '초기'를 초로 읽었다
     ('msgs'→ms, 'minimum'→min 도). 개수 조절값은 헛 재요청(wrong_unit — 같은 근거뿐이면 계약 실패), 시간 조절값은 개수 문장으로
