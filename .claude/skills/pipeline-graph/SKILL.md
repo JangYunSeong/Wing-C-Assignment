@@ -256,6 +256,23 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
   API `RunView.approval_summary` 로 노출. **주장 인용·판정 이유는 인증 전까지 넣지 않는다** — 근거는 주장 id 만 [제안: 인증 후 가명화 인용 추가].
 - 저장소에는 지원자 실행과 연결되는 값(run_id 등)을 두지 않는다. 미승인 초안을 재사용하면 `review_flags` 로 표시.
 
+## 채용담당자 인터뷰 과제 [확정: 2026-11-19 사용자] (`spec/store.py`, `nodes/spec.py`, `nodes/posting_profile.py`)
+
+- 인터뷰가 만든 공통 과제는 저장 키 `prompt_ref` = `interview:{인터뷰 id}`. 공고(같은 온톨로지 판)마다 **승인된 것 하나**
+  (부분 유일 색인 `common_task_one_interview`). 승인은 채용담당자만 — `approve_interview_task(conn, …, replaces=)`:
+  이미 있으면(같은 인터뷰의 고친 판 포함) `replaces` 로 지금 과제 id 를 짚어야 바꾼다 (`InterviewTaskConflict`).
+  교체된 과제는 다시 승인하지 않는다 (새 판으로 저장해 승인). 읽을 때 과제 id·슬롯 parent 를 저장 id 로 맞춘다.
+- draft_spec: 그 과제가 있으면 유형 고르기·골격·서술 없이 **그대로** 쓴다 (`common_refs` reused=true, 명세 flag).
+  revise(verification) 도 저장소를 다시 본다 — 교체됐으면 지금 과제로 바꾸고 배정·질문도 다시 (#234 의 예외: 교체는 명시적이고,
+  교체 전 과제를 가리키는 명세는 승인할 수 없다). revise(common·all)·유형 바꾸기는 API 409(`interview_task_locked`),
+  노드에 들어와도 반영하지 않고 `interview_common_locked` 기록.
+- finalize: 인터뷰 과제는 `store.approve()` 를 부르지 않는다 (승인자 기록을 덮고 교체된 과제를 되살린다 — `approve()` 는 인터뷰 과제를
+  거절). 명세의 과제가 그 공고의 지금 인터뷰 과제인지만 본다 — 아니면(교체됨·인터뷰 승인 전에 만든 P1 과제) API 409
+  `common_task_replaced`, finalize `CommonTaskNotCurrent`.
+- 과제 안의 역량·수행준거 id 는 승인한 판 것이라 다른 판 실행에 쓰지 않는다 (불변식 4). 그 공고의 인터뷰 과제가 **다른 판에만** 있으면
+  ① posting_profile 에서 멈추고(`interview_task_version_mismatch`) `POST /runs` 도 409 — 공개 사례 과제로 바꿔 만들지 않는다.
+  새 판에서 다시 승인하는 흐름은 인터뷰 쪽 (`docs/design/recruiter-interview.md`).
+
 ## 노드 규칙
 
 - 노드 = `async def node(state: RunState) -> dict`. 하나의 노드는 하나의 단계만.

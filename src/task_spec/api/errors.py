@@ -188,6 +188,49 @@ class CommonTaskGone(DomainError):
         )
 
 
+class CommonTaskReplaced(DomainError):
+    """승인하려는 명세의 공통 과제를 이 공고가 이제 쓰지 않는다 — 채용담당자 인터뷰 과제가 승인·교체됐다 [확정: 2026-11-19 사용자].
+    확정하면 공고 지원자끼리 다른 과제가 되므로 승인 전에 막는다."""
+
+    code = "common_task_replaced"
+    status_code = 409
+
+    def __init__(self, common_ids: list[str], *, run_id: str) -> None:
+        super().__init__(
+            f"이 공고의 공통 과제가 인터뷰 과제로 정해졌거나 바뀌었습니다 (이 명세의 과제: {', '.join(common_ids)}) — "
+            "경험 검증 다시 만들기(revise_target=verification)로 지금 과제를 반영한 명세를 만드세요",
+            run_id=run_id,
+        )
+
+
+class InterviewTaskLocked(DomainError):
+    """지원자 명세의 수정 요청으로 인터뷰 과제를 고치려 한다 — 인터뷰 과제는 채용담당자가 인터뷰 화면에서 고친다."""
+
+    code = "interview_task_locked"
+    status_code = 409
+
+    def __init__(self, common_id: str, *, run_id: str) -> None:
+        super().__init__(
+            f"이 공고의 공통 과제는 채용담당자 인터뷰로 승인된 과제({common_id})라 여기서 고칠 수 없습니다 — "
+            "과제는 인터뷰 화면에서 고치고, 이 명세는 경험 검증만 다시 만들 수 있습니다 (revise_target=verification)",
+            run_id=run_id,
+        )
+
+
+class InterviewTaskVersionMismatch(DomainError):
+    """공고의 인터뷰 과제가 다른 온톨로지 판으로만 승인돼 있다 — 과제 안의 역량·수행준거 id 가 그 판 것이라 이 판 실행에 쓸 수
+    없고(불변식 4), 공개 사례 과제로 바꿔 만들지도 않는다 [확정: 2026-11-19 사용자]."""
+
+    code = "interview_task_version_mismatch"
+    status_code = 409
+
+    def __init__(self, posting_id: str, versions: list[str], current: str) -> None:
+        super().__init__(
+            f"공고 {posting_id} 의 인터뷰 과제는 온톨로지 {', '.join(versions)} 로 승인돼 있어 지금 판({current})에서 "
+            "쓸 수 없습니다 — 인터뷰에서 지금 판으로 다시 승인한 뒤 실행하세요"
+        )
+
+
 class BuildRuleViolation(DomainError):
     """빌드 저장소 규칙 위반 (상태·역할 충돌) — 저장소 메시지는 id·상태·역할만 담는다."""
 

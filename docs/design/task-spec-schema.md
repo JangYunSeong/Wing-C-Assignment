@@ -20,6 +20,7 @@ task_spec:
   verification_tasks: [task, ...]      # 지원자별 경험 검증 과제 (claims_to_verify에서)
   common_refs:                         # 공통 과제가 공고 단위 저장소의 어느 판인지 (비교 가능성 추적)
     - {common_id, revision, status: draft|approved|superseded, reused: bool, prompt_ref}
+    # prompt_ref = 만든 프롬프트 판(draft_task@N…·skeleton) 또는 interview:{인터뷰 id} (채용담당자 인터뷰가 만든 과제)
   slot_assignments:                    # 검증할 주장 → 확장 슬롯 배정 (규칙, 승인자가 바꿀 수 있음)
     - {claim_id, competency_ids, slot_id|null, basis, link_text, follow_up_questions, review_flags, provenance_id}
   review_flags: [...]                  # 승인자가 꼭 볼 것
@@ -145,6 +146,7 @@ task:                                  # common_tasks·verification_tasks·slots
 | 숨김 수용 기준의 실패 지정(`acceptance_hidden[].faults`) — 순번(처음 N건)이 아니라 항목 내용으로 정해 명세에 두고 사람이 승인한다. 과제 코드 단계는 계약 API·요청 칸에 옮기기만 하고 코드가 같은 값인지 대조 | [확정: 2026-11-11 사용자] | 재측정 오프라인: 순번 지정이 보내는 방식(하나씩/한꺼번에)마다 다르게 소비됨. 재료 `FeatureSeed.fault_by="item"` 이면 필수 |
 | 실패 지정이 있는 숨김 수용 기준은 테스트가 만들 항목(`items`, 2개 이상)을 나열하고, 실패 항목은 그중 하나 — 실패하지 않는 항목이 남아야 한다 | [확정: 2026-11-11 사용자] | 재배정 명세(오프라인): item 을 '대기 중인 점검 메모'(항목 전체)로 적어 '그 항목만 실패'가 성립하지 않음 |
 | 자료 `role` 이 빠진 LLM 답은 support 로 받는다 — 답 전체를 버리지 않고, 핵심·방해 자료 수는 자료 목록 검사가 판정 | [제안] | 명세 알파: 자료 하나의 role 누락으로 답 전체가 스키마 위반, 하루 5번 재요청 기회를 날림 |
+| 공고(같은 온톨로지 판)에 채용담당자 인터뷰로 승인된 공통 과제가 있으면 지원자 명세는 그 과제를 그대로 쓴다 — `common_refs[].prompt_ref` = `interview:{인터뷰 id}`(`reused`=true, `status`=approved). 지원자 명세 승인은 그 과제를 다시 승인하지 않고, `revise_target` common·all(유형 바꾸기 포함)은 받지 않는다 (경험 검증만 다시) | [확정: 2026-11-19 사용자] | `docs/design/recruiter-interview.md` — 공고당 하나·교체는 명시, 다른 판에만 있으면 실행을 멈춤 |
 | 연결 문구(`link_text`)에 숫자·가명화 토큰·원문 베끼기·정답 개념 없음                                        | [제안]                 | P1 생성 단계 검사 `spec/questions.py` (스키마 검증 아님), 실패 시 1회 재요청 후 기본 문구                         |
 | 기능형의 자료·질문 한도 없음 — 새로 만드는 기능형은 `max_requests`·`max_clarifications`·`debug_stage.max_requests` 가 null, 상황 글에 한도 안내를 붙이지 않고 README 는 "제한이 없다"고 적음. 생성기 출력의 한도 칸은 예전 판 출력 스키마라 남기되 명세에 넣지 않음 | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4.4 — 한도는 정보를 막지 못하고 묻는 형식만 벌함. 상한은 제한 시간 |
 | 문제 분석 판 칸 — `background`·`request`·`request_mentions`·`facts`(`ask_when` 포함)·`acceptance_public[].req_ids`. 기능형 전용, 예전 판은 비어 있음. 참조 검사는 `spec/analysis.py` | [확정: 2026-11-16 사용자] | `analysis-stage.md` §4·§6 (스키마 PR, §12-3). 생성기는 다음 단계 |

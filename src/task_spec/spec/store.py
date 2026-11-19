@@ -8,6 +8,10 @@
 - 승인(finalize): 그 판을 approved 로, 같은 키의 이전 approved 는 superseded 로.
 - 유형(task_kind) [2026-11-06]: 그 공고(같은 온톨로지 버전)에서 가장 최근에 승인된 판의 유형을 다음 실행이 따른다
   (spec/kind.py 우선순위 2). 예전 판(유형 필드 없음)은 incident.
+- 인터뷰 과제 [확정: 2026-11-19 사용자]: 채용담당자 인터뷰가 만든 과제는 prompt_ref = `interview:{인터뷰 id}`.
+  공고(같은 온톨로지 판)마다 승인된 인터뷰 과제는 하나 — 그 공고 지원자 실행은 새로 만들지 않고 이 과제를 쓴다 (nodes/spec.py).
+  승인은 채용담당자만(`approve_interview` — 이미 있으면 `replaces` 로 교체를 명시), 지원자 명세 승인은 다시 승인하지 않는다.
+  다른 온톨로지 판에만 있으면 그 공고 실행을 멈춘다 (과제 안의 역량·수행준거 id 가 그 판 것 — 불변식 4).
 """
 
 from __future__ import annotations
@@ -17,14 +21,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
 
+from psycopg import AsyncConnection, errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
-from task_spec.schemas import Provenance, TaskItem, TaskKind
+from task_spec.schemas import Provenance, TaskItem, TaskKind, TaskSpec
 
 CommonStatus = Literal["draft", "approved", "superseded"]
+INTERVIEW_REF_PREFIX = "interview:"  # 채용담당자 인터뷰가 만든 공통 과제의 저장 키 머리
+_SUPERSEDED = (
+    "교체된 인터뷰 과제는 다시 승인하지 않습니다 — 되돌리려면 새 판으로 저장해 승인하세요: {}"
+)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.common_task (
@@ -43,7 +52,31 @@ CREATE TABLE IF NOT EXISTS public.common_task (
 );
 -- 초기 개발판(2026-11-03)에 있던 지원자 실행 연결 칸 제거 (privacy-auditor W3)
 ALTER TABLE public.common_task DROP COLUMN IF EXISTS created_by_run;
+-- 공고(같은 온톨로지 판)마다 승인된 인터뷰 과제는 하나 [확정: 2026-11-19 사용자] — 바꾸려면 approve_interview(replaces=…)
+CREATE UNIQUE INDEX IF NOT EXISTS common_task_one_interview ON public.common_task (posting_id, ontology_version)
+    WHERE status = 'approved' AND prompt_ref LIKE 'interview:%';
 """
+
+
+def is_interview_ref(prompt_ref: str) -> bool:
+    """채용담당자 인터뷰가 만든 공통 과제인가 (저장 키 prompt_ref = interview:{인터뷰 id})."""
+    return prompt_ref.startswith(INTERVIEW_REF_PREFIX)
+
+
+class InterviewTaskConflict(RuntimeError):
+    """인터뷰 과제 승인이 그 공고의 지금 인터뷰 과제와 맞지 않는다 — 교체를 명시하지 않았거나(replaces 없음),
+    짚은 과제가 지금 과제가 아니다 (그 사이 다른 승인). 화면을 다시 읽고 교체할지 정한다."""
+
+    def __init__(self, posting_id: str, current: str | None, replaces: str | None) -> None:
+        self.posting_id, self.current, self.replaces = posting_id, current, replaces
+        if current is not None and replaces is None:
+            msg = f"이 공고에는 이미 승인된 인터뷰 과제({current})가 있습니다 — 바꾸려면 교체를 명시하세요"
+        else:
+            msg = (
+                f"교체하려는 과제({replaces or '없음'})가 이 공고의 지금 인터뷰 과제({current or '없음'})가 아닙니다"
+                " — 화면을 다시 불러오세요"
+            )
+        super().__init__(msg)
 
 
 @dataclass(frozen=True)
@@ -57,6 +90,7 @@ class StoredCommon(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str
+    prompt_ref: str  # 저장 키의 프롬프트 판 (draft_task@N… · skeleton · interview:{인터뷰 id})
     revision: int = Field(ge=1)
     status: CommonStatus
     task: TaskItem
@@ -79,6 +113,20 @@ class CommonTaskRepo(Protocol):
 
     async def approved_kind(self, posting_id: str, ontology_version: str) -> TaskKind | None: ...
 
+    async def interview_task(self, posting_id: str, ontology_version: str) -> StoredCommon | None:
+        """그 공고(같은 온톨로지 판)에 승인된 인터뷰 과제 — 지원자 실행이 새로 만들지 않고 쓴다. 없으면 None."""
+        ...
+
+    async def interview_versions(self, posting_id: str) -> list[str]:
+        """그 공고에 승인된 인터뷰 과제가 있는 온톨로지 판 (실행 판이 여기 없으면 그 공고 실행을 멈춘다)."""
+        ...
+
+    async def approve_interview(
+        self, common_id: str, reviewer: str, at: datetime, *, replaces: str | None = None
+    ) -> None:
+        """채용담당자 승인 — 이미 승인된 인터뷰 과제가 있으면 `replaces` 로 그 id 를 짚어야 바꾼다 (InterviewTaskConflict)."""
+        ...
+
 
 def _new_id() -> str:
     return f"ct-{uuid.uuid4().hex[:12]}"
@@ -90,8 +138,23 @@ def _with_id(task: TaskItem, common_id: str) -> TaskItem:
     return task.model_copy(update={"task_id": common_id, "slots": slots})
 
 
+def _normalized(stored: StoredCommon) -> StoredCommon:
+    # 인터뷰 과제는 다른 계층이 저장한다 — 과제 id·슬롯 parent 가 저장 id 와 같다는 전제(CommonRef.common_id = task_id)를 읽을 때 맞춘다
+    return stored.model_copy(update={"task": _with_id(stored.task, stored.id)})
+
+
 def _stored(row: dict[str, Any]) -> StoredCommon:
-    return StoredCommon(**{k: v for k, v in row.items() if k not in ("key", "approved_at")})
+    return StoredCommon(
+        prompt_ref=row["key"].prompt_ref,
+        **{k: v for k, v in row.items() if k not in ("key", "approved_at")},
+    )
+
+
+def _not_interview(common_id: str, prompt_ref: str) -> None:
+    # 인터뷰 과제는 채용담당자 승인(approve_interview)으로만 바뀐다 — 지원자 명세 승인이 다시 승인하면 승인자 기록이 덮이고
+    # 교체한 과제가 되살아난다
+    if is_interview_ref(prompt_ref):
+        raise ValueError(f"인터뷰 과제는 approve_interview 로 승인합니다: {common_id}")
 
 
 class InMemoryCommonStore:
@@ -127,6 +190,7 @@ class InMemoryCommonStore:
         row = next((r for r in self.rows if r["id"] == common_id), None)
         if row is None:
             raise KeyError(common_id)
+        _not_interview(common_id, row["key"].prompt_ref)
         for r in self.rows:
             if r["key"] == row["key"] and r["status"] == "approved" and r is not row:
                 r["status"] = "superseded"
@@ -148,6 +212,53 @@ class InMemoryCommonStore:
             return None
         latest = max(rows, key=lambda r: r["approved_at"])
         return latest["task"].task_kind
+
+    def _interviews(self, posting_id: str) -> list[dict[str, Any]]:
+        return [
+            r
+            for r in self.rows
+            if r["key"].posting_id == posting_id
+            and r["status"] == "approved"
+            and is_interview_ref(r["key"].prompt_ref)
+        ]
+
+    async def interview_task(self, posting_id: str, ontology_version: str) -> StoredCommon | None:
+        rows = [
+            r for r in self._interviews(posting_id) if r["key"].ontology_version == ontology_version
+        ]
+        return _normalized(_stored(rows[0])) if rows else None
+
+    async def interview_versions(self, posting_id: str) -> list[str]:
+        return sorted({r["key"].ontology_version for r in self._interviews(posting_id)})
+
+    async def approve_interview(
+        self, common_id: str, reviewer: str, at: datetime, *, replaces: str | None = None
+    ) -> None:
+        row = next((r for r in self.rows if r["id"] == common_id), None)
+        if row is None:
+            raise KeyError(common_id)
+        key = row["key"]
+        if not is_interview_ref(key.prompt_ref):
+            raise ValueError(f"인터뷰 과제가 아닙니다: {common_id}")
+        if row["status"] == "superseded":
+            raise ValueError(_SUPERSEDED.format(common_id))
+        current = next(
+            (
+                r
+                for r in self._interviews(key.posting_id)
+                if r["key"].ontology_version == key.ontology_version
+            ),
+            None,
+        )
+        if current is row:
+            return  # 이미 지금 과제 — 승인 기록을 덮지 않는다
+        if (current["id"] if current else None) != replaces:
+            raise InterviewTaskConflict(
+                key.posting_id, current["id"] if current else None, replaces
+            )
+        if current is not None:
+            current["status"] = "superseded"
+        row["status"], row["approved_by"], row["approved_at"] = "approved", reviewer, at
 
 
 class CommonTaskStore:
@@ -171,6 +282,7 @@ class CommonTaskStore:
     def _row(r: dict[str, Any]) -> StoredCommon:
         return StoredCommon(
             id=r["id"],
+            prompt_ref=r["prompt_ref"],
             revision=r["revision"],
             status=r["status"],
             task=TaskItem.model_validate(r["task"]),
@@ -233,6 +345,7 @@ class CommonTaskStore:
             r = await cur.fetchone()
             if r is None:
                 raise KeyError(common_id)
+            _not_interview(common_id, r[2])
             await conn.execute(
                 "UPDATE public.common_task SET status = 'superseded' "
                 "WHERE posting_id = %s AND ontology_version = %s AND prompt_ref = %s "
@@ -268,3 +381,127 @@ class CommonTaskStore:
             return None
         kind = r["kind"]
         return kind if kind in ("incident", "feature") else "incident"
+
+    async def interview_task(self, posting_id: str, ontology_version: str) -> StoredCommon | None:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM public.common_task WHERE posting_id = %s AND ontology_version = %s "
+                "AND status = 'approved' AND prompt_ref LIKE %s "
+                "ORDER BY approved_at DESC NULLS LAST LIMIT 1",
+                (posting_id, ontology_version, f"{INTERVIEW_REF_PREFIX}%"),
+            )
+            r = await cur.fetchone()
+        return _normalized(self._row(r)) if r else None
+
+    async def interview_versions(self, posting_id: str) -> list[str]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT DISTINCT ontology_version FROM public.common_task WHERE posting_id = %s "
+                "AND status = 'approved' AND prompt_ref LIKE %s ORDER BY 1",
+                (posting_id, f"{INTERVIEW_REF_PREFIX}%"),
+            )
+            return [r[0] for r in await cur.fetchall()]
+
+    async def approve_interview(
+        self, common_id: str, reviewer: str, at: datetime, *, replaces: str | None = None
+    ) -> None:
+        async with self._pool.connection() as conn, conn.transaction():
+            await approve_interview_task(conn, common_id, reviewer, at, replaces=replaces)
+
+
+async def replaced_common(store: CommonTaskRepo, spec: TaskSpec) -> list[str]:
+    """명세의 공통 과제 중 이 공고가 이제 쓰지 않는 것 — 공고(같은 온톨로지 판)에 승인된 인터뷰 과제가 있으면 그 과제만 쓴다.
+
+    인터뷰 과제를 가리키는데 그 과제가 교체됐거나, 인터뷰 과제가 승인되기 전에 만든 명세(P1 과제)면 여기 든다.
+    명세 승인 전(API 409)과 확정(finalize) 때 본다.
+    """
+    if not spec.common_refs:
+        return []
+    current = await store.interview_task(spec.posting_id, spec.ontology_version)
+    if current is None:
+        return [r.common_id for r in spec.common_refs if is_interview_ref(r.prompt_ref)]
+    return [r.common_id for r in spec.common_refs if r.common_id != current.id]
+
+
+async def interview_lock(store: CommonTaskRepo, spec: TaskSpec) -> str | None:
+    """이 명세의 공통 과제를 지원자 명세의 수정 요청으로 고칠 수 없으면 그 인터뷰 과제 id — 명세가 인터뷰 과제를 가리키거나
+    그 공고에 지금 승인된 인터뷰 과제가 있으면 (다시 만들어도 그 과제를 쓴다). 고칠 곳은 인터뷰 화면.
+    공통 과제가 없는 명세는 막지 않는다 — 다시 만들면 인터뷰 과제가 있을 때 그 과제를 그대로 쓴다 (nodes/spec.py)."""
+    if not spec.common_refs:
+        return None
+    for r in spec.common_refs:
+        if is_interview_ref(r.prompt_ref):
+            return r.common_id
+    current = await store.interview_task(spec.posting_id, spec.ontology_version)
+    return current.id if current is not None else None
+
+
+async def approve_interview_task(
+    conn: AsyncConnection[Any],
+    common_id: str,
+    reviewer: str,
+    at: datetime,
+    *,
+    replaces: str | None = None,
+) -> None:
+    """인터뷰 과제 승인 (호출하는 쪽 트랜잭션 안에서 — 인터뷰 판본 확정과 함께 묶을 수 있게).
+
+    공고(같은 온톨로지 판)에 이미 승인된 인터뷰 과제가 있으면(같은 인터뷰의 이전 판 포함) `replaces` 가 그 id 여야 바꾼다 —
+    모집 중에 과제가 말없이 바뀌지 않게. 이미 지금 과제면 아무것도 하지 않는다 (승인 기록을 덮지 않음).
+    교체된(superseded) 과제는 다시 승인하지 않는다 — 되돌리려면 새 판으로 저장해 승인한다.
+    충돌(InterviewTaskConflict)이면 이 함수는 아무것도 바꾸지 않고(savepoint) 호출하는 쪽 트랜잭션도 계속 쓸 수 있다 —
+    예외를 그대로 올려 인터뷰 판본 확정과 함께 되돌린다.
+    """
+    cur = await conn.execute(
+        "SELECT posting_id, ontology_version, prompt_ref, status FROM public.common_task "
+        "WHERE id = %s FOR UPDATE",
+        (common_id,),
+    )
+    r = await cur.fetchone()
+    if r is None:
+        raise KeyError(common_id)
+    posting_id, version, prompt_ref, status = r
+    if not is_interview_ref(prompt_ref):
+        raise ValueError(f"인터뷰 과제가 아닙니다: {common_id}")
+    if status == "superseded":
+        raise ValueError(_SUPERSEDED.format(common_id))
+    cur = await conn.execute(
+        "SELECT id FROM public.common_task WHERE posting_id = %s AND ontology_version = %s "
+        "AND status = 'approved' AND prompt_ref LIKE %s FOR UPDATE",
+        (posting_id, version, f"{INTERVIEW_REF_PREFIX}%"),
+    )
+    found = [x[0] for x in await cur.fetchall()]
+    current = found[0] if found else None
+    if current == common_id:
+        return
+    if current != replaces:
+        # 잠그는 동안 다른 승인이 바꿨으면 위 조회는 그 결과를 못 본다 — 알릴 때는 지금 과제를 다시 읽는다
+        now = await _approved_interview_id(conn, posting_id, version)
+        raise InterviewTaskConflict(posting_id, now, replaces)
+    try:
+        async with conn.transaction():  # savepoint — 충돌이면 이 안의 변경만 되돌린다
+            if current is not None:
+                await conn.execute(
+                    "UPDATE public.common_task SET status = 'superseded' WHERE id = %s", (current,)
+                )
+            await conn.execute(
+                "UPDATE public.common_task SET status = 'approved', approved_by = %s, "
+                "approved_at = %s WHERE id = %s",
+                (reviewer, at, common_id),
+            )
+    except errors.UniqueViolation:
+        # 같은 공고의 다른 인터뷰 승인이 먼저 끝났다 (common_task_one_interview)
+        now = await _approved_interview_id(conn, posting_id, version)
+        raise InterviewTaskConflict(posting_id, now, replaces) from None
+
+
+async def _approved_interview_id(
+    conn: AsyncConnection[Any], posting_id: str, ontology_version: str
+) -> str | None:
+    cur = await conn.execute(
+        "SELECT id FROM public.common_task WHERE posting_id = %s AND ontology_version = %s "
+        "AND status = 'approved' AND prompt_ref LIKE %s LIMIT 1",
+        (posting_id, ontology_version, f"{INTERVIEW_REF_PREFIX}%"),
+    )
+    r = await cur.fetchone()
+    return r[0] if r else None

@@ -71,7 +71,9 @@ def build_graph(
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
-    g.add_node("posting_profile", make_posting_profile(ontology, postings, ontology_lists))
+    g.add_node(
+        "posting_profile", make_posting_profile(ontology, postings, ontology_lists, common_store)
+    )
     g.add_node("ingest", make_ingest(ingestor, use_cover_letters=use_cover_letters))
     g.add_node("pseudonymize", make_pseudonymize(pseudonymizer))
     g.add_node("assign_roles", assign_roles)
