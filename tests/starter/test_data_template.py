@@ -106,7 +106,7 @@ def _plan() -> HiddenPlan:
 
 
 def test_data_engineer_template_is_selected_and_python_only_artifacts() -> None:
-    assert select_template("data.eng").manifest.ref == "data/python-duckdb@v1"  # type: ignore[union-attr]
+    assert select_template("data.eng").manifest.ref == "data/python-duckdb@v2"  # type: ignore[union-attr]
     assert render_persistence_check(_contract(), DE.manifest) is None
     p = render_params(_plan(), DE.manifest)
     assert p.path == "grading/grader-params.json"
@@ -250,6 +250,61 @@ def test_hidden_terms_in_fixture_path_are_reasked() -> None:
     assert not leaks(_with_fixture("한 줄에 Payment 하나"))
     got = leaks(_with_fixture("한 줄에 Payment 하나", path="{raw_dir}/backfill/{date}/*.jsonl"))
     assert len(got) == 1 and "backfill" in got[0] and "시드 파일 1 위치" in got[0]
+
+
+def _with_schedule() -> TaskContract:
+    """2026-11-18 woori001 계약 모양 — 본 명령 + 스케줄 등록 명령(파일 위치 옵션 없음) + 크론 줄을 담은 kind env 입력 환경."""
+    d = _contract().model_dump()
+    d["endpoints"].append(
+        {
+            "endpoint_id": "e2",
+            "path": "pipeline/setup_schedule.py",
+            "summary": "매일 정해진 시각에 실행되게 등록",
+            "request": [_f("schedule_time", "string")],
+            "responses": [
+                {"status": 0, "description": "등록"},
+                {"status": 1, "description": "실패"},
+            ],
+            "refs": ["r1"],
+        }
+    )
+    d["fixtures"].append(
+        {
+            "fixture_id": "f2",
+            "kind": "env",
+            "summary": "배치 실행 시각",
+            "content": "0 2 * * * python pipeline/run.py",
+            "refs": ["r1"],
+        }
+    )
+    d["covers"]["r1"] += ["e2"]
+    return TaskContract.model_validate(d)
+
+
+def test_harness_scope_sends_back_what_the_data_harness_cannot_test() -> None:
+    """#256 (2026-11-18 woori001): 스케줄 등록 명령(crontab)과 kind env 입력 환경이 계약을 통과해 모든 구현이 그 공개 테스트에서 떨어졌다.
+    하네스는 파일만 깔고 명령에 작업 폴더 위치를 옵션으로 넘긴다 — manifest harness_scope 로 계약 단계에서 되돌린다."""
+    from task_spec.starter.contract import _harness_scope, check_contract
+
+    scope = DE.manifest.harness_scope
+    assert scope is not None and scope.hint
+    assert _harness_scope(_contract(), DE.manifest) == []
+    env, cmd = _harness_scope(_with_schedule(), DE.manifest)
+    assert "입력 환경 f2 의 kind env" in env and "깔 수 있는 것: file" in env
+    assert "명령 e2 pipeline/setup_schedule.py 의 옵션(schedule_time)" in cmd
+    assert cmd.endswith(scope.hint) and scope.hint not in env  # 안내는 한 번 — 마지막 문제 끝에
+    res = check_contract(_with_schedule(), _plan(), _spec(), DE.manifest, _batch_seed())
+    assert [p for p in res.problems if "깔 수 없음" in p or "파일 입력 환경의 위치" in p] == [
+        env,
+        cmd,
+    ]
+    # 파일 위치가 정해지지 않았으면 명령은 판정하지 않는다 — _file_fixtures 가 먼저 묻는다 (path 가 없던 11-15 이전 계약은 본 명령까지 걸렸다)
+    assert _harness_scope(_with_fixture("한 줄에 Payment 하나", path=None), DE.manifest) == []
+    stray = _with_fixture("한 줄에 Payment 하나", path="{raw}/{YYYY-MM-DD}/*.jsonl")
+    assert _harness_scope(stray, DE.manifest) == []
+    # 범위를 선언하지 않은 템플릿(Java)은 그대로
+    java = load_template("backend/java-spring-boot3-jpa").manifest
+    assert java.harness_scope is None and _harness_scope(_with_schedule(), java) == []
 
 
 def test_dated_input_folders_need_date_named_input_folder_and_date_option() -> None:

@@ -18,7 +18,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.provenance import NodeError, Provenance
-from task_spec.schemas.template import InterfaceKind
+from task_spec.schemas.template import FixtureKind, InterfaceKind
 
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 # 오버레이 파일 종류 — public_test 는 공개 테스트를 지원자에게 주지 않을 때 (spec-to-code §4.3 [제안])
@@ -214,7 +214,7 @@ class Fixture(Schema):
     숨은 테스트가 채점 때 바꾸는 단계는 HiddenCase.setup (숨김) 에 따로 적는다."""
 
     fixture_id: str = Field(pattern=r"^f\d{1,2}$")
-    kind: Literal["db", "file", "service", "browser", "env"]
+    kind: FixtureKind
     summary: str = Field(min_length=1, max_length=200)
     content: str = Field(
         default="", max_length=2000
