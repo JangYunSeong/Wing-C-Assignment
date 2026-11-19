@@ -578,6 +578,26 @@ async def test_hidden_case_mentioning_another_case_is_reasked() -> None:
     assert any("다른 케이스 id 가 나옴: hc1" in p for p in res.first_problems)
 
 
+async def test_hidden_case_using_another_cases_helper_names_is_reasked() -> None:
+    # 2026-11-19 운영 ct-d367bb7b2d4c-b2: hc1 파일이 HC2_FIRST 의 행을 바꿔 hc2 가 모든 구현에서 떨어졌다 — 케이스 id 패턴은
+    # 소문자·단어 경계라 대문자 상수를 못 봤다
+    b = _two_cases()
+    uses = HC2.replace("int n = ", "long first = HC1_FIRST;\n        int n = ")
+    fake = FakeBackend().push(
+        _files((HC1_PATH, HC1)), _files((HC2_PATH, uses)), _files((HC2_PATH, HC2))
+    )
+    res = await _gen(gen_hidden, fake, b)
+    assert res.ok and len(fake.calls) == 3, res.problems
+    files = {f.path: f.content for f in res.overlay.files}  # type: ignore[union-attr]
+    assert files[HC2_PATH] == HC2
+    assert any("다른 케이스의 도우미 이름을 씀: HC1_FIRST" in p for p in res.first_problems)
+    # 자기 케이스의 이름은 그대로 쓴다
+    own = HC1.replace("int n = ", "long first = HC1_FIRST;\n        int n = ")
+    fake = FakeBackend().push(_files((HC1_PATH, own)), _files((HC2_PATH, HC2)))
+    res = await _gen(gen_hidden, fake, b)
+    assert res.ok and len(fake.calls) == 2, res.problems
+
+
 async def test_hidden_repair_regenerates_only_the_named_case() -> None:
     b = _two_cases()
     from task_spec.schemas import GeneratedFile
