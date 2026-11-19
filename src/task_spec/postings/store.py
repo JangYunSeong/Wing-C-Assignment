@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from task_spec.postings.search import SearchTerm
+from task_spec.postings.search import CompanyFilter, SearchTerm
 from task_spec.postings.suggest import OntologyLists
 from task_spec.schemas import (
     AnalyzedLine,
@@ -250,10 +250,22 @@ class PostingStore:
         async with self._pool.connection() as conn:
             await conn.execute(query, params)  # type: ignore[arg-type]
 
-    async def search_provisional(self, terms: list[SearchTerm], limit: int) -> list[dict[str, Any]]:
-        """임시 공고를 회사·직무명·id·직군으로 (postings/search.search_terms), 최근 것부터."""
+    async def all_entered_companies(self) -> dict[str, str]:
+        """사람이 정한 회사 전부 — 공고 id → 회사 표기 (한 회사 공고 찾기, GET /postings?company=)."""
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT posting_id, company FROM public.posting_company")
+            return {r["posting_id"]: r["company"] for r in await cur.fetchall()}
+
+    async def search_provisional(
+        self, terms: list[SearchTerm], limit: int | None, company: CompanyFilter | None = None
+    ) -> list[dict[str, Any]]:
+        """임시 공고를 회사·직무명·id·직군으로 (postings/search.search_terms), 최근 것부터. limit None = 전부."""
         where = ["TRUE"]
         params: list[Any] = []
+        if company is not None:
+            clause, extra = company.sql()
+            where.append(clause)
+            params += extra
         for t in terms:
             where.append(
                 "(company ILIKE %s ESCAPE '\\' OR title ILIKE %s ESCAPE '\\'"

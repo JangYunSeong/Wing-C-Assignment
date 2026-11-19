@@ -19,9 +19,12 @@ from task_spec.ontology.queries import (
     position_career_texts,
     posting_exists,
     posting_profile,
+    search_positions,
 )
 from task_spec.ontology.repository import OntologyNotLoaded, OntologyRepository, resolve_version
 from task_spec.postings.career import estimate_career
+from task_spec.postings.company import company_id
+from task_spec.postings.search import CompanyFilter
 from tests.api.conftest import make_settings, reviewer_decision, wait_status
 from tests.conftest import config_for
 
@@ -210,3 +213,36 @@ async def test_position_career_texts_are_name_and_required_lines(repo: OntologyR
         "경력",
         None,
     )  # '신입' 도 함께 적힌 공고면 추정하지 않는다
+
+
+async def test_search_positions_company_filter(repo: OntologyRepository) -> None:
+    """한 회사 공고만, limit 없이 전부 (GET /postings?company=) [2026-11-20 사용자] — 법인 표기·공백을 빼고 맞춘다."""
+    rows = await repo.fetch(
+        "SELECT company, count(*) AS n FROM position GROUP BY company ORDER BY n DESC LIMIT 1"
+    )
+    name = str(rows[0]["company"])
+    key = company_id(name)
+    assert key is not None
+    expected = [
+        r["id"]
+        for r in await repo.fetch("SELECT id, company FROM position")
+        if company_id(str(r["company"])) == key
+    ]
+    hits = await search_positions(
+        repo, [], pilot_only=False, limit=None, company=CompanyFilter(key=key)
+    )
+    assert sorted(str(h["id"]) for h in hits) == sorted(str(i) for i in expected)
+    assert all(company_id(str(h["company"])) == key for h in hits)
+    moved = str(hits[0]["id"])
+    without = await search_positions(
+        repo, [], pilot_only=False, limit=None, company=CompanyFilter(key=key, exclude=(moved,))
+    )
+    assert moved not in {str(h["id"]) for h in without}
+    assert (
+        len(
+            await search_positions(
+                repo, [], pilot_only=False, limit=1, company=CompanyFilter(key=key)
+            )
+        )
+        == 1
+    )
