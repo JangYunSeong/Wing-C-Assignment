@@ -5,8 +5,10 @@ ASGITransport 는 lifespan 을 돌리지 않으므로, graph 가 주입되면 �
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from datetime import timedelta
 
 from fastapi import FastAPI
 from langgraph.graph.state import CompiledStateGraph
@@ -14,16 +16,19 @@ from langgraph.graph.state import CompiledStateGraph
 from task_spec.api.deps import PostingsContext
 from task_spec.api.errors import install_error_handlers
 from task_spec.api.launcher import RunLauncher
-from task_spec.api.routers import builds, health, incidents, postings, pull, runs, ui
+from task_spec.api.routers import builds, health, incidents, interviews, postings, pull, runs, ui
 from task_spec.config import Settings, get_settings
 from task_spec.delivery.sender import DeliverySender
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.graph.build_approval import build_approval_graph
 from task_spec.graph.incident_share import incident_share_graph
+from task_spec.interview.postings import PostingSource
+from task_spec.interview.service import InterviewService, sweep_forever
+from task_spec.interview.store import PgInterviewStore
 from task_spec.llm.factory import build_llm_client
 from task_spec.logging_setup import configure_logging
 from task_spec.nodes.ingest import FileIngestor
-from task_spec.nodes.pseudonymize import RulePseudonymizer
+from task_spec.nodes.pseudonymize import InterviewPseudonymizer, RulePseudonymizer
 from task_spec.ontology.relatedness import load_relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.company import posting_companies
@@ -89,6 +94,29 @@ def create_app(
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때
+        # 채용담당자 사례 인터뷰 (#262 D1) — 탐지기(Kiwi)는 지원서 가명화기와 같이 쓴다. 프롬프트 CURRENT 가 없으면 '준비 중'
+        interview_store = await PgInterviewStore.open(
+            app.state.settings.database_url.get_secret_value()
+        )
+        app.state.interviews = InterviewService(
+            store=interview_store,
+            pseudo=InterviewPseudonymizer(
+                pseudonymizer.detectors, app.state.settings.data_dir.resolve()
+            ),
+            postings=PostingSource(ontology=app.state.ontology, store=store, lists=lists),
+            llm=llm,
+            prompts=prompts,
+            ontology_version=lists.version,
+            mapping_ttl=timedelta(days=app.state.settings.interview_mapping_ttl_days),
+            draft_ttl=timedelta(hours=app.state.settings.interview_draft_ttl_hours),
+        )
+        # 보관 기간 정리 (결정 4) — 원문 임시 저장 하루, 방치 인터뷰 대응표 30일
+        sweeper = asyncio.create_task(
+            sweep_forever(
+                app.state.interviews,
+                timedelta(minutes=app.state.settings.interview_sweep_minutes),
+            )
+        )
         retriever = await build_retriever(app.state.ontology, lists)  # T1 검색 색인 (수 초, 로컬)
         async with make_checkpointer(app.state.settings) as cp:
             app.state.graph = build_graph(
@@ -117,6 +145,10 @@ def create_app(
             try:
                 yield
             finally:
+                sweeper.cancel()
+                with suppress(asyncio.CancelledError):
+                    await sweeper
+                await interview_store.close()
                 await app.state.launcher.shutdown()
                 await app.state.delivery.shutdown()
                 await app.state.ontology.close()
@@ -138,6 +170,7 @@ def create_app(
     app.include_router(postings.router)
     app.include_router(builds.router)
     app.include_router(incidents.router)
+    app.include_router(interviews.router)
     app.include_router(pull.router)
     app.include_router(health.router)
     app.include_router(ui.router)

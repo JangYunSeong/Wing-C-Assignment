@@ -29,7 +29,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from task_spec.llm.backend import ChatBackend, Completion, TransientLLMError, Usage
+from task_spec.llm.backend import ChatBackend, Completion, TextCallback, TransientLLMError, Usage
 from task_spec.llm.pricing import cost_usd
 from task_spec.prompting import AssembledPrompt, Message
 from task_spec.schemas import Provenance, TokenUsage
@@ -176,6 +176,7 @@ class LLMClient:
         *,
         split_on_truncation: bool = False,
         reasoning_off_last: bool = False,
+        on_delta: TextCallback | None = None,
     ) -> LLMResult[T]:
         """split_on_truncation=True: 잘린 응답(finish_reason=length)을 형식 재요청 없이 OutputTruncated 로
         돌려준다 (추론 설정을 바꿀 수 있고 low 가 아니면 low 로 1회 먼저). 입력을 나눠 다시 부를 수 있는 호출자만 켠다.
@@ -233,7 +234,14 @@ class LLMClient:
 
         while True:
             completion = await self._complete_with_backoff(
-                backend, model, messages, params, retries, ref=prompt.template.ref, started=started
+                backend,
+                model,
+                messages,
+                params,
+                retries,
+                ref=prompt.template.ref,
+                started=started,
+                on_delta=on_delta,
             )
             total = Usage(
                 total.input + completion.usage.input,
@@ -398,12 +406,15 @@ class LLMClient:
         *,
         ref: str = "",
         started: float | None = None,
+        on_delta: TextCallback | None = None,
     ) -> Completion:
         attempt = 0
         timeouts = 0
         t0 = started if started is not None else time.monotonic()
         while True:
             try:
+                if on_delta is not None:
+                    return await backend.complete(model, messages, params, on_delta=on_delta)
                 return await backend.complete(model, messages, params)
             except TransientLLMError as exc:
                 kind = str(exc)

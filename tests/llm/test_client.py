@@ -97,6 +97,22 @@ async def test_code_fence_is_tolerated() -> None:
     assert len(r.parsed.claims) == 1
 
 
+async def test_stream_resets_on_schema_retry_and_preserves_validation() -> None:
+    fake = FakeBackend().push(Completion('{"invalid":true}'), Completion(GOOD, Usage(10, 5)))
+    received = []
+
+    async def consume(chunk):
+        received.append(chunk)
+
+    result = await _client(fake).call(_prompt(), ClaimExtractionOutput, on_delta=consume)
+    assert received.count(None) == 2
+    last_reset = len(received) - 1 - received[::-1].index(None)
+    assert "".join(received[last_reset + 1 :]) == GOOD
+    assert result.parsed.claims[0].action == "데이터 파이프라인 설계"
+    assert result.provenance.retries == 1
+    assert result.provenance.tokens.out == 5
+
+
 async def test_empty_response_retries_with_low_effort() -> None:
     prompt = _prompt()
     prompt = prompt.model_copy(update={"params": {"temperature": 0}})  # 기본 추론 설정 상황

@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     # 공통 과제 기능 개발형 기본값 규칙 (spec/kind.py) [2026-11-06]. false 면 규칙이 feature 여도 이슈형으로 만든다 —
     # 승인자가 수정 요청에서 기능형을 지정하는 것은 항상 된다. draft_feature_task 평가(설계 §9, PR-4) 통과 뒤 켠다
     feature_task_default: bool = False
+    # 채용담당자 사례 인터뷰 보관 (#262, 결정 4 [확정: 2026-11-19 사용자]) — 대화는 가명화한 글만 DB.
+    # 이름 대응표(data/interviews/<id>/mapping.json)는 승인·폐기 때 지우고, 승인·폐기 없이 이 기간 방치되면 폐기로 본다
+    interview_mapping_ttl_days: int = Field(default=30, ge=1)
+    # 화면의 단계별 임시 저장(원문)은 이 시간 뒤 지운다 — 그 단계를 제출하면 바로 지운다
+    interview_draft_ttl_hours: int = Field(default=24, ge=1)
+    # 위 두 보관 기간 정리 주기(분)
+    interview_sweep_minutes: int = Field(default=60, ge=1)
 
     # 업로드 (fastapi-service "업로드"): 파일 1개당 바이트 상한. 허용 형식은 api/uploads.py.
     upload_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)

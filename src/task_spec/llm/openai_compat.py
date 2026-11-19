@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from task_spec.llm.backend import Completion, TransientLLMError, Usage
+from task_spec.llm.backend import Completion, TextCallback, TransientLLMError, Usage
 from task_spec.prompting import Message
 
 _TRANSIENT = (
@@ -67,7 +67,12 @@ class OpenAICompatBackend:
         return {**rest, "extra_body": {"max_tokens": params["max_tokens"]}}
 
     async def complete(
-        self, model: str, messages: list[Message], params: dict[str, Any]
+        self,
+        model: str,
+        messages: list[Message],
+        params: dict[str, Any],
+        *,
+        on_delta: TextCallback | None = None,
     ) -> Completion:
         chat = ChatOpenAI(
             model=model,
@@ -78,7 +83,17 @@ class OpenAICompatBackend:
             **self._kwargs(params),
         )
         try:
-            msg = await chat.ainvoke(_to_lc(messages))
+            if on_delta is None:
+                msg = await chat.ainvoke(_to_lc(messages))
+            else:
+                await on_delta(None)
+                msg = None
+                async for chunk in chat.astream(_to_lc(messages), stream_usage=True):
+                    msg = chunk if msg is None else msg + chunk
+                    if isinstance(chunk.content, str) and chunk.content:
+                        await on_delta(chunk.content)
+                if msg is None:
+                    return Completion(content="")
         except _TRANSIENT as exc:
             raise TransientLLMError(type(exc).__name__) from exc
         assert isinstance(msg, AIMessage)

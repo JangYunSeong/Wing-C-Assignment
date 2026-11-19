@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 
 from task_spec.schemas.base import Schema
+from task_spec.schemas.interview_case import KnownIncidentCase
 
 NeedKind = Literal[
     "stateful_target",
@@ -167,6 +168,22 @@ class PublicIncident(Schema):
         default_factory=list
     )  # 원문의 오류 문구·지표 값 — 생성 입력에 넣지 않고, 과제에 2개 이상 함께 나오면 복사로 본다
     task_pattern: Literal["qa_mutation"] | None = None
+    # 채용담당자 사례 인터뷰가 확인한 한 사건과 그 사건의 실패한 첫 시도 — 기준 답안(answer_text) 포함 (#262, 포크 9ef2f50).
+    # 비면 직렬화에서 뺀다: 이 칸이 생기기 전의 사례 지문(prompt_ref)·공통 과제 키·회사 사례 content_sha256 이 바뀌지 않게.
+    # 스키마(프롬프트에 렌더되는 글)에는 그대로 남는다 — exclude_if 는 직렬화만 바꾼다.
+    known_incident_cases: list[KnownIncidentCase] = Field(
+        default_factory=list, max_length=2, exclude_if=lambda v: not v
+    )
+
+    @model_validator(mode="after")
+    def one_incident_and_optional_failed_attempt(self) -> PublicIncident:
+        cases = self.known_incident_cases
+        if cases and sum(not case.is_trap for case in cases) != 1:
+            raise ValueError("확인된 한 사건과 그 사건의 실패한 첫 시도만 입력해 주세요")
+        if len({case.case_id for case in cases}) != len(cases):
+            raise ValueError("인터뷰 항목 UUID가 중복되었습니다")
+        return self
+
     # 이 사례의 기능형 재료(feature)를 숨은 테스트로 시험할 수 있는 템플릿 (templates/<id>). 직군 기본 사례(<직군>.json)가 아닌 사례는 적어야 한다.
     # 2026-11-09 사용자 결정: 직군마다 여러 건 허용 — 기능형 과제는 직군 템플릿이 시험할 수 있는 사례를, 디버깅형은 기본 사례를 쓴다
     # (프론트엔드 기본 사례 '여러 탭이 같은 로컬 DB 에 씀'은 실제 브라우저가 필요해 jsdom 템플릿으로 시험할 수 없다).

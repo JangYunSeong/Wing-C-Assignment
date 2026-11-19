@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from task_spec.nodes.pseudonymize.interview import (
+    InterviewMappingGone,
+    InterviewPseudonymizer,
+    InterviewTextRejected,
+)
 from task_spec.nodes.pseudonymize.node import (
     PseudonymizedNotAvailable,
     Pseudonymizer,
@@ -18,6 +23,9 @@ from task_spec.nodes.pseudonymize.node import (
 from task_spec.nodes.pseudonymize.rule_pseudonymizer import RulePseudonymizer
 
 __all__ = [
+    "InterviewMappingGone",
+    "InterviewPseudonymizer",
+    "InterviewTextRejected",
     "PseudonymizedNotAvailable",
     "Pseudonymizer",
     "RulePseudonymizer",

@@ -443,6 +443,9 @@ DB·`task_data` 볼륨은 그대로 남는다. 새 테이블은 앱이 기동할
 - 앱 인증 (지금은 nginx Basic 인증이 임시 대책 — 승인자 식별이 요청 본문의 reviewer 값뿐)
 - DB 백업 주기·보관 위치·기간 (덤프와 `task_data` 볼륨에 지원자 파생물이 있음 — 외부 반출 금지)
 - `DATA_DIR`(`task_data` 볼륨) 보관 기간·삭제 정책
+  - 채용담당자 사례 인터뷰(#262)만 정해졌다 [확정: 2026-11-19 사용자]: 이름 대응표 `data/interviews/<id>/mapping.json` 은 승인·폐기 때,
+    방치 30일(`INTERVIEW_MAPPING_TTL_DAYS`, 업무 저장 기준) 뒤 지우고, 화면 임시 저장 원문(DB `recruiter_interview.ui_drafts`)은 처음 쓴 때부터 하루(`INTERVIEW_DRAFT_TTL_HOURS`) 뒤 지운다.
+    API 안 주기 작업(`INTERVIEW_SWEEP_MINUTES`)이 정리한다 — API 를 오래 내려 두면 그동안 정리되지 않는다.
 
 ## 문제 해결
 

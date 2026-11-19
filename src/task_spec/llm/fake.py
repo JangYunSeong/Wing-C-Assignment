@@ -10,7 +10,7 @@ import hashlib
 from collections import defaultdict, deque
 from typing import Any
 
-from task_spec.llm.backend import Completion, TransientLLMError
+from task_spec.llm.backend import Completion, TextCallback, TransientLLMError
 from task_spec.prompting import Message
 
 
@@ -28,7 +28,12 @@ class FakeBackend:
         return self
 
     async def complete(
-        self, model: str, messages: list[Message], params: dict[str, Any]
+        self,
+        model: str,
+        messages: list[Message],
+        params: dict[str, Any],
+        *,
+        on_delta: TextCallback | None = None,
     ) -> Completion:
         self.calls.append((model, dict(params)))
         k = input_key(messages)
@@ -38,6 +43,10 @@ class FakeBackend:
         item = q.popleft()
         if isinstance(item, Exception):
             raise item
+        if on_delta:
+            await on_delta(None)
+            for offset in range(0, len(item.content), 8):
+                await on_delta(item.content[offset : offset + 8])
         return item
 
 
