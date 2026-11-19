@@ -366,7 +366,14 @@ async def test_list_runs_by_company_including_companies_not_in_ontology(
     )
     ids = {}
     for pid in ("posting-fake-001", "prov-fake0001", "prov-fake0002", "posting-fake-003"):
-        resp = await client.post("/runs", data={"posting_id": pid}, files=[("resumes", FAKE_FILE)])
+        resp = await client.post(
+            "/runs",
+            data={
+                "posting_id": pid,
+                "career_level": "경력",
+            },  # 공고 저장소가 있으면 신입·경력이 필요
+            files=[("resumes", FAKE_FILE)],
+        )
         assert resp.status_code == 202, resp.text
         ids[pid] = resp.json()["run_id"]
         await wait_status(client, ids[pid], "awaiting_approval")
@@ -403,14 +410,18 @@ async def test_list_runs_shows_posting_career_level(client: httpx.AsyncClient) -
         {"prov-fake0001": "가상회사", "prov-fake0002": "가상회사"},
         rows={"prov-fake0001": {"title": "가상 백엔드 (경력)", "lines": []}},
     )
-    store.levels["prov-fake0002"] = "신입"
     app.state.postings = SimpleNamespace(store=store)
     ids = {}
     for pid in ("posting-fake-001", "prov-fake0001", "prov-fake0002", "posting-fake-003"):
-        resp = await client.post("/runs", data={"posting_id": pid}, files=[("resumes", FAKE_FILE)])
+        resp = await client.post(
+            "/runs",
+            data={"posting_id": pid, "career_level": "신입"},
+            files=[("resumes", FAKE_FILE)],
+        )
         assert resp.status_code == 202, resp.text
         ids[pid] = resp.json()["run_id"]
         await wait_status(client, ids[pid], "awaiting_approval")
+    store.levels = {"prov-fake0002": "신입"}  # 나머지는 정한 값을 지운 공고 — 문구 추정을 본다
     app.state.ontology = FakeOntology(
         {"posting-fake-001": "가상회사"},
         ["가상회사"],
@@ -428,3 +439,51 @@ async def test_list_runs_shows_posting_career_level(client: httpx.AsyncClient) -
         "prov-fake0001": "경력",
         "prov-fake0002": "신입",
     }
+
+
+async def test_create_run_needs_posting_career_level(client: httpx.AsyncClient) -> None:
+    """명세 전에 신입·경력 [확정: 2026-11-19 사용자 (가)] — 공고에 정한 값이 없으면 career_level 이 필요하고 받은 값은 공고에
+    저장된다 (set_by = 그 실행). 정한 값이 있으면 비우거나 같은 값만. 거절은 지원서를 저장하기 전에."""
+    app = client._transport.app  # type: ignore[attr-defined]
+    store = FakeProvisional({"prov-fake0001": "가상회사"})
+    app.state.postings = SimpleNamespace(store=store)
+    runs_dir = app.state.settings.data_dir
+
+    def files() -> list[tuple[str, tuple[str, bytes, str]]]:
+        return [("resumes", FAKE_FILE)]
+
+    before = sorted(p.name for p in runs_dir.rglob("*")) if runs_dir.exists() else []
+    r = await client.post("/runs", data={"posting_id": "posting-fake-001"}, files=files())
+    assert r.status_code == 422 and r.json()["error"]["code"] == "career_level_required"
+    bad = await client.post(
+        "/runs", data={"posting_id": "posting-fake-001", "career_level": "무관"}, files=files()
+    )
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "validation_error"
+    after = sorted(p.name for p in runs_dir.rglob("*")) if runs_dir.exists() else []
+    assert after == before  # 거절된 요청은 지원서를 남기지 않는다
+
+    r = await client.post(
+        "/runs", data={"posting_id": "posting-fake-001", "career_level": "신입"}, files=files()
+    )
+    assert r.status_code == 202, r.text
+    run_id = r.json()["run_id"]
+    await wait_status(client, run_id, "awaiting_approval")
+    assert store.levels["posting-fake-001"] == "신입"
+    assert store.set_by["posting-fake-001"] == f"run:{run_id}"
+
+    # 정한 값이 있으면 비워도 되고, 같은 값도 되고, 다른 값은 409
+    for data in ({}, {"career_level": "신입"}):
+        ok = await client.post(
+            "/runs", data={"posting_id": "posting-fake-001", **data}, files=files()
+        )
+        assert ok.status_code == 202, ok.text
+        await wait_status(client, ok.json()["run_id"], "awaiting_approval")
+    clash = await client.post(
+        "/runs", data={"posting_id": "posting-fake-001", "career_level": "경력"}, files=files()
+    )
+    assert clash.status_code == 409 and clash.json()["error"]["code"] == "career_level_conflict"
+    assert store.levels["posting-fake-001"] == "신입"
+
+    # 없는 공고는 신입·경력보다 먼저 404
+    gone = await client.post("/runs", data={"posting_id": "prov-fake9999"}, files=files())
+    assert gone.status_code == 404

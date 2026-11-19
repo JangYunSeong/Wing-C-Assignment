@@ -136,6 +136,7 @@ class FakeProvisional:
         self.companies = companies
         self.rows = rows or {}
         self.levels: dict[str, str] = {}
+        self.set_by: dict[str, str] = {}
 
     async def get_provisional(self, pid: str) -> dict[str, object] | None:
         if pid not in self.companies:
@@ -150,3 +151,8 @@ class FakeProvisional:
             self.levels.pop(pid, None)
         else:
             self.levels[pid] = level
+        self.set_by[pid] = set_by
+
+    async def init_career_level(self, pid: str, level: str, set_by: str) -> None:
+        if pid not in self.levels:
+            self.levels[pid], self.set_by[pid] = level, set_by

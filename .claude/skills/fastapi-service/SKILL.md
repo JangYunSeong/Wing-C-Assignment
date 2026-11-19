@@ -22,7 +22,7 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 
 | 메서드 | 경로 | 동작 |
 |---|---|---|
-| `POST` | `/runs` | 공고 id + 업로드 문서 → `run_id` 발급, 백그라운드 실행 시작. `202` |
+| `POST` | `/runs` | 공고 id + 업로드 문서 (+ `career_level`) → `run_id` 발급, 백그라운드 실행 시작. `202`. 공고에 신입·경력이 정해져 있지 않으면 `career_level`(신입·경력)이 필요(`422 career_level_required`)하고 받은 값은 공고에 저장(`set_by=run:<run_id>`), 정해져 있으면 비우거나 같은 값만(`409 career_level_conflict` — 바꾸려면 `PUT /postings/{id}/career-level`). 거절은 지원서를 저장하기 전에. 공고 저장소가 없는 앱(테스트)은 보지 않음 [확정: 2026-11-19 사용자 — 명세 전에 신입·경력] |
 | `GET` | `/runs?status=&company=&limit=` | 실행 목록 — 최근에 시작한 것부터, `limit` 이 없으면 전부 [확정: 2026-11-18 사용자 — 회사의 명세를 전부]. thread 첫 체크포인트(`source=input`)와 그 그래프 입력(공고 id)으로 찾고 run_id(uuid4 hex) 꼴만 (빌드 승인 thread 제외), 상태는 `GET /runs/{id}` 와 같은 계산. 회사(`postings/company.py`): id = 표기에서 공백·법인 표기를 빼고 소문자 — 온톨로지에 없는 새 회사도 id 가 생기고, 표시 이름은 온톨로지 `company.name` 과 같으면 그 표기, `company_known` = 온톨로지 회사인지. `company` 로 거르기는 상태를 읽기 전에. 상태·현재 노드·판·공고·회사·시작/마지막 시각만 — 명세 초안·승인 요약 없음 [확정: 2026-11-18 사용자 — Wing 관리 화면의 '최근 실행'] |
 | `GET` | `/runs/{run_id}` | 상태(`running`/`awaiting_approval`/`done`/`rejected`/`failed`) + 현재 노드 + (승인 대기 시) 명세 초안 + 승인 요약(`approval_summary` — 승인 대기·`done`·`rejected`, `spec/summary.py`) |
 | `GET` | `/runs/{run_id}/events` | SSE. 노드 진행·interrupt 발생 이벤트 |
