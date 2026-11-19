@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel
 
 from task_spec.api.app import create_app
+from task_spec.interview.approval import MemoryApprovalCommitter
 from task_spec.interview.service import InterviewService
 from task_spec.interview.store import MemoryInterviewStore
 from task_spec.llm import LLMClient
@@ -300,11 +301,18 @@ def make_service(
     prompts: PromptRegistry | None = None,
     tasks: Any = None,
     common_store: Any = None,
+    incidents: Any = None,
+    builds: Any = None,
 ) -> tuple[InterviewService, CapturingBackend, MemoryInterviewStore, FakePostings, Clock]:
     clock = Clock()
     backend = CapturingBackend()
     store = MemoryInterviewStore(now=clock)
     postings = FakePostings()
+    approvals = (
+        MemoryApprovalCommitter(store, common_store, incidents)
+        if common_store is not None and incidents is not None
+        else None
+    )
     service = InterviewService(
         store=store,
         pseudo=InterviewPseudonymizer(detectors, tmp),
@@ -314,6 +322,8 @@ def make_service(
         ontology_version="onto-test",
         tasks=tasks,
         common_store=common_store,
+        approvals=approvals,
+        builds=builds,
         now=clock,
     )
     return service, backend, store, postings, clock

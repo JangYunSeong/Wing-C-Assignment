@@ -28,7 +28,8 @@ Stage = Literal[
     "success_interview",  # ⑤ 성공 기준 → 기준 답안·답안 검증
     "incident_review",  # ⑥ 사례·답안 확인
     "competencies",  # ⑦ 역량 고르기 (⑥ 확인 뒤)
-    "task_review",  # ⑧ 생성한 과제·지원자 질문에 답할 범위 검토 — 승인(⑨)은 D2b
+    "task_review",  # ⑧ 생성한 과제·지원자 질문에 답할 범위 검토
+    "approved",  # ⑨ 승인됨 (D2b) — 사례를 co: 로 등록, 공통 과제 승인, 대응표 삭제. 더 고치지 않는다(새 인터뷰로 교체)
     "discarded",  # 폐기 (담당자 폐기·방치 30일) — 대응표를 지웠으므로 더 이상 LLM 을 부르지 않는다
 ]
 ScopeField = Literal["expected_outcome_90_days", "decision_situation"]
@@ -124,6 +125,19 @@ class TargetedQuestion(Schema):
     answer: str | None = Field(default=None, min_length=1, max_length=ANSWER_MAX)
 
 
+class InterviewApprovalRecord(Schema):
+    """⑨ 승인 기록 (#266 D2b) — 승인 그래프의 finalize 가 인터뷰 판본 확정과 같은 트랜잭션에 남긴다.
+    reviewer 는 직원 식별자(원문 예외, incident_confirmation.reviewer 와 같다) — LLM 입력에는 넣지 않는다."""
+
+    reviewer: str
+    at: str  # ISO 시각
+    revision: int  # 승인한 인터뷰 판본
+    common_id: str  # 승인한 공통 과제 (interview:{id})
+    incident_id: str  # co: 로 등록한 사례 (공유 승인 대기)
+    replaced: str | None = None  # 교체한 이전 인터뷰 과제
+    comment: str | None = None  # 가명화한 글
+
+
 class InterviewSpec(Schema):
     """확인된 사례로 만든 공고 공통 과제와 평가 맥락 (#266 D2a, 포크 interviews.InterviewSpec).
 
@@ -192,6 +206,7 @@ class InterviewState(_State):
     competency_ids: list[str] = Field(default_factory=list)  # ⑦ 고른 역량 (2~3)
     template_id: str | None = None  # 직군 기본 코딩 템플릿
     spec: InterviewSpec | None = None  # ⑧ 생성한 과제와 평가 맥락
+    approval: InterviewApprovalRecord | None = None  # ⑨ 승인 기록 (D2b)
     discarded_at: str | None = None
     discard_reason: Literal["recruiter", "stale"] | None = None
 

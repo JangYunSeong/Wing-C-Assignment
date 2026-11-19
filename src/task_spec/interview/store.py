@@ -6,7 +6,8 @@
   다른 단계를 저장해도 연장되지 않고, 하루가 지난 뒤 저장하면 남은 것을 버리고 새로 시작한다 (privacy-auditor M1).
   draft_revision 은 임시 저장끼리의 충돌 검사용. 임시 저장은 30일 방치 판정(updated_at)의 활동으로 세지 않는다 —
   열어 둔 화면의 자동 저장이 대응표를 무기한 살리지 않게 (M4).
-- 승인 기록(evaluation_spec)·성공 기준 추적은 D2·D3.
+- 승인(D2b)은 인터뷰 판본 확정·회사 사례 등록·공통 과제 승인을 한 트랜잭션으로 — interview/approval.py.
+  평가팀 전달 기록(evaluation_spec, 결정 3)·성공 기준 추적은 D3.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -36,7 +38,8 @@ CREATE TABLE IF NOT EXISTS public.recruiter_interview (
 );
 CREATE INDEX IF NOT EXISTS recruiter_interview_updated ON public.recruiter_interview (updated_at);
 """
-CLOSED_STAGES = ("discarded",)
+# 닫힌 단계 — 더 고치지 않고 대응표가 없다 (승인·폐기, 결정 4). 임시 저장·방치 정리 대상이 아니다
+CLOSED_STAGES = ("discarded", "approved")
 # 상태 저장 — 제출한 단계의 임시 저장을 함께 지운다 (지운 뒤 비면 drafts_started_at 도 비운다)
 _SAVE = (
     "UPDATE public.recruiter_interview SET state = %(state)s, revision = revision + 1, "
@@ -58,6 +61,23 @@ _SAVE_DRAFTS = (
     "THEN now() ELSE drafts_started_at END, draft_revision = draft_revision + 1 "
     "WHERE id = %(id)s AND draft_revision = %(draft_revision)s AND NOT (state->>'stage' = ANY(%(closed)s))"
 )
+
+
+async def save_in(
+    conn: AsyncConnection[Any], interview_id: str, revision: int, state: InterviewState
+) -> bool:
+    """닫는 저장 — 호출하는 쪽 트랜잭션 안에서 (승인: 회사 사례 등록·과제 승인과 함께, interview/approval.py).
+    판본이 맞을 때만 상태를 바꾸고 revision+1, 원문 임시 저장을 모두 지운다."""
+    cur = await conn.execute(
+        _SAVE_CLEAR_ALL,
+        {
+            "state": Jsonb(state.model_dump(mode="json")),
+            "bump": 1,
+            "id": interview_id,
+            "revision": revision,
+        },
+    )
+    return cur.rowcount == 1
 
 
 @dataclass(frozen=True)
@@ -133,6 +153,11 @@ class PgInterviewStore:
 
     async def close(self) -> None:
         await self._pool.close()
+
+    @property
+    def pool(self) -> AsyncConnectionPool:
+        """승인 확정(PgApprovalCommitter)이 같은 연결 풀에서 세 표를 한 트랜잭션으로 묶는다."""
+        return self._pool
 
     async def create(self, interview_id: str, state: InterviewState) -> InterviewRow:
         async with self._pool.connection() as conn:

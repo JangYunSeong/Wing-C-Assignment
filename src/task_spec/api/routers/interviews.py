@@ -10,16 +10,21 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command
 from pydantic import BaseModel, Field, StrictBool, StrictStr, model_validator
 
-from task_spec.api.deps import InterviewsDep
-from task_spec.interview.errors import InterviewError
-from task_spec.schemas import PublicIncident, TaskItem
+from task_spec.api.deps import InterviewApprovalDep, InterviewsDep
+from task_spec.graph.interview_approval import thread_id as approval_thread
+from task_spec.interview.errors import InterviewConflict, InterviewError, InterviewInvalid
+from task_spec.schemas import InterviewApprovalState, PublicIncident, TaskItem
+from task_spec.schemas.interview_approval import COMMON_ID
 from task_spec.schemas.interview_state import ANSWER_MAX, GeneralQuestion, TargetedQuestion
 
 logger = logging.getLogger(__name__)
@@ -338,3 +343,132 @@ async def save_step_drafts(
 async def discard(interview_id: str, interviews: InterviewsDep) -> dict[str, Any]:
     """폐기 — 이름 대응표·원문 임시 저장을 지운다. 되돌릴 수 없다 (새 인터뷰를 시작한다)."""
     return await interviews.discard(interview_id)
+
+
+# ================================================================ ⑨ 승인 (#266 D2b) — 그래프 thread 를 시작하고 resume 만 한다 (불변식 9)
+class InterviewApproveRequest(BaseModel):
+    revision: int = Field(ge=1)  # 화면이 본 인터뷰 판본 — 다르면 409
+    status: Literal["approved", "rejected"]
+    reviewer: str = Field(min_length=1, max_length=200)  # TODO(auth): 인증 전까지 요청 본문에서
+    at: datetime | None = None  # 없으면 서버 시각
+    comment: str | None = Field(default=None, max_length=1000)  # 반려면 필수 — resume 전에 가명화
+    replaces: str | None = Field(default=None, pattern=COMMON_ID)  # 화면이 보여 준 지금 인터뷰 과제
+
+
+class InterviewBuildRequest(BaseModel):
+    revision: int = Field(ge=1)
+    requested_by: str | None = Field(default=None, min_length=1, max_length=200)  # 없으면 승인자
+
+
+def _pending(snap: Any) -> dict[str, Any] | None:
+    for task in snap.tasks:
+        for itr in task.interrupts:
+            if isinstance(itr.value, dict):
+                return itr.value
+    return None
+
+
+def _closed(view: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "interview_id": view["interview_id"],
+        "revision": view["revision"],
+        "state": "closed",
+        "stage": view["stage"],
+        "approval": view.get("approval"),
+    }
+
+
+async def _waiting(
+    graph: Any, interview_id: str, revision: int, *, start: bool
+) -> dict[str, Any] | None:
+    """그 판본의 승인 thread — 없으면(start) 시작해 interrupt 까지. 기다리는 중이 아니면 None."""
+    cfg: RunnableConfig = {"configurable": {"thread_id": approval_thread(interview_id, revision)}}
+    snap = await graph.aget_state(cfg)
+    if not snap.values and start:
+        state = InterviewApprovalState(interview_id=interview_id, revision=revision)
+        await graph.ainvoke(state.model_dump(), cfg)
+        snap = await graph.aget_state(cfg)
+    return _pending(snap)
+
+
+@router.get("/{interview_id}/approval")
+async def get_approval(
+    interview_id: str, interviews: InterviewsDep, graph: InterviewApprovalDep
+) -> dict[str, Any]:
+    """승인 대기 내용 — 교체 대상(지금 승인된 인터뷰 과제)·승인할 수 없는 사유. 승인한 인터뷰는 닫힌 상태만."""
+    view = await interviews.get(interview_id)
+    if view["stage"] == "approved":
+        return _closed(view)
+    if view["stage"] != "task_review":
+        raise InterviewConflict("과제 검토 단계에서만 승인할 수 있습니다")
+    payload = await _waiting(graph, interview_id, view["revision"], start=True)
+    if payload is None:
+        raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
+    return {**payload, "state": "awaiting"}
+
+
+@router.post("/{interview_id}/approve")
+async def approve(
+    interview_id: str,
+    body: InterviewApproveRequest,
+    interviews: InterviewsDep,
+    graph: InterviewApprovalDep,
+) -> dict[str, Any]:
+    """승인·반려 — 그래프 resume 만 한다. 승인되면 닫힌 상태, 반려되면 인터뷰(과제 검토 단계·수정 요청),
+    그래프가 다시 기다리면(교체 미명시·승인할 수 없음·형식 오류) 422 + 사유."""
+    view = await interviews.get(interview_id)
+    if view["stage"] == "approved":
+        raise InterviewConflict("이미 승인한 인터뷰입니다")
+    if view["revision"] != body.revision or view["stage"] != "task_review":
+        raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
+    if await _waiting(graph, interview_id, body.revision, start=True) is None:
+        raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
+    comment = (
+        await interviews.pseudonymize_note(interview_id, body.comment)
+        if body.comment and body.comment.strip()
+        else None
+    )
+    decision = {
+        "status": body.status,
+        "reviewer": body.reviewer,
+        "at": (body.at or datetime.now(UTC)).isoformat(),
+        "comment": comment,
+        "replaces": body.replaces,
+    }
+    cfg: RunnableConfig = {
+        "configurable": {"thread_id": approval_thread(interview_id, body.revision)}
+    }
+    await graph.ainvoke(Command(resume=decision), cfg)
+    # 결과는 인터뷰 행으로 판정한다 — 같은 thread 에 결정이 동시에 들어오면(두 번 누름·두 화면) 확정은 잠금·판본으로 한 번뿐이지만
+    # 체크포인트는 마지막에 쓴 쪽이 이겨, 승인한 요청이 stale 을 읽을 수 있다 (code review W2)
+    after = await interviews.get(interview_id)
+    if after["stage"] == "approved":
+        if body.status == "approved":
+            return _closed(after)
+        raise InterviewConflict("그 사이 승인된 인터뷰입니다")
+    if (
+        body.status == "rejected"
+        and after["revision"] > body.revision
+        and after.get("review_note") == comment
+    ):
+        return after
+    snap = await graph.aget_state(cfg)
+    waiting = _pending(snap)
+    if waiting is not None:
+        raise InterviewInvalid(
+            waiting.get("error") or "결정이 적용되지 않았습니다 — 다시 불러오세요"
+        )
+    raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
+
+
+@router.post("/{interview_id}/builds", status_code=202)
+async def request_build(
+    interview_id: str, body: InterviewBuildRequest, interviews: InterviewsDep, response: Response
+) -> dict[str, Any]:
+    """승인한 과제의 시작 코드 빌드 요청 (포크와 같음) — 이미 만든 빌드나 진행 중 빌드가 있으면 그것(200)."""
+    out = await interviews.interview_build(
+        interview_id, revision=body.revision, requested_by=body.requested_by
+    )
+    if not out["created"]:
+        response.status_code = 200
+    return out

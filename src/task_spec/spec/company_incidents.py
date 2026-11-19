@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
+from psycopg import AsyncConnection, errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -252,6 +253,45 @@ def _check_new(company_id: str, incident: PublicIncident) -> None:
         )
 
 
+_INSERT = (
+    "INSERT INTO public.company_incident "
+    "(id, company_id, sub, incident, content_sha256, source, created_by) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *"
+)
+
+
+def _insert_params(
+    company_id: str, incident: PublicIncident, source: dict[str, Any], created_by: str
+) -> tuple[Any, ...]:
+    return (
+        incident.incident_id,
+        company_id,
+        incident.sub,
+        Jsonb(incident.model_dump(mode="json")),
+        content_sha256(incident),
+        Jsonb(source),
+        created_by,
+    )
+
+
+async def insert_incident(
+    conn: AsyncConnection[Any],
+    company_id: str,
+    incident: PublicIncident,
+    *,
+    source: dict[str, Any],
+    created_by: str,
+) -> None:
+    """등록 (pending) — 호출하는 쪽 트랜잭션 안에서 (인터뷰 승인이 인터뷰 판본 확정·과제 승인과 함께 묶는다, #266 D2b).
+    같은 id 가 있으면 ValueError (그 savepoint 만 되돌린다). 연락처·링크 검사(scan_incident)는 부르는 쪽이 먼저 한다."""
+    _check_new(company_id, incident)
+    try:
+        async with conn.transaction():
+            await conn.execute(_INSERT, _insert_params(company_id, incident, source, created_by))
+    except errors.UniqueViolation:
+        raise ValueError(f"이미 있는 사례 id: {incident.incident_id}") from None
+
+
 class InMemoryCompanyIncidents:
     """단위 테스트·DB 없는 앱용."""
 
@@ -399,20 +439,7 @@ class CompanyIncidentStore:
         _check_new(company_id, incident)
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             try:
-                await cur.execute(
-                    "INSERT INTO public.company_incident "
-                    "(id, company_id, sub, incident, content_sha256, source, created_by) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
-                    (
-                        incident.incident_id,
-                        company_id,
-                        incident.sub,
-                        Jsonb(incident.model_dump(mode="json")),
-                        content_sha256(incident),
-                        Jsonb(source),
-                        created_by,
-                    ),
-                )
+                await cur.execute(_INSERT, _insert_params(company_id, incident, source, created_by))
             except Exception as exc:  # psycopg.errors.UniqueViolation
                 if type(exc).__name__ == "UniqueViolation":
                     raise ValueError(f"이미 있는 사례 id: {incident.incident_id}") from None
