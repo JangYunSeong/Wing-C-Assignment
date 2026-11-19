@@ -152,3 +152,14 @@ def get_interviews(request: Request) -> InterviewService:
 
 
 InterviewsDep = Annotated[InterviewService, Depends(get_interviews)]
+
+
+def get_interview_approval(request: Request) -> CompiledStateGraph:
+    """인터뷰 과제 승인 그래프 (#266 D2b) — lifespan 이 체크포인터와 함께 만든다 (테스트는 app.state.interview_approval 에)."""
+    graph = getattr(request.app.state, "interview_approval", None)
+    if graph is None:
+        raise ServiceUnavailable("인터뷰 승인 그래프가 준비되지 않았습니다")
+    return graph  # type: ignore[no-any-return]
+
+
+InterviewApprovalDep = Annotated[CompiledStateGraph, Depends(get_interview_approval)]

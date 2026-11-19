@@ -38,6 +38,15 @@ from task_spec.interview.answers import (
     set_answer_questions,
     validation_current,
 )
+from task_spec.interview.approval import (
+    ApprovalCommit,
+    ApprovalCommitter,
+    ApprovalOutcome,
+    approval_problems,
+    blocked_findings,
+    interview_ref,
+    pattern_detect,
+)
 from task_spec.interview.errors import (
     InterviewClosed,
     InterviewConflict,
@@ -95,6 +104,7 @@ from task_spec.nodes.pseudonymize import (
     InterviewTextRejected,
 )
 from task_spec.nodes.pseudonymize.engine import RunMapping
+from task_spec.postings.company import company_id as company_key
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import PostingProfile, PublicIncident, TaskItem
 from task_spec.schemas.interview_answer import (
@@ -102,12 +112,14 @@ from task_spec.schemas.interview_answer import (
     TargetedAnswerDraftInput,
     TargetedAnswerDraftOutput,
 )
+from task_spec.schemas.interview_approval import InterviewApprovalDecision, InterviewApprovalResult
 from task_spec.schemas.interview_incident import IncidentInterviewInput, IncidentInterviewOutput
 from task_spec.schemas.interview_state import (
     ANSWER_MAX,
     ChatMessage,
     GeneralQuestion,
     IncidentConfirmation,
+    InterviewApprovalRecord,
     InterviewSpec,
     InterviewState,
     PostingContext,
@@ -117,10 +129,11 @@ from task_spec.schemas.interview_state import (
     TrapAnswers,
 )
 from task_spec.schemas.pseudo_text import PseudonymizedText
-from task_spec.spec.company_incidents import new_incident_id
+from task_spec.spec.company_incidents import Detect, new_incident_id
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID
 from task_spec.spec.incidents import incident_block, known_cases_block
-from task_spec.spec.store import CommonKey, CommonTaskRepo
+from task_spec.spec.store import CommonKey, CommonTaskRepo, InterviewTaskConflict, StoredCommon
+from task_spec.starter.store import BuildRepo, BuildRuleError
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +213,11 @@ class InterviewService:
     draft_ttl: timedelta = timedelta(days=1)
     tasks: TaskMaker | None = None  # 과제 생성기 묶음 (D2a — 온톨로지·LLM)
     common_store: CommonTaskRepo | None = None  # 공통 과제 저장소 (interview:{id} 초안)
+    approvals: ApprovalCommitter | None = None  # 승인 확정 — 세 표를 한 트랜잭션으로 (D2b)
+    builds: BuildRepo | None = (
+        None  # 승인한 과제의 시작 코드 빌드 요청 (POST /interviews/{id}/builds)
+    )
+    detect: Detect = pattern_detect  # 회사 사례 등록 검사 (연락처·링크)
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     _locks: _KeyedLocks = field(default_factory=_KeyedLocks)
 
@@ -241,6 +259,10 @@ class InterviewService:
         if row is None:
             raise InterviewNotFound("인터뷰를 찾을 수 없습니다")
         if open_only and row.state.stage in CLOSED_STAGES:
+            if row.state.stage == "approved":
+                raise InterviewClosed(
+                    "승인한 인터뷰는 고치지 않습니다. 과제를 바꾸려면 새 인터뷰로 교체해 주세요"
+                )
             raise InterviewClosed("폐기된 인터뷰입니다. 새 인터뷰를 시작해 주세요")
         return row
 
@@ -1030,6 +1052,7 @@ class InterviewService:
                         ontology_version=profile.ontology_version,
                     )
                 )
+                self._registrable(coding_incident)
                 made = await self._llm(
                     tasks.make(
                         chosen,
@@ -1323,6 +1346,206 @@ class InterviewService:
             )
         state.stage = "task_review"
 
+    # ================================================================ ⑨ 승인 (D2b, #266) — 그래프 graph/interview_approval.py 가 부른다
+    def _registrable(self, incident: PublicIncident) -> None:
+        """회사 사례로 등록할 수 있는 내용인가 (연락처·링크) — 승인 때 막히지 않게 과제를 만들 때 먼저 본다.
+        기능형 재료(feature)는 LLM 이 쓴 글이라 다시 받으면 되고(OutputRejected), 확인한 사례 쪽이면 사례를 고쳐야 한다."""
+        found = blocked_findings(incident, self.detect)
+        if any(f.field == "feature" for f in found):
+            raise OutputRejected("기능형 재료에 연락처·링크 형식이 있습니다")
+        if found:
+            raise TaskGenerationFailed(
+                "확인한 사례에 연락처·링크 형식이 있어 회사 사례로 등록할 수 없습니다. 사례를 고쳐 주세요"
+            )
+
+    async def _approval_check(
+        self, row: InterviewRow
+    ) -> tuple[list[str], StoredCommon | None, str | None]:
+        """(승인할 수 없는 사유, 지금 승인된 인터뷰 과제, 공고 회사 id) — 읽기만."""
+        state = row.state
+        spec = state.spec
+        stored = current = None
+        if spec is not None and self.common_store is not None:
+            stored = await self.common_store.reusable(
+                CommonKey(spec.posting_id, spec.ontology_version, interview_ref(row.id))
+            )
+            current = await self.common_store.interview_task(spec.posting_id, spec.ontology_version)
+        company = company_key(await self.postings.company(state.posting_id))
+        blocked = (
+            await asyncio.to_thread(blocked_findings, spec.coding_incident, self.detect)
+            if spec is not None
+            else []
+        )
+        problems = approval_problems(state, stored, company, blocked)
+        if self.approvals is None or self.common_store is None:
+            problems.append("승인 저장소가 준비되지 않았습니다")
+        return problems, current, company
+
+    async def approval_context(self, interview_id: str, revision: int) -> dict[str, Any] | None:
+        """승인 대기 내용 (interrupt 앞 — 읽기만). 그 판본이 지금 과제 검토 단계가 아니면 None (stale).
+        인터뷰·과제 본문은 싣지 않는다 — 체크포인트에 사본을 두지 않는다 (화면은 GET /interviews/{id} 로 본다)."""
+        row = await self.store.get(interview_id)
+        if row is None or row.revision != revision or row.state.stage != "task_review":
+            return None
+        problems, current, company = await self._approval_check(row)
+        spec = row.state.spec
+        return {
+            "interview_id": interview_id,
+            "revision": revision,
+            "posting_id": row.state.posting_id,
+            "ontology_version": spec.ontology_version if spec else None,
+            "common_id": spec.common_task.task_id if spec else None,
+            "incident_id": spec.coding_incident.incident_id if spec else None,
+            "company_id": company,
+            "review_flag_count": len(spec.review_flags) if spec else 0,
+            # 교체 대상 — 이 공고(같은 온톨로지 판)에 이미 승인된 인터뷰 과제. 그 과제로 진행한 지원자 수는 [미정]
+            "current": {
+                "common_id": current.id,
+                "approved_by": current.approved_by,
+                "approved_at": current.approved_at.isoformat() if current.approved_at else None,
+            }
+            if current is not None
+            else None,
+            "problems": problems,
+        }
+
+    async def finalize_approval(
+        self, interview_id: str, revision: int, decision: InterviewApprovalDecision
+    ) -> ApprovalOutcome:
+        """승인 확정 — 인터뷰 잠금 안에서 다시 검사하고 한 트랜잭션으로 확정, 커밋 뒤 대응표를 지운다.
+        판본이 바뀌었으면 stale, 교체 충돌·검사 실패면 사유를 붙여 다시 기다린다."""
+        async with self._lock(interview_id):
+            row = await self.store.get(interview_id)
+            if row is None or row.revision != revision or row.state.stage != "task_review":
+                return ApprovalOutcome(result="stale")
+            problems, _, company = await self._approval_check(row)
+            spec = row.state.spec
+            if problems or spec is None or company is None or self.approvals is None:
+                return ApprovalOutcome(error="승인할 수 없습니다: " + "; ".join(problems[:3]))
+            state = row.state.model_copy(deep=True)
+            state.stage = "approved"
+            state.review_note = None
+            state.approval = InterviewApprovalRecord(
+                reviewer=decision.reviewer,
+                at=decision.at.isoformat(),
+                revision=revision,
+                common_id=spec.common_task.task_id,
+                incident_id=spec.coding_incident.incident_id,
+                replaced=decision.replaces,
+                comment=decision.comment,
+            )
+            commit = ApprovalCommit(
+                interview_id=interview_id,
+                revision=revision,
+                state=state,
+                company_id=company,
+                # 기준 답안·인터뷰 본문(known_incident_cases)은 회사 사례에 넣지 않는다 — 채점 근거이고, 사례 모음·/incidents 로
+                # 다른 공고 담당자에게 보일 이유가 없다 (빌더·다른 공고 생성은 쓰지 않음). 인터뷰 상태에는 남는다 (privacy-auditor M1)
+                incident=spec.coding_incident.model_copy(update={"known_incident_cases": []}),
+                common_id=spec.common_task.task_id,
+                reviewer=decision.reviewer,
+                at=decision.at,
+                replaces=decision.replaces,
+            )
+            try:
+                ok = await self.approvals.commit(commit)
+            except (
+                InterviewTaskConflict
+            ) as exc:  # 교체 미명시·그 사이 다른 승인 — 메시지는 과제 id 뿐
+                return ApprovalOutcome(error=str(exc))
+            except (
+                KeyError,
+                ValueError,
+            ) as exc:  # 저장본 없음·사례 id 중복·교체된 과제 — 메시지는 고정 문구만
+                logger.warning(
+                    "interview_approve_rejected id=%s type=%s", interview_id, type(exc).__name__
+                )
+                return ApprovalOutcome(
+                    error="공통 과제 저장본을 찾을 수 없습니다. 과제를 다시 생성해 주세요"
+                    if isinstance(exc, KeyError)
+                    else "승인을 저장하지 못했습니다 — 같은 사례가 이미 등록됐거나 교체된 과제입니다. 새로고침 후 다시 시도해 주세요"
+                )
+            if not ok:
+                return ApprovalOutcome(result="stale")
+            try:
+                # 결정 4 — 승인하면 대응표 삭제
+                await asyncio.to_thread(self.pseudo.delete, interview_id)
+            except OSError as exc:  # 승인은 됐다 — 닫힌 인터뷰의 대응표는 정리 작업이 다시 지운다
+                logger.error(
+                    "interview_mapping_delete_failed id=%s type=%s",
+                    interview_id,
+                    type(exc).__name__,
+                )
+            logger.info(
+                "interview_approved id=%s common=%s incident=%s replaced=%s",
+                interview_id,
+                spec.common_task.task_id,
+                spec.coding_incident.incident_id,
+                decision.replaces,
+            )
+            return ApprovalOutcome(result="approved", common_id=spec.common_task.task_id)
+
+    async def reject_approval(
+        self, interview_id: str, revision: int, decision: InterviewApprovalDecision
+    ) -> InterviewApprovalResult:
+        """반려 — 사유(가명화한 글)를 수정 요청(review_note)으로 남기고 과제 검토 단계 그대로. 판본이 올라가 새 승인 thread 가 된다."""
+        async with self._lock(interview_id):
+            row = await self.store.get(interview_id)
+            if row is None or row.revision != revision or row.state.stage != "task_review":
+                return "stale"
+            state = row.state.model_copy(deep=True)
+            state.review_note = decision.comment
+            updated = await self.store.save(interview_id, revision, state)
+            return "rejected" if updated is not None else "stale"
+
+    async def pseudonymize_note(self, interview_id: str, text: str) -> str:
+        """승인·반려 사유를 resume 전에 가명화한다 — 체크포인트에 원문이 남지 않게, 반려 사유는 다음 생성의 수정 요청으로 간다.
+        새 토큰이 생기면 대응표를 바로 저장한다 (토큰은 더하기만)."""
+        async with self._lock(interview_id):
+            await self._load(interview_id)
+            mapping = self._mapping(interview_id)
+            out = await self._pseudonymize(text, mapping)
+            await asyncio.to_thread(self.pseudo.save, interview_id, mapping)
+            return out
+
+    async def interview_build(
+        self, interview_id: str, *, revision: int, requested_by: str | None
+    ) -> dict[str, Any]:
+        """승인한 과제의 시작 코드 빌드 (포크 POST /interviews/{id}/builds) — 이미 만든 빌드(검토·승인·배포)나
+        진행 중 빌드가 있으면 그것. 승인과 따로 둔다 [확정: 2026-11-19 사용자 — 포크처럼 별도 요청]."""
+        row = await self._load(interview_id, open_only=False)
+        self._expect_revision(row, revision)
+        approval = row.state.approval
+        if row.state.stage != "approved" or approval is None:
+            raise InterviewConflict("승인한 인터뷰에서만 빌드를 요청할 수 있습니다")
+        if self.builds is None:
+            raise InterviewNotReady("코딩 과제 빌더가 준비되지 않았습니다")
+        ready = next(
+            (
+                b
+                for b in await self.builds.builds(approval.common_id)
+                if b.status in ("review", "approved", "published")
+            ),
+            None,
+        )
+        if ready is not None:
+            build, created = ready, False
+        else:
+            try:
+                build, created = await self.builds.request_build(
+                    approval.common_id, requested_by or approval.reviewer
+                )
+            except (KeyError, BuildRuleError):
+                raise InterviewConflict(
+                    "이 과제는 빌드를 요청할 수 없습니다 — 다른 인터뷰 과제로 교체됐는지 확인해 주세요"
+                ) from None
+        return {
+            "build_id": build.build_id,
+            "status": build.status,
+            "created": created,
+            "url": f"/ui/builds.html#{build.build_id}",
+        }
+
     # ================================================================ 앞 단계로·임시 저장·폐기
     async def revise(
         self,
@@ -1396,6 +1619,10 @@ class InterviewService:
         """담당자가 인터뷰를 폐기한다 — 이름 대응표·임시 저장을 지운다. 가명화한 대화는 남는다."""
         async with self._lock(interview_id):
             row = await self._load(interview_id, open_only=False)
+            if row.state.stage == "approved":
+                raise InterviewClosed(
+                    "승인한 인터뷰는 폐기하지 않습니다. 과제를 바꾸려면 새 인터뷰로 교체해 주세요"
+                )
             if row.state.stage in CLOSED_STAGES:
                 return self.view(row)
             view = await self._close(row, "recruiter")
@@ -1412,6 +1639,14 @@ class InterviewService:
         if updated is None:
             raise InterviewConflict(_STALE)
         await asyncio.to_thread(self.pseudo.delete, row.id)
+        if self.common_store is not None:
+            # 폐기한 인터뷰의 과제 초안 판 — 가명화한 글뿐이지만 쓸 곳이 없다 (D2b [확정: 2026-11-19 사용자])
+            try:
+                await self.common_store.drop_interview_drafts(interview_ref(row.id))
+            except Exception as exc:  # noqa: BLE001 — 폐기는 이미 됐다. 남은 초안은 지원자 실행이 쓰지 않는다
+                logger.error(
+                    "interview_drafts_drop_failed id=%s type=%s", row.id, type(exc).__name__
+                )
         logger.info("interview_discarded id=%s reason=%s", row.id, reason)
         return self.view(updated)
 

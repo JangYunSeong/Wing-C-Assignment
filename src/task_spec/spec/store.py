@@ -96,6 +96,7 @@ class StoredCommon(BaseModel):
     task: TaskItem
     provenance: list[Provenance] = Field(default_factory=list)
     approved_by: str | None = None
+    approved_at: datetime | None = None
 
 
 class CommonTaskRepo(Protocol):
@@ -125,6 +126,11 @@ class CommonTaskRepo(Protocol):
         self, common_id: str, reviewer: str, at: datetime, *, replaces: str | None = None
     ) -> None:
         """채용담당자 승인 — 이미 승인된 인터뷰 과제가 있으면 `replaces` 로 그 id 를 짚어야 바꾼다 (InterviewTaskConflict)."""
+        ...
+
+    async def drop_interview_drafts(self, prompt_ref: str, *, keep: str | None = None) -> int:
+        """인터뷰(interview:{id})의 초안 판을 지운다 — 폐기한 인터뷰, 승인한 인터뷰의 다른 판 (keep 은 남김).
+        승인·교체된 판은 지우지 않는다. 빌드는 승인된 과제만 받으므로 초안에 걸린 빌드는 없다 (#266 D2b)."""
         ...
 
     async def incident_usage(
@@ -158,7 +164,7 @@ def _normalized(stored: StoredCommon) -> StoredCommon:
 def _stored(row: dict[str, Any]) -> StoredCommon:
     return StoredCommon(
         prompt_ref=row["key"].prompt_ref,
-        **{k: v for k, v in row.items() if k not in ("key", "approved_at")},
+        **{k: v for k, v in row.items() if k != "key"},
     )
 
 
@@ -272,6 +278,17 @@ class InMemoryCommonStore:
             current["status"] = "superseded"
         row["status"], row["approved_by"], row["approved_at"] = "approved", reviewer, at
 
+    async def drop_interview_drafts(self, prompt_ref: str, *, keep: str | None = None) -> int:
+        if not is_interview_ref(prompt_ref):
+            raise ValueError(f"인터뷰 과제 키가 아닙니다: {prompt_ref}")
+        gone = [
+            r
+            for r in self.rows
+            if r["key"].prompt_ref == prompt_ref and r["status"] == "draft" and r["id"] != keep
+        ]
+        self.rows = [r for r in self.rows if not any(r is g for g in gone)]
+        return len(gone)
+
     async def incident_usage(
         self, incident_ids: list[str], *, exclude_posting: str
     ) -> dict[str, int]:
@@ -325,6 +342,7 @@ class CommonTaskStore:
             task=TaskItem.model_validate(r["task"]),
             provenance=[Provenance.model_validate(p) for p in r["provenance"]],
             approved_by=r["approved_by"],
+            approved_at=r.get("approved_at"),
         )
 
     async def reusable(self, key: CommonKey) -> StoredCommon | None:
@@ -445,6 +463,10 @@ class CommonTaskStore:
         async with self._pool.connection() as conn, conn.transaction():
             await approve_interview_task(conn, common_id, reviewer, at, replaces=replaces)
 
+    async def drop_interview_drafts(self, prompt_ref: str, *, keep: str | None = None) -> int:
+        async with self._pool.connection() as conn:
+            return await drop_interview_drafts(conn, prompt_ref, keep=keep)
+
     async def incident_usage(
         self, incident_ids: list[str], *, exclude_posting: str
     ) -> dict[str, int]:
@@ -556,6 +578,20 @@ async def approve_interview_task(
         # 같은 공고의 다른 인터뷰 승인이 먼저 끝났다 (common_task_one_interview)
         now = await _approved_interview_id(conn, posting_id, version)
         raise InterviewTaskConflict(posting_id, now, replaces) from None
+
+
+async def drop_interview_drafts(
+    conn: AsyncConnection[Any], prompt_ref: str, *, keep: str | None = None
+) -> int:
+    """인터뷰 초안 판 지우기 (호출하는 쪽 트랜잭션 안에서도 쓴다 — 인터뷰 승인)."""
+    if not is_interview_ref(prompt_ref):
+        raise ValueError(f"인터뷰 과제 키가 아닙니다: {prompt_ref}")
+    cur = await conn.execute(
+        "DELETE FROM public.common_task WHERE prompt_ref = %s AND status = 'draft' "
+        "AND id IS DISTINCT FROM %s",
+        (prompt_ref, keep),
+    )
+    return cur.rowcount
 
 
 async def _approved_interview_id(

@@ -209,6 +209,16 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 빌더: 명세 `source_incident` 로 공개 사례는 파일, 회사 사례는 DB 에서 찾는다 (`RealSteps.incident_for`). 재료 id 가 있는데 못 찾으면 다른 재료로
   바꾸지 않고 실패 (예전에는 말없이 직군의 다른 사례로 빌드). builder DB 역할에 `company_incident` 읽기 권한 (`db-role.sql`).
 
+## 채용담당자 인터뷰 승인 [확정: 2026-11-19 사용자] (`graph/interview_approval.py`, `interview/approval.py`, `/interviews/{id}/approval`)
+
+- 인터뷰 대화(사례·기준 답안 → 기능형 공통 과제)는 API + 형 있는 상태(마법사)이고, **승인만 interrupt 그래프**다 (결정 2 — 결정 1 로 이 승인이
+  공고 지원자 전원의 공통 과제를 정한다). 빌드 승인·회사 사례 공유 그래프와 같은 모양, 같은 체크포인터.
+- thread = (인터뷰, 판본) `interview-{id}-r{판본}`. resume 하면 노드가 지금 판본·단계(task_review)를 다시 보고 다르면 stale.
+  interrupt 앞은 읽기만 (승인 전 검사·교체 대상), 대기 내용에 인터뷰·과제 본문 없음. 사유가 있으면 승인은 다시 대기, 반려는 받음.
+- 확정은 인터뷰 잠금 안에서 **한 트랜잭션**: 인터뷰 approved → 사례 `co:` 등록(pending — 공유 승인은 위 그래프가 따로) →
+  `approve_interview_task(replaces=)` → 같은 인터뷰의 다른 초안 삭제. 충돌이면 아무것도 바뀌지 않고 사유를 붙여 다시 대기. 커밋 뒤 대응표 삭제.
+- 반려 = 사유(API 가 가명화)를 review_note 로, 단계 task_review 유지 → 판본이 올라가 새 thread. 승인한 인터뷰는 닫힌다(고치려면 새 인터뷰로 교체).
+
 ## 지원서 사용 범위 — 이력서만 [확정: 2026-11-03 사용자]
 
 - 검증할 주장은 **이력서에서만** 뽑는다. `USE_COVER_LETTERS=false`(기본): API 는 자기소개서를 저장하지 않고 응답 `ignored` 로 알리고,

@@ -22,6 +22,8 @@ from task_spec.delivery.sender import DeliverySender
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.graph.build_approval import build_approval_graph
 from task_spec.graph.incident_share import incident_share_graph
+from task_spec.graph.interview_approval import interview_approval_graph
+from task_spec.interview.approval import PgApprovalCommitter
 from task_spec.interview.postings import PostingSource
 from task_spec.interview.service import InterviewService, sweep_forever
 from task_spec.interview.store import PgInterviewStore
@@ -110,6 +112,9 @@ def create_app(
             ontology_version=lists.version,
             tasks=OntologyTaskMaker(ontology=app.state.ontology, llm=llm, prompts=prompts),
             common_store=common_store,
+            # 승인 확정 — 인터뷰·회사 사례·공통 과제를 같은 연결로 한 트랜잭션에 (D2b)
+            approvals=PgApprovalCommitter(interview_store.pool),
+            builds=app.state.builds,
             mapping_ttl=timedelta(days=app.state.settings.interview_mapping_ttl_days),
             draft_ttl=timedelta(hours=app.state.settings.interview_draft_ttl_hours),
         )
@@ -145,6 +150,8 @@ def create_app(
             app.state.build_approval = build_approval_graph(app.state.builds, cp)
             # 회사 사례 공유 승인 — 같은 체크포인터, thread 는 (사례, 내용)마다
             app.state.incident_share = incident_share_graph(company_incidents, cp)
+            # 인터뷰 과제 승인 — 같은 체크포인터, thread 는 (인터뷰, 판본)마다 (결정 2, #266 D2b)
+            app.state.interview_approval = interview_approval_graph(app.state.interviews, cp)
             try:
                 yield
             finally:

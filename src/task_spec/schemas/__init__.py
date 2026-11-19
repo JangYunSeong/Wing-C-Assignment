@@ -173,6 +173,11 @@ from task_spec.schemas.interview_answer import (
     TargetedAnswerDraftInput,
     TargetedAnswerDraftOutput,
 )
+from task_spec.schemas.interview_approval import (
+    InterviewApprovalDecision,
+    InterviewApprovalResult,
+    InterviewApprovalState,
+)
 from task_spec.schemas.interview_case import KnownIncidentCase
 from task_spec.schemas.interview_incident import (
     IncidentInterviewInput,
@@ -257,6 +262,9 @@ __all__ = [
     "IncidentShareDecision",
     "IncidentShareResult",
     "IncidentShareState",
+    "InterviewApprovalDecision",
+    "InterviewApprovalResult",
+    "InterviewApprovalState",
     "ReviewDecision",
     "CompileError",
     "ResultClass",
