@@ -11,6 +11,7 @@ BEGIN
 END $$;
 GRANT USAGE ON SCHEMA public TO task_builder;
 GRANT SELECT ON public.common_task TO task_builder;                                   -- 명세·판·상태 (superseded 확인)
+GRANT SELECT ON public.company_incident TO task_builder;                              -- 회사 결정적 사건 재료 (co:…, 읽기만)
 GRANT SELECT, INSERT, UPDATE ON public.common_task_build TO task_builder;             -- 큐·상태·결과 (claim 은 FOR UPDATE)
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.starter_file TO task_builder;          -- 오버레이·README (죽은 작업 복구 때 지움)
 GRANT SELECT, INSERT, UPDATE ON public.build_artifact TO task_builder;                -- 묶음 등록, 확정 때 파일 목록 갱신 (#130)

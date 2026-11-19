@@ -137,10 +137,11 @@ function rememberLabel(id, label) {
 const labelOf = (id) => keep.get("labels", {})[id] || id;
 
 /* ── STEP 1 공고 ───────────────────── */
-const posting = { mode: 0, bodyMode: 0, suggestion: null, confirmedId: null, picked: null, searched: false };
+const posting = { mode: 0, bodyMode: 0, suggestion: null, confirmedId: null, confirmedMeta: null, picked: null, searched: false };
 seg(["pm-text", "pm-id"], ["posting-text-pane", "posting-id-pane"], (i) => {
   posting.mode = i;
   if (i === 1 && !posting.searched) searchPostings();
+  syncRunMeta();
 });
 
 let searchTimer = null;
@@ -172,7 +173,14 @@ function renderHits(hits) {
   ul.querySelectorAll("button[data-i]").forEach((b) =>
     b.addEventListener("click", () => {
       const h = hits[Number(b.dataset.i)];
-      pickPosting({ id: h.posting_id, label: postingName(h), meta: [h.sub, h.industry_id].filter(Boolean).join(" · ") });
+      pickPosting({
+        id: h.posting_id,
+        label: postingName(h),
+        meta: [h.sub, h.industry_id].filter(Boolean).join(" · "),
+        career: h.career_level || null,
+        careerSource: h.career_level_source || null,
+        company: h.company || null,
+      });
       ul.querySelectorAll("button[data-i]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     }),
   );
@@ -183,8 +191,10 @@ function pickPosting(p) {
   const box = $("#posting-picked");
   box.innerHTML = `<span class="eyebrow">고른 공고</span><div class="row"><strong>${esc(p.label)}</strong><button type="button" class="link-btn" id="unpick">다시 고르기</button></div><span class="mono">${esc(p.id)}${p.meta ? ` · ${esc(p.meta)}` : ""}</span>`;
   box.hidden = false;
+  syncRunMeta();
   $("#unpick").addEventListener("click", () => {
     posting.picked = null;
+    syncRunMeta();
     box.hidden = true;
     $("#posting-hits").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", "false"));
     $("#posting-q").focus();
@@ -204,9 +214,39 @@ $("#confirmed-by").value = keep.get("confirmedBy", "");
 function invalidateSuggestion() {
   posting.suggestion = null;
   posting.confirmedId = null;
+  posting.confirmedMeta = null;
   $("#cands").hidden = true;
   $("#confirmed").hidden = true;
   say($("#confirm-msg"), "");
+  syncRunMeta();
+}
+
+/* 실행 만들기의 공고 정보 — 공고에 사람이 정한 신입·경력이 없으면 API 가 요구한다 (#255, 받은 값은 공고에 저장).
+   회사는 선택 — 공고에 회사가 없을 때 정하면 공고에 저장되고, 그 회사의 공유 사례를 공통 과제에 쓴다. 다른 회사면 409. */
+function syncRunMeta() {
+  const hint = [];
+  let career = "";
+  if (posting.mode === 0 && posting.confirmedId) {
+    const set = posting.confirmedMeta || {}; // 이 공고로 실행을 만들며 정한 값
+    const cand = posting.suggestion && posting.suggestion.career_level_candidate;
+    if (set.career) hint.push(`신입·경력: 공고에 정한 값 ${set.career}`);
+    else {
+      career = cand || "";
+      hint.push(cand ? `신입·경력: 공고 문구 추정 ${cand} — 맞는지 확인하세요` : "신입·경력: 공고에 정한 값이 없습니다 — 고르세요");
+    }
+    const c = $("#p-company").value.trim() || set.company;
+    hint.push(c ? `회사: ${c}` : "회사: 공고에 없습니다 — 회사 사례를 쓰려면 적으세요");
+  } else if (posting.mode === 1 && posting.picked) {
+    const p = posting.picked;
+    if (p.careerSource === "confirmed") hint.push(`신입·경력: 공고에 정한 값 ${p.career}`);
+    else {
+      career = p.career || "";
+      hint.push(p.career ? `신입·경력: 공고 문구 추정 ${p.career} — 맞는지 확인하세요` : "신입·경력: 공고에 정한 값이 없습니다 — 고르세요");
+    }
+    hint.push(p.company ? `회사: ${p.company}` : "회사: 공고에 없습니다 — 회사 사례를 쓰려면 적으세요");
+  }
+  $("#run-career").value = career;
+  $("#run-meta-hint").textContent = hint.join(" · ");
 }
 ["#p-company", "#p-title", "#p-body"].forEach((s) => $(s).addEventListener("input", invalidateSuggestion));
 $("#p-file").addEventListener("change", (ev) => {
@@ -284,6 +324,8 @@ $("#confirm-btn").addEventListener("click", async () => {
       }),
     );
     posting.confirmedId = r.posting_id;
+    posting.confirmedMeta = null;
+    syncRunMeta();
     rememberLabel(r.posting_id, [$("#p-company").value.trim(), $("#p-title").value.trim()].filter(Boolean).join(" · "));
     const box = $("#confirmed");
     box.innerHTML = `<span class="mono">${esc(r.posting_id)}</span><span>임시 공고 · 역량 <b class="num">${r.competencies}</b>개 · 매칭 안 된 문장 <b class="num">${r.unmatched_lines}</b>개</span>`;
@@ -344,9 +386,22 @@ $("#run-form").addEventListener("submit", async (ev) => {
   const fd = new FormData();
   fd.append("posting_id", pid);
   fd.append("resumes", file, file.name);
+  const career = $("#run-career").value;
+  const company = $("#run-company").value.trim();
+  if (career) fd.append("career_level", career);
+  if (company) fd.append("company", company);
   try {
     const r = await busy($("#run-btn"), "보내는 중…", () => api("POST", "/runs", { form: fd }));
     rememberRun(r.run_id, pid);
+    // 이번에 정한 값은 공고에 저장됐다 — 다음 실행부터는 공고에 정한 값으로 보인다
+    if (posting.mode === 1 && posting.picked) {
+      if (career) Object.assign(posting.picked, { career, careerSource: "confirmed" });
+      if (company && !posting.picked.company) posting.picked.company = company;
+    } else if (posting.mode === 0) {
+      const set = posting.confirmedMeta || {};
+      posting.confirmedMeta = { career: set.career || career || null, company: set.company || company || null };
+    }
+    syncRunMeta();
     say(msg, "실행을 시작했습니다. 처음 보는 공고면 공통 과제를 만드느라 3~5분 걸립니다.", "ok");
     openRun(r.run_id, { live: true });
   } catch (e) {

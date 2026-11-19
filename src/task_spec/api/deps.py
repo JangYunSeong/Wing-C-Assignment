@@ -19,6 +19,7 @@ from task_spec.ontology.repository import OntologyRepository
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
+from task_spec.spec.company_incidents import CompanyIncidentRepo
 from task_spec.spec.store import CommonTaskRepo
 from task_spec.starter.store import BuildRepo
 
@@ -117,3 +118,25 @@ def get_build_approval(request: Request) -> CompiledStateGraph:
 
 
 BuildApprovalDep = Annotated[CompiledStateGraph, Depends(get_build_approval)]
+
+
+def get_company_incidents(request: Request) -> CompanyIncidentRepo:
+    """회사 결정적 사건 저장소 — lifespan 이 연다 (테스트는 app.state.company_incidents 에)."""
+    store = getattr(request.app.state, "company_incidents", None)
+    if store is None:
+        raise ServiceUnavailable("회사 사례 저장소가 준비되지 않았습니다 (DB 미연결)")
+    return store  # type: ignore[no-any-return]
+
+
+CompanyIncidentsDep = Annotated[CompanyIncidentRepo, Depends(get_company_incidents)]
+
+
+def get_incident_share(request: Request) -> CompiledStateGraph:
+    """회사 사례 공유 승인 그래프 — lifespan 이 실행 그래프와 같은 체크포인터로 만든다 (테스트는 app.state.incident_share 에)."""
+    graph = getattr(request.app.state, "incident_share", None)
+    if graph is None:
+        raise ServiceUnavailable("회사 사례 공유 승인 그래프가 준비되지 않았습니다")
+    return graph  # type: ignore[no-any-return]
+
+
+IncidentShareDep = Annotated[CompiledStateGraph, Depends(get_incident_share)]

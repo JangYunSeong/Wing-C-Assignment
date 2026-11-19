@@ -133,7 +133,8 @@ class FeatureSeed(Schema):
 
 
 class PublicIncident(Schema):
-    incident_id: str = Field(pattern=r"^pub:[a-z_.]+:[a-z0-9-]+$")
+    # pub: 공개 사례(incidents/public_v1 파일) / co: 회사 결정적 사건 (DB, spec/company_incidents.py) [2026-11-19 사용자]
+    incident_id: str = Field(pattern=r"^(?:pub|co):[a-z_.]+:[a-z0-9-]+$")
     sub: str
     title: str
     org: str

@@ -49,7 +49,7 @@ from task_spec.spec.common import (
     FEATURE_BUILD_MIN,
     FEATURE_DEBUG_MIN,
     FLAG_NO_INCIDENT,
-    FLAG_PUBLIC_INCIDENT,
+    incident_flag,
 )
 from task_spec.spec.draft import (
     _ART_ID,
@@ -1107,7 +1107,9 @@ def apply_feature(task: TaskItem, res: DraftResult) -> TaskItem:
             "source_incident": res.incident_id,
             "review_flags": [
                 *(
-                    FLAG_PUBLIC_INCIDENT if f == FLAG_NO_INCIDENT and res.incident_id else f
+                    incident_flag(res.incident_id)
+                    if f == FLAG_NO_INCIDENT and res.incident_id
+                    else f
                     for f in task.review_flags
                 ),
                 *res.flags,

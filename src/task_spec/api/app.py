@@ -14,21 +14,24 @@ from langgraph.graph.state import CompiledStateGraph
 from task_spec.api.deps import PostingsContext
 from task_spec.api.errors import install_error_handlers
 from task_spec.api.launcher import RunLauncher
-from task_spec.api.routers import builds, health, postings, pull, runs, ui
+from task_spec.api.routers import builds, health, incidents, postings, pull, runs, ui
 from task_spec.config import Settings, get_settings
 from task_spec.delivery.sender import DeliverySender
 from task_spec.graph import build_graph, make_checkpointer
 from task_spec.graph.build_approval import build_approval_graph
+from task_spec.graph.incident_share import incident_share_graph
 from task_spec.llm.factory import build_llm_client
 from task_spec.logging_setup import configure_logging
 from task_spec.nodes.ingest import FileIngestor
 from task_spec.nodes.pseudonymize import RulePseudonymizer
 from task_spec.ontology.relatedness import load_relatedness
 from task_spec.ontology.repository import OntologyRepository
+from task_spec.postings.company import posting_companies
 from task_spec.postings.store import PostingStore
 from task_spec.postings.suggest import load_lists
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve import build_retriever
+from task_spec.spec.company_incidents import CompanyIncidentStore
 from task_spec.spec.incidents import load_incidents
 from task_spec.spec.store import CommonTaskStore
 from task_spec.starter.store import PgBuildStore
@@ -72,6 +75,17 @@ def create_app(
         )
         await app.state.delivery.recover()
         app.state.common_store = common_store  # 명세 승인 전 공통 과제 확인 (runs.approve_run)
+        # 회사 결정적 사건 (같은 회사 공고에서 공유 승인된 사례를 공개 사례보다 먼저) [확정: 2026-11-19 사용자]
+        company_incidents = await CompanyIncidentStore.open(
+            app.state.settings.database_url.get_secret_value()
+        )
+        app.state.company_incidents = company_incidents
+
+        async def company_of(posting_id: str) -> str | None:
+            found = await posting_companies([posting_id], ontology=app.state.ontology, store=store)
+            c = found.get(posting_id)
+            return c.company_id if c is not None else None
+
         app.state.postings = PostingsContext(store=store, lists=lists, llm=llm, prompts=prompts)
         pseudonymizer = RulePseudonymizer(app.state.settings.data_dir)
         await pseudonymizer.warm_up()  # Kiwi 모델 로드(수 초)를 첫 요청이 아니라 기동 때
@@ -92,10 +106,14 @@ def create_app(
                 incidents=load_incidents(app.state.settings.incidents_dir),
                 use_cover_letters=app.state.settings.use_cover_letters,
                 feature_task_default=app.state.settings.feature_task_default,
+                company_incidents=company_incidents,
+                company_of=company_of,
             )
             app.state.launcher = RunLauncher(app.state.graph)
             # 빌드(시작 코드) 승인 — 실행 그래프와 같은 체크포인터, thread 는 빌드·결과마다 (#130)
             app.state.build_approval = build_approval_graph(app.state.builds, cp)
+            # 회사 사례 공유 승인 — 같은 체크포인터, thread 는 (사례, 내용)마다
+            app.state.incident_share = incident_share_graph(company_incidents, cp)
             try:
                 yield
             finally:
@@ -104,6 +122,7 @@ def create_app(
                 await app.state.ontology.close()
                 await store.close()
                 await common_store.close()
+                await company_incidents.close()
                 await app.state.builds.close()
 
     app = FastAPI(title="task-spec", lifespan=lifespan)
@@ -118,6 +137,7 @@ def create_app(
     app.include_router(runs.router)
     app.include_router(postings.router)
     app.include_router(builds.router)
+    app.include_router(incidents.router)
     app.include_router(pull.router)
     app.include_router(health.router)
     app.include_router(ui.router)

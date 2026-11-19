@@ -111,6 +111,18 @@
       </div>
       <p class="note">가명화를 거친 글만 외부 LLM에 보냅니다. 원본은 서버 data/ 에만 남습니다.</p>
       <p class="note">자기소개서는 지금 쓰지 않습니다.</p>
+      <span class="eyebrow">공고 정보 — 공고에 정한 값이 없을 때 한 번 정하면 공고에 저장됩니다</span>
+      <div class="row2">
+        <label class="field" for="run-career">신입·경력
+          <select id="run-career">
+            <option value="">공고에 정한 값</option>
+            <option value="신입">신입</option>
+            <option value="경력">경력</option>
+          </select>
+        </label>
+        <label class="field" for="run-company">회사 (선택)<input type="text" id="run-company" maxlength="200" placeholder="공고에 회사가 없을 때"></label>
+      </div>
+      <p class="note" id="run-meta-hint"></p>
       <button type="submit" class="btn primary" id="run-btn">명세 만들기</button>
       <p class="msg" id="run-msg" role="status"></p>
     </form>

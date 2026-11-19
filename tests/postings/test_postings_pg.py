@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from urllib.parse import quote
@@ -282,4 +283,27 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
             )
             await conn.execute("DELETE FROM public.provisional_posting WHERE company = '가상테크'")
             await conn.execute("DELETE FROM public.posting_suggestion WHERE company = '가상테크'")
+        await store.close()
+
+
+async def test_posting_company_set_clear_and_init() -> None:
+    """사람이 정한 공고의 회사 (posting_company) [2026-11-19 사용자] — 정하기·지우기·실행 만들기의 처음만 넣기."""
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await PostingStore.open(u.get_secret_value())
+    pid = f"prov-test{uuid.uuid4().hex[:8]}"
+    try:
+        assert await store.entered_companies([pid]) == {}
+        await store.init_company(pid, "(주)가상회사", "run:a")
+        await store.init_company(pid, "다른회사", "run:b")  # 이미 있으면 덮지 않는다
+        assert await store.entered_companies([pid, "prov-none"]) == {pid: "(주)가상회사"}
+        await store.set_company(pid, "다른회사", "reviewer-fake")
+        assert await store.entered_companies([pid]) == {pid: "다른회사"}
+        await store.set_company(pid, None, "reviewer-fake")
+        assert await store.entered_companies([pid]) == {}
+        assert await store.entered_companies([]) == {}
+    finally:
+        async with store._pool.connection() as conn:
+            await conn.execute("DELETE FROM public.posting_company WHERE posting_id = %s", (pid,))
         await store.close()

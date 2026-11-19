@@ -62,6 +62,11 @@ from task_spec.schemas.build_approval import (
     BuildApprovalState,
 )
 from task_spec.schemas.claims import ClaimExtractionInput, ClaimExtractionOutput, ExtractedClaim
+from task_spec.schemas.company_incident import (
+    IncidentShareDecision,
+    IncidentShareResult,
+    IncidentShareState,
+)
 from task_spec.schemas.documents import DocumentKind, DocumentRef, PseudoCheck, PseudoDocRef
 from task_spec.schemas.domain import (
     AI_AXES,
@@ -229,6 +234,9 @@ __all__ = [
     "BuildApprovalDecision",
     "BuildApprovalResult",
     "BuildApprovalState",
+    "IncidentShareDecision",
+    "IncidentShareResult",
+    "IncidentShareState",
     "ReviewDecision",
     "CompileError",
     "ResultClass",
