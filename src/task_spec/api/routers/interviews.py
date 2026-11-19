@@ -164,7 +164,8 @@ class InterviewSummaryView(BaseModel):
 @router.get("")
 async def list_interviews(
     interviews: InterviewsDep,
-    company: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    # 필수 — 인증 전에는 회사 없이 전부 보지 않는다 (목록의 id 로 상세를 열 수 있다, recruiter-interview.md 한계) [확정: 2026-11-20 사용자]
+    company: Annotated[str, Query(min_length=1, max_length=200)],
     stage: Stage | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[InterviewSummaryView]:
@@ -177,7 +178,7 @@ async def list_interviews(
             company_id=company_key(r.company),
             posting_id=r.posting_id,
             title=r.title,
-            stage=r.stage,  # type: ignore[arg-type]
+            stage=r.stage,
             revision=r.revision,
             created_at=r.created_at,
             updated_at=r.updated_at,
@@ -188,7 +189,7 @@ async def list_interviews(
             ),
             discarded_at=r.discarded_at
             or ((r.updated_at + interviews.mapping_ttl).isoformat() if r.stale else None),
-            discard_reason="stale" if r.stale else r.discard_reason,  # type: ignore[arg-type]
+            discard_reason="stale" if r.stale else r.discard_reason,
         )
         for r in rows
     ]

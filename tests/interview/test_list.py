@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from tests.interview.conftest import POSTING_ID, Session
 
+MINE = {"company": "가상테크"}
 ROW_KEYS = {
     "interview_id",
     "company",
@@ -33,7 +34,8 @@ async def test_list_filters_by_company_and_has_no_bodies(session: Session) -> No
     assert row["stage"] == "incident_interview" and row["approval"] is None
     assert (await session.client.get("/interviews", params={"company": "다른회사"})).json() == []
     assert (await session.client.get("/interviews", params={"company": "(주)"})).json() == []
-    assert len((await session.client.get("/interviews")).json()) == 1  # 회사 없이 — 전부
+    # 회사 없이 전부 보지 않는다 — 인증 전 (목록의 id 로 상세를 열 수 있다) [확정: 2026-11-20 사용자]
+    assert (await session.client.get("/interviews")).status_code == 422
 
 
 async def test_list_orders_by_recent_progress_and_filters_stage(session: Session) -> None:
@@ -42,31 +44,33 @@ async def test_list_orders_by_recent_progress_and_filters_stage(session: Session
     session.clock.advance(minutes=5)
     await session.start()
     second = session.interview_id
-    rows = (await session.client.get("/interviews")).json()
+    rows = (await session.client.get("/interviews", params=MINE)).json()
     assert [r["interview_id"] for r in rows] == [second, first]
-    assert (await session.client.get("/interviews", params={"limit": 1})).json()[0][
+    assert (await session.client.get("/interviews", params={**MINE, "limit": 1})).json()[0][
         "interview_id"
     ] == second
     session.clock.advance(minutes=5)
     assert (await session.client.post(f"/interviews/{first}/discard")).status_code == 200
-    rows = (await session.client.get("/interviews")).json()
+    rows = (await session.client.get("/interviews", params=MINE)).json()
     assert [r["interview_id"] for r in rows] == [first, second]  # 폐기도 진행 — 맨 앞
-    gone = (await session.client.get("/interviews", params={"stage": "discarded"})).json()
+    gone = (await session.client.get("/interviews", params={**MINE, "stage": "discarded"})).json()
     assert [r["interview_id"] for r in gone] == [first]
     assert gone[0]["discard_reason"] == "recruiter" and gone[0]["discarded_at"]
-    assert (await session.client.get("/interviews", params={"stage": "nope"})).status_code == 422
+    assert (
+        await session.client.get("/interviews", params={**MINE, "stage": "nope"})
+    ).status_code == 422
 
 
 async def test_stale_interview_reads_as_discarded_before_the_sweep(session: Session) -> None:
     await session.start()
     session.clock.advance(days=31)
-    rows = (await session.client.get("/interviews", params={"stage": "discarded"})).json()
+    rows = (await session.client.get("/interviews", params={**MINE, "stage": "discarded"})).json()
     assert [r["interview_id"] for r in rows] == [session.interview_id]
     assert rows[0]["discard_reason"] == "stale" and rows[0]["discarded_at"]
     assert (
-        await session.client.get("/interviews", params={"stage": "incident_interview"})
+        await session.client.get("/interviews", params={**MINE, "stage": "incident_interview"})
     ).json() == []
     # 정리 작업이 닫은 뒤에도 같게 보인다
     assert (await session.service.sweep())["stale"] == 1
-    rows = (await session.client.get("/interviews")).json()
+    rows = (await session.client.get("/interviews", params=MINE)).json()
     assert rows[0]["stage"] == "discarded" and rows[0]["discard_reason"] == "stale"

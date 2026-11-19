@@ -88,7 +88,7 @@ async def test_interview_summaries_filter_company_stage_and_stale() -> None:
     company = f"가상목록{tag}"
     now = datetime.now(UTC)
     try:
-        await store.create(mine, _state().model_copy(update={"company": f"(주) {company}"}))
+        await store.create(mine, _state().model_copy(update={"company": f"(주)\u00a0{company}"}))
         await store.create(other, _state().model_copy(update={"company": f"다른{tag}"}))
 
         async def ids(**kw: object) -> list[str]:
@@ -105,7 +105,9 @@ async def test_interview_summaries_filter_company_stage_and_stale() -> None:
         )
         assert [r.id for r in rows] == [mine]
         r = rows[0]
-        assert r.company == f"(주) {company}" and r.posting_id == "prov-0123456789ab"
+        assert (
+            r.company == f"(주)\u00a0{company}" and r.posting_id == "prov-0123456789ab"
+        )  # NBSP 도 맞춘다
         assert r.stage == "incident_interview" and not r.stale and r.reviewer is None
         assert await ids(stages=["incident_interview"]) == [mine]
         assert await ids(stages=["discarded"]) == []

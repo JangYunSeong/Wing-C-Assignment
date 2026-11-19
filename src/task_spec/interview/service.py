@@ -429,12 +429,12 @@ class InterviewService:
         return self.view(await self._load(interview_id, open_only=False))
 
     async def summaries(
-        self, *, company: str | None, stage: str | None, limit: int
+        self, *, company: str, stage: str | None, limit: int
     ) -> list[InterviewSummary]:
         """회사별 인터뷰 목록 (최근 진행 순) — Wing 이 시작한 인터뷰를 브라우저에만 기억해 다른 담당자의 인터뷰가 안 보였다.
         company 는 회사 id 또는 표기 (postings/company.company_id 로 맞춤). 방치 기간을 넘은 열린 인터뷰는 정리 작업 전이라도 discarded."""
-        key = company_key(company) if company is not None else None
-        if company is not None and key is None:
+        key = company_key(company)
+        if key is None:
             return []  # 법인 표기·공백뿐 — 맞는 회사가 없다
         return await self.store.summaries(
             company=key,

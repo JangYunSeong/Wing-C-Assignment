@@ -36,6 +36,7 @@ from task_spec.postings.company import CompanySource, company_id, posting_compan
 from task_spec.postings.search import CompanyFilter, PostingHit, search_terms
 from task_spec.postings.sections import segment
 from task_spec.postings.store import (
+    SamePostingExists,
     is_provisional,
     provisional_profile,
     rules_fingerprint,
@@ -229,28 +230,28 @@ async def confirm_posting(req: ConfirmRequest, postings: PostingsDep) -> Confirm
     ]
     if bad:
         raise InvalidUpload(f"온톨로지 목록에 없는 값: {', '.join(bad)}")
-    # 같은 회사·같은 원문의 공고가 있으면 알린다 — 실수로 두 번 올리면 같은 공고 목록에 두 줄이 생긴다 (2026-11-20 운영)
-    if not req.allow_duplicate and (
-        same := await postings.store.same_postings(
-            company_id(sug["company"]) or "", sug["text_sha256"]
-        )
-    ):
-        raise PostingDuplicate(same)
     lines = [PostingLineIn.model_validate(x) for x in sug["lines"]]
     pid_prefix = f"sug:{req.suggestion_id}"
     analyzed = analyze(lists, lines, req.sub, id_prefix=pid_prefix)
-    pid = await postings.store.create_provisional(
-        suggestion_id=req.suggestion_id,
-        company=sug["company"],
-        title=sug["title"],
-        sub=req.sub,
-        secondary_sub=req.secondary_sub,
-        industry_id=req.industry_id,
-        confirmed_by=req.confirmed_by,
-        ontology_version=lists.version,
-        rules_sha256=rules_fingerprint(lists),
-        lines=analyzed,
-    )
+    # 같은 회사·같은 원문의 공고가 있으면 알린다 — 실수로 두 번 올리면 같은 공고 목록에 두 줄이 생긴다 (2026-11-20 운영).
+    # 검사와 저장은 저장소가 한 트랜잭션으로 (확정을 두 번 눌러도 하나만)
+    unique = None if req.allow_duplicate else (company_id(sug["company"]) or "", sug["text_sha256"])
+    try:
+        pid = await postings.store.create_provisional(
+            unique=unique,
+            suggestion_id=req.suggestion_id,
+            company=sug["company"],
+            title=sug["title"],
+            sub=req.sub,
+            secondary_sub=req.secondary_sub,
+            industry_id=req.industry_id,
+            confirmed_by=req.confirmed_by,
+            ontology_version=lists.version,
+            rules_sha256=rules_fingerprint(lists),
+            lines=analyzed,
+        )
+    except SamePostingExists as e:
+        raise PostingDuplicate(e.posting_ids) from None
     if req.career_level is not None:
         await postings.store.set_career_level(pid, req.career_level, req.confirmed_by)
     return ConfirmResponse(

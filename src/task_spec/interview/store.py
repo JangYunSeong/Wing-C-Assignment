@@ -16,7 +16,7 @@ import copy
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -25,7 +25,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from task_spec.postings.company import company_id
 from task_spec.postings.search import COMPANY_NOISE
-from task_spec.schemas.interview_state import InterviewState
+from task_spec.schemas.interview_state import InterviewState, Stage
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.recruiter_interview (
@@ -100,7 +100,7 @@ class InterviewSummary:
 
     id: str
     revision: int
-    stage: str
+    stage: Stage
     company: str
     title: str
     posting_id: str
@@ -109,7 +109,7 @@ class InterviewSummary:
     reviewer: str | None
     approved_at: str | None
     discarded_at: str | None
-    discard_reason: str | None
+    discard_reason: Literal["recruiter", "stale"] | None
     stale: bool  # 읽을 때 방치로 본 것 (아직 정리 작업이 닫지 않음)
 
 

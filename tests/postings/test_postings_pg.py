@@ -429,3 +429,64 @@ async def test_search_provisional_company_filter() -> None:
             await conn.execute("DELETE FROM public.provisional_posting WHERE id = ANY(%s)", (ids,))
             await conn.execute("DELETE FROM public.posting_suggestion WHERE id = %s", (sid,))
         await store.close()
+
+
+async def test_same_posting_check_and_insert_are_atomic() -> None:
+    """확정을 두 번 눌러도(동시 요청) 같은 회사·같은 원문 공고는 하나만 (2026-11-20 리뷰) — 검사와 저장이 한 트랜잭션·잠금."""
+    import asyncio
+
+    from task_spec.postings.store import SamePostingExists, text_sha256
+
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await PostingStore.open(u.get_secret_value())
+    tag = uuid.uuid4().hex[:6]
+    text = f"가상 원문 {tag}"
+    sid = await store.create_suggestion(
+        text=text,
+        company=f"가상중복{tag}",
+        title="t",
+        method="test",
+        lines=[],
+        subs=[],
+        industries=[],
+        meta={},
+        ontology_version=VERSION,
+    )
+    key = (f"가상중복{tag}".casefold(), text_sha256(text))
+
+    async def make() -> str | Exception:
+        try:
+            return await store.create_provisional(
+                suggestion_id=sid,
+                company=f"가상중복{tag}",
+                title="t",
+                sub="sw.backend",
+                secondary_sub=None,
+                industry_id="it",
+                confirmed_by="tester",
+                ontology_version=VERSION,
+                rules_sha256="x",
+                lines=[],
+                unique=key,
+            )
+        except SamePostingExists as e:
+            return e
+
+    try:
+        results = await asyncio.gather(*(make() for _ in range(4)))
+        made = [r for r in results if isinstance(r, str)]
+        refused = [r for r in results if isinstance(r, SamePostingExists)]
+        assert len(made) == 1 and len(refused) == 3
+        assert all(r.posting_ids == made for r in refused)
+        assert await store.same_postings(key[0], key[1]) == made
+    finally:
+        async with await psycopg.AsyncConnection.connect(
+            u.get_secret_value(), autocommit=True
+        ) as conn:
+            await conn.execute(
+                "DELETE FROM public.provisional_posting WHERE suggestion_id = %s", (sid,)
+            )
+            await conn.execute("DELETE FROM public.posting_suggestion WHERE id = %s", (sid,))
+        await store.close()
