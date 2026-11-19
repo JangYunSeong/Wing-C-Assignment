@@ -46,6 +46,7 @@ from task_spec.postings.company import CompanySource, company_id, posting_compan
 from task_spec.postings.search import CompanyFilter, PostingHit, search_terms
 from task_spec.postings.sections import segment
 from task_spec.postings.store import (
+    LinkRefused,
     SamePostingExists,
     is_provisional,
     provisional_profile,
@@ -425,6 +426,16 @@ async def set_company(
         raise PostingNotFound(posting_id)
     if req.company is not None and company_id(req.company) is None:
         raise PostingCompanyInvalid()
+    # 묶음에 든 공고의 회사는 다른 회사로 바꾸지 않는다 — 잇기 때의 회사 검사가 뒤에서 무너진다 (2026-11-20 리뷰)
+    if len(group := await postings.store.posting_group(posting_id)) > 1:
+        now = (await posting_companies([posting_id], ontology=ontology, store=postings.store)).get(
+            posting_id
+        )
+        asked = company_id(req.company) if req.company is not None else None
+        if now is None or asked != now.company_id:
+            raise PostingLinkConflict(
+                f"묶음({', '.join(group)})에 든 공고의 회사는 바꾸지 않습니다 — 먼저 DELETE /postings/{posting_id}/link 로 풉니다 (기준 공고면 이어진 공고를 먼저)"
+            )
     await postings.store.set_company(
         posting_id, req.company.strip() if req.company else None, req.set_by
     )
@@ -488,28 +499,24 @@ async def link_posting(
             raise PostingNotFound(pid)
     if posting_id == req.linked_to:
         raise PostingLinkConflict("공고를 자기 자신에게 잇지 않습니다")
-    if (anchor := await store.linked_to(req.linked_to)) is not None:
-        raise PostingLinkConflict(
-            f"{req.linked_to} 는 {anchor} 에 이어진 공고입니다 — 기준 공고 {anchor} 에 이어 주세요 (한 단계만)"
-        )
-    if members := await store.linked_from(posting_id):
-        raise PostingLinkConflict(
-            f"{posting_id} 에 이어진 공고가 있습니다({', '.join(members)}) — 기준 공고는 다른 공고에 잇지 않습니다"
-        )
+    # 둘 다 회사가 정해져 있고 같아야 잇는다 [확정: 2026-11-20 사용자] — 회사 없는 공고를 다른 회사 공고에 이으면 그 회사의
+    # 과제·회사 사례를 고를 수 있게 된다
     companies = await posting_companies([posting_id, req.linked_to], ontology=ontology, store=store)
-    a, b = companies.get(posting_id), companies.get(req.linked_to)
-    if a is not None and b is not None and a.company_id != b.company_id:
+    for pid in (posting_id, req.linked_to):
+        if companies.get(pid) is None:
+            raise PostingLinkConflict(
+                f"{pid} 의 회사가 정해지지 않았습니다 — 먼저 PUT /postings/{pid}/company (같은 회사 공고만 잇습니다)"
+            )
+    a, b = companies[posting_id], companies[req.linked_to]
+    if a.company_id != b.company_id:
         raise PostingLinkConflict(
             f"회사가 다릅니다 ({a.name} · {b.name}) — 같은 회사 공고만 잇습니다"
         )
-    if not await store.link(posting_id, req.linked_to, req.linked_by):
-        raise PostingLinkConflict(
-            f"{posting_id} 는 이미 {await store.linked_to(posting_id)} 에 이어져 있습니다 — 바꾸려면 먼저 "
-            f"DELETE /postings/{posting_id}/link"
-        )
-    return LinkOut(
-        posting_id=posting_id, linked_to=req.linked_to, group=await store.posting_group(posting_id)
-    )
+    try:
+        group = await store.link(posting_id, req.linked_to, req.linked_by)
+    except LinkRefused as e:
+        raise PostingLinkConflict(str(e)) from None
+    return LinkOut(posting_id=posting_id, linked_to=req.linked_to, group=group)
 
 
 @router.delete("/{posting_id}/link")

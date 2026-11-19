@@ -551,10 +551,16 @@ async def replaced_common(
     chosen(실행 만들 때 담당자가 고른 문제)이 있으면 그 과제만 쓴다 — 공고의 인터뷰 과제와 달라도 된다.
     명세 승인 전(API 409)과 확정(finalize) 때 본다.
     """
+    if chosen is not None:
+        # 고른 과제가 교체(superseded)·삭제됐거나, 명세가 그 과제를 가리키지 않으면(사라져서 공통 과제 없이 만든 명세 포함) 막는다
+        got = await store.get(chosen)
+        stale = [r.common_id for r in spec.common_refs if r.common_id != chosen]
+        usable = got is not None and got.status == "approved"
+        if not usable or chosen not in {r.common_id for r in spec.common_refs}:
+            stale = [chosen, *stale]
+        return stale
     if not spec.common_refs:
         return []
-    if chosen is not None:
-        return [r.common_id for r in spec.common_refs if r.common_id != chosen]
     current = await store.interview_task(spec.posting_id, spec.ontology_version)
     if current is None:
         return [r.common_id for r in spec.common_refs if is_interview_ref(r.prompt_ref)]

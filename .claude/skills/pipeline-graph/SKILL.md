@@ -280,6 +280,8 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
   (고를 수 있는 것: `GET /postings/{id}/tasks` = 그 공고와 이어진 공고(`posting_link`, docs/design/posting-link.md)에 실행 판으로
   승인된 과제). draft_spec 은 고른 과제를 인터뷰 과제처럼 그대로 쓰고(만들지도 고치지도 않음, 공고의 인터뷰 과제보다 먼저),
   finalize 는 다시 승인하지 않는다. 고른 과제가 저장소에서 사라졌으면 다른 과제로 바꾸지 않고 공통 과제 없는 명세 + 오류.
+  고른 과제가 교체·삭제되면 승인 409(`chosen_task_unavailable`). 묶음에 승인된 문제가 둘 이상인데 고르지 않으면 422, 이어진
+  공고에만 하나면 그것을 고른 것으로 (API 가 `common_id` 를 채운다).
 - draft_spec: revise 가 아니면 저장소에서 **승인된 최신 판 → 없으면 최신 초안**을 재사용 (LLM 호출 없음, 저장된 provenance 를 State 에 싣는다).
   없으면 생성 후 초안으로 저장. task_id = 저장 id(`ct-…`). 명세 `common_refs` 에 판 번호·재사용 여부를 남긴다.
 - revise(common·all): 재사용하지 않고 승인자 수정 요청으로 새 판(revision+1) 초안을 만든다.

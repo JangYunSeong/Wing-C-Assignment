@@ -516,7 +516,7 @@ async def test_posting_link_group_and_choosable_tasks(ctx, tmp_path: Path) -> No
         ontology_version=VERSION,
     )
 
-    async def make(name: str) -> str:
+    async def make(name: str | None) -> str:
         return await store.create_provisional(
             suggestion_id=sid,
             company=name,
@@ -531,6 +531,7 @@ async def test_posting_link_group_and_choosable_tasks(ctx, tmp_path: Path) -> No
         )
 
     a, b, other = await make(company), await make(f"(주) {company}"), await make(f"다른{tag}")
+    blank = await make(None)  # 회사가 정해지지 않은 공고
     common = InMemoryCommonStore()
     version = repo.version.version
     approved: dict[str, str] = {}
@@ -570,9 +571,21 @@ async def test_posting_link_group_and_choosable_tasks(ctx, tmp_path: Path) -> No
                 (other, b, 409),
                 (other, a, 409),  # 회사가 다르다
                 (a, a, 409),
+                (blank, a, 409),  # 회사가 없는 공고는 잇지 않는다 [확정: 2026-11-20 사용자]
                 (b, "prov-000000000000", 404),
             ):
                 assert (await link(pid, to)).status_code == code, (pid, to)
+            # 묶음에 든 공고의 회사는 다른 회사로 바꾸지 않는다 (같은 회사의 다른 표기는 된다)
+            moved = await client.put(
+                f"/postings/{b}/company", json={"company": f"다른{tag}", "set_by": "tester"}
+            )
+            assert moved.status_code == 409
+            assert moved.json()["error"]["code"] == "posting_link_conflict"
+            same = await client.put(
+                f"/postings/{b}/company",
+                json={"company": f"주식회사 {company}", "set_by": "tester"},
+            )
+            assert same.status_code == 200, same.text
             gone = await client.delete(f"/postings/{b}/link")
             assert gone.status_code == 200 and gone.json()["group"] == [b]
             assert await tasks(b) == [approved[b]]
@@ -580,7 +593,11 @@ async def test_posting_link_group_and_choosable_tasks(ctx, tmp_path: Path) -> No
         async with await psycopg.AsyncConnection.connect(url, autocommit=True) as conn:
             await conn.execute(
                 "DELETE FROM public.posting_link WHERE posting_id = ANY(%s) OR linked_to = ANY(%s)",
-                ([a, b, other], [a, b, other]),
+                ([a, b, other, blank], [a, b, other, blank]),
+            )
+            await conn.execute(
+                "DELETE FROM public.posting_company WHERE posting_id = ANY(%s)",
+                ([a, b, other, blank],),
             )
             await conn.execute(
                 "DELETE FROM public.provisional_posting WHERE suggestion_id = %s", (sid,)
