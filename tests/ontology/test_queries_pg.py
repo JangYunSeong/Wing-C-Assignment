@@ -14,8 +14,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from task_spec.api.app import create_app
 from task_spec.graph import build_graph, make_checkpointer
-from task_spec.ontology.queries import evidence, posting_exists, posting_profile
+from task_spec.ontology.queries import (
+    evidence,
+    position_career_texts,
+    posting_exists,
+    posting_profile,
+)
 from task_spec.ontology.repository import OntologyNotLoaded, OntologyRepository, resolve_version
+from task_spec.postings.career import estimate_career
 from tests.api.conftest import make_settings, reviewer_decision, wait_status
 from tests.conftest import config_for
 
@@ -184,3 +190,23 @@ async def test_sub_fallback_only_when_cell_has_no_ncs(repo: OntologyRepository) 
     assert all(u.subd_code in allowed for e in unseen for u in e.ncs_units)
     seen = await evidence(repo, ids, sub="data.eng", industry_id="ind.it_si")  # 셀 있음
     assert "sub_fallback" not in {u.scope for e in seen for u in e.ncs_units}
+
+
+async def test_position_career_texts_are_name_and_required_lines(repo: OntologyRepository) -> None:
+    """신입·경력 추정 글 (postings/career.py) — 원 표기 직무명 + 자격요건 문장만, 없는 공고는 빠진다."""
+    rows = await repo.fetch(
+        "SELECT position_id FROM posting_line WHERE section = 'required' AND text LIKE %s LIMIT 1",
+        ("%경력%년 이상%",),
+    )
+    pid = str(rows[0]["position_id"])
+    texts = await position_career_texts(repo, [pid, "없는공고#999"])
+    assert list(texts) == [pid]
+    n = await repo.fetch(
+        "SELECT count(*) AS n FROM posting_line WHERE position_id = %s AND section = 'required'",
+        (pid,),
+    )
+    assert len(texts[pid]) == 1 + int(n[0]["n"])  # type: ignore[call-overload]
+    assert estimate_career(texts[pid]) in (
+        "경력",
+        None,
+    )  # '신입' 도 함께 적힌 공고면 추정하지 않는다

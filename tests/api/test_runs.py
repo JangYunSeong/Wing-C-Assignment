@@ -335,12 +335,15 @@ async def test_list_runs_newest_first_with_status_filter(client: httpx.AsyncClie
         "company_id",
         "company",
         "company_known",
+        "career_level",
+        "career_level_source",
         "started_at",
         "updated_at",
     }
     assert rows[0]["posting_id"] == "posting-fake-001" and rows[0]["revision"] == 1
     assert rows[0]["current_node"] == "approval"
     assert rows[0]["company_id"] is None  # 온톨로지·공고 저장소가 없으면 회사를 모른다
+    assert rows[0]["career_level"] is None  # 신입·경력도 모른다
     assert rows[1]["started_at"] < rows[0]["started_at"] <= rows[0]["updated_at"]
 
     pending = (await client.get("/runs", params={"status": "awaiting_approval"})).json()
@@ -390,3 +393,38 @@ async def test_list_runs_by_company_including_companies_not_in_ontology(
     assert await by("㈜가상 회사") == same  # 표기로 줘도 같은 규칙으로 맞춘다
     assert await by("newcorp") == [ids["prov-fake0002"]]
     assert await by("다른회사") == []
+
+
+async def test_list_runs_shows_posting_career_level(client: httpx.AsyncClient) -> None:
+    """신입·경력 (postings/career.py) — 사람이 정한 값(confirmed)이 먼저, 없으면 공고 문구(직무명·자격요건) 추정(posting_text),
+    둘 다 없으면 null. 회사로 걸러도 같은 값."""
+    app = client._transport.app  # type: ignore[attr-defined]
+    store = FakeProvisional(
+        {"prov-fake0001": "가상회사", "prov-fake0002": "가상회사"},
+        rows={"prov-fake0001": {"title": "가상 백엔드 (경력)", "lines": []}},
+    )
+    store.levels["prov-fake0002"] = "신입"
+    app.state.postings = SimpleNamespace(store=store)
+    ids = {}
+    for pid in ("posting-fake-001", "prov-fake0001", "prov-fake0002", "posting-fake-003"):
+        resp = await client.post("/runs", data={"posting_id": pid}, files=[("resumes", FAKE_FILE)])
+        assert resp.status_code == 202, resp.text
+        ids[pid] = resp.json()["run_id"]
+        await wait_status(client, ids[pid], "awaiting_approval")
+    app.state.ontology = FakeOntology(
+        {"posting-fake-001": "가상회사"},
+        ["가상회사"],
+        careers={"posting-fake-001": ["가상회사 / 가상 직무", "신입 지원 가능"]},
+    )
+    rows = {r["posting_id"]: r for r in (await client.get("/runs")).json()}
+    pick = ("career_level", "career_level_source")
+    assert [rows["posting-fake-001"][k] for k in pick] == ["신입", "posting_text"]
+    assert [rows["prov-fake0001"][k] for k in pick] == ["경력", "posting_text"]
+    assert [rows["prov-fake0002"][k] for k in pick] == ["신입", "confirmed"]
+    assert [rows["posting-fake-003"][k] for k in pick] == [None, None]
+    picked = (await client.get("/runs", params={"company": "가상회사"})).json()
+    assert {r["posting_id"]: r["career_level"] for r in picked} == {
+        "posting-fake-001": "신입",
+        "prov-fake0001": "경력",
+        "prov-fake0002": "신입",
+    }

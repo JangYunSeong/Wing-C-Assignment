@@ -144,6 +144,7 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     sug["segment_method"] == "rules" and sug["llm_used"]
                 )  # 모르는 회사 → 업종은 LLM
                 assert sug["industry_candidates"][0]["id"] == "ind.platform"
+                assert sug["career_level_candidate"] == "경력"  # 자격요건 '실무 경력 3년 이상'
                 sub = "data.eng"  # 확인자가 고른 값 — 온톨로지에 있는 셀(data.eng|ind.it_si)로 근거까지 확인
 
                 bad = await client.post(
@@ -164,6 +165,7 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                         "sub": sub,
                         "industry_id": "ind.it_si",
                         "confirmed_by": "reviewer-fake",
+                        "career_level": "신입",  # 확인자가 추정과 다르게 고름
                     },
                 )
                 assert r.status_code == 201, r.text
@@ -176,10 +178,12 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     and prof["sub"] == sub
                     and prof["ontology_version"] == VERSION
                 )
+                assert (prof["career_level"], prof["career_level_source"]) == ("신입", "confirmed")
 
                 # 공고 찾기: 임시 공고는 회사·직무명으로, 온톨로지 공고는 시범만 기본 [제안: 2026-11-04]
                 hits = (await client.get("/postings", params={"q": "가상테크 데이터"})).json()
                 assert any(h["posting_id"] == pid and h["source"] == "provisional" for h in hits)
+                assert next(h for h in hits if h["posting_id"] == pid)["career_level"] == "신입"
                 onto = (await client.get("/postings", params={"q": "", "limit": 5})).json()
                 onto = [h for h in onto if h["source"] == "ontology"]
                 assert onto and all(h["in_pilot"] and h["company"] for h in onto)
@@ -199,6 +203,24 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     await client.get(f"/postings/{quote(first['posting_id'], safe='')}")
                 ).json()
                 assert prof_o["source"] == "ontology" and prof_o["company"] == first["company"]
+                assert {"career_level", "career_level_source"} <= prof_o.keys()
+                # 온톨로지 공고도 정할 수 있다 (task_db posting_meta) — 지우면 공고 문구 추정으로 돌아간다
+                level_url = f"/postings/{quote(first['posting_id'], safe='')}/career-level"
+                put = await client.put(
+                    level_url, json={"career_level": "경력", "set_by": "reviewer-fake"}
+                )
+                assert put.status_code == 200 and put.json()["career_level_source"] == "confirmed"
+                again = (
+                    await client.get(f"/postings/{quote(first['posting_id'], safe='')}")
+                ).json()
+                assert (again["career_level"], again["career_level_source"]) == (
+                    "경력",
+                    "confirmed",
+                )
+                cleared = await client.put(
+                    level_url, json={"career_level": None, "set_by": "reviewer-fake"}
+                )
+                assert cleared.json()["career_level_source"] in ("posting_text", None)
                 assert (
                     await client.get(f"/postings/{quote('없는공고#999', safe='')}")
                 ).status_code == 404
@@ -233,11 +255,21 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     await graph.aget_state({"configurable": {"thread_id": r.json()["run_id"]}})
                 ).values
                 assert "posting_cell_unseen" in [e.code for e in st2["errors"]]
+                # 신입·경력을 고르지 않고 확인한 공고는 공고 문구 추정
+                prof2 = (await client.get(f"/postings/{st2['posting_id']}")).json()
+                assert (prof2["career_level"], prof2["career_level_source"]) == (
+                    "경력",
+                    "posting_text",
+                )
                 units = [u for e in st2["evidence"] for u in e.ncs_units]
                 assert units and {u.scope for u in units} == {"sub_fallback"}
             await app.state.launcher.shutdown()
     finally:
         async with await psycopg.AsyncConnection.connect(url, autocommit=True) as conn:
+            await conn.execute(
+                "DELETE FROM public.posting_meta WHERE posting_id IN "
+                "(SELECT id FROM public.provisional_posting WHERE company = '가상테크')"
+            )
             await conn.execute("DELETE FROM public.provisional_posting WHERE company = '가상테크'")
             await conn.execute("DELETE FROM public.posting_suggestion WHERE company = '가상테크'")
         await store.close()

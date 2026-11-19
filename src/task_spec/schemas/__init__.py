@@ -167,6 +167,8 @@ from task_spec.schemas.pilot import (
 from task_spec.schemas.postings import (
     AnalyzedLine,
     Candidate,
+    CareerLevel,
+    CareerSource,
     PostingLineIn,
     SegmentPostingInput,
     SegmentPostingOutput,
@@ -400,6 +402,8 @@ __all__ = [
     "SegmentPostingInput",
     "PostingLineIn",
     "Candidate",
+    "CareerLevel",
+    "CareerSource",
     "AnalyzedLine",
     "PostingTool",
     "PostingCompetency",

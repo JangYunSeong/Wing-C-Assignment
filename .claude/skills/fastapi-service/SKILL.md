@@ -34,6 +34,7 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 | `GET` | `/healthz` | 프로세스·Postgres 연결·온톨로지 산출물 버전 (키 값은 노출하지 않고 설정 여부만) |
 | `GET` | `/postings?q=` | 공고 찾기 — 회사·직무명·id·직군 이름으로 임시 공고와 온톨로지 공고(기본 시범만, `pilot_only`), 최대 `limit` 건. 검색어는 공백으로 나눠 AND, LIKE 특수문자는 글자 그대로 [제안: 2026-11-04] |
 | `GET` | `/postings/{id}` | 공고 프로필 — 임시 공고(`prov-…`)와 온톨로지 공고 모두 (`#` 이 든 id 는 URL 인코딩) |
+| `PUT` | `/postings/{id}/career-level` | 공고의 신입·경력을 사람이 정함 `{career_level: "신입"|"경력"|null, set_by}` — null 이면 지움. 값은 task_db `posting_meta`(온톨로지 공고도 — 온톨로지는 읽기만). 공고 확인(`POST /postings`)의 `career_level` 도 같은 곳에. 공고 찾기·프로필·`/builds`·`/runs` 가 `career_level`·`career_level_source`(`confirmed` 사람이 정함 / `posting_text` 직무명·자격요건 문구 추정 / null) 로 같은 값을 보이고, 추천(`/postings/suggest`)은 `career_level_candidate` 로 추정값을 준다. 과제 생성에는 쓰지 않는다 (`postings/career.py`) [확정: 2026-11-19 사용자 — 두 값, 추정값도 내보냄, Wing 이 과제를 신입·경력으로 나눔] |
 | `GET` | `/`, `/ui/` | 임시 화면 "과제 명세 작업대" (`api/routers/ui.py`, `api/static/`). `UI_ENABLED=false` 면 `404` [제안: 2026-11-04] |
 
 - 상태는 `graph.aget_state(config)` 에서 계산한다. 별도 상태 테이블을 두지 않는다 (체크포인터가 SSOT).

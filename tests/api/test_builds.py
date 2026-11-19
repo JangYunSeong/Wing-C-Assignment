@@ -135,6 +135,37 @@ async def test_builds_by_company(tmp_path: Path) -> None:
         assert (detail["company_id"], detail["company"]) == ("가상회사", "가상회사")
 
 
+async def test_builds_show_posting_career_level(tmp_path: Path) -> None:
+    """신입·경력 — 공통 과제 → 공고의 값 (postings/career.py, GET /runs·/postings 와 같음). 정한 값이 먼저, 없으면 공고 문구 추정."""
+    store = InMemoryBuildStore()
+    a = await store.new_build(CID, "onto-test", AT)
+    b = await store.new_build("ct-aaaaaaaaaaaa", "onto-test", AT)
+    c_ = await store.new_build("ct-bbbbbbbbbbbb", "onto-test", AT)
+    store.labels[CID] = TaskLabel(title="가상 과제 1", posting_id="가상_공고#001")
+    store.labels["ct-aaaaaaaaaaaa"] = TaskLabel(title="가상 과제 2", posting_id="prov-fake0001")
+    store.labels["ct-bbbbbbbbbbbb"] = TaskLabel(title="가상 과제 3", posting_id="가상_공고#002")
+    prov = FakeProvisional({"prov-fake0001": "가상회사"})
+    prov.levels["prov-fake0001"] = "경력"
+    async with await _client(tmp_path, store) as cl:
+        app = cl._transport.app  # type: ignore[attr-defined]
+        app.state.ontology = FakeOntology(
+            {"가상_공고#001": "가상회사", "가상_공고#002": "가상회사"},
+            ["가상회사"],
+            careers={
+                "가상_공고#001": ["가상회사 / 가상 직무", "관련 경력 3년 이상"],
+                "가상_공고#002": ["가상회사 / 가상 직무", "가상 도구 사용 경험"],
+            },
+        )
+        app.state.postings = SimpleNamespace(store=prov)
+        rows = {r["build_id"]: r for r in (await cl.get("/builds")).json()}
+        pick = ("career_level", "career_level_source")
+        assert [rows[a.build_id][k] for k in pick] == ["경력", "posting_text"]
+        assert [rows[b.build_id][k] for k in pick] == ["경력", "confirmed"]
+        assert [rows[c_.build_id][k] for k in pick] == [None, None]  # 단서 없음
+        detail = (await cl.get(f"/builds/{a.build_id}")).json()
+        assert [detail[k] for k in pick] == ["경력", "posting_text"]
+
+
 async def test_missing_and_malformed_ids(tmp_path: Path) -> None:
     async with await _client(tmp_path, InMemoryBuildStore()) as c:
         r = await c.get(f"/builds/{CID}-b9")

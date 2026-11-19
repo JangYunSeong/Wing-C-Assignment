@@ -2,6 +2,7 @@
 
 posting_suggestion : 추천 결과 (절 분리 문장·후보). 확인 전 상태.
 provisional_posting: 확인된 임시 공고 — 직군·업종·확인자·문장별 매칭·규칙 버전. 상태 pending_review (환류 대기).
+posting_meta       : 사람이 정한 공고 속성 — 신입·경력 (postings/career.py). 온톨로지 공고·임시 공고 모두 (온톨로지는 읽기만).
 공고 원문은 지원자 개인정보가 아니다. 내보내기(온톨로지 레포 검수용)는 보류 [미정].
 """
 
@@ -21,6 +22,7 @@ from task_spec.postings.suggest import OntologyLists
 from task_spec.schemas import (
     AnalyzedLine,
     Candidate,
+    CareerLevel,
     PostingCompetency,
     PostingLineIn,
     PostingProfile,
@@ -56,6 +58,12 @@ CREATE TABLE IF NOT EXISTS public.provisional_posting (
     lines jsonb NOT NULL,
     n_unmatched integer NOT NULL,
     status text NOT NULL DEFAULT 'pending_review' CHECK (status IN ('pending_review', 'exported', 'reviewed'))
+);
+CREATE TABLE IF NOT EXISTS public.posting_meta (
+    posting_id text PRIMARY KEY,
+    career_level text NOT NULL CHECK (career_level IN ('신입', '경력')),
+    set_by text NOT NULL,
+    set_at timestamptz NOT NULL DEFAULT now()
 );
 """
 
@@ -167,6 +175,33 @@ class PostingStore:
 
     async def get_provisional(self, pid: str) -> dict[str, Any] | None:
         return await self._one("SELECT * FROM public.provisional_posting WHERE id = %s", (pid,))
+
+    async def career_levels(self, pids: list[str]) -> dict[str, CareerLevel]:
+        """공고 id → 사람이 정한 신입·경력 (정하지 않은 공고는 빠진다)."""
+        if not pids:
+            return {}
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT posting_id, career_level FROM public.posting_meta WHERE posting_id = ANY(%s)",
+                (pids,),
+            )
+            return {r["posting_id"]: r["career_level"] for r in await cur.fetchall()}
+
+    async def set_career_level(self, pid: str, level: CareerLevel | None, set_by: str) -> None:
+        """None 이면 정한 값을 지운다 (다시 공고 문구 추정)."""
+        if level is None:
+            await self._exec("DELETE FROM public.posting_meta WHERE posting_id = %s", (pid,))
+            return
+        await self._exec(
+            "INSERT INTO public.posting_meta (posting_id, career_level, set_by) VALUES (%s, %s, %s) "
+            "ON CONFLICT (posting_id) DO UPDATE SET career_level = EXCLUDED.career_level, "
+            "set_by = EXCLUDED.set_by, set_at = now()",
+            (pid, level, set_by),
+        )
+
+    async def _exec(self, query: str, params: tuple[Any, ...]) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(query, params)  # type: ignore[arg-type]
 
     async def search_provisional(self, terms: list[SearchTerm], limit: int) -> list[dict[str, Any]]:
         """임시 공고를 회사·직무명·id·직군으로 (postings/search.search_terms), 최근 것부터."""
