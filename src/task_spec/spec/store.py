@@ -127,6 +127,18 @@ class CommonTaskRepo(Protocol):
         """채용담당자 승인 — 이미 승인된 인터뷰 과제가 있으면 `replaces` 로 그 id 를 짚어야 바꾼다 (InterviewTaskConflict)."""
         ...
 
+    async def incident_usage(
+        self, incident_ids: list[str], *, exclude_posting: str
+    ) -> dict[str, int]:
+        """사례마다 그 사례로 공통 과제가 승인된 다른 공고 수 (task.source_incident) — 회사 사례 고르기용."""
+        ...
+
+    async def posting_incidents(self, posting_id: str) -> list[str]:
+        """그 공고의 공통 과제(superseded 제외, 모든 온톨로지 판)가 쓴 사례 id. 사례 없는 과제는 "".
+        순서: 승인된 과제가 있는 사례(최근 승인 순) → 초안만 있는 사례(최근 순) → 같으면 id 순.
+        공고가 쓰던 사례를 계속 쓰게 한다 (spec/company_incidents.py)."""
+        ...
+
 
 def _new_id() -> str:
     return f"ct-{uuid.uuid4().hex[:12]}"
@@ -259,6 +271,31 @@ class InMemoryCommonStore:
         if current is not None:
             current["status"] = "superseded"
         row["status"], row["approved_by"], row["approved_at"] = "approved", reviewer, at
+
+    async def incident_usage(
+        self, incident_ids: list[str], *, exclude_posting: str
+    ) -> dict[str, int]:
+        want = set(incident_ids)
+        seen: dict[str, set[str]] = {}
+        for r in self.rows:
+            inc = r["task"].source_incident
+            if r["status"] == "approved" and inc in want and r["key"].posting_id != exclude_posting:
+                seen.setdefault(inc, set()).add(r["key"].posting_id)
+        return {k: len(v) for k, v in seen.items()}
+
+    async def posting_incidents(self, posting_id: str) -> list[str]:
+        approved: dict[str, datetime] = {}
+        created: dict[str, int] = {}
+        for i, r in enumerate(self.rows):
+            if r["key"].posting_id != posting_id or r["status"] == "superseded":
+                continue
+            inc = r["task"].source_incident or ""
+            created[inc] = i  # 행 순서 = 만든 순서
+            if r["status"] == "approved" and r["approved_at"] is not None:
+                approved[inc] = max(approved.get(inc, r["approved_at"]), r["approved_at"])
+        approved_first = sorted(approved, key=lambda k: (-approved[k].timestamp(), k))
+        drafts = sorted((k for k in created if k not in approved), key=lambda k: (-created[k], k))
+        return [*approved_first, *drafts]
 
 
 class CommonTaskStore:
@@ -407,6 +444,32 @@ class CommonTaskStore:
     ) -> None:
         async with self._pool.connection() as conn, conn.transaction():
             await approve_interview_task(conn, common_id, reviewer, at, replaces=replaces)
+
+    async def incident_usage(
+        self, incident_ids: list[str], *, exclude_posting: str
+    ) -> dict[str, int]:
+        if not incident_ids:
+            return {}
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task->>'source_incident', COUNT(DISTINCT posting_id) FROM public.common_task "
+                "WHERE status = 'approved' AND task->>'source_incident' = ANY(%s) AND posting_id <> %s "
+                "GROUP BY 1",
+                (list(incident_ids), exclude_posting),
+            )
+            return {r[0]: int(r[1]) for r in await cur.fetchall()}
+
+    async def posting_incidents(self, posting_id: str) -> list[str]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT COALESCE(task->>'source_incident', '') AS inc, "
+                "MAX(approved_at) FILTER (WHERE status = 'approved') AS approved_last, "
+                "MAX(created_at) AS created_last "
+                "FROM public.common_task WHERE posting_id = %s AND status <> 'superseded' "
+                "GROUP BY 1 ORDER BY approved_last DESC NULLS LAST, created_last DESC, inc",
+                (posting_id,),
+            )
+            return [r[0] for r in await cur.fetchall()]
 
 
 async def replaced_common(store: CommonTaskRepo, spec: TaskSpec) -> list[str]:

@@ -18,6 +18,7 @@ from task_spec.builder.steps import RealSteps
 from task_spec.llm.factory import build_llm_client
 from task_spec.logging_setup import configure_logging
 from task_spec.prompting import PromptRegistry
+from task_spec.spec.company_incidents import CompanyIncidentStore
 from task_spec.starter.store import PgBuildStore
 
 logger = logging.getLogger("task_spec.builder")
@@ -28,6 +29,8 @@ async def main(once: bool) -> None:
     configure_logging(s.log_level, s.log_format)
     # 표는 API(표 주인)가 만든다 — builder 전용 DB 역할은 DDL 을 못 돌린다
     store = await PgBuildStore.open(s.database_url.get_secret_value(), ddl=False)
+    # 회사 결정적 사건 (co:…) 읽기만 — 권한은 db-role.sql (GRANT SELECT ON public.company_incident)
+    company = await CompanyIncidentStore.open(s.database_url.get_secret_value(), ddl=False)
     try:
         worker = Worker(
             store=store,
@@ -37,6 +40,7 @@ async def main(once: bool) -> None:
                 s.incidents_dir,
                 s.images_dir.resolve(),
                 designs=s.build_designs,
+                company_incidents=company,
             ),
             cfg=RunConfig(
                 work_root=s.work_root,
@@ -67,6 +71,7 @@ async def main(once: bool) -> None:
         await worker.serve(once=once)
     finally:
         await store.close()
+        await company.close()
 
 
 def cli() -> None:

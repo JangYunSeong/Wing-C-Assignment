@@ -68,3 +68,28 @@ async def test_posting_companies_without_ontology_still_names_provisional() -> N
         ["posting-fake-001", "prov-fake-a"], ontology=None, store=_Store()
     )
     assert got == {"prov-fake-a": PostingCompany("fakecorp", "fake corp", False)}
+
+
+class _EnteredStore(_Store):
+    """사람이 정한 회사가 있는 저장소 — 공고 데이터의 회사보다 먼저."""
+
+    async def entered_companies(self, pids: list[str]) -> dict[str, str]:
+        rows = {
+            "prov-fake-a": "다른 가상회사",
+            "prov-fake-c": "(주)가상회사",
+            "posting-fake-002": "가상회사",
+        }
+        return {p: rows[p] for p in pids if p in rows}
+
+
+async def test_entered_company_comes_first() -> None:
+    """[확정: 2026-11-19 사용자 — 인증 전에는 입력한 회사] 회사 칸이 빈 임시 공고·온톨로지 공고도 정한 회사로."""
+    got = await posting_companies(
+        ["prov-fake-a", "prov-fake-b", "prov-fake-c", "posting-fake-002"],
+        ontology=_Onto(),  # type: ignore[arg-type]
+        store=_EnteredStore(),
+    )
+    assert got["prov-fake-a"] == PostingCompany("다른가상회사", "다른 가상회사", False, "entered")
+    assert got["prov-fake-b"] == PostingCompany("새가상회사", "새 가상회사", False, "posting")
+    assert got["prov-fake-c"] == PostingCompany("가상회사", "가상회사", True, "entered")
+    assert got["posting-fake-002"] == PostingCompany("가상회사", "가상회사", True, "entered")

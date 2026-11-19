@@ -40,7 +40,7 @@ from task_spec.schemas import (
 )
 from task_spec.schemas.domain import ARTIFACT_TRIMMED, Anchor, BehavioralAnchors
 from task_spec.schemas.incident import FeatureSeed, PublicIncident
-from task_spec.spec.common import FLAG_NO_INCIDENT, FLAG_PUBLIC_INCIDENT
+from task_spec.spec.common import FLAG_NO_INCIDENT, incident_flag
 from task_spec.spec.incidents import incident_block
 
 logger = logging.getLogger(__name__)
@@ -563,7 +563,9 @@ def apply(task: TaskItem, res: DraftResult) -> TaskItem:
             "source_incident": res.incident_id,
             "review_flags": [
                 *(
-                    FLAG_PUBLIC_INCIDENT if f == FLAG_NO_INCIDENT and res.incident_id else f
+                    incident_flag(res.incident_id)
+                    if f == FLAG_NO_INCIDENT and res.incident_id
+                    else f
                     for f in task.review_flags
                 ),
                 *res.flags,

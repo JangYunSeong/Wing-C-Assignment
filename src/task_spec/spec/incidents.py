@@ -91,6 +91,19 @@ def pin_feature_incident(incidents: IncidentCatalog, sub: str, incident_id: str)
     return out
 
 
+def with_incident(
+    incidents: Mapping[str, PublicIncident] | None, inc: PublicIncident
+) -> IncidentCatalog:
+    """그 직군의 사례를 `inc` 하나로 고정한 카탈로그 — 회사 사례(co:…)를 공개 사례보다 먼저 쓸 때 (spec/company_incidents.py).
+    다른 직군은 그대로. 기능형 재료가 있으면 추가 사례에도 넣어 feature_incident 가 고르게 한다."""
+    alternates = dict(getattr(incidents, "alternates", {}) or {})
+    alternates[inc.sub] = [inc] if inc.feature is not None else []
+    out = IncidentCatalog(alternates)
+    out.update(incidents or {})
+    out[inc.sub] = inc
+    return out
+
+
 def incident_by_id(
     incidents: Mapping[str, PublicIncident] | None, incident_id: str | None
 ) -> PublicIncident | None:

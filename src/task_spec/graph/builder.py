@@ -37,6 +37,7 @@ from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve.t1 import T1Retriever
 from task_spec.schemas import PublicIncident, RunInput, RunState
+from task_spec.spec.company_incidents import CompanyIncidentRepo, CompanyResolver
 from task_spec.spec.store import CommonTaskRepo
 
 
@@ -68,6 +69,8 @@ def build_graph(
     incidents: dict[str, PublicIncident] | None = None,
     use_cover_letters: bool = False,
     feature_task_default: bool = False,
+    company_incidents: CompanyIncidentRepo | None = None,
+    company_of: CompanyResolver | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -97,6 +100,8 @@ def build_graph(
             common_store,
             incidents,
             feature_default=feature_task_default,
+            company_incidents=company_incidents,
+            company_of=company_of,
         ),
     )
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))

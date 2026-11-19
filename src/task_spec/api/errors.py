@@ -231,6 +231,71 @@ class InterviewTaskVersionMismatch(DomainError):
         )
 
 
+class PostingCompanyInvalid(DomainError):
+    """회사 표기에서 회사를 알 수 없다 (법인 표기·공백만 있음)."""
+
+    code = "posting_company_invalid"
+    status_code = 422
+
+    def __init__(self) -> None:
+        super().__init__("회사 표기에서 회사를 알 수 없습니다 (법인 표기·공백만 있음)")
+
+
+class PostingCompanyConflict(DomainError):
+    """실행 만들기에서 받은 회사가 공고에 정해진 회사와 다르다 — 공고의 회사를 바꾸려면 PUT /postings/{id}/company."""
+
+    code = "posting_company_conflict"
+    status_code = 409
+
+    def __init__(self, posting_id: str, current: str, asked: str) -> None:
+        super().__init__(
+            f"공고 {posting_id} 의 회사는 '{current}' 입니다 (받은 값 '{asked}') — 바꾸려면 PUT /postings/{posting_id}/company"
+        )
+
+
+class IncidentNotFound(DomainError):
+    code = "incident_not_found"
+    status_code = 404
+
+    def __init__(self, incident_id: str) -> None:
+        super().__init__(f"회사 사례를 찾을 수 없습니다: {incident_id}")
+
+
+class IncidentInvalid(DomainError):
+    """회사 사례 등록·조회 값이 맞지 않다 (회사 표기를 id 로 못 바꿈 등)."""
+
+    code = "incident_invalid"
+    status_code = 422
+
+
+class IncidentContentBlocked(DomainError):
+    """회사 사례에 연락처·링크로 보이는 표현이 있다 — 공유되면 여러 공고·LLM 입력으로 퍼지므로 등록하지 않는다.
+    값은 돌려주지 않고 칸·범주만."""
+
+    code = "incident_content_blocked"
+    status_code = 422
+
+    def __init__(self, findings: list[str]) -> None:
+        super().__init__(
+            "연락처·링크로 보이는 표현이 있어 등록하지 않았습니다 — 지우거나 일반 표현으로 바꿔 다시 등록하세요: "
+            + "; ".join(findings)
+        )
+
+
+class IncidentNotPending(DomainError):
+    """공유 승인·보관할 수 있는 상태가 아니다 (이미 결정·보관됨)."""
+
+    code = "incident_not_pending"
+    status_code = 409
+
+
+class IncidentShareInvalid(DomainError):
+    """공유 승인 그래프가 결정을 받지 않고 다시 기다린다 — 사유를 그대로 돌려준다."""
+
+    code = "incident_share_invalid"
+    status_code = 422
+
+
 class BuildRuleViolation(DomainError):
     """빌드 저장소 규칙 위반 (상태·역할 충돌) — 저장소 메시지는 id·상태·역할만 담는다."""
 

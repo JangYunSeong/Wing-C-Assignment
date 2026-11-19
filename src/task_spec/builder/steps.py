@@ -30,9 +30,11 @@ from task_spec.nodes.starter.build import HIDDEN, PUBLIC, build_and_repair
 from task_spec.nodes.starter.generate import BuildInputs
 from task_spec.nodes.starter.plan_contract import PlanResult, plan_contract
 from task_spec.prompting import PromptRegistry
+from task_spec.schemas import PublicIncident, TaskItem
 from task_spec.schemas.build_record import BuildFailure
 from task_spec.schemas.package import PackageHeader
-from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
+from task_spec.spec.company_incidents import CompanyIncidentReader, is_company_incident
+from task_spec.spec.incidents import incident_by_id, load_incidents
 from task_spec.starter.artifacts import summaries
 from task_spec.starter.contract import SpecView
 from task_spec.starter.images import (
@@ -120,11 +122,35 @@ class RealSteps:
         incidents_dir: Path,
         images_root: Path,
         designs: int | None = None,  # None = 허용 설계 전부 (#171)
+        company_incidents: CompanyIncidentReader | None = None,  # 회사 결정적 사건 (co:…) — 읽기만
     ) -> None:
         self.llm, self.prompts = llm, prompts
         self.incidents = load_incidents(incidents_dir)
         self.images_root = images_root
         self.designs = designs
+        self.company_incidents = company_incidents
+
+    async def incident_for(self, task: TaskItem) -> PublicIncident | None:
+        """명세가 적은 재료(source_incident)를 찾는다 — 공개 사례는 파일, 회사 사례(co:…)는 DB (내용은 등록 뒤 바뀌지 않는다).
+        재료 id 가 있는데 찾지 못하면 실패한다 — 예전에는 그 직군의 다른 사례로 말없이 바꿔 만들어, 승인된 명세와 다른 재료로
+        빌드했다. 재료 id 가 없는 명세는 None — contract 가 직군(템플릿) 단계에서 먼저 멈춘다."""
+        sid = task.source_incident
+        inc = incident_by_id(self.incidents, sid)
+        if inc is None and is_company_incident(sid) and self.company_incidents is not None:
+            assert sid is not None
+            try:
+                rec = await self.company_incidents.get(sid)
+            except Exception as exc:  # 권한 없음 등 — 사유를 남기고 멈춘다
+                raise StepFailed(
+                    f"contract: 회사 사례 {sid} 를 읽지 못함 ({type(exc).__name__}) — builder DB 역할의 "
+                    "company_incident 읽기 권한 확인 (docker/builder/db-role.sql)"
+                ) from exc
+            inc = rec.incident if rec is not None else None
+        if inc is None and sid:
+            raise StepFailed(
+                f"contract: 명세의 재료 {sid} 를 찾을 수 없음 — 다른 재료로 바꿔 만들지 않는다"
+            )
+        return inc
 
     # ① 계약
     async def contract(self, job: Job) -> ContractResult:
@@ -133,9 +159,7 @@ class RealSteps:
         template = select_template(sub) if sub else None
         if template is None:
             raise StepFailed(f"contract: 템플릿이 없는 직군 ({sub or '재료 없음'})")
-        inc = incident_by_id(self.incidents, task.source_incident) or feature_incident(
-            self.incidents, sub, job.label.posting_id
-        )
+        inc = await self.incident_for(task)
         if inc is None or inc.feature is None:
             raise StepFailed(f"contract: 기능형 재료가 없는 직군 ({sub})")
         res = await plan_contract(

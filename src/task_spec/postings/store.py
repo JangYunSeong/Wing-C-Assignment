@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS public.posting_meta (
     set_by text NOT NULL,
     set_at timestamptz NOT NULL DEFAULT now()
 );
+-- 사람이 정한 공고의 회사 [확정: 2026-11-19 사용자 — 인증 전에는 입력한 회사] — 공고 데이터(온톨로지·임시 공고 칸)보다 먼저.
+-- 회사 결정적 사건을 고를 때 쓴다 (spec/company_incidents.py). 온톨로지는 읽기만 하므로(불변식 4) task_db 에 둔다
+CREATE TABLE IF NOT EXISTS public.posting_company (
+    posting_id text PRIMARY KEY,
+    company text NOT NULL,
+    set_by text NOT NULL,
+    set_at timestamptz NOT NULL DEFAULT now()
+);
 """
 
 PROVISIONAL_PREFIX = "prov-"
@@ -205,6 +213,37 @@ class PostingStore:
             "INSERT INTO public.posting_meta (posting_id, career_level, set_by) VALUES (%s, %s, %s) "
             "ON CONFLICT (posting_id) DO NOTHING",
             (pid, level, set_by),
+        )
+
+    async def entered_companies(self, pids: list[str]) -> dict[str, str]:
+        """공고 id → 사람이 정한 회사 표기 (정하지 않은 공고는 빠진다)."""
+        if not pids:
+            return {}
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT posting_id, company FROM public.posting_company WHERE posting_id = ANY(%s)",
+                (pids,),
+            )
+            return {r["posting_id"]: r["company"] for r in await cur.fetchall()}
+
+    async def set_company(self, pid: str, company: str | None, set_by: str) -> None:
+        """None 이면 정한 값을 지운다 (다시 공고의 회사 칸)."""
+        if company is None:
+            await self._exec("DELETE FROM public.posting_company WHERE posting_id = %s", (pid,))
+            return
+        await self._exec(
+            "INSERT INTO public.posting_company (posting_id, company, set_by) VALUES (%s, %s, %s) "
+            "ON CONFLICT (posting_id) DO UPDATE SET company = EXCLUDED.company, "
+            "set_by = EXCLUDED.set_by, set_at = now()",
+            (pid, company, set_by),
+        )
+
+    async def init_company(self, pid: str, company: str, set_by: str) -> None:
+        """정한 값이 없을 때만 넣는다 (실행 만들기 — 그 사이 누가 정했으면 그 값을 덮지 않는다)."""
+        await self._exec(
+            "INSERT INTO public.posting_company (posting_id, company, set_by) VALUES (%s, %s, %s) "
+            "ON CONFLICT (posting_id) DO NOTHING",
+            (pid, company, set_by),
         )
 
     async def _exec(self, query: str, params: tuple[Any, ...]) -> None:

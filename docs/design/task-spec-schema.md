@@ -73,7 +73,7 @@ task:                                  # common_tasks·verification_tasks·slots
   artifacts:                           # 요청 시 공개 자료 (지원자에게는 목록만, 요청한 것만 내용 공개)
     - {artifact_id, title, content, role: key|support|distractor}   # role은 승인자·채점용 — LLM 이 빠뜨리면 support 로 받는다 (key·distractor 수는 검사가 본다)
   max_requests: 1~12 | null                 # 기능형은 2026-11-16 부터 null — 한도 없음 (analysis-stage.md §4.4). 예전 판·이슈형은 숫자
-  source_incident: critical_incident_id      # 부서 결정적 사건 — 수집 전에는 비어 있음
+  source_incident: incident_id               # 쓴 사례 — 공개 사례 pub:… 또는 회사 결정적 사건 co:… (사례 없이 만들면 비어 있음)
 
   # 기능 개발형(task_kind=feature) 전용 — incident에서는 비어 있어야 한다
   requirements: [{req_id: r#, text}]         # 공개 요구 — '무엇을'만, 최대 6

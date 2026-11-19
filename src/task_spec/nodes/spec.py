@@ -36,11 +36,21 @@ from task_spec.schemas import (
 from task_spec.spec.analysis_request import TASK as ANALYSIS_TASK
 from task_spec.spec.analysis_request import apply_analysis, draft_analysis_request
 from task_spec.spec.build import build_common
+from task_spec.spec.company_incidents import (
+    FLAG_COMPANY_REUSED,
+    CompanyIncident,
+    CompanyIncidentRepo,
+    CompanyResolver,
+    company_open,
+    feature_fit,
+    is_company_incident,
+    pick_company_incident,
+)
 from task_spec.spec.draft import TASK as DRAFT_TASK
 from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
 from task_spec.spec.feature import TASK as FEATURE_TASK
 from task_spec.spec.feature import apply_feature, draft_feature_task, uses_seed
-from task_spec.spec.incidents import feature_incident, feature_ref, incident_ref
+from task_spec.spec.incidents import feature_incident, feature_ref, incident_ref, with_incident
 from task_spec.spec.kind import choose_task_kind
 from task_spec.spec.questions import TASK as Q_TASK
 from task_spec.spec.questions import build_slot_verifications
@@ -134,8 +144,13 @@ def make_draft_spec(
     store: CommonTaskRepo | None = None,
     incidents: dict[str, PublicIncident] | None = None,
     feature_default: bool = False,
+    company_incidents: CompanyIncidentRepo | None = None,
+    company_of: CompanyResolver | None = None,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     """공통 과제 = 결정적 골격 + 서술(LLM). 공고·온톨로지만 쓴다 — 지원자 문서·주장을 읽지 않는다 (불변식 3).
+
+    사례: 같은 회사에서 공유 승인된 회사 결정적 사건(company_incidents, 회사 = company_of(공고))을 공개 사례보다 먼저 쓴다
+    [확정: 2026-11-19 사용자] — 공고마다 처음 정한 사례를 계속 쓴다 (spec/company_incidents.py).
 
     공고 단위 저장소(store)가 있으면 같은 (공고, 온톨로지 버전, 프롬프트) 의 판을 재사용한다 — 승인된 판 우선.
     revise 로 돌아오면 재사용하지 않고 승인자 수정 요청을 넣어 새 판을 만든다. 경험 검증만 다시 만들면
@@ -199,9 +214,27 @@ def make_draft_spec(
                     update=update,
                     lowered=lowered,
                 )
-            # v2 기능형은 그 직군 공개 사례에 기능형 재료(feature)가 있어야 한다 — 없으면 기본값 규칙에서 뺀다
+            # 회사 결정적 사건 후보 — 공통 과제가 이미 있는 공고는 그 사례 그대로 (공개 사례로 시작했으면 바꾸지 않는다, 불변식 3).
+            # 경험 검증만 다시 만들면(공통 과제 유지, #234) 고르지 않는다 — 유지한 과제의 사례 표시만 다시 센다
+            keeping = (
+                revise is not None
+                and not redo_common
+                and state.spec is not None
+                and bool(state.spec.common_tasks)
+            )
+            company_pool, posting_used = (
+                ([], [])
+                if keeping
+                else await _company_pool(
+                    company_incidents, company_of, store, state.posting_id, p.sub or ""
+                )
+            )
+            open_to_company = company_open(posting_used, company_pool)
+            # v2 기능형은 그 직군 사례(공개·회사)에 기능형 재료(feature)가 있어야 한다 — 없으면 기본값 규칙에서 뺀다
             seed_ok = bool(
                 (inc0 := feature_incident(incidents, p.sub or "", p.posting_id)) and inc0.feature
+            ) or (
+                open_to_company and any(feature_fit(c.incident, p.sub or "") for c in company_pool)
             )
             seed_needed = feature_ready and prompts is not None and uses_seed(prompts)
             kind, kind_flags = await choose_kind(
@@ -217,6 +250,22 @@ def make_draft_spec(
                 ),
                 rule_feature_on=feature_default and feature_ready and (seed_ok or not seed_needed),
             )
+            catalog = incidents
+            if keeping:
+                kind_flags = [*kind_flags, *await _kept_company_flags(store, state)]
+            elif store is not None and (company_pool or posting_used):
+                # 공유 사례가 없어도 부른다 — 그 공고가 쓰던 회사 사례가 보관됐으면 바뀐다고 표시해야 한다
+                pick = await pick_company_incident(
+                    company_pool,
+                    kind=kind,
+                    sub=p.sub or "",
+                    posting_id=state.posting_id,
+                    prev=posting_used,
+                    common=store,
+                )
+                if pick.incident is not None:
+                    catalog = with_incident(incidents, pick.incident)
+                kind_flags = [*kind_flags, *pick.flags]
             built = await build_common(
                 p,
                 state.evidence,
@@ -224,7 +273,7 @@ def make_draft_spec(
                 ontology_version=state.ontology_version,
                 ontology=ontology,
                 rel=rel,
-                incidents=incidents,
+                incidents=catalog,
                 task_kind=kind,
             )
             flags = [*built.flags, *kind_flags]
@@ -399,6 +448,37 @@ def make_draft_spec(
         )
 
     return draft_spec
+
+
+async def _company_pool(
+    company_incidents: CompanyIncidentRepo | None,
+    company_of: CompanyResolver | None,
+    store: CommonTaskRepo | None,
+    posting_id: str,
+    sub: str,
+) -> tuple[list[CompanyIncident], list[str]]:
+    """(그 회사·직군의 공유된 회사 사례, 그 공고의 공통 과제가 쓴 사례 id — 승인된 것 먼저).
+
+    공유 사례가 없어도(전부 보관 등) 공고가 쓴 사례는 읽는다 — 쓰던 회사 사례가 사라졌으면 바뀐다고 표시하려고."""
+    if company_incidents is None or store is None:
+        return [], []
+    used = await store.posting_incidents(posting_id)
+    company = await company_of(posting_id) if company_of is not None and sub else None
+    pool = await company_incidents.shared(company, sub) if company else []
+    return pool, used
+
+
+async def _kept_company_flags(store: CommonTaskRepo | None, state: RunState) -> list[str]:
+    """경험 검증만 다시 만들어 공통 과제를 유지할 때 — 그 과제의 회사 사례를 다른 공고가 쓰는지만 다시 센다."""
+    inc = (
+        state.spec.common_tasks[0].source_incident
+        if state.spec and state.spec.common_tasks
+        else None
+    )
+    if store is None or inc is None or not is_company_incident(inc):
+        return []
+    n = (await store.incident_usage([inc], exclude_posting=state.posting_id)).get(inc, 0)
+    return [FLAG_COMPANY_REUSED.format(id=inc, n=n)] if n else []
 
 
 def _out(

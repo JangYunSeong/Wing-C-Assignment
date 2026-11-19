@@ -137,6 +137,7 @@ class FakeProvisional:
         self.rows = rows or {}
         self.levels: dict[str, str] = {}
         self.set_by: dict[str, str] = {}
+        self.entered: dict[str, str] = {}  # 사람이 정한 회사 (posting_company)
 
     async def get_provisional(self, pid: str) -> dict[str, object] | None:
         if pid not in self.companies:
@@ -156,3 +157,18 @@ class FakeProvisional:
     async def init_career_level(self, pid: str, level: str, set_by: str) -> None:
         if pid not in self.levels:
             self.levels[pid], self.set_by[pid] = level, set_by
+
+    # 사람이 정한 회사 — PUT /postings/{id}/company·실행 만들기의 company
+    async def entered_companies(self, pids: list[str]) -> dict[str, str]:
+        return {p: self.entered[p] for p in pids if p in self.entered}
+
+    async def set_company(self, pid: str, company: str | None, set_by: str) -> None:
+        if company is None:
+            self.entered.pop(pid, None)
+        else:
+            self.entered[pid] = company
+        self.set_by[f"company:{pid}"] = set_by
+
+    async def init_company(self, pid: str, company: str, set_by: str) -> None:
+        if pid not in self.entered:
+            self.entered[pid], self.set_by[f"company:{pid}"] = company, set_by

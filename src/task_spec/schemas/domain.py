@@ -511,7 +511,7 @@ class TaskItem(Schema):
     follow_up_questions: list[str] = Field(
         default_factory=list
     )  # 면접 확인 질문 (확장 문항) [제안]
-    source_incident: str | None = None  # 부서 결정적 사건 id — 수집 전에는 None
+    source_incident: str | None = None  # 쓴 사례 — 공개 pub:… · 회사 co:… (없으면 None)
     # 기능형(feature) 전용 — LLM(draft_feature_task)이 채운다. incident 에서는 비어 있어야 한다
     requirements: list[Requirement] = Field(default_factory=list, max_length=6)
     acceptance_public: list[LinkedAcceptance] = Field(default_factory=list, max_length=6)

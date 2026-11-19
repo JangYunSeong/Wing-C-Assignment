@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from task_spec.api.deps import OntologyDep, PostingsDep, SettingsDep, get_postings
 from task_spec.api.errors import (
     InvalidUpload,
+    PostingCompanyInvalid,
     PostingNotFound,
     ServiceUnavailable,
     UnsupportedFileType,
@@ -30,6 +31,7 @@ from task_spec.api.uploads import ALLOWED_EXTENSIONS, _read_limited
 from task_spec.nodes.ingest.extractors import OcrError, UnsupportedFormat, extract_raw
 from task_spec.ontology.queries import posting_exists, posting_profile, search_positions
 from task_spec.postings.career import PostingCareer, estimate_career, posting_careers
+from task_spec.postings.company import CompanySource, company_id, posting_companies
 from task_spec.postings.search import PostingHit, search_terms
 from task_spec.postings.sections import segment
 from task_spec.postings.store import is_provisional, provisional_profile, rules_fingerprint
@@ -84,6 +86,25 @@ class PostingProfileView(PostingProfile):
 class CareerLevelIn(BaseModel):
     career_level: CareerLevel | None  # null = 정한 값 지우기 (다시 공고 문구 추정)
     set_by: str = Field(min_length=1, max_length=200)  # TODO(auth)
+
+
+class CompanyIn(BaseModel):
+    company: str | None = Field(
+        min_length=1, max_length=200
+    )  # null = 정한 값 지우기 (다시 공고의 회사 칸)
+    set_by: str = Field(
+        min_length=1, max_length=200
+    )  # TODO(auth) — 인증 전에는 입력한 회사를 그대로 믿는다
+
+
+class CompanyOut(BaseModel):
+    """정한 뒤의 회사 — 지웠으면 공고 데이터의 회사, 그것도 없으면 null."""
+
+    posting_id: str
+    company_id: str | None = None
+    company: str | None = None
+    company_known: bool | None = None  # 온톨로지 company 표에 있는 회사인지
+    company_source: CompanySource | None = None
 
 
 class CareerLevelOut(BaseModel):
@@ -263,7 +284,33 @@ async def search_postings(
     careers = await posting_careers(
         [h.posting_id for h in hits], ontology=ontology, store=ctx.store if ctx else None
     )
-    return [h.model_copy(update=_career_fields(careers.get(h.posting_id))) for h in hits]
+    # 사람이 정한 회사가 있으면 그 표기를 보인다 (회사 사례를 고르는 값과 같게)
+    entered = await ctx.store.entered_companies([h.posting_id for h in hits]) if ctx else {}
+    return [
+        h.model_copy(
+            update={
+                **_career_fields(careers.get(h.posting_id)),
+                **({"company": entered[h.posting_id]} if h.posting_id in entered else {}),
+            }
+        )
+        for h in hits
+    ]
+
+
+class SubItem(BaseModel):
+    id: str
+    label: str
+    in_pilot: bool
+
+
+@router.get("/subs")
+async def list_subs(postings: PostingsDep) -> list[SubItem]:
+    """직군 목록 (온톨로지, 버전 고정) — 공고 확인·회사 결정적 사건 등록 화면의 직군 선택 칸.
+    `/{posting_id}` 보다 먼저 선언한다 (subs 를 공고 id 로 잡지 않게)."""
+    return [
+        SubItem(id=k, label=str(v.get("label", "")), in_pilot=bool(v.get("in_pilot")))
+        for k, v in sorted(postings.lists.subs.items())
+    ]
 
 
 @router.get("/{posting_id}")
@@ -302,3 +349,35 @@ async def set_career_level(
     await postings.store.set_career_level(posting_id, req.career_level, req.set_by)
     careers = await posting_careers([posting_id], ontology=ontology, store=postings.store)
     return CareerLevelOut(posting_id=posting_id, **_career_fields(careers.get(posting_id)))
+
+
+@router.put("/{posting_id}/company")
+async def set_company(
+    posting_id: str, req: CompanyIn, postings: PostingsDep, ontology: OntologyDep
+) -> CompanyOut:
+    """공고의 회사를 정한다 (온톨로지 공고도 — 값은 task_db posting_company 에) [확정: 2026-11-19 사용자 — 인증 전에는 입력한
+    회사를 믿는다]. 회사 결정적 사건은 이 회사의 공유 사례에서 고른다 (spec/company_incidents.py) — 이미 회사 사례로 공통 과제를
+    만든 공고의 회사를 바꾸면 다음 명세부터 다른 사례로 바뀌고 명세에 표시된다."""
+    if is_provisional(posting_id):
+        found = await postings.store.get_provisional(posting_id) is not None
+    else:
+        found = ontology is not None and await posting_exists(ontology, posting_id)
+    if not found:
+        raise PostingNotFound(posting_id)
+    if req.company is not None and company_id(req.company) is None:
+        raise PostingCompanyInvalid()
+    await postings.store.set_company(
+        posting_id, req.company.strip() if req.company else None, req.set_by
+    )
+    found_company = (
+        await posting_companies([posting_id], ontology=ontology, store=postings.store)
+    ).get(posting_id)
+    if found_company is None:
+        return CompanyOut(posting_id=posting_id)
+    return CompanyOut(
+        posting_id=posting_id,
+        company_id=found_company.company_id,
+        company=found_company.name,
+        company_known=found_company.known,
+        company_source=found_company.source,
+    )

@@ -29,6 +29,8 @@ from task_spec.api.errors import (
     ErrorResponse,
     InterviewTaskLocked,
     InterviewTaskVersionMismatch,
+    PostingCompanyConflict,
+    PostingCompanyInvalid,
     PostingNotFound,
     RunNotFound,
     SpecNotFound,
@@ -46,7 +48,7 @@ from task_spec.api.schemas import (
 from task_spec.api.uploads import store_uploads
 from task_spec.ontology.queries import posting_exists
 from task_spec.postings.career import PostingCareer, posting_careers
-from task_spec.postings.company import PostingCompany, posting_companies
+from task_spec.postings.company import PostingCompany, company_id, posting_companies
 from task_spec.postings.store import is_provisional
 from task_spec.schemas import ApprovalDecision, CareerLevel, DocumentKind, RunInput, TaskSpec
 from task_spec.spec.store import interview_lock, replaced_common
@@ -85,6 +87,27 @@ async def get_runs(
         company=company,
         careers=careers,
     )
+
+
+async def _company_to_set(
+    ctx: Any, ontology: Any, posting_id: str, asked: str | None
+) -> str | None:
+    """공고의 회사 [확정: 2026-11-19 사용자 — 인증 전에는 입력한 회사]. 회사 결정적 사건을 이 회사의 공유 사례에서 고른다
+    (spec/company_incidents.py). 필수가 아니다 — 회사가 없는 공고는 공개 사례만 쓴다. 공고에 회사가 없으면 받은 값을 돌려주고
+    (실행을 띄우기 직전에 저장), 있으면 같은 회사(같은 규칙으로 맞춘 id)만 — 다르면 409 (바꾸려면 PUT /postings/{id}/company)."""
+    if ctx is None or asked is None:
+        return None
+    wanted = company_id(asked)
+    if wanted is None:
+        raise PostingCompanyInvalid()
+    current = (await posting_companies([posting_id], ontology=ontology, store=ctx.store)).get(
+        posting_id
+    )
+    if current is None:
+        return asked.strip()
+    if current.company_id != wanted:
+        raise PostingCompanyConflict(posting_id, current.name, asked)
+    return None
 
 
 async def _career_to_set(
@@ -126,6 +149,8 @@ async def create_run(
     cover_letters: Annotated[list[UploadFile] | None, File()] = None,
     # 공고의 신입·경력 — 공고에 정한 값이 없을 때만 필요 (있으면 비우거나 같은 값). 받은 값은 공고에 저장된다
     career_level: Annotated[CareerLevel | None, Form()] = None,
+    # 공고의 회사 — 공고에 회사가 없을 때 정한다 (있으면 비우거나 같은 회사). 회사 사례를 고르는 데 쓴다
+    company: Annotated[str | None, Form(min_length=1, max_length=200)] = None,
 ) -> RunAccepted:
     ctx = getattr(request.app.state, "postings", None)
     if is_provisional(posting_id):
@@ -141,6 +166,7 @@ async def create_run(
         if versions and version not in versions:
             raise InterviewTaskVersionMismatch(posting_id, versions, version)
     level = await _career_to_set(ctx, posting_id, career_level)
+    company_new = await _company_to_set(ctx, ontology, posting_id, company)
     run_id = uuid.uuid4().hex
     # 자기소개서를 쓰지 않으면 저장하지도 않는다 (개인정보 최소 처리) [확정: 2026-11-03]
     use_cl = settings.use_cover_letters
@@ -164,6 +190,8 @@ async def create_run(
     )
     if level is not None and ctx is not None:
         await ctx.store.init_career_level(posting_id, level, f"run:{run_id}")
+    if company_new is not None and ctx is not None:
+        await ctx.store.init_company(posting_id, company_new, f"run:{run_id}")
     launcher.launch(run_id, graph_input.model_dump(mode="json"))
     return RunAccepted(run_id=run_id, status="running", ignored=ignored)
 

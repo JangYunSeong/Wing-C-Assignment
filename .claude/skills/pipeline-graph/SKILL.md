@@ -191,6 +191,24 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 과제 형태 `qa_mutation`(sw.qa): 요구사항 + 작은 모듈 + 커버리지 높고 단언 약한 테스트 → 채점은 비공개로 심은 결함 검출 수.
   실행 채점(돌연변이 실행·커버리지 측정)은 응시 플랫폼 몫 [미정].
 
+## 회사 결정적 사건 [확정: 2026-11-19 사용자] (`spec/company_incidents.py`, `graph/incident_share.py`, `/incidents`)
+
+- 회사의 실제 장애 사례를 DB(`company_incident`)에 두고, **공유 승인된 것만 같은 회사 공고**의 공통 과제에 공개 사례보다 먼저 쓴다.
+  다른 회사의 과제·LLM 입력에는 쓰지 않는다 (회사 = 공고의 company_id). 공개 사례(`incidents/public_v1`)는 파일로만 둔다 (DB 에 넣지 않음).
+- id `co:<직군>:<12자>`, 내용은 PublicIncident 형식. 등록 뒤 내용은 바꾸지 않는다 (고치려면 새로 등록, 이전 것은 보관) — 빌더가 id 로 같은 내용을 읽는다.
+- 상태: pending → shared | rejected (공유 승인 그래프, interrupt — 불변식 9), pending·shared → retired (보관 — 새로 고르지 않을 뿐 이미 만든 과제는 그대로).
+- 등록 때 가명화와 같은 로컬 탐지기로 검사 — LLM 입력 칸(incident_block 칸 + 기능형 재료)의 연락처·링크는 등록 거절, 그 밖의 칸(원문 오류 문구 등)은 표시만.
+  사람 이름·회사·제품 등은 공유 승인 대기 내용에 칸별 개수로만 보인다 (값·본문은 체크포인트에 싣지 않음).
+- draft_spec 고르기: **공고가 쓰던 사례를 계속 쓴다** (불변식 3) — 그 공고 공통 과제의 사례(`CommonTaskRepo.posting_incidents`: 승인된 것 최근 승인 순
+  → 초안만 → "")를 앞에서부터 보고, 쓸 수 있는 회사 사례면 그대로, 공개 사례·사례 없음이면 바꾸지 않고, 더 쓸 수 없는 회사 사례(보관·반려)는
+  건너뛰며 flag (공유 사례가 다 사라졌으면 공개 사례로 + 같은 flag). 회사 사례는 공통 과제가 아직 없는 공고부터. 새로 고를 때는 다른 공고가
+  덜 쓴 사례 먼저 (승인된 공통 과제 기준, `incident_usage`), 이미 다른 공고가 쓰면 명세 flag. 경험 검증만 다시 만들면(공통 과제 유지) 고르지 않고
+  재사용 flag 만 다시 센다. 기능형은 직군 템플릿이 시험할 수 있는 기능형 재료가 있는 사례만. 회사 사례를 쓴 과제 flag 는 `FLAG_COMPANY_INCIDENT`.
+- 회사 = 공고의 company_id — 사람이 정한 값(`posting_company`: PUT /postings/{id}/company·POST /runs 의 company)이 공고 데이터보다 먼저
+  [확정: 2026-11-19 사용자 — 인증 전에는 입력한 회사를 믿는다]. 인증 때 입력자와 회사를 묶는다 [미정].
+- 빌더: 명세 `source_incident` 로 공개 사례는 파일, 회사 사례는 DB 에서 찾는다 (`RealSteps.incident_for`). 재료 id 가 있는데 못 찾으면 다른 재료로
+  바꾸지 않고 실패 (예전에는 말없이 직군의 다른 사례로 빌드). builder DB 역할에 `company_incident` 읽기 권한 (`db-role.sql`).
+
 ## 지원서 사용 범위 — 이력서만 [확정: 2026-11-03 사용자]
 
 - 검증할 주장은 **이력서에서만** 뽑는다. `USE_COVER_LETTERS=false`(기본): API 는 자기소개서를 저장하지 않고 응답 `ignored` 로 알리고,
