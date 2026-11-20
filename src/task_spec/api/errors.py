@@ -93,14 +93,6 @@ class CasesNotAvailable(DomainError):
         super().__init__(f"테스트 정보를 볼 수 없습니다 ({reason}): {build_id}")
 
 
-class UiDisabled(DomainError):
-    code = "not_found"
-    status_code = 404
-
-    def __init__(self) -> None:
-        super().__init__("화면이 꺼져 있거나 없는 파일입니다 (UI_ENABLED)")
-
-
 class ApprovalNotPending(DomainError):
     code = "approval_not_pending"
     status_code = 409

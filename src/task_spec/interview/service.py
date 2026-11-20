@@ -1789,7 +1789,6 @@ class InterviewService:
             "build_id": build.build_id,
             "status": build.status,
             "created": created,
-            "url": f"/ui/builds.html#{build.build_id}",
         }
 
     # ================================================================ 앞 단계로·임시 저장·폐기

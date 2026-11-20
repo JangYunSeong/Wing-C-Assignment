@@ -35,7 +35,6 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 | `GET` | `/postings?q=` | 공고 찾기 — 회사·직무명·id·직군 이름으로 임시 공고와 온톨로지 공고(기본 시범만, `pilot_only`), 최대 `limit` 건. 검색어는 공백으로 나눠 AND, LIKE 특수문자는 글자 그대로 [제안: 2026-11-04] |
 | `GET` | `/postings/{id}` | 공고 프로필 — 임시 공고(`prov-…`)와 온톨로지 공고 모두 (`#` 이 든 id 는 URL 인코딩) |
 | `PUT` | `/postings/{id}/career-level` | 공고의 신입·경력을 사람이 정함 `{career_level: "신입"|"경력"|null, set_by}` — null 이면 지움. 값은 task_db `posting_meta`(온톨로지 공고도 — 온톨로지는 읽기만). 공고 확인(`POST /postings`)의 `career_level` 도 같은 곳에. 공고 찾기·프로필·`/builds`·`/runs` 가 `career_level`·`career_level_source`(`confirmed` 사람이 정함 / `posting_text` 직무명·자격요건 문구 추정 / null) 로 같은 값을 보이고, 추천(`/postings/suggest`)은 `career_level_candidate` 로 추정값을 준다. 과제 생성에는 쓰지 않는다 (`postings/career.py`) [확정: 2026-11-19 사용자 — 두 값, 추정값도 내보냄, Wing 이 과제를 신입·경력으로 나눔] |
-| `GET` | `/`, `/ui/` | 임시 화면 "과제 명세 작업대" (`api/routers/ui.py`, `api/static/`). `UI_ENABLED=false` 면 `404` [제안: 2026-11-04] |
 
 - 상태는 `graph.aget_state(config)` 에서 계산한다. 별도 상태 테이블을 두지 않는다 (체크포인터가 SSOT).
 - 승인 대기 판정: `state.tasks` 에 interrupt 가 있으면 `awaiting_approval`.
@@ -82,13 +81,10 @@ async def lifespan(app: FastAPI):
 - 4xx: 입력·상태 오류. 5xx: 내부 오류 — 메시지에 원문 조각 포함 금지.
 - 예외 핸들러 한 곳에서 도메인 예외 → 코드 매핑.
 
-## 임시 화면 (/ui/) [제안: 2026-11-04 사용자 요청]
+## 화면 [확정: 2026-11-20 사용자 — 내부 시험용 /ui/ 제거]
 
-- 정적 파일 세 개(`index.html`·`app.css`·`app.js`)만. 빌드 도구·CDN·웹폰트 없음 (사내망). 라우터는 정해 둔 파일명만 돌려준다 (디렉터리 마운트 금지 — 경로 조작).
-- 화면은 **기존·일반 API 만** 부른다: `/postings/suggest` → `/postings` → `/runs` → SSE → `/runs/{id}` → `/approve` → `/spec`, 공고 고르기는 `GET /postings?q=`·`GET /postings/{id}`. 화면 전용 엔드포인트를 만들지 않는다 (공고 찾기는 화면이 아니어도 쓰는 조회 API).
-- 공고는 id 대신 이름으로 보여준다 — 온톨로지 원 표기("회사 / 직무 (경력)")에 회사가 들어 있으면 그대로, 아니면 "회사 · 직무".
-- API 가 준 글(LLM 출력 포함)은 전부 이스케이프해서 넣는다. 브라우저 저장소에는 실행 id·공고 id·승인자/확인자 이름만 (지원서 내용 금지).
-- 인증이 없으므로 운영에서는 nginx Basic 인증 뒤에서만 켠다. 인증이 붙으면 화면의 승인자 입력칸을 인증 사용자로 바꾼다 [TODO(auth)].
+- 화면은 Wing 관리 화면이 맡는다. 이 API 는 화면 파일을 내주지 않고, 화면 전용 엔드포인트를 만들지 않는다.
+- 예전 임시 화면(`/ui/`, `api/static/`, `UI_ENABLED`)은 Wing 이 같은 일(공고·실행·명세 승인·빌드 승인·인터뷰)을 하게 되어 지웠다.
 
 ## 설정
 
