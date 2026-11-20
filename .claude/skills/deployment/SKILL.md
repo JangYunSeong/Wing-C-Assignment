@@ -71,8 +71,9 @@ env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한
   `run.sh` 가 만드는 설정 조각은 `/etc/task-spec/nginx/` (재부팅 후 재시작에 필요 — `/tmp` 금지).
 - 설정을 바꾸면 이 서버에서 `nginx -t` 로 문법만 확인 (더미 인증서·htpasswd, `upstream.conf` 에 `127.0.0.1:8001`).
   운영 컨테이너는 `nginx.conf` 파일 하나를 바인드한다 — `git pull` 등으로 파일이 새로 생기면 reload 가 아니라 restart 해야 반영된다 (`docs/deploy.md` 2-6).
-- 8443 은 Wing 코딩 테스트(`wing-web` 127.0.0.1:8080, 같은 Basic 인증)와 미리보기 서브도메인. Wing 관리 화면은 Task API 를 443 으로 CORS 호출한다
-  (허용 origin `.allow_list`) [확정: 2026-11-18 사용자 — 8443 아래 중계 경로 대신 CORS].
+- 443 의 `/` 는 Wing 코딩 테스트(`wing-web` 127.0.0.1:8080, 같은 Basic 인증), task-api 는 같은 443 의 `/task-api/`(접두사 떼고 넘김) —
+  같은 출처라 운영 CORS 없음 [확정: 2026-11-20 사용자 — 프론트를 443 으로]. 옛 루트 API 경로는 옛 주소를 쓰는 곳이 옮길 때까지 남김(`docs/deploy.md` 2-6).
+  8443 은 옛 Wing 주소(443 으로 301)와 미리보기 서브도메인.
 
 ## 4. 업그레이드·롤백·백업
 
