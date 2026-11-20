@@ -11,9 +11,13 @@ from typing import Any
 
 import httpx
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
 from task_spec.api.app import create_app
+from task_spec.api.interview_generation import InterviewGenerationRunner
+from task_spec.graph import make_serializer
+from task_spec.graph.interview_generate import interview_generate_graph
 from task_spec.interview.approval import MemoryApprovalCommitter
 from task_spec.interview.service import InterviewService
 from task_spec.interview.store import MemoryInterviewStore
@@ -281,6 +285,17 @@ class Session:
             f"/interviews/{self.interview_id}/{suffix}", json={"revision": self.revision, **data}
         )
 
+    async def generate(self, **data: Any) -> httpx.Response:
+        """과제 만들기 — 시작(202) 뒤 백그라운드 생성이 끝날 때까지 기다려 인터뷰를 다시 읽는다 (#280).
+        시작이 거절되면(검증 오류) 그 응답."""
+        started = await self.post("generate", **data)
+        if started.status_code != 202:
+            return started
+        runner = self.service.generation
+        assert isinstance(runner, InterviewGenerationRunner)
+        await runner.wait(started.json()["generation"]["thread_id"])
+        return await self.client.get(f"/interviews/{self.interview_id}")
+
     async def success_step(self, *, trap: bool = True) -> dict[str, Any]:
         self.push(answer_output(), check_output(trap=trap))
         response = await self.post("success", **SUCCESS)
@@ -325,6 +340,10 @@ def make_service(
         approvals=approvals,
         builds=builds,
         now=clock,
+    )
+    # 과제 만들기 실행기 (#280) — 앱 lifespan 과 같이 생성 그래프를 붙인다 (체크포인터는 메모리)
+    service.generation = InterviewGenerationRunner(
+        interview_generate_graph(service, InMemorySaver(serde=make_serializer()))
     )
     return service, backend, store, postings, clock
 

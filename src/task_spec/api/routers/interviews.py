@@ -98,6 +98,10 @@ class SelectionRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+class ResumeRequest(BaseModel):
+    revision: int = Field(ge=1)
+
+
 class AnswersRequest(BaseModel):
     # 짚은 질문 id → 답 (원문 — 서비스가 가명화한 뒤 다시 길이를 본다)
     answers: dict[
@@ -389,14 +393,31 @@ async def select_competencies(
     )
 
 
-@router.post("/{interview_id}/generate")
+@router.post("/{interview_id}/generate", status_code=202)
 async def generate(
     interview_id: str, body: SelectionRequest, interviews: InterviewsDep
 ) -> dict[str, Any]:
-    """확인된 사례로 공고 공통 과제(기능형)와 지원자 질문을 만든다. interview_feature_seed CURRENT 가 없으면 503."""
+    """확인된 사례로 공고 공통 과제(기능형)와 지원자 질문을 만들기 시작한다 (#280 — 명세 실행처럼 백그라운드, 202).
+    응답은 생성 표시(generation.status=running)가 담긴 인터뷰 — 진행은 GET …/generation, 끝나면 과제 검토 단계.
+    입력 검증 오류는 바로(422·409), interview_feature_seed CURRENT 가 없으면 503. 모델 실패는 generation.status=failed."""
     return await interviews.generate(
         interview_id, revision=body.revision, competency_ids=body.competency_ids
     )
+
+
+@router.get("/{interview_id}/generation")
+async def generation_progress(interview_id: str, interviews: InterviewsDep) -> dict[str, Any]:
+    """과제 만들기 진행 (화면 폴링용, 가벼움) — status: running·failed·interrupted·idle(만드는 중이 아님 → 인터뷰를 다시 읽는다),
+    current_node: 도는 중이면 지금 단계, 실패·중단이면 이어서 할 단계 (seed·feature·request·slots·finish), revision."""
+    return await interviews.generation_progress(interview_id)
+
+
+@router.post("/{interview_id}/generation/resume", status_code=202)
+async def resume_generation(
+    interview_id: str, body: ResumeRequest, interviews: InterviewsDep
+) -> dict[str, Any]:
+    """실패·중단(재시작·배포)한 과제 만들기를 그 단계부터 — 같은 thread, 끝난 단계는 다시 하지 않는다."""
+    return await interviews.resume_generation(interview_id, revision=body.revision)
 
 
 @router.post("/{interview_id}/answers")
@@ -484,6 +505,7 @@ async def get_approval(
     interview_id: str, interviews: InterviewsDep, graph: InterviewApprovalDep
 ) -> dict[str, Any]:
     """승인 대기 내용 — 교체 대상(지금 승인된 인터뷰 과제)·승인할 수 없는 사유. 승인한 인터뷰는 닫힌 상태만."""
+    await interviews.ensure_idle(interview_id)
     view = await interviews.get(interview_id)
     if view["stage"] == "approved":
         return _closed(view)
@@ -504,6 +526,7 @@ async def approve(
 ) -> dict[str, Any]:
     """승인·반려 — 그래프 resume 만 한다. 승인되면 닫힌 상태, 반려되면 인터뷰(과제 검토 단계·수정 요청),
     그래프가 다시 기다리면(교체 미명시·승인할 수 없음·형식 오류) 422 + 사유."""
+    await interviews.ensure_idle(interview_id)
     view = await interviews.get(interview_id)
     if view["stage"] == "approved":
         raise InterviewConflict("이미 승인한 인터뷰입니다")

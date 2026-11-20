@@ -172,6 +172,25 @@ class InterviewSpec(Schema):
     review_flags: list[str] = Field(default_factory=list)
 
 
+class InterviewGeneration(_State):
+    """⑧ 과제 만들기 진행 (#280) — 생성 중·실패·중단일 때만 있고, 과제를 저장하면 비운다.
+
+    단계 산출물은 끊긴 단계부터 이을 때 읽는다 — 생성 그래프의 체크포인트에는 id 만 두고 사본을 두지 않는다
+    (graph/interview_generate.py). 산출물도 다른 칸처럼 가명화한 글만이다.
+    """
+
+    thread_id: str  # 생성 그래프 thread (interview/generation.thread_id)
+    revision: int  # 생성 표시를 저장한 인터뷰 판본 — thread·과제 id 에 쓴다
+    started_at: str  # ISO 시각
+    competency_ids: list[str]
+    reason: str | None = None  # 실패 사유 (고정 문구) — 있으면 실패, 이어서 하면 지운다
+    coding_incident: PublicIncident | None = None  # seed: 기능형 재료를 붙인 사례
+    seed_provenance: list[Provenance] = Field(default_factory=list)
+    task: TaskItem | None = None  # feature → request → slots 를 거치며 갱신
+    task_provenance: list[Provenance] = Field(default_factory=list)
+    task_flags: list[str] = Field(default_factory=list)
+
+
 class InterviewState(_State):
     stage: Stage
     company: str  # 공고의 회사 (메타데이터, 원문) — 대응표의 ORG 토큰 첫 값
@@ -211,6 +230,7 @@ class InterviewState(_State):
     competency_ids: list[str] = Field(default_factory=list)  # ⑦ 고른 역량 (2~3)
     template_id: str | None = None  # 직군 기본 코딩 템플릿
     spec: InterviewSpec | None = None  # ⑧ 생성한 과제와 평가 맥락
+    generation: InterviewGeneration | None = None  # ⑧ 과제 만들기 진행 (#280)
     approval: InterviewApprovalRecord | None = None  # ⑨ 승인 기록 (D2b)
     discarded_at: str | None = None
     discard_reason: Literal["recruiter", "stale"] | None = None
@@ -221,6 +241,7 @@ class InterviewState(_State):
         self.incident_confirmed = None
         self.incident_confirmation = None
         self.spec = None
+        self.generation = None
         self.competency_ids = []
 
     def reset_answers(self) -> None:

@@ -179,6 +179,12 @@ from task_spec.schemas.interview_approval import (
     InterviewApprovalState,
 )
 from task_spec.schemas.interview_case import KnownIncidentCase
+from task_spec.schemas.interview_generate import (
+    GENERATE_STEPS,
+    GenerateStep,
+    InterviewGenerateResult,
+    InterviewGenerateState,
+)
 from task_spec.schemas.interview_incident import (
     IncidentInterviewInput,
     IncidentInterviewOutput,
@@ -265,6 +271,10 @@ __all__ = [
     "InterviewApprovalDecision",
     "InterviewApprovalResult",
     "InterviewApprovalState",
+    "GENERATE_STEPS",
+    "GenerateStep",
+    "InterviewGenerateResult",
+    "InterviewGenerateState",
     "ReviewDecision",
     "CompileError",
     "ResultClass",

@@ -222,6 +222,25 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - 사례 출처(D2c): 인터뷰 사례만 승인 때 `co:` 로 등록한다. 공개·회사 사례(`incident/source`)는 이미 있는 사례라 등록하지 않고, 회사 사례는
   승인 직전에도 공유 승인 상태·회사를 다시 본다. 고른 사례의 기준 답안은 생성 입력에 싣지 않는다.
 
+## 채용담당자 인터뷰 과제 만들기 [확정: 2026-11-20 사용자] (`graph/interview_generate.py`, `api/interview_generation.py`, #280)
+
+- **명세 생성 과정과 같은 실행 방식** — 요청 하나로 끝까지 돌리면 10분 넘게 걸려(운영 첫 생성 11분 35초) 새로고침·nginx 600초에 진행이
+  사라졌다. `POST /interviews/{id}/generate` 는 검증 → 생성 표시 저장 → 그래프 launch → 202. 명세 실행 자체(`POST /runs`)로 돌리지는 않는다
+  (지원자 문서의 주장 추출·대조 파이프라인) — 같은 실행기·체크포인터·상태 모양, 다른 그래프.
+- 노드: `seed`(재료 정리 — 인터뷰 사례만 LLM) → `feature`(build_common + draft_feature_task) → `request`(요청 글) → `slots`(확장 슬롯) →
+  `finish`(질문·공통 과제 초안·InterviewSpec 저장). 생성기는 `TaskMaker.feature/request/slots` 로 나뉘고, 계산 맥락(DraftContext)은
+  단계마다 결정적으로 다시 만든다.
+- **State 에는 id 만** (`interview_id`·`thread_id`·`result`) — 승인 그래프처럼 체크포인트에 사본을 두지 않는다. 단계 산출물(재료 사례·과제 초안)은
+  서비스가 `InterviewState.generation` 에 저장하고, 끝나면 비운다. thread = 생성마다 `interview-gen-{id}-r{판본}` (명세 실행 목록은 run_id 꼴만).
+- 노드는 `service.generation_step` 만 부른다 — 생성 표시 읽기·저장은 잠금 안에서(시작이 표시를 저장한 뒤에 읽게), 입력 수집·LLM 은 잠금 없이.
+  표시가 이 thread 가 아니면 stale 로 끝. 실패 = 고정 문구 사유를 남기고(`generation_failed`) **메시지 없는 `GenerationStepFailed`** 를 던짐 —
+  LangGraph 가 노드 예외를 체크포인트 쓰기(`__error__`)에 repr 로 남기므로 원래 예외(입력·모델 출력 조각이 섞일 수 있음)를 다시 던지지 않는다.
+  체크포인트의 다음 노드가 실패한 단계로 남아, 같은 thread 를 입력 없이 돌리면 그 단계부터. 승인·폐기·30일 정리는 남은 생성 표시(산출물 사본)를 비운다.
+- 진행 판정(`launcher.thread_status`): 이 프로세스에서 도는 중 = running, 사유 있음 = failed, **체크포인트가 중간인데 이 프로세스에서 안 돎 =
+  interrupted**(워커 1개 전제 — 재시작·배포). 명세 실행은 같은 경우를 아직 running 으로 둔다 (#280 E).
+- 생성 중에는 그 인터뷰의 상태 변경을 409 `interview_generating` (`_expect_revision` 입구·폐기·승인 대기·결정), 임시 저장만 허용. 다른 업무 저장은
+  실패·중단한 생성을 버린다(`_save keep_generation`) — 이어서 한 생성이 그 사이 바뀐 상태를 덮지 않게.
+
 ## 지원서 사용 범위 — 이력서만 [확정: 2026-11-03 사용자]
 
 - 검증할 주장은 **이력서에서만** 뽑는다. `USE_COVER_LETTERS=false`(기본): API 는 자기소개서를 저장하지 않고 응답 `ignored` 로 알리고,

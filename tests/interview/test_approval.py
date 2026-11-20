@@ -21,6 +21,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from task_spec.api.app import create_app
+from task_spec.api.interview_generation import InterviewGenerationRunner
 from task_spec.graph import make_checkpointer
 from task_spec.graph.interview_approval import interview_approval_graph, thread_id
 from task_spec.interview.approval import ApprovalCommit, MemoryApprovalCommitter, blocked_findings
@@ -359,8 +360,8 @@ async def test_a_feature_seed_with_a_link_is_rejected_and_a_linked_case_needs_ed
     seed = json.loads(feature_seed_output())
     seed["business_need"] = "https://gasang.example.com/orders 주문 기록을 남긴다"
     s.backend.push(Completion(json.dumps(seed, ensure_ascii=False)))
-    response = await s.post("generate", competency_ids=SELECTED)
-    assert response.status_code == 503 and env.common.rows == []
+    response = await s.generate(competency_ids=SELECTED)
+    assert response.json()["generation"]["status"] == "failed" and env.common.rows == []
     # 확인한 사례 쪽 칸이면 다시 받아도 같으므로 사례를 고치라고 한다 (422)
     service = s.service
     incident = known_incident()
@@ -379,3 +380,38 @@ async def test_a_feature_seed_with_a_link_is_rejected_and_a_linked_case_needs_ed
         service._registrable(
             incident.model_copy(update={"symptom": "http://gasang.example.com 접속 실패"})
         )
+
+
+async def test_approval_waits_while_the_task_is_being_made_again(env) -> None:
+    """과제 검토 단계에서 다시 만드는 중이면 승인 대기·결정 모두 409 (#280) — 끝나면 판본이 바뀌어 지금 과제는 낡는다."""
+    s = env.session
+    await ready(s)
+    env.maker.gate, env.maker.entered = asyncio.Event(), asyncio.Event()
+    s.backend.push(Completion(feature_seed_output()))
+    started = await s.post("generate", competency_ids=SELECTED)
+    assert started.status_code == 202, started.text
+    await env.maker.entered.wait()
+    for blocked in (await approval(s), await decide(s, status="approved")):
+        assert (
+            blocked.status_code == 409 and blocked.json()["error"]["code"] == "interview_generating"
+        )
+    env.maker.gate.set()
+    runner = s.service.generation
+    assert isinstance(runner, InterviewGenerationRunner)
+    await runner.wait(started.json()["generation"]["thread_id"])
+    assert (await approval(s)).status_code == 200
+
+
+async def test_approving_drops_a_failed_regeneration_copy(env) -> None:
+    """과제 검토 중 다시 만들기가 실패해도 지금 과제는 승인할 수 있고, 실패한 생성의 산출물 사본은 남기지 않는다 (개인정보 점검 L1)."""
+    s = env.session
+    await ready(s)
+    env.maker.fail = OutputRejected("가상")
+    s.backend.push(Completion(feature_seed_output()))
+    failed = (await s.generate(competency_ids=SELECTED)).json()
+    assert failed["generation"]["status"] == "failed" and failed["spec"] is not None
+    assert (await approval(s)).status_code == 200
+    decided = await decide(s, status="approved")
+    assert decided.status_code == 200, decided.text
+    state = s.store.rows[s.interview_id].state
+    assert state.stage == "approved" and state.generation is None

@@ -51,6 +51,7 @@ from task_spec.interview.errors import (
     InterviewClosed,
     InterviewConflict,
     InterviewError,
+    InterviewGenerating,
     InterviewInvalid,
     InterviewNotFound,
     InterviewNotReady,
@@ -58,6 +59,12 @@ from task_spec.interview.errors import (
     OutputRejected,
     PostingMissing,
 )
+from task_spec.interview.generation import (
+    GenerationBusy,
+    GenerationNotResumable,
+    GenerationRunner,
+)
+from task_spec.interview.generation import thread_id as generation_thread_id
 from task_spec.interview.incident import (
     align_incident_evidence,
     attach_interview_cases,
@@ -72,8 +79,10 @@ from task_spec.interview.task import (
     FEATURE_SEED_PROMPT,
     TARGETED_PROMPT,
     CompetencyChoice,
+    MadeTask,
     TaskGenerationFailed,
     TaskMaker,
+    TaskRequest,
     coding_template,
     copies_answer,
     evaluation_criteria,
@@ -107,7 +116,13 @@ from task_spec.nodes.pseudonymize import (
 from task_spec.nodes.pseudonymize.engine import RunMapping
 from task_spec.postings.company import company_id as company_key
 from task_spec.prompting import PromptRegistry, assemble
-from task_spec.schemas import PostingProfile, PublicIncident, TaskItem
+from task_spec.schemas import (
+    CompetencyEvidence,
+    GenerateStep,
+    PostingProfile,
+    PublicIncident,
+    TaskItem,
+)
 from task_spec.schemas.interview_answer import (
     AnswerValidationRecord,
     TargetedAnswerDraftInput,
@@ -122,6 +137,7 @@ from task_spec.schemas.interview_state import (
     IncidentConfirmation,
     IncidentSource,
     InterviewApprovalRecord,
+    InterviewGeneration,
     InterviewSpec,
     InterviewState,
     PostingContext,
@@ -142,6 +158,7 @@ from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID
 from task_spec.spec.incidents import incident_block, incident_by_id, known_cases_block
 from task_spec.spec.store import CommonKey, CommonTaskRepo, InterviewTaskConflict, StoredCommon
 from task_spec.starter.store import BuildRepo, BuildRuleError
+from task_spec.starter.templates import Template
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +172,8 @@ SUCCESS_FIELDS = ("reproduction", "expected_result", "invariants", "verification
 TRAP_FIELDS = ("attempted_fix", "observed_result", "why_failed")
 RevisionTarget = Literal["project", "incident", "trap", "success", "common", "questions"]
 _STALE = "인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요"
+_GENERATING = "과제를 만들고 있습니다. 끝난 뒤 다시 시도해 주세요"
+_GENERATE_FAILED = "과제를 만들지 못했습니다. 다시 시도해 주세요"
 NOTE_TRAP_UNKNOWN = "실제 실패 시도는 확인되지 않음. 흔한 대응은 가상 함정 후보입니다."
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
@@ -163,6 +182,39 @@ Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 class _GeneralQuestions(RootModel[list[GeneralQuestion]]):
     pass
+
+
+@dataclass(frozen=True)
+class _GenerationInputs:
+    """과제 만들기 단계의 입력 — 단계마다 인터뷰 상태·공고·온톨로지에서 다시 모은다 (#280, 그래프 State 에는 id 만)."""
+
+    interview: (
+        bool  # 인터뷰 사례 (기능형 재료를 LLM 으로 정리) — 공개·회사 사례는 재료를 그대로 쓴다
+    )
+    llm: LLMClient
+    prompts: PromptRegistry
+    tasks: TaskMaker
+    common_store: CommonTaskRepo
+    incident: PublicIncident
+    mapping: RunMapping
+    profile: PostingProfile
+    chosen: PostingProfile  # 고른 역량만
+    matches: list[CompetencyEvidence]
+    template: Template
+    reviewer_note: str | None
+
+
+def _generation_reason(exc: Exception) -> str:
+    """과제 만들기 실패 사유 — 고정 문구만 (예외 메시지에 모델 출력·입력 조각이 섞일 수 있다)."""
+    if isinstance(
+        exc, TaskGenerationFailed
+    ):  # 고른 역량·직군으로는 만들 수 없음 — 이 모듈의 고정 문구
+        return str(exc)
+    if isinstance(
+        exc, InterviewError
+    ):  # 업무 오류 (대응표 삭제·사례 보관·모델 호출 실패 등) — 고정 문구
+        return exc.message
+    return _GENERATE_FAILED
 
 
 class _TargetedQuestions(RootModel[list[TargetedQuestion]]):
@@ -229,6 +281,8 @@ class InterviewService:
     # 사례 출처 (D2c) — 공개 사례 카탈로그(git 파일)와 같은 회사의 공유 승인된 사례
     public_incidents: Mapping[str, PublicIncident] | None = None
     company_incidents: CompanyIncidentRepo | None = None
+    # 과제 만들기 실행기 (#280) — 생성 그래프를 백그라운드로 (api/interview_generation.py). 서비스를 만든 뒤 앱이 넣는다
+    generation: GenerationRunner | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     _locks: _KeyedLocks = field(default_factory=_KeyedLocks)
 
@@ -263,6 +317,20 @@ class InterviewService:
             "ui_drafts": drafts,
             "draft_revision": row.draft_revision,
             **row.state.model_dump(mode="json"),
+            "generation": self._generation_summary(row),
+        }
+
+    def _generation_summary(self, row: InterviewRow) -> dict[str, Any] | None:
+        """화면용 과제 만들기 진행 — 단계 산출물(초안 사본)은 싣지 않는다. 닫힌 인터뷰는 없음."""
+        g = row.state.generation
+        if g is None or row.state.stage in CLOSED_STAGES:
+            return None
+        return {
+            "status": self._generation_status(g),
+            "thread_id": g.thread_id,
+            "started_at": g.started_at,
+            "competency_ids": list(g.competency_ids),
+            "reason": g.reason,
         }
 
     async def _load(self, interview_id: str, *, open_only: bool = True) -> InterviewRow:
@@ -277,8 +345,13 @@ class InterviewService:
             raise InterviewClosed("폐기된 인터뷰입니다. 새 인터뷰를 시작해 주세요")
         return row
 
+    def _expect_revision(self, row: InterviewRow, revision: int) -> None:
+        """상태를 바꾸는 요청의 입구 — 과제를 만드는 중이면 막고(#280), 판본을 확인한다."""
+        self._ensure_idle(row)
+        self._check_revision(row, revision)
+
     @staticmethod
-    def _expect_revision(row: InterviewRow, revision: int) -> None:
+    def _check_revision(row: InterviewRow, revision: int) -> None:
         if row.revision != revision:
             raise InterviewConflict(_STALE)
 
@@ -328,8 +401,13 @@ class InterviewService:
         mapping: RunMapping | None,
         *,
         steps: Sequence[str] = (),
+        keep_generation: bool = False,
     ) -> dict[str, Any]:
-        self._expect_revision(row, revision)
+        """keep_generation 은 과제 만들기 경로만 — 다른 업무 저장은 실패·중단한 과제 만들기를 버린다 (#280, 도는 중이면
+        입구에서 이미 막혔다). 버리지 않으면 이어서 한 생성이 그 사이 바뀐 상태를 덮는다."""
+        self._check_revision(row, revision)
+        if not keep_generation:
+            state.generation = None
         if mapping is not None:
             # 대응표를 DB 보다 먼저 저장한다. 대응표는 토큰을 더하기만 하고 같은 인터뷰 요청은 잠금으로 한 줄이라, 이 대응표는
             # 디스크의 것을 포함한다 — DB 저장이 충돌·취소·실패해도 쓰지 않는 토큰이 남을 뿐이다. 반대 순서면 DB 만 저장되고
@@ -1039,91 +1117,270 @@ class InterviewService:
             ).strip()
         return note or None
 
+    # ================================================================ ⑧ 과제 만들기 (#280) — 생성 그래프 graph/interview_generate.py
+    # 명세 생성 과정과 같은 실행 방식: generate 는 검증하고 생성 표시를 저장한 뒤 그래프를 띄우고 바로 돌아온다. 그래프가 단계마다
+    # generation_step 을 부르고, 산출물은 인터뷰 상태(generation)에 둔다 — 끊긴 단계부터 이을 때 거기서 읽는다.
+    def _require_runner(self) -> GenerationRunner:
+        if self.generation is None:
+            raise InterviewNotReady("과제 생성 실행기가 준비되지 않았습니다")
+        return self.generation
+
+    def _generating(self, row: InterviewRow) -> bool:
+        """이 프로세스에서 이 인터뷰의 과제를 만드는 중 (워커 1개 전제 — api/app.py)."""
+        g = row.state.generation
+        return (
+            g is not None and self.generation is not None and self.generation.is_active(g.thread_id)
+        )
+
+    def _ensure_idle(self, row: InterviewRow) -> None:
+        if self._generating(row):
+            raise InterviewGenerating(_GENERATING)
+
+    async def ensure_idle(self, interview_id: str) -> None:
+        """과제를 만드는 중이면 409 — 서비스 잠금 밖에서 그래프를 도는 승인 API 의 입구 (#280)."""
+        self._ensure_idle(await self._load(interview_id, open_only=False))
+
+    def _generation_status(
+        self, g: InterviewGeneration
+    ) -> Literal["running", "failed", "interrupted"]:
+        """도는 중 = 이 프로세스의 실행기에 있음, 실패 = 사유가 남음, 그 밖 = 재시작·배포로 끊김 (이어서 하기)."""
+        if self.generation is not None and self.generation.is_active(g.thread_id):
+            return "running"
+        return "failed" if g.reason is not None else "interrupted"
+
+    async def _generation_check(self, state: InterviewState, competency_ids: list[str]) -> None:
+        """시작·이어서 하기 전에 — 고른 역량·준비된 프롬프트·확인한 사례·답안 검증·고른 회사 사례."""
+        self._require(state, "competencies", "task_review")
+        if not state.competency_ids or state.competency_ids != competency_ids:
+            raise InterviewInvalid("먼저 고른 역량과 생성 요청이 다릅니다")
+        interview = state.incident_source == "known_problem"
+        # 기능형 재료 정리(interview_feature_seed)는 인터뷰 사례만 — 공개·회사 사례는 재료를 그대로 쓴다
+        if interview:
+            self._require_step(FEATURE_SEED_PROMPT, "과제 생성")
+        else:
+            self._require_ready()
+        self._require_tasks()
+        incident = state.incident_confirmed
+        if (
+            incident is None
+            or state.incident_confirmation is None
+            or state.incident_confirmation.sha256 != incident_digest(incident)
+        ):
+            raise InterviewInvalid("사례·답안 확인 단계를 먼저 완료해 주세요")
+        if interview and not validation_current(incident, state):
+            raise InterviewInvalid("기준 답안 검증을 완료하고 다시 확인해 주세요")
+        if state.incident_source == "company":  # 고른 뒤 보관·반려됐으면 쓰지 않는다
+            await self._company_case(incident.incident_id, state)
+
     async def generate(
         self, interview_id: str, *, revision: int, competency_ids: list[str]
     ) -> dict[str, Any]:
-        """확인된 사례 → 기능형 재료 → 공고 공통 과제(interview:{id} 초안) → 지원자 질문. 승인은 D2b 그래프."""
+        """과제 만들기 시작 — 확인된 사례 → 기능형 재료 → 공고 공통 과제(interview:{id} 초안) → 지원자 질문을 백그라운드로.
+        바로 돌아오고(생성 표시가 담긴 화면), 진행·결과·실패는 GET 으로 본다. 승인은 D2b 그래프."""
+        runner = self._require_runner()
         async with self._lock(interview_id):
             row = await self._load(interview_id)
             self._expect_revision(row, revision)
             state = row.state.model_copy(deep=True)
-            self._require(state, "competencies", "task_review")
-            if not state.competency_ids or state.competency_ids != competency_ids:
-                raise InterviewInvalid("먼저 고른 역량과 생성 요청이 다릅니다")
-            interview = state.incident_source == "known_problem"
-            # 기능형 재료 정리(interview_feature_seed)는 인터뷰 사례만 — 공개·회사 사례는 재료를 그대로 쓴다
-            llm, prompts = (
-                self._require_step(FEATURE_SEED_PROMPT, "과제 생성")
-                if interview
-                else self._require_ready()
+            await self._generation_check(state, competency_ids)
+            self._mapping(interview_id)  # 대응표가 지워졌으면 지금 멈춘다
+            marker = row.revision + 1  # 아래 저장이 올리는 판본
+            thread = generation_thread_id(interview_id, marker)
+            state.generation = InterviewGeneration(
+                thread_id=thread,
+                revision=marker,
+                started_at=self.now().isoformat(),
+                competency_ids=list(competency_ids),
             )
-            tasks, common_store = self._require_tasks()
-            incident = state.incident_confirmed
-            if (
-                incident is None
-                or state.incident_confirmation is None
-                or state.incident_confirmation.sha256 != incident_digest(incident)
-            ):
-                raise InterviewInvalid("사례·답안 확인 단계를 먼저 완료해 주세요")
-            if interview and not validation_current(incident, state):
-                raise InterviewInvalid("기준 답안 검증을 완료하고 다시 확인해 주세요")
-            if state.incident_source == "company":  # 고른 뒤 보관·반려됐으면 쓰지 않는다
-                await self._company_case(incident.incident_id, state)
-            mapping = self._mapping(interview_id)
-            profile = await self._profile(state.posting_id)
-            choice = await self._competencies(tasks, profile)
-            selected = set(competency_ids)
-            chosen = profile.model_copy(
-                update={
-                    "competencies": [c for c in profile.competencies if c.competency_id in selected]
-                }
-            )
-            matches = [e for e in choice.matches if e.competency_id in selected]
+            # 표시를 저장하기 전에 띄운다 — 단계는 표시를 이 잠금 안에서 읽으므로(generation_step) 이 저장이 끝난 뒤에 읽는다.
+            # 저장 뒤에 띄우면 그 사이 읽은 요청이 표시만 보고 '중단됨'으로 본다. 저장이 실패하면 그 thread 는 표시를 못 찾아 stale
+            runner.start(interview_id, thread)
+            return await self._save(row, revision, state, None, keep_generation=True)
+
+    async def resume_generation(self, interview_id: str, *, revision: int) -> dict[str, Any]:
+        """실패·중단한 과제 만들기를 그 단계부터 — 같은 thread, 끝난 단계는 다시 하지 않는다."""
+        runner = self._require_runner()
+        async with self._lock(interview_id):
+            row = await self._load(interview_id)
+            self._expect_revision(row, revision)
+            state = row.state.model_copy(deep=True)
+            g = state.generation
+            if g is None:
+                raise InterviewConflict("이어서 할 과제 만들기가 없습니다")
+            await self._generation_check(state, list(g.competency_ids))
             try:
-                template = coding_template(profile.sub or "")
-                if interview:
-                    interview_text = self.pseudo.stored(
-                        "\n".join([incident_block(incident), known_cases_block(incident)]), mapping
-                    )
-                    coding_incident, seed_provenance = await self._llm(
-                        prepare_coding_incident(
-                            incident,
-                            template,
-                            interview=interview_text,
-                            llm=llm,
-                            prompts=prompts,
-                            ontology_version=profile.ontology_version,
-                        )
-                    )
-                    self._registrable(coding_incident)
-                else:
-                    coding_incident, seed_provenance = ready_coding_incident(incident, template), []
-                made = await self._llm(
-                    tasks.make(
-                        chosen,
-                        matches,
-                        coding_incident,
-                        template,
-                        task_id=f"{interview_id}-common-{row.revision}",
-                        reviewer_note=self._reviewer_note(state),
+                await runner.resume(g.thread_id)
+            except GenerationBusy:
+                raise InterviewGenerating(_GENERATING) from None
+            except GenerationNotResumable:
+                raise InterviewConflict(
+                    "이어서 할 단계가 없습니다. 과제를 다시 만들어 주세요"
+                ) from None
+            state.generation = g.model_copy(update={"reason": None})
+            return await self._save(row, revision, state, None, keep_generation=True)
+
+    async def generation_progress(self, interview_id: str) -> dict[str, Any]:
+        """화면 폴링용 — 진행 상태·단계(도는 중이면 지금, 실패·중단이면 이어서 할 단계)·판본. 만드는 중이 아니면 idle."""
+        row = await self._load(interview_id, open_only=False)
+        g = row.state.generation
+        if g is None or row.state.stage in CLOSED_STAGES:
+            return {
+                "status": "idle",
+                "current_node": None,
+                "started_at": None,
+                "reason": None,
+                "revision": row.revision,
+            }
+        progress = await self.generation.progress(g.thread_id) if self.generation else None
+        return {
+            "status": self._generation_status(g),
+            "current_node": progress.step if progress else None,
+            "started_at": g.started_at,
+            "reason": g.reason,
+            "revision": row.revision,
+        }
+
+    @staticmethod
+    def _own_generation(row: InterviewRow | None, thread_id: str) -> InterviewGeneration | None:
+        """이 thread 의 생성 표시 — 다시 만들기·역량 바꾸기·폐기·승인으로 바뀌었으면 None (낡은 thread)."""
+        if row is None or row.state.stage in CLOSED_STAGES:
+            return None
+        g = row.state.generation
+        return g if g is not None and g.thread_id == thread_id else None
+
+    async def _generation_inputs(
+        self, interview_id: str, state: InterviewState, g: InterviewGeneration
+    ) -> _GenerationInputs:
+        interview = state.incident_source == "known_problem"
+        llm, prompts = (
+            self._require_step(FEATURE_SEED_PROMPT, "과제 생성")
+            if interview
+            else self._require_ready()
+        )
+        tasks, common_store = self._require_tasks()
+        incident = state.incident_confirmed
+        if incident is None:
+            raise InterviewInvalid("사례·답안 확인 단계를 먼저 완료해 주세요")
+        mapping = self._mapping(interview_id)
+        profile = await self._profile(state.posting_id)
+        choice = await self._competencies(tasks, profile)
+        selected = set(g.competency_ids)
+        chosen = profile.model_copy(
+            update={
+                "competencies": [c for c in profile.competencies if c.competency_id in selected]
+            }
+        )
+        return _GenerationInputs(
+            interview=interview,
+            llm=llm,
+            prompts=prompts,
+            tasks=tasks,
+            common_store=common_store,
+            incident=incident,
+            mapping=mapping,
+            profile=profile,
+            chosen=chosen,
+            matches=[e for e in choice.matches if e.competency_id in selected],
+            template=coding_template(profile.sub or ""),
+            reviewer_note=self._reviewer_note(state),
+        )
+
+    @staticmethod
+    def _seeded(g: InterviewGeneration) -> PublicIncident:
+        if g.coding_incident is None:  # 그래프가 seed 를 저장한 뒤에만 다음 단계로 간다
+            raise InterviewConflict(
+                "과제 만들기 단계 순서가 어긋났습니다. 과제를 다시 만들어 주세요"
+            )
+        return g.coding_incident
+
+    @staticmethod
+    def _drafted(g: InterviewGeneration) -> MadeTask:
+        if g.task is None:
+            raise InterviewConflict(
+                "과제 만들기 단계 순서가 어긋났습니다. 과제를 다시 만들어 주세요"
+            )
+        return MadeTask(task=g.task, provenance=list(g.task_provenance), flags=list(g.task_flags))
+
+    async def _run_step(
+        self, interview_id: str, step: GenerateStep, inp: _GenerationInputs, g: InterviewGeneration
+    ) -> dict[str, Any]:
+        """seed·feature·request·slots 하나 — 잠금 없이 (LLM 몇 분). 저장할 산출물 칸을 돌려준다."""
+        if step == "seed":
+            if inp.interview:
+                text = self.pseudo.stored(
+                    "\n".join([incident_block(inp.incident), known_cases_block(inp.incident)]),
+                    inp.mapping,
+                )
+                coding, seed_provenance = await self._llm(
+                    prepare_coding_incident(
+                        inp.incident,
+                        inp.template,
+                        interview=text,
+                        llm=inp.llm,
+                        prompts=inp.prompts,
+                        ontology_version=inp.profile.ontology_version,
                     )
                 )
-                # 인터뷰 사례만 '공유 승인 전' 표시로 바꾼다 — 고른 회사 사례는 공유 승인된 것이라 생성기 표시가 맞다
-                task = with_interview_flag(made.task, coding_incident) if interview else made.task
-                general, targeted = questions_for(task)
-            except (
-                TaskGenerationFailed
-            ) as exc:  # 고른 역량·직군으로는 만들 수 없음 — 고정 문구, 선택을 바꿔야 함
-                logger.warning("interview_generate_invalid type=%s", type(exc).__name__)
-                raise InterviewInvalid(str(exc)) from None
-            except (SchemaViolation, EmptyResponse, TransientLLMError, ValueError) as exc:
-                # 모델 출력을 쓰지 못함 (OutputRejected·형식 검증·저장 글 검사 포함) — 사유는 고정 문구일 때만 로그에
-                logger.warning(
-                    "interview_generate_rejected type=%s reason=%s",
-                    type(exc).__name__,
-                    str(exc) if isinstance(exc, OutputRejected | InterviewTextRejected) else "-",
-                )
-                raise InterviewUnavailable("과제를 만들지 못했습니다. 다시 시도해 주세요") from None
+                self._registrable(coding)
+            else:
+                coding, seed_provenance = ready_coding_incident(inp.incident, inp.template), []
+            return {"coding_incident": coding, "seed_provenance": seed_provenance}
+        req = TaskRequest(
+            profile=inp.chosen,
+            matches=inp.matches,
+            coding_incident=self._seeded(g),
+            template=inp.template,
+            task_id=f"{interview_id}-common-{g.revision}",
+            reviewer_note=inp.reviewer_note,
+        )
+        if step == "feature":
+            made = await self._llm(inp.tasks.feature(req))
+        elif step == "request":
+            made = await self._llm(inp.tasks.request(req, self._drafted(g)))
+        else:
+            made = await self._llm(inp.tasks.slots(req, self._drafted(g)))
+        return {"task": made.task, "task_provenance": made.provenance, "task_flags": made.flags}
+
+    async def generation_step(self, interview_id: str, thread_id: str, step: GenerateStep) -> bool:
+        """생성 그래프의 단계 하나 — 입력을 모아 단계를 돌리고(잠금 없이) 잠금 안에서 산출물을 저장한다.
+        생성 표시가 이 thread 가 아니면 아무것도 하지 않고 False (그래프는 stale 로 끝난다)."""
+        if step == "finish":
+            return await self._finish_generation(interview_id, thread_id)
+        # 표시는 잠금 안에서 읽는다 — 잠금 밖이면 시작(generate)이 표시를 저장하기 전 행을 읽어 stale 로 끝난다
+        # (Postgres 저장은 이벤트 루프에 양보한다, #280 개인정보 점검 I3)
+        async with self._lock(interview_id):
+            row = await self.store.get(interview_id)
+        g = self._own_generation(row, thread_id)
+        if row is None or g is None:
+            return False
+        inp = await self._generation_inputs(interview_id, row.state, g)
+        update = await self._run_step(interview_id, step, inp, g)
+        async with self._lock(interview_id):
+            row = await self.store.get(interview_id)
+            g = self._own_generation(row, thread_id)
+            if row is None or g is None:
+                return False
+            state = row.state.model_copy(deep=True)
+            state.generation = g.model_copy(update=update)
+            # 대응표는 넘기지 않는다 — 단계는 토큰을 만들지 않고(pseudo.stored), 몇 분 전에 읽은 대응표를 다시 쓰면 그 사이
+            # 더해진 토큰을 되돌린다 (개인정보 점검 L3)
+            await self._save(row, row.revision, state, None, keep_generation=True)
+        return True
+
+    async def _finish_generation(self, interview_id: str, thread_id: str) -> bool:
+        """질문을 만들고 공통 과제 초안·과제를 저장한다 (잠금 안에서) — 생성 표시를 비우고 과제 검토 단계로."""
+        async with self._lock(interview_id):
+            row = await self.store.get(interview_id)
+            g = self._own_generation(row, thread_id)
+            if row is None or g is None:
+                return False
+            state = row.state.model_copy(deep=True)
+            inp = await self._generation_inputs(interview_id, state, g)
+            coding_incident = self._seeded(g)
+            made = self._drafted(g)
+            # 인터뷰 사례만 '공유 승인 전' 표시로 바꾼다 — 고른 회사 사례는 공유 승인된 것이라 생성기 표시가 맞다
+            task = with_interview_flag(made.task, coding_incident) if inp.interview else made.task
+            general, targeted = questions_for(task)
             if not general or not targeted:
                 logger.warning("interview_generate_rejected type=no_questions")
                 raise InterviewUnavailable(
@@ -1133,25 +1390,28 @@ class InterviewService:
             if (
                 state.incident_source == "company"
             ):  # 다른 공고도 쓰는 사례 — 두 공고에 모두 지원한 사람은 함정·정답을 안다
-                used = await common_store.incident_usage(
+                used = await inp.common_store.incident_usage(
                     [coding_incident.incident_id], exclude_posting=state.posting_id
                 )
                 if n := used.get(coding_incident.incident_id, 0):
                     reuse.append(FLAG_COMPANY_REUSED.format(id=coding_incident.incident_id, n=n))
-            saved = await common_store.save_draft(
-                CommonKey(state.posting_id, profile.ontology_version, f"interview:{interview_id}"),
+            provenance = [*g.seed_provenance, *made.provenance]
+            saved = await inp.common_store.save_draft(
+                CommonKey(
+                    state.posting_id, inp.profile.ontology_version, f"interview:{interview_id}"
+                ),
                 task,
-                [*seed_provenance, *made.provenance],
+                provenance,
             )
             task = saved.task
             state.spec = InterviewSpec(
                 posting_id=state.posting_id,
-                ontology_version=profile.ontology_version,
-                competency_ids=list(competency_ids),
-                template_id=template.manifest.template_id,
+                ontology_version=inp.profile.ontology_version,
+                competency_ids=list(g.competency_ids),
+                template_id=inp.template.manifest.template_id,
                 project=state.project,
                 incident_source=state.incident_source,
-                incident=incident,
+                incident=inp.incident,
                 coding_incident=coding_incident,
                 incident_confirmation=state.incident_confirmation,
                 answer_validation=state.answer_validation,
@@ -1165,17 +1425,40 @@ class InterviewService:
                 hidden_requirements=hidden_requirements(task, targeted),
                 evaluation_intent=[
                     f"{c.label}: 근거 자료를 요청하고 AI의 답을 검증하는 과정"
-                    for c in chosen.competencies
+                    for c in inp.chosen.competencies
                 ],
                 evaluation_criteria=evaluation_criteria(task),
-                generation_provenance=[*seed_provenance, *made.provenance],
+                generation_provenance=provenance,
                 review_flags=with_content_flags(
                     [*made.flags, *task.review_flags, *reuse], task, coding_incident
                 ),
             )
             state.stage = "task_review"
             state.review_note = None
-            return await self._save(row, revision, state, mapping, steps=(STEP_TASK,))
+            state.generation = None
+            await self._save(row, row.revision, state, inp.mapping, steps=(STEP_TASK,))
+        return True
+
+    async def generation_failed(
+        self, interview_id: str, thread_id: str, step: GenerateStep, exc: Exception
+    ) -> None:
+        """실패 사유를 고정 문구로 남긴다 — 화면은 사유와 '이어서 하기'(그 단계부터)를 보인다."""
+        known = isinstance(exc, (*_LLM_ERRORS, InterviewError))
+        (logger.warning if known else logger.error)(
+            "interview_generate_failed step=%s type=%s reason=%s",
+            step,
+            type(exc).__name__,
+            # 사유는 고정 문구일 때만 로그에 (모델 출력·입력 조각이 섞일 수 있다)
+            str(exc) if isinstance(exc, OutputRejected | InterviewTextRejected) else "-",
+        )
+        async with self._lock(interview_id):
+            row = await self.store.get(interview_id)
+            g = self._own_generation(row, thread_id)
+            if row is None or g is None:
+                return
+            state = row.state.model_copy(deep=True)
+            state.generation = g.model_copy(update={"reason": _generation_reason(exc)})
+            await self._save(row, row.revision, state, None, keep_generation=True)
 
     async def set_answers(
         self, interview_id: str, *, revision: int, answers: dict[str, str]
@@ -1616,6 +1899,10 @@ class InterviewService:
         problems = approval_problems(state, stored, company, blocked, source_problem)
         if self.approvals is None or self.common_store is None:
             problems.append("승인 저장소가 준비되지 않았습니다")
+        if self._generating(
+            row
+        ):  # 과제를 다시 만드는 중 — 끝나면 판본이 바뀌어 지금 과제는 낡는다 (#280)
+            problems.append(_GENERATING)
         return problems, current, company
 
     async def approval_context(self, interview_id: str, revision: int) -> dict[str, Any] | None:
@@ -1668,6 +1955,9 @@ class InterviewService:
             state = row.state.model_copy(deep=True)
             state.stage = "approved"
             state.review_note = None
+            state.generation = (
+                None  # 실패·중단한 다시 만들기의 산출물 사본을 닫힌 인터뷰에 남기지 않는다 (#280)
+            )
             state.approval = InterviewApprovalRecord(
                 reviewer=decision.reviewer,
                 at=decision.at.isoformat(),
@@ -1868,6 +2158,7 @@ class InterviewService:
         """담당자가 인터뷰를 폐기한다 — 이름 대응표·임시 저장을 지운다. 가명화한 대화는 남는다."""
         async with self._lock(interview_id):
             row = await self._load(interview_id, open_only=False)
+            self._ensure_idle(row)
             if row.state.stage == "approved":
                 raise InterviewClosed(
                     "승인한 인터뷰는 폐기하지 않습니다. 과제를 바꾸려면 새 인터뷰로 교체해 주세요"
@@ -1884,6 +2175,7 @@ class InterviewService:
         state.stage = "discarded"
         state.discarded_at = self.now().isoformat()
         state.discard_reason = reason
+        state.generation = None  # 실패·중단한 과제 만들기의 산출물 사본도 지운다 (#280 — 초안 판을 지우는 것과 같은 이유)
         updated = await self.store.save(row.id, row.revision, state, clear_all_drafts=True)
         if updated is None:
             raise InterviewConflict(_STALE)

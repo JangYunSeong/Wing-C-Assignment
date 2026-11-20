@@ -30,6 +30,12 @@ class InterviewConflict(InterviewError):
     status_code = 409
 
 
+class InterviewGenerating(InterviewConflict):
+    """과제를 만드는 중이라 그 인터뷰를 바꿀 수 없다 (#280) — 임시 저장만 된다."""
+
+    code = "interview_generating"
+
+
 class InterviewClosed(InterviewError):
     """폐기된 인터뷰 — 대응표를 지웠으므로 더 진행하지 않는다."""
 

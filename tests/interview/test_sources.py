@@ -117,7 +117,7 @@ async def task_review(s: Session, source: str, incident_id: str | None = None) -
     assert confirmed.status_code == 200, confirmed.text
     assert (await s.post("competencies", competency_ids=SELECTED)).status_code == 200
     calls = len(s.backend.prompts)
-    generated = await s.post("generate", competency_ids=SELECTED)
+    generated = await s.generate(competency_ids=SELECTED)
     assert generated.status_code == 200, generated.text
     assert (
         len(s.backend.prompts) == calls
@@ -200,7 +200,7 @@ async def test_a_company_case_retired_after_choosing_cannot_be_used(env) -> None
     assert any("고른 회사 사례를 더 쓸 수 없습니다" in p for p in payload["problems"])
     assert (await approve(s)).status_code == 422
     regenerate = await s.post("generate", competency_ids=SELECTED)
-    assert regenerate.status_code == 422
+    assert regenerate.status_code == 422  # 시작 전 검증 — 백그라운드로 가지 않는다
 
 
 @pytest.mark.parametrize(

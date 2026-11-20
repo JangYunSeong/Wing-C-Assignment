@@ -15,6 +15,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from task_spec.api.deps import PostingsContext
 from task_spec.api.errors import install_error_handlers
+from task_spec.api.interview_generation import InterviewGenerationRunner
 from task_spec.api.launcher import RunLauncher
 from task_spec.api.routers import builds, health, incidents, interviews, postings, pull, runs
 from task_spec.config import Settings, get_settings
@@ -23,6 +24,7 @@ from task_spec.graph import build_graph, make_checkpointer
 from task_spec.graph.build_approval import build_approval_graph
 from task_spec.graph.incident_share import incident_share_graph
 from task_spec.graph.interview_approval import interview_approval_graph
+from task_spec.graph.interview_generate import interview_generate_graph
 from task_spec.interview.approval import PgApprovalCommitter
 from task_spec.interview.postings import PostingSource
 from task_spec.interview.service import InterviewService, sweep_forever
@@ -156,12 +158,20 @@ def create_app(
             app.state.incident_share = incident_share_graph(company_incidents, cp)
             # 인터뷰 과제 승인 — 같은 체크포인터, thread 는 (인터뷰, 판본)마다 (결정 2, #266 D2b)
             app.state.interview_approval = interview_approval_graph(app.state.interviews, cp)
+            # 인터뷰 과제 만들기 — 같은 체크포인터, thread 는 생성마다 (#280, 명세 실행과 같은 방식으로 백그라운드)
+            generation = InterviewGenerationRunner(
+                interview_generate_graph(app.state.interviews, cp)
+            )
+            app.state.interviews.generation = generation
             try:
                 yield
             finally:
                 sweeper.cancel()
                 with suppress(asyncio.CancelledError):
                     await sweeper
+                await (
+                    generation.shutdown()
+                )  # 도는 생성은 끊긴다 — 다음 기동 때 '중단됨'(이어서 하기)
                 await interview_store.close()
                 await app.state.launcher.shutdown()
                 await app.state.delivery.shutdown()
