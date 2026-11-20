@@ -416,7 +416,6 @@ docker/deploy_all.sh --api-only       # API 만 · --builder-only 는 builder �
 
 ```bash
 curl -s http://127.0.0.1:8001/healthz     # status ok, database ok, ontology_resolved = 고정 버전
-curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8001/ui/   # 200 — 임시 화면 (UI_ENABLED=false 면 404)
 # nginx 앞단이면: curl -s https://<서버 주소>/healthz  (인증 없이 ok)
 #                 curl -s -o /dev/null -w '%{http_code}' https://<서버 주소>/runs/x  → 401 (Basic 인증 동작)
 podman logs --tail 50 task-api            # 원문·키가 찍히지 않아야 함

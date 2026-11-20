@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from task_spec.api.run_view import _summary
@@ -212,10 +211,6 @@ def test_old_select_overlap_is_shown_and_can_be_lowered() -> None:
         "select",
         False,
     )
-    ui = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
-        "utf-8"
-    )
-    assert 'select: "선택만 일치(예전 실행) — 확인 필요"' in ui
 
     st = RunState.model_validate(
         {

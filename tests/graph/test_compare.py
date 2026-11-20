@@ -294,12 +294,6 @@ def test_select_only_is_marked_in_verify_reasons() -> None:
     c1 = next(x for x in cmp.claims_to_verify if x.claim_id == "d1-c1")
     assert not any(r.startswith(SELECT_ONLY) for r in c1.reasons)
     assert SELECT_ONLY == "선택만 일치(확인 경로 근거 없음)"
-    from pathlib import Path
-
-    ui = Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js"
-    assert f'const SELECT_ONLY_KO = "{SELECT_ONLY}"' in ui.read_text(
-        "utf-8"
-    )  # 승인 화면 표시와 같은 문구
 
 
 def test_promoted_reason_replaces_select_only_reason() -> None:
@@ -311,10 +305,3 @@ def test_promoted_reason_replaces_select_only_reason() -> None:
     )
     assert f"{PROMOTED_KO}: B" in c2.reasons
     assert not any(r.startswith(SELECT_ONLY) for r in c2.reasons)
-    from pathlib import Path
-
-    ui = (Path(__file__).resolve().parents[2] / "src/task_spec/api/static/app.js").read_text(
-        "utf-8"
-    )
-    assert f'promoted: "{PROMOTED_KO}"' in ui  # 승인 화면과 같은 말
-    assert 'select: "선택만 일치(예전 실행) — 확인 필요"' in ui
