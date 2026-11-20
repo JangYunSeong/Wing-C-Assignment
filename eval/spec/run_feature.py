@@ -286,13 +286,19 @@ async def pick(
 
 
 async def run_one(
-    llm: LLMClient, reg: Any, pid: str, built: CommonDraft, sem: asyncio.Semaphore
+    llm: LLMClient,
+    reg: Any,
+    pid: str,
+    built: CommonDraft,
+    sem: asyncio.Semaphore,
+    *,
+    repair_first: bool = True,
 ) -> dict[str, Any]:
     assert built.ctx is not None and built.task is not None
     _POSTING.set(pid)  # --save-raw 원문을 공고에 묶는다 (gather 한 태스크마다 따로)
     async with sem:
         t0 = time.monotonic()
-        res = await draft_feature_task(built.ctx, llm=llm, prompts=reg)
+        res = await draft_feature_task(built.ctx, llm=llm, prompts=reg, repair_first=repair_first)
         dt = time.monotonic() - t0
     row: dict[str, Any] = {
         "posting": pid,
@@ -305,6 +311,9 @@ async def run_one(
         and not [f for f in res.flags if f.startswith(FLAG_DRAFT_INVALID)],
         "first_problems": res.first_problems,
         "patched": res.patched,  # 부분 수리(spec/patch.py)로 풀린 문제
+        # 전체 생성 시도 수 — 성공한 기능형 초안 호출 + 통째로 실패한 호출 (재요청이면 2)
+        "attempts": sum(1 for p in res.provenance if p.prompt.startswith("draft_feature_task"))
+        + len(res.fail_reasons),
         "flags": res.flags,
         "fail_reasons": res.fail_reasons,
         "cost_usd": sum(p.cost_usd or 0.0 for p in res.provenance),
@@ -395,6 +404,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "n": len(rows),
         "ok_first": sum(r["ok_first"] for r in rows),
+        "second_attempts": sum(r.get("attempts", 1) >= 2 for r in rows),
         "ok_final": sum(r["ok_final"] for r in rows),
         "failed": sum(r["failed"] for r in rows),
         "cost_usd": round(sum(r["cost_usd"] for r in rows), 4),
@@ -427,6 +437,11 @@ async def main() -> None:
     ap.add_argument("--openai-key-env", default=None, help="예: OPENAI_PREMIUM_API_KEY")
     ap.add_argument(
         "--prompt-version", type=int, default=None, help="draft_feature_task 버전 (기본 CURRENT)"
+    )
+    ap.add_argument(
+        "--no-repair-first",
+        action="store_true",
+        help="코드로 고칠 수 있는 문제도 전체 재요청 (예전 순서 — #280 D 비교용)",
     )
     ap.add_argument(
         "--save-raw",
@@ -487,14 +502,21 @@ async def main() -> None:
     rows: list[dict[str, Any]] = []
     skipped: list[str] = []
     if a.budget_usd is None:
-        rows = list(await asyncio.gather(*(run_one(llm, reg, pid, b, sem) for pid, b in picked)))
+        rows = list(
+            await asyncio.gather(
+                *(
+                    run_one(llm, reg, pid, b, sem, repair_first=not a.no_repair_first)
+                    for pid, b in picked
+                )
+            )
+        )
     else:
         spent, worst = 0.0, 0.0
         for pid, b in picked:
             if worst and spent + worst > a.budget_usd:
                 skipped.append(pid)
                 continue
-            r = await run_one(llm, reg, pid, b, sem)
+            r = await run_one(llm, reg, pid, b, sem, repair_first=not a.no_repair_first)
             rows.append(r)
             spent += r["cost_usd"]
             worst = max(worst, r["cost_usd"])
@@ -512,6 +534,7 @@ async def main() -> None:
         "split": split_name,
         "model": a.model,
         "prompt_version": a.prompt_version,
+        "repair_first": not a.no_repair_first,
         "distribution": dist,
         "skipped_for_budget": skipped,
         "summary": summarize(rows),
