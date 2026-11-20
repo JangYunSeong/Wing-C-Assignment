@@ -56,7 +56,7 @@ env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한
 
 ## 3-1. nginx (TLS + Basic 인증) [확정: 2026-11-03 — TLS 사용, 사내망 밖 접속]
 
-- 앱에 인증이 없으므로 **모든 경로 Basic 인증**(`/healthz`·Wing 응시 쪽만 예외). 승인자마다 계정. 앱 인증이 붙으면 다시 본다.
+- 앱에 인증이 없으므로 **모든 경로 Basic 인증**(`/healthz`·Wing 화면 정적 파일만 예외). 승인자마다 계정. 앱 인증이 붙으면 다시 본다.
 - HTTP→HTTPS, TLS 1.2+, HSTS·nosniff·frame DENY. Basic 인증 헤더는 앱으로 넘기지 않는다.
 - SSE `/runs/{id}/events`: `proxy_buffering off`, read 1h. 그 밖 read 600s (LLM_TIMEOUT_SECONDS 300 + 여유). 업로드 25 MB.
 - 접근 로그 형식에 쿼리·본문을 넣지 않는다 (지원서 경로). IP 당 10 r/s.
@@ -74,8 +74,9 @@ env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한
 - 443 의 `/` 는 Wing 코딩 테스트(`wing-web` 127.0.0.1:8080), task-api 는 같은 443 의 `/task-api/`(접두사 떼고 넘김) —
   같은 출처라 운영 CORS 없음 [확정: 2026-11-20 사용자 — 프론트를 443 으로]. 옛 루트 API 경로는 옛 주소를 쓰는 곳이 옮길 때까지 남김(`docs/deploy.md` 2-6).
   8443 은 옛 Wing 주소(443 으로 301)와 미리보기 서브도메인.
-- Wing 은 응시 쪽만 Basic 인증 없이 — `/`·`/admin` 정적 파일·`/api/exams`·`/api/exam-sessions/…` [확정: 2026-11-20 사용자].
-  나머지 `/api/` 는 Basic 인증. **열 경로만 적는다** — 막을 경로를 적으면 대소문자 변형(`/api/Admin/…`)으로 우회된다 (nginx 는 가리고 Express 는 안 가림).
+- Wing 은 화면 정적 파일(`/`·`/admin`)만 Basic 인증 없이(앱 로그인 폼), `/api/` 는 응시 API 까지 전부 Basic 인증
+  [확정: 2026-11-20 사용자 — 앱 로그인 전까지 내부 사람만 관리자 계정으로 응시]. Basic 인증엔 계정별 권한이 없으므로 실제 응시자에게 계정을 주지 않는다.
+  응시 API 를 다시 열 때는 **열 경로만 적는다** — 막을 경로를 적으면 대소문자 변형(`/api/Admin/…`)으로 우회된다 (nginx 는 가리고 Express 는 안 가림).
 
 ## 4. 업그레이드·롤백·백업
 
