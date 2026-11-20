@@ -1,6 +1,8 @@
 # P1 과제 명세 API — FastAPI + LangGraph (deployment 스킬)
 #
-# 넣는 것: src/ (설치된 패키지로), prompts/, incidents/   — 넣지 않는 것: data/, .env, tests/, eval/ (.containerignore)
+# 넣는 것: src/ (설치된 패키지로), prompts/, incidents/, templates/   — 넣지 않는 것: data/, .env, tests/, eval/ (.containerignore)
+# templates/ 는 인터뷰 과제 생성이 직군 기본 코딩 템플릿을 읽는 데 쓴다 (interview/task.py coding_template) —
+# 설치된 패키지에서는 레포 경로를 못 찾으므로 TEMPLATES_DIR 로 준다
 # 비밀값은 이미지에 넣지 않는다 — 실행 때 --env-file 로 주입.
 #
 # 빌드: podman build -f docker/api/Dockerfile -t task-api:<버전> .   (레포 루트에서)
@@ -28,11 +30,13 @@ WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
 COPY prompts ./prompts
 COPY incidents ./incidents
+COPY templates ./templates
 
 ENV PATH=/app/.venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PROMPTS_DIR=/app/prompts \
     INCIDENTS_DIR=/app/incidents/public_v1 \
+    TEMPLATES_DIR=/app/templates \
     DATA_DIR=/data \
     ONTOLOGY_ARTIFACT_DIR=/data/ontology \
     CHECKPOINTER=postgres

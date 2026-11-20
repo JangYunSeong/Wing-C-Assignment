@@ -19,7 +19,8 @@ description: P1 과제 명세 서비스의 컨테이너 구성·내부망 배포
 
 ## 1. 이미지 규칙 (불변식)
 
-- 넣는 것: 설치된 패키지(`src/`), `prompts/`, `incidents/`. tesseract(kor+eng).
+- 넣는 것: 설치된 패키지(`src/`), `prompts/`, `incidents/`, `templates/`(인터뷰 과제의 직군 기본 코딩 템플릿 — `TEMPLATES_DIR`). tesseract(kor+eng).
+  레포 경로로 찾는 자원(`Path(__file__)…/templates` 등)은 설치된 패키지에서 못 찾는다 — 이미지에 넣고 `*_DIR` 환경변수로 준다.
 - **넣지 않는 것: `data/`, `.env`, `tests/`, `eval/`, 덤프** — `.containerignore`, `build_release.sh` 가 검사한다.
 - 비밀값은 실행 때 `--env-file`(`docker/api/.env`, gitignore·권한 600 — `run.sh` 기본값) [확정: 2026-11-06]로만. 이미지·로그·스크립트에 쓰지 않는다.
 - 지원자 데이터는 볼륨 `task_data`(`DATA_DIR=/data`)와 DB 체크포인트에만 있다 — 이미지·로그로 새지 않게.

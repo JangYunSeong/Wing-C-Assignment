@@ -14,7 +14,7 @@ docs/
 *.dump
 *.tar
 dist/
-# 템플릿 폴더에 호스트 실행이 남긴 것 (builder 이미지는 templates/ 를 넣는다)
+# 템플릿 폴더에 호스트 실행이 남긴 것 (api·builder 이미지는 templates/ 를 넣는다)
 templates/**/.gradle/
 templates/**/build/
 templates/**/node_modules/

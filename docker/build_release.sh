@@ -10,8 +10,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-[[ -z "$(git status --porcelain -- src prompts incidents pyproject.toml uv.lock docker)" ]] \
-  || { echo "커밋되지 않은 변경이 있습니다 (src·prompts·incidents·docker) — 커밋된 상태로만 묶습니다" >&2; exit 1; }
+[[ -z "$(git status --porcelain -- src prompts incidents templates pyproject.toml uv.lock docker)" ]] \
+  || { echo "커밋되지 않은 변경이 있습니다 (src·prompts·incidents·templates·docker) — 커밋된 상태로만 묶습니다" >&2; exit 1; }
 
 VER="${1:-$(date +%Y%m%d)-$(git rev-parse --short HEAD)}"
 OUT="dist/task-spec-${VER}"
@@ -25,8 +25,12 @@ podman pull -q "$NGINX_IMAGE" >/dev/null
 
 # 이미지에 비밀값·지원자 데이터가 없는지 확인
 podman run --rm --entrypoint sh "task-api:${VER}" -c \
-  'test ! -e /app/.env && test ! -e /app/data && test -z "$(ls -A /data)" && test ! -e /app/tests' \
+  'test ! -e /app/.env && test ! -e /app/data && test -z "$(ls -A /data)" && test ! -e /app/tests && test -z "$(find /app/templates -name .gradle -o -name node_modules)"' \
   || { echo "이미지에 넣으면 안 되는 파일이 있습니다" >&2; exit 1; }
+# 설치된 패키지는 레포 경로로 템플릿을 못 찾는다 — 직군 기본 코딩 템플릿을 이미지 안에서 실제로 읽어 본다 (인터뷰 과제 생성)
+podman run --rm --entrypoint python "task-api:${VER}" -c \
+  'from task_spec.starter.templates import TEMPLATE_FOR_SUB, load_template; [load_template(t) for t in TEMPLATE_FOR_SUB.values()]' \
+  || { echo "task-api 이미지에서 직군 기본 코딩 템플릿을 읽지 못합니다 (templates/·TEMPLATES_DIR)" >&2; exit 1; }
 podman run --rm --entrypoint sh "task-builder:${VER}" -c \
   'test ! -e /app/.env && test ! -e /app/data && test ! -e /app/tests && test ! -e /app/eval && test -z "$(find /app/templates -name .gradle -o -name node_modules)"' \
   || { echo "builder 이미지에 넣으면 안 되는 파일이 있습니다" >&2; exit 1; }
