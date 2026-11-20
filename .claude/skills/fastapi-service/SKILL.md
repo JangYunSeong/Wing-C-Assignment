@@ -48,6 +48,10 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 - 승인 resume 은 상태를 읽기 **전에** `launcher.launches(run_id)` 를 받아 `launch(after=…)` 로 넘긴다 — 읽은 뒤 다른 요청이
   띄웠으면(먼저 들어온 결정이 이미 끝났어도) `RunBusy` → `409` (#247). 프로세스 안 레지스트리라 워커 하나(`--workers 1`)에서만 막는다.
 - 그래프 `config = {"configurable": {"thread_id": run_id}}`.
+- 인터뷰 과제 만들기도 같은 방식 (#280) — `api/interview_generation.InterviewGenerationRunner` 가 `RunLauncher` 인스턴스를 하나 더 둔다.
+  서비스는 `interview/generation.GenerationRunner` 프로토콜로만 안다 (인터뷰 모듈이 API 계층을 import 하지 않게). lifespan 에서 같은 체크포인터로
+  만들어 `app.state.interviews.generation` 에 넣고 종료 때 `shutdown()`. 진행 판정은 `launcher.thread_status` — 체크포인트가 중간인데 이 프로세스에서
+  안 돌면 interrupted (이어서 하기 `POST /interviews/{id}/generation/resume`).
 
 ## lifespan
 
