@@ -78,7 +78,7 @@ task:                                  # common_tasks·verification_tasks·slots
   # 기능 개발형(task_kind=feature) 전용 — incident에서는 비어 있어야 한다
   requirements: [{req_id: r#, text}]         # 공개 요구 — '무엇을'만, 최대 6
   acceptance_public: [{ac_id, text, req_ids: [r#]}]   # 공개 수용 기준, 최대 6. req_ids = 확인하는 공식 요구 (예전 판은 비어 있음).
-                                             # draft_feature_task v11 이 p# 와 함께 쓰고(출력 AcceptanceDraftV6), 그 전 판 명세는 문제 분석 생성기가 채운다.
+                                             # draft_feature_task v11 부터 p# 와 함께 쓰고(출력 AcceptanceDraftV6), 그 전 판 명세는 문제 분석 생성기가 채운다.
                                              # v5 이하 생성기 출력 모델은 req_ids 없는 판(PublicAcceptance) — 출력 스키마가 프롬프트에 들어가므로
   acceptance_hidden:                          # 숨김 수용 기준 (채점용, 숨은 요구 하나에 연결), 최대 8
     - ac_id: h#

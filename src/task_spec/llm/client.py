@@ -115,8 +115,78 @@ class LLMResult(BaseModel, Generic[T]):
     provenance: Provenance
 
 
-def _parse_json(content: str) -> Any:
-    return json.loads(_FENCE.sub("", content.strip()))
+_SIMPLE_ESCAPES = frozenset('"\\/bfnrt')
+_HEX4 = re.compile(r"[0-9a-fA-F]{4}")
+
+
+def _fix_escapes(text: str) -> str:
+    """JSON 에 없는 역슬래시 이스케이프(\\d·\\s 같은 정규식, 윈도 경로)를 글자 역슬래시로 — 맞는 이스케이프는 그대로."""
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] != "\\":
+            out.append(text[i])
+            i += 1
+            continue
+        nxt = text[i + 1 : i + 2]
+        if nxt == "u" and _HEX4.fullmatch(text[i + 2 : i + 6]):
+            out.append(text[i : i + 6])
+            i += 6
+        elif nxt and nxt in _SIMPLE_ESCAPES:
+            out.append(text[i : i + 2])
+            i += 2
+        else:
+            out.append("\\\\")
+            i += 1
+    return "".join(out)
+
+
+def _parse_json(content: str) -> tuple[Any, tuple[str, ...]]:
+    """JSON 을 읽고, 고쳐 읽었으면 고친 종류를 함께 돌려준다 (#280 D2 — 형식 오류 재시도 한 번이 수 분짜리 재생성이다).
+
+    모델이 흔히 깨뜨리는 꼴만 결정적으로 고친다: 문자열 안 제어 문자(줄바꿈·탭 — 코드가 든 자료), JSON 에 없는 역슬래시
+    이스케이프(정규식 \\d), JSON 앞뒤 군더더기(설명 문장·두 번째 JSON). 잘린 JSON 은 고치지 않는다(finish_reason=length 는
+    따로) — 첫 객체가 닫히지 않으면 그대로 실패. 고친 뒤에도 출력 스키마 검증은 그대로 받는다. 못 고치면 원래 오류를 원인으로
+    단 마지막 오류를 던진다 (_violation_kinds 가 둘 다 적는다)."""
+    text = _FENCE.sub("", content.strip())
+    try:
+        return json.loads(text), ()
+    except json.JSONDecodeError as first:
+        original = first
+    lenient = json.JSONDecoder(strict=False)  # 문자열 안 제어 문자 허용
+    last = original
+    try:
+        return lenient.decode(text), ("control_char",)
+    except json.JSONDecodeError as exc:
+        last = exc
+    fixed = _fix_escapes(text)
+    escaped: tuple[str, ...] = ("bad_escape",) if fixed != text else ()
+    if escaped:
+        try:
+            return lenient.decode(fixed), escaped
+        except json.JSONDecodeError as exc:
+            last = exc
+    starts = [i for i in (fixed.find("{"), fixed.find("[")) if i >= 0]
+    if starts:
+        start = min(starts)
+        try:
+            value, end = lenient.raw_decode(fixed, start)
+            return value, (*escaped, "extra_text")
+        except json.JSONDecodeError as exc:
+            last = exc
+    if last is original:
+        raise original
+    raise last from original
+
+
+def _decode_kind(exc: json.JSONDecodeError) -> str:
+    """json 모듈의 고정 문구(입력 글 없음)·위치 비율·길이·끝이 닫혔는지 — 원문 없이 원인을 가른다 (#280 D1: 이스케이프·제어
+    문자·군더더기·잘림)."""
+    kind = re.sub(r"[^a-z]+", "_", exc.msg.lower()).strip("_")
+    size = len(exc.doc)
+    pct = exc.pos * 100 // size if size else 0
+    tail = "closed" if exc.doc.rstrip().endswith(("}", "]")) else "open"
+    return f"{kind}@{pct}%/len={size}/{tail}"
 
 
 def _violation_kinds(exc: Exception) -> str:
@@ -127,6 +197,12 @@ def _violation_kinds(exc: Exception) -> str:
             f"{'.'.join(map(str, e['loc'])) or '(root)'}:{e['type']}({type(e.get('input')).__name__})"
             for e in exc.errors()[:5]
         )
+    if isinstance(exc, json.JSONDecodeError):
+        # 고쳐 읽기도 실패했으면 원래 오류 > 마지막 오류
+        cause = exc.__cause__
+        if isinstance(cause, json.JSONDecodeError):
+            return f"json_parse:{_decode_kind(cause)}>{_decode_kind(exc)}"
+        return f"json_parse:{_decode_kind(exc)}"
     return "json_parse"
 
 
@@ -202,6 +278,7 @@ class LLMClient:
 
         messages = list(prompt.messages)
         retries: list[str] = []
+        repairs: list[str] = []  # 고쳐 읽은 JSON 형식 (재시도가 아님 — 로그만)
         total = Usage()
         started = time.monotonic()
         called_at = datetime.now(UTC)  # 단가 적용일 기준 (llm/pricing.PRICE_CHANGES)
@@ -253,7 +330,9 @@ class LLMClient:
                 summary = "빈 응답"
                 if completion.content.strip():
                     try:  # 상한에 딱 맞게 끝난 완전한 JSON 은 그대로 받는다
-                        parsed = out_model.model_validate(_parse_json(completion.content))
+                        data, fixed = _parse_json(completion.content)
+                        parsed = out_model.model_validate(data)
+                        repairs.extend(fixed)
                         break
                     except (ValueError, ValidationError) as exc:
                         summary = _validation_summary(exc)
@@ -354,7 +433,9 @@ class LLMClient:
                 continue
 
             try:
-                parsed = out_model.model_validate(_parse_json(completion.content))
+                data, fixed = _parse_json(completion.content)
+                parsed = out_model.model_validate(data)
+                repairs.extend(fixed)
                 break
             except (ValueError, ValidationError) as exc:  # JSONDecodeError 는 ValueError
                 summary = _validation_summary(exc)
@@ -385,11 +466,13 @@ class LLMClient:
         prov = record()
         latency_ms = prov.latency_ms
         logger.info(
-            "llm call prompt=%s model=%s retries=%s reasons=%s tokens_in=%d tokens_out=%d latency_ms=%d",
+            "llm call prompt=%s model=%s retries=%s reasons=%s repairs=%s tokens_in=%d tokens_out=%d "
+            "latency_ms=%d",
             prov.prompt,
             prov.model,
             prov.retries,
             ",".join(retries) or "-",
+            ",".join(repairs) or "-",
             total.input,
             total.output,
             latency_ms,

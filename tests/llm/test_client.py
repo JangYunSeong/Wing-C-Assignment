@@ -15,7 +15,13 @@ from task_spec.llm import (
     TransientLLMError,
     Usage,
 )
-from task_spec.llm.client import MAX_RESAMPLES, EmptyResponse, OutputTruncated
+from task_spec.llm.client import (
+    MAX_RESAMPLES,
+    EmptyResponse,
+    OutputTruncated,
+    _parse_json,
+    _violation_kinds,
+)
 from task_spec.nodes.pseudonymize import mint_pseudonymized
 from task_spec.prompting import AssembledPrompt, PromptRegistry, assemble
 from task_spec.schemas import ClaimExtractionInput, ClaimExtractionOutput
@@ -523,3 +529,67 @@ async def test_qwen_retry_ladder_is_pinned(caplog: pytest.LogCaptureFixture) -> 
     assert (
         "reasons=output_truncated->reasoning_effort=low,empty_truncated->resample " in caplog.text
     )
+
+
+# ================================================================ 깨진 JSON 고쳐 읽기·진단 (#280 D1·D2)
+
+
+def test_valid_json_is_read_without_repairs() -> None:
+    assert _parse_json(GOOD) == (json.loads(GOOD), ())
+
+
+@pytest.mark.parametrize(
+    ("raw", "value", "repairs"),
+    [
+        # 문자열 안 날 줄바꿈·탭 — 코드가 든 자료에서 흔하다
+        ('{"code": "if x:\n\treturn 1"}', "if x:\n\treturn 1", ("control_char",)),
+        # JSON 에 없는 이스케이프(정규식 \d) — 글자 역슬래시로. 맞는 이스케이프(\\, \u0041, \")는 그대로
+        ('{"code": "re(\\d+) \\\\s \\u0041 \\"q\\""}', 're(\\d+) \\s A "q"', ("bad_escape",)),
+        ('{"code": "\\u12zz"}', "\\u12zz", ("bad_escape",)),
+        # 앞뒤 군더더기 — 설명 문장, 두 번째 JSON
+        ('결과입니다:\n{"a": 1}\n이상입니다.', None, ("extra_text",)),
+        ('{"a": 1}{"a": 2}', None, ("extra_text",)),
+    ],
+)
+def test_common_breakage_is_repaired(raw: str, value: str | None, repairs: tuple[str, ...]) -> None:
+    data, fixed = _parse_json(raw)
+    assert fixed == repairs
+    assert data == ({"a": 1} if value is None else {"code": value})
+
+
+@pytest.mark.parametrize("raw", ['{"a": "가상 원문 조각', "not json 가상 원문", '{"a": 1, }'])
+def test_truncated_or_unreadable_json_still_fails(raw: str) -> None:
+    with pytest.raises(json.JSONDecodeError):  # 잘린 JSON 은 고치지 않는다 (finish_reason 은 따로)
+        _parse_json(raw)
+
+
+def test_json_parse_diagnosis_names_kind_and_place_without_content() -> None:
+    with pytest.raises(json.JSONDecodeError) as ei:
+        _parse_json('{"a": "가상 원문 조각')
+    kind = _violation_kinds(ei.value)
+    assert kind.startswith("json_parse:unterminated_string") and "/open" in kind and "len=" in kind
+    assert "가상" not in kind
+    with pytest.raises(json.JSONDecodeError) as ei2:  # 고쳐 읽기도 실패 — 원래 오류 > 마지막 오류
+        _parse_json('{"a": "줄\n바꿈", "b" 1}')
+    assert ">" in _violation_kinds(ei2.value) and "줄" not in _violation_kinds(ei2.value)
+
+
+async def test_repaired_json_is_accepted_without_a_retry(caplog: pytest.LogCaptureFixture) -> None:
+    broken = GOOD.replace("설계했다.", "설계\n했다.")  # 문자열 안 날 줄바꿈
+    fake = FakeBackend().push(Completion(broken))
+    with caplog.at_level("INFO"):
+        r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert r.provenance.retries == 0 and len(fake.calls) == 1  # 수 분짜리 재생성을 하지 않는다
+    line = next(rec.getMessage() for rec in caplog.records if "llm call" in rec.getMessage())
+    assert "repairs=control_char" in line and "설계" not in line
+
+
+async def test_unrepairable_json_retry_log_says_why(caplog: pytest.LogCaptureFixture) -> None:
+    fake = FakeBackend().push(Completion('{"claims": [{"action": "가상 원문'), Completion(GOOD))
+    with caplog.at_level("WARNING"):
+        r = await _client(fake).call(_prompt(), ClaimExtractionOutput)
+    assert r.provenance.retries == 1
+    line = next(
+        rec.getMessage() for rec in caplog.records if "schema_violation" in rec.getMessage()
+    )
+    assert "where=json_parse:unterminated_string" in line and "가상" not in line

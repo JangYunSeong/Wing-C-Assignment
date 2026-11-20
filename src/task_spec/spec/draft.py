@@ -608,11 +608,52 @@ async def draft_task(
     repairer: Callable[[Any, DraftContext], tuple[Any, bool]] = repair,
     shuffler: Callable[[Any, str], Any] = shuffle_artifacts,
     patch: bool = False,
+    repair_first: bool = False,
 ) -> DraftResult:
     """생성 → 검증 → 1회 재요청 → 고쳐 쓰기 → 다시 검증. 공통 과제(draft_task)·확장 슬롯(draft_slot)·기능형(draft_feature_task,
     checker/repairer/shuffler 를 spec/feature.py 것으로)이 같이 쓴다. 표시: 고쳐 쓰기 뒤에도 남은 문제는 FLAG_DRAFT_INVALID,
-    고쳐 쓰기가 푼 문제는 FLAG_DRAFT_REPAIRED."""
+    고쳐 쓰기가 푼 문제는 FLAG_DRAFT_REPAIRED.
+
+    repair_first: 첫 답의 문제를 칸 부분 수정·코드 고쳐 쓰기로 먼저 고쳐 보고, 다 풀리면 전체 재요청을 하지 않는다 (#280 D —
+    재요청은 출력 전체를 다시 쓰는 수 분짜리다. 2026-11-20 기준 측정: 두 번째 시도 6건 중 2건이 코드가 빼는 추가 요구 하나 때문).
+    남으면 지금처럼 재요청한다 (메모는 첫 답의 문제 전부 — 새 답에 같은 문제가 다시 나오지 않게)."""
     template = prompts.get(task)
+
+    def recheck(out: Any) -> list[str]:
+        return checker(out, ctx) + (extra_check(out) if extra_check else [])
+
+    async def fix(
+        out: Any, problems: list[str]
+    ) -> tuple[Any, list[str], list[str], list[str], bool | None]:
+        """칸 부분 수정(patch) → 코드 고쳐 쓰기 → 다시 검사. (고친 출력, 남은 문제, 부분 수정이 푼 것, 코드가 푼 것, 행동 기준)."""
+        patched: list[str] = []
+        if problems and patch:
+            # 걸린 칸만 고쳐 다시 검사 (spec/patch.py) — 재요청은 전체를 다시 써 같은 문장을 또 넣었다 (2026-11-11 명세 알파)
+            from task_spec.spec.patch import fix_fields
+
+            fixed, left, prov = await fix_fields(
+                out,
+                problems,
+                llm=llm,
+                prompts=prompts,
+                ontology_version=ctx.ontology_version,
+                checker=recheck,
+            )
+            if prov is not None:
+                res.provenance.append(prov)
+            if fixed is not None:
+                patched = [p for p in problems if p not in left]
+                out, problems = fixed, left
+        repaired: list[str] = []
+        anchors_ok: bool | None = None
+        if problems:
+            out, anchors_ok = repairer(out, ctx)
+            # 고쳐 쓴 결과를 다시 검사해 남은 문제만 실패로 — 고쳐 쓰기가 푼 것은 코드가 고친 것으로 따로 보인다
+            left = recheck(out)
+            repaired = [p for p in problems if p not in left]
+            problems = left
+        return out, problems, patched, repaired, anchors_ok
+
     res = DraftResult()
     if "incident" in template.input_model.model_fields and ctx.incident is not None:
         res.incident_id = ctx.incident.incident_id
@@ -642,7 +683,7 @@ async def draft_task(
             res.fail_reasons.append(f"FillValidationError: {where[:300]}")
             continue
         r = r.model_copy(update={"parsed": parsed})
-        problems = checker(r.parsed, ctx) + (extra_check(r.parsed) if extra_check else [])
+        problems = recheck(r.parsed)
         logger.info(
             "%s attempt=%d problems=%d latency_ms=%d",
             task,
@@ -656,6 +697,16 @@ async def draft_task(
             break
         if attempt == 0:
             res.first_problems = list(problems)
+            if repair_first:
+                out, left, patched, repaired, anchors_ok = await fix(r.parsed, list(problems))
+                if not left:  # 다 풀림 — 전체 재요청을 하지 않는다
+                    logger.info("%s attempt=1 fixed_without_reask problems=%d", task, len(problems))
+                    res.patched = patched
+                    if anchors_ok is not None:
+                        res.anchors_ok = anchors_ok
+                    if repaired:
+                        res.flags.append(FLAG_DRAFT_REPAIRED + "; ".join(repaired))
+                    return _finish(res, out, r.provenance.provenance_id)
             res.errors.append(
                 NodeError(
                     node=task,
@@ -670,35 +721,25 @@ async def draft_task(
     if best is None:
         res.flags.append(FLAG_DRAFT_FAILED)
         return res
-    out, problems, res.provenance_id = best
-    if problems and patch:
-        # 걸린 칸만 고쳐 다시 검사 (spec/patch.py) — 재요청은 전체를 다시 써 같은 문장을 또 넣었다 (2026-11-11 명세 알파)
-        from task_spec.spec.patch import fix_fields
-
-        fixed, left, prov = await fix_fields(
-            out,
-            problems,
-            llm=llm,
-            prompts=prompts,
-            ontology_version=ctx.ontology_version,
-            checker=lambda o: checker(o, ctx) + (extra_check(o) if extra_check else []),
-        )
-        if prov is not None:
-            res.provenance.append(prov)
-        if fixed is not None:
-            res.patched = [p for p in problems if p not in left]
-            out, problems = fixed, left
+    out, problems, provenance_id = best
     if problems:
-        out, res.anchors_ok = repairer(out, ctx)
-        # 고쳐 쓴 결과를 다시 검사해 남은 문제만 실패로 — 고쳐 쓰기가 푼 것은 코드가 고친 것으로 따로 보인다
-        left = checker(out, ctx) + (extra_check(out) if extra_check else [])
-        if fixed := [p for p in problems if p not in left]:
-            res.flags.append(FLAG_DRAFT_REPAIRED + "; ".join(fixed))
+        out, left, patched, repaired, anchors_ok = await fix(out, problems)
+        if patched:
+            res.patched = patched
+        if anchors_ok is not None:
+            res.anchors_ok = anchors_ok
+        if repaired:
+            res.flags.append(FLAG_DRAFT_REPAIRED + "; ".join(repaired))
         if left:
             res.flags.append(FLAG_DRAFT_INVALID + "; ".join(left))
+    return _finish(res, out, provenance_id)
+
+
+def _finish(res: DraftResult, out: Any, provenance_id: str) -> DraftResult:
     if trimmed := trimmed_artifacts(out):
         res.flags.append(FLAG_ARTIFACT_TRIMMED + ", ".join(trimmed))
     res.output = out
+    res.provenance_id = provenance_id
     return res
 
 

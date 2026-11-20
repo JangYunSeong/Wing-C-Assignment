@@ -12,14 +12,20 @@ samples.md 는 사람 검토용 전체 본문(숨김 부분 포함).
   uv run python -m eval.spec.run_feature --split dev --n 3
   uv run python -m eval.spec.run_feature --subs sw.frontend sw.backend data.eng infra.dba data.ml --per-sub 1 \\
       --model openai:gpt-4.1 --openai-key-env OPENAI_PREMIUM_API_KEY --budget-usd 0.5
+--save-raw (#280 D): 받은 답 원문을 전부 모아 같은 파서·출력 모델로 다시 읽어 본다 — 형식 오류율(분모 있음)·고쳐 읽기·
+JSON 깨짐 원인·추가 요구 항목별 칸을 raw_report.json 에, 실패·고쳐 읽은 원문을 raw/ 에, INFO 로그를 llm.log 에.
+시범 공고라 원문을 남겨도 된다 (samples.md 도 전체 본문).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import json
+import logging
 import os
+import re
 import time
 from collections import Counter
 from datetime import date
@@ -27,15 +33,19 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from pydantic import BaseModel, ValidationError
+
 from task_spec.config import Settings
 from task_spec.llm import LLMClient
+from task_spec.llm.backend import ChatBackend, Completion, TextCallback
+from task_spec.llm.client import _parse_json, _violation_kinds
 from task_spec.llm.factory import build_llm_client
 from task_spec.ontology.queries import evidence as query_evidence
 from task_spec.ontology.queries import posting_profile
 from task_spec.ontology.relatedness import load_relatedness
 from task_spec.ontology.repository import OntologyRepository
-from task_spec.prompting import PromptRegistry, PromptTemplate
-from task_spec.schemas import DraftFeatureOutput, PublicIncident, TaskItem
+from task_spec.prompting import Message, PromptRegistry, PromptTemplate
+from task_spec.schemas import DraftFeatureOutput, FieldFixOutput, PublicIncident, TaskItem
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID
 from task_spec.spec.feature import apply_feature, draft_feature_task
@@ -79,6 +89,119 @@ class ModelOverride:
         params = PARAMS.get(model, t.meta.params)
         meta = t.meta.model_copy(update={"model": model, "params": params})
         return t.model_copy(update={"meta": meta})
+
+
+_POSTING: contextvars.ContextVar[str] = contextvars.ContextVar("posting", default="?")
+
+
+class RecordingBackend:
+    """--save-raw: 받은 답 원문을 공고별로 모은다 (평가 전용 — 시범 공고, 지원자 데이터 아님)."""
+
+    def __init__(self, inner: ChatBackend, sink: list[dict[str, Any]]) -> None:
+        self.inner, self.sink = inner, sink
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[Message],
+        params: dict[str, Any],
+        *,
+        on_delta: TextCallback | None = None,
+    ) -> Completion:
+        c = await self.inner.complete(model, messages, params, on_delta=on_delta)
+        self.sink.append(
+            {
+                "posting": _POSTING.get(),
+                "model": model,
+                "finish_reason": c.finish_reason,
+                "tokens_out": c.usage.output,
+                "content": c.content,
+            }
+        )
+        return c
+
+
+def _clarification_shape(data: Any) -> list[dict[str, Any]] | None:
+    """추가 요구 항목마다 단서인지(reveals)·있는 칸 — answer 를 빠뜨린 항목이 단서인지 보려고 (#280 D3 가설)."""
+    items = data.get("clarifications") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    return [
+        {"i": i, "clue": bool(it.get("reveals")), "keys": sorted(it)}
+        if isinstance(it, dict)
+        else {"i": i, "type": type(it).__name__}
+        for i, it in enumerate(items)
+    ]
+
+
+def classify(content: str, out_model: type[BaseModel]) -> dict[str, Any]:
+    """클라이언트와 같은 파서·출력 모델로 다시 읽기 — ok·repaired·json_error·schema_error, 고쳐 읽기 기능형 초안이 아닌
+    호출(부분 수리 fix_feature_fields)은 fix_fields."""
+    try:
+        data, fixed = _parse_json(content)
+    except ValueError as exc:
+        return {"status": "json_error", "kind": _violation_kinds(exc)}
+    if (
+        isinstance(data, dict)
+        and set(FieldFixOutput.model_fields) & set(data)
+        and "title" not in data
+    ):
+        return {"status": "fix_fields", "repaired": list(fixed)}
+    try:
+        out_model.model_validate(data)
+    except ValidationError as exc:
+        clar = [
+            f"{'.'.join(map(str, e['loc']))}:{e['type']}"
+            for e in exc.errors()
+            if e["loc"] and e["loc"][0] == "clarifications"
+        ]
+        return {
+            "status": "schema_error",
+            "repaired": list(fixed),
+            "kind": _violation_kinds(exc),
+            "clarification_errors": clar,
+            "clarifications": _clarification_shape(data) if clar else None,
+        }
+    return {"status": "repaired" if fixed else "ok", "repaired": list(fixed)}
+
+
+def raw_report(
+    raw: list[dict[str, Any]], out_model: type[BaseModel], out_dir: Path
+) -> dict[str, Any]:
+    """원문마다 다시 읽은 결과(raw.jsonl — 원문 없이) + 실패·고쳐 읽은 원문(raw/) + 요약."""
+    (out_dir / "raw").mkdir(exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for n, rec in enumerate(raw, 1):
+        info = classify(rec["content"], out_model)
+        row = {k: v for k, v in rec.items() if k != "content"} | {"n": n, **info}
+        if info["status"] in ("json_error", "schema_error", "repaired"):
+            name = f"{n:02d}-{re.sub(r'[^A-Za-z0-9_.-]+', '_', rec['posting'])}.txt"
+            (out_dir / "raw" / name).write_text(rec["content"], "utf-8")
+            row["raw_file"] = f"raw/{name}"
+        rows.append(row)
+    with (out_dir / "raw.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    drafts = [r for r in rows if r["status"] != "fix_fields"]
+    return {
+        "draft_calls": len(drafts),
+        "status": dict(Counter(r["status"] for r in drafts)),
+        "finish_reason": dict(Counter(str(r["finish_reason"]) for r in drafts)),
+        "repaired": dict(Counter(k for r in drafts for k in r.get("repaired", []))),
+        "json_error": [r["kind"] for r in drafts if r["status"] == "json_error"],
+        "schema_error": [r["kind"] for r in drafts if r["status"] == "schema_error"],
+        "clarifications_on_error": [
+            {
+                "n": r["n"],
+                "posting": r["posting"],
+                "errors": r["clarification_errors"],
+                "items": r["clarifications"],
+            }
+            for r in drafts
+            if r["status"] == "schema_error" and r["clarification_errors"]
+        ],
+        "fix_fields_calls": len(rows) - len(drafts),
+    }
 
 
 def make_client(key_env: str | None) -> LLMClient:
@@ -163,12 +286,19 @@ async def pick(
 
 
 async def run_one(
-    llm: LLMClient, reg: Any, pid: str, built: CommonDraft, sem: asyncio.Semaphore
+    llm: LLMClient,
+    reg: Any,
+    pid: str,
+    built: CommonDraft,
+    sem: asyncio.Semaphore,
+    *,
+    repair_first: bool = True,
 ) -> dict[str, Any]:
     assert built.ctx is not None and built.task is not None
+    _POSTING.set(pid)  # --save-raw 원문을 공고에 묶는다 (gather 한 태스크마다 따로)
     async with sem:
         t0 = time.monotonic()
-        res = await draft_feature_task(built.ctx, llm=llm, prompts=reg)
+        res = await draft_feature_task(built.ctx, llm=llm, prompts=reg, repair_first=repair_first)
         dt = time.monotonic() - t0
     row: dict[str, Any] = {
         "posting": pid,
@@ -181,6 +311,9 @@ async def run_one(
         and not [f for f in res.flags if f.startswith(FLAG_DRAFT_INVALID)],
         "first_problems": res.first_problems,
         "patched": res.patched,  # 부분 수리(spec/patch.py)로 풀린 문제
+        # 전체 생성 시도 수 — 성공한 기능형 초안 호출 + 통째로 실패한 호출 (재요청이면 2)
+        "attempts": sum(1 for p in res.provenance if p.prompt.startswith("draft_feature_task"))
+        + len(res.fail_reasons),
         "flags": res.flags,
         "fail_reasons": res.fail_reasons,
         "cost_usd": sum(p.cost_usd or 0.0 for p in res.provenance),
@@ -271,6 +404,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "n": len(rows),
         "ok_first": sum(r["ok_first"] for r in rows),
+        "second_attempts": sum(r.get("attempts", 1) >= 2 for r in rows),
         "ok_final": sum(r["ok_final"] for r in rows),
         "failed": sum(r["failed"] for r in rows),
         "cost_usd": round(sum(r["cost_usd"] for r in rows), 4),
@@ -305,6 +439,16 @@ async def main() -> None:
         "--prompt-version", type=int, default=None, help="draft_feature_task 버전 (기본 CURRENT)"
     )
     ap.add_argument(
+        "--no-repair-first",
+        action="store_true",
+        help="코드로 고칠 수 있는 문제도 전체 재요청 (예전 순서 — #280 D 비교용)",
+    )
+    ap.add_argument(
+        "--save-raw",
+        action="store_true",
+        help="받은 답 원문을 모아 다시 읽어 본다 — raw_report.json·raw/·llm.log (#280 D)",
+    )
+    ap.add_argument(
         "--budget-usd",
         type=float,
         default=None,
@@ -336,27 +480,6 @@ async def main() -> None:
     shown = dist if a.subs else dist["kinds"]
     print(f"유형 분포 {shown} — 표본 {len(picked)}건: " + ", ".join(pid for pid, _ in picked))
 
-    llm = make_client(a.openai_key_env)
-    reg = ModelOverride(PromptRegistry(ROOT / "prompts"), a.model, a.prompt_version)
-    sem = asyncio.Semaphore(a.concurrency)
-    rows: list[dict[str, Any]] = []
-    skipped: list[str] = []
-    if a.budget_usd is None:
-        rows = list(await asyncio.gather(*(run_one(llm, reg, pid, b, sem) for pid, b in picked)))
-    else:
-        spent, worst = 0.0, 0.0
-        for pid, b in picked:
-            if worst and spent + worst > a.budget_usd:
-                skipped.append(pid)
-                continue
-            r = await run_one(llm, reg, pid, b, sem)
-            rows.append(r)
-            spent += r["cost_usd"]
-            worst = max(worst, r["cost_usd"])
-            print(f"  {r['sub']} {pid} — ${r['cost_usd']:.4f} (누적 ${spent:.4f})", flush=True)
-        if skipped:
-            print(f"예산 {a.budget_usd} 때문에 건너뜀: {', '.join(skipped)}")
-
     out_dir = (
         ROOT
         / "data"
@@ -365,6 +488,42 @@ async def main() -> None:
         / f"{date.today()}-feature-{split_name}{('-' + a.tag) if a.tag else ''}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
+    llm = make_client(a.openai_key_env)
+    raw: list[dict[str, Any]] = []
+    if a.save_raw:
+        # 평가 전용 — 클라이언트의 공급자마다 원문 기록기를 씌운다
+        llm = LLMClient({k: RecordingBackend(v, raw) for k, v in llm._backends.items()})
+        log = logging.FileHandler(out_dir / "llm.log", encoding="utf-8")
+        log.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        logging.getLogger("task_spec").addHandler(log)
+        logging.getLogger("task_spec").setLevel(logging.INFO)
+    reg = ModelOverride(PromptRegistry(ROOT / "prompts"), a.model, a.prompt_version)
+    sem = asyncio.Semaphore(a.concurrency)
+    rows: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    if a.budget_usd is None:
+        rows = list(
+            await asyncio.gather(
+                *(
+                    run_one(llm, reg, pid, b, sem, repair_first=not a.no_repair_first)
+                    for pid, b in picked
+                )
+            )
+        )
+    else:
+        spent, worst = 0.0, 0.0
+        for pid, b in picked:
+            if worst and spent + worst > a.budget_usd:
+                skipped.append(pid)
+                continue
+            r = await run_one(llm, reg, pid, b, sem, repair_first=not a.no_repair_first)
+            rows.append(r)
+            spent += r["cost_usd"]
+            worst = max(worst, r["cost_usd"])
+            print(f"  {r['sub']} {pid} — ${r['cost_usd']:.4f} (누적 ${spent:.4f})", flush=True)
+        if skipped:
+            print(f"예산 {a.budget_usd} 때문에 건너뜀: {', '.join(skipped)}")
+
     samples = [sample_md(r) for r in rows]
     with (out_dir / "drafts.jsonl").open("w", encoding="utf-8") as f:
         for r in rows:
@@ -375,13 +534,27 @@ async def main() -> None:
         "split": split_name,
         "model": a.model,
         "prompt_version": a.prompt_version,
+        "repair_first": not a.no_repair_first,
         "distribution": dist,
         "skipped_for_budget": skipped,
         "summary": summarize(rows),
     }
+    if a.save_raw:
+        out_model = reg.get("draft_feature_task").output_model
+        report["raw"] = raw_report(raw, out_model, out_dir)
+        (out_dir / "raw_report.json").write_text(
+            json.dumps(report["raw"], ensure_ascii=False, indent=1), "utf-8"
+        )
     (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
     (out_dir / "samples.md").write_text("\n---\n\n".join(samples), "utf-8")
     print(json.dumps(report["summary"], ensure_ascii=False))
+    if a.save_raw:
+        print(
+            json.dumps(
+                {k: v for k, v in report["raw"].items() if k != "clarifications_on_error"},
+                ensure_ascii=False,
+            )
+        )
     print(f"→ {out_dir}")
 
 

@@ -1145,8 +1145,10 @@ async def draft_feature_task(
     llm: LLMClient,
     prompts: PromptRegistry,
     reviewer_note: str | None = None,
+    repair_first: bool = True,
 ) -> DraftResult:
     """생성 → 검증 → 1회 재요청 → 고쳐 쓰기 (이슈형과 같은 루프, 기능형 검사).
+    repair_first: 코드로 고칠 수 있는 문제뿐이면 전체 재요청 없이 (#280 D — draft_task). 끄는 것은 평가 비교용.
 
     v2(입력에 feature_seed): 공개 사례의 기능형 재료가 있어야 한다. LLM 출력(겉모습)에 재료의 숨은 요구·허용 설계를
     채운 뒤 섞고 검사한다. v1: 공개 사례 원문(incident)을 넣고 LLM 이 숨은 요구까지 쓴다.
@@ -1163,6 +1165,7 @@ async def draft_feature_task(
             repairer=cast(Any, repair_feature),
             shuffler=cast(Any, shuffle_feature),
             patch=True,
+            repair_first=repair_first,
         )
     inc = ctx.incident
     if inc is None or inc.feature is None:
@@ -1198,6 +1201,7 @@ async def draft_feature_task(
         repairer=cast(Any, repair_feature),
         shuffler=fill_then_shuffle,
         patch=True,
+        repair_first=repair_first,
     )
     res.incident_id = inc.incident_id
     res.seed = seed

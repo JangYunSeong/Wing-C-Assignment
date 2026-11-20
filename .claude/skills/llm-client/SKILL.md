@@ -27,6 +27,12 @@ result = await llm.call(assembled, output=ClaimExtractionOutput)
 - OpenCode 쪽이 지원하지 않는 파라미터(예: `reasoning_effort`)는 provider 별 허용 목록으로 걸러 보내고, 걸러진 사실을 provenance 에 남긴다.
 - 구조화 출력 [확정: 2026-11-02]: `with_structured_output` 을 쓰지 않는다. 프로바이더마다 json_schema 지원이 달라서,
   프롬프트에 `{{output_schema}}`(출력 모델 JSON 스키마)를 넣고 응답 본문 JSON 을 직접 파싱(코드 펜스 허용) → Pydantic 검증.
+- 깨진 JSON 고쳐 읽기 [확정: 2026-11-20 사용자, #280 D2] (`_parse_json`): 형식 재요청 한 번이 긴 출력이면 수 분짜리 재생성이라,
+  모델이 흔히 깨뜨리는 꼴만 결정적으로 고쳐 읽는다 — 문자열 안 제어 문자(날 줄바꿈·탭, 코드가 든 자료), JSON 에 없는 역슬래시
+  이스케이프(`\d` 같은 정규식 → 글자 역슬래시), JSON 앞뒤 군더더기(설명 문장·두 번째 JSON). **잘린 JSON 은 고치지 않는다**(첫 객체가
+  닫히지 않으면 실패 — 잘림은 `finish_reason` 으로 따로). 고친 뒤에도 스키마 검증은 그대로. 고쳤으면 `llm call … repairs=` 에
+  종류(재시도 수에는 넣지 않음). 못 고친 JSON 의 재요청 로그 `where=json_parse:<json 모듈 고정 문구>@<위치%>/len=<길이>/<open|closed>`
+  — 원문 없이 원인(이스케이프·제어 문자·군더더기·잘림)을 가른다 (#280 D1).
 - 구조: `ChatBackend`(1회 호출, `llm/backend.py`) ← `LLMClient`(재시도·검증·provenance, `llm/client.py`).
   실제 백엔드는 `OpenAICompatBackend`(ChatOpenAI, SDK 재시도 0), 조립은 `llm/factory.py` 의 `build_llm_client(settings)`.
 - 프로바이더별 허용 파라미터: `ALLOWED_PARAMS` (`llm/client.py`). 걸러진 키는 provenance `params.dropped`.
