@@ -26,8 +26,10 @@ from task_spec.interview.task import (
     MadeTask,
     OntologyTaskMaker,
     TaskGenerationFailed,
+    TaskRequest,
     answer_leak_flags,
     coding_template,
+    make_task,
     prepare_coding_incident,
     pseudonymize_changes,
     questions_for,
@@ -167,27 +169,38 @@ class FakeTaskMaker:
             suggested=[c.competency_id for c in profile.competencies[:2]],
         )
 
-    async def make(self, profile, matches, coding_incident, template, *, task_id, reviewer_note):  # type: ignore[no-untyped-def]
+    async def feature(self, req: TaskRequest) -> MadeTask:
         self.calls.append(
             {
-                "competencies": [c.competency_id for c in profile.competencies],
-                "incident": coding_incident,
-                "template": template.manifest.template_id,
-                "task_id": task_id,
-                "reviewer_note": reviewer_note,
+                "competencies": [c.competency_id for c in req.profile.competencies],
+                "incident": req.coding_incident,
+                "template": req.template.manifest.template_id,
+                "task_id": req.task_id,
+                "reviewer_note": req.reviewer_note,
             }
         )
         if self.fail is not None:
             raise self.fail
-        slots = [slot_task(profile, self.slot_scenario)] if self.slot_scenario else []
         task = fake_task(
-            profile,
-            task_id,
+            req.profile,
+            req.task_id,
             scenario=self.scenario,
-            source_incident=coding_incident.incident_id,
-            slots=slots,
+            source_incident=req.coding_incident.incident_id,
         )
         return MadeTask(task=task, flags=["가상 생성기 표시"])
+
+    async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        return made
+
+    async def slots(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        if not self.slot_scenario:
+            return made
+        slots = [slot_task(req.profile, self.slot_scenario)]
+        return MadeTask(
+            task=made.task.model_copy(update={"slots": slots}),
+            provenance=made.provenance,
+            flags=made.flags,
+        )
 
 
 def feature_seed_output(**updates: Any) -> str:
@@ -399,10 +412,12 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
         seen["answers"] = ctx.with_known_answers
         return SimpleNamespace(output=object(), provenance=[])
 
-    async def draft_analysis_request(*args: Any, **kwargs: Any) -> Any:
+    async def draft_analysis_request(task: Any, ctx: Any, **kwargs: Any) -> Any:
+        seen["request_ctx"] = (ctx.with_known_answers, ctx.env.basis)
         return SimpleNamespace(provenance=[])
 
-    async def build_slots(*args: Any, **kwargs: Any) -> Any:
+    async def build_slots(profile: Any, matches: Any, task: Any, ctx: Any, **kwargs: Any) -> Any:
+        seen["slots_ctx"] = (ctx.with_known_answers, ctx.env.basis)
         return SimpleNamespace(slots=[], provenance=[], flags=["가상 슬롯"])
 
     monkeypatch.setattr(task_module, "build_common", build_common)
@@ -414,19 +429,21 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
     maker = OntologyTaskMaker(ontology=None, llm=None, prompts=None)  # type: ignore[arg-type]
     template = coding_template("sw.backend")
     incident = known_incident()
-    made = await maker.make(
-        PROFILE.model_copy(update={"sub": "sw.backend"}),
-        [],
-        incident,
-        template,
+    req = TaskRequest(
+        profile=PROFILE.model_copy(update={"sub": "sw.backend"}),
+        matches=[],
+        coding_incident=incident,
+        template=template,
         task_id="t",
-        reviewer_note=None,
     )
+    made = await make_task(maker, req)
     assert seen["answers"] is True and seen["incidents"] == {"sw.backend": incident}
     assert made.task.tech_env.basis == "직군 기본 코딩 템플릿" and made.flags == [
         "가상 골격",
         "가상 슬롯",
     ]
+    # 단계마다 다시 만든 맥락도 같은 설정 (기준 답안·템플릿 기술 환경) — 끊긴 단계부터 이어도 같은 입력
+    assert seen["request_ctx"] == seen["slots_ctx"] == (True, "직군 기본 코딩 템플릿")
     three = PROFILE.model_copy(
         update={
             "sub": "sw.backend",
@@ -437,7 +454,7 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
         }
     )
     with pytest.raises(TaskGenerationFailed):  # 생성된 과제가 고른 역량(3개) 중 일부만 잼
-        await maker.make(three, [], incident, template, task_id="t", reviewer_note=None)
+        await maker.feature(TaskRequest(three, [], incident, template, task_id="t"))
 
 
 async def test_selecting_the_same_competencies_again_keeps_the_task(task_session) -> None:

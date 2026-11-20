@@ -6,6 +6,7 @@
 - 기준 답안은 인터뷰 공고 자신의 기능형 생성 입력(seed_block — DraftContext.with_known_answers)에만 들어가고,
   지원자에게 보이는 글(확장 슬롯·짚은 질문의 답 포함)로 새는지 결정적으로 검사한다. 보이는 글에 남은 가명화 토큰도 표시한다.
 - 무거운 생성기(build_common → draft_feature_task → 요청 글 → 슬롯)는 TaskMaker 로 묶어 테스트에서 갈아 끼운다.
+  단계(feature·request·slots)로 나눠 두어 끊긴 단계부터 이을 수 있다 (#280).
 
 오류 구분: 고른 역량·직군으로는 만들 수 없음 = TaskGenerationFailed (422, 선택을 바꿔야 함),
 모델 출력을 쓰지 못함 = OutputRejected·LLM 오류 (503, 다시 시도). 메시지는 둘 다 이 모듈의 고정 문구다.
@@ -42,6 +43,7 @@ from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.spec.analysis_request import apply_analysis, draft_analysis_request
 from task_spec.spec.build import build_common
 from task_spec.spec.common import FLAG_COMPANY_INCIDENT, plan_common
+from task_spec.spec.draft import DraftContext
 from task_spec.spec.feature import apply_feature, draft_feature_task
 from task_spec.spec.slots import build_slots
 from task_spec.starter.templates import TEMPLATE_FOR_SUB, Template, load_template
@@ -380,22 +382,43 @@ class MadeTask:
     flags: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TaskRequest:
+    """기능형 공통 과제 한 번 만들기의 입력 — 단계마다 같은 값을 넘긴다 (#280: 단계별로 나눠 돌리고 끊긴 단계부터 잇는다).
+    profile·matches 는 선택한 역량만 담는다."""
+
+    profile: PostingProfile
+    matches: list[CompetencyEvidence]
+    coding_incident: PublicIncident
+    template: Template
+    task_id: str
+    reviewer_note: str | None = None
+
+
 class TaskMaker(Protocol):
+    """단계: feature → request → slots. 앞 단계의 MadeTask 를 받아 다음 MadeTask 를 돌려준다.
+    근거가 모자라거나 역량이 빠지면 TaskGenerationFailed(422), 모델 출력을 못 쓰면 OutputRejected·LLM 오류(503)."""
+
     async def competencies(self, profile: PostingProfile) -> CompetencyChoice: ...
 
-    async def make(
-        self,
-        profile: PostingProfile,
-        matches: list[CompetencyEvidence],
-        coding_incident: PublicIncident,
-        template: Template,
-        *,
-        task_id: str,
-        reviewer_note: str | None,
-    ) -> MadeTask:
-        """선택한 역량만 담은 profile·matches 로 기능형 공통 과제를 만든다.
-        근거가 모자라면 TaskGenerationFailed(422), 모델 출력을 못 쓰면 OutputRejected·LLM 오류(503)."""
+    async def feature(self, req: TaskRequest) -> MadeTask:
+        """공통 과제 뼈대(build_common) → 기능형 초안(draft_feature_task)."""
         ...
+
+    async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        """요청 글 (draft_analysis_request)."""
+        ...
+
+    async def slots(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        """확장 슬롯 (build_slots)."""
+        ...
+
+
+async def make_task(tasks: TaskMaker, req: TaskRequest) -> MadeTask:
+    """세 단계를 차례로 — 한 요청 안에서 끝까지 만들 때."""
+    made = await tasks.feature(req)
+    made = await tasks.request(req, made)
+    return await tasks.slots(req, made)
 
 
 @dataclass(frozen=True)
@@ -423,68 +446,76 @@ class OntologyTaskMaker:
             suggested=[c.competency_id for c in plan.competencies],
         )
 
-    async def make(
-        self,
-        profile: PostingProfile,
-        matches: list[CompetencyEvidence],
-        coding_incident: PublicIncident,
-        template: Template,
-        *,
-        task_id: str,
-        reviewer_note: str | None,
-    ) -> MadeTask:
+    async def _context(self, req: TaskRequest) -> tuple[TaskItem, DraftContext, list[str]]:
+        """공통 과제 뼈대·계산 맥락·표시 — 온톨로지 조회뿐이라 결정적이다. 맥락(DraftContext)은 단계 사이에 넘기지 않고
+        단계마다 다시 만든다 (끊긴 단계부터 이을 때 저장해 둘 수 없는 값)."""
         built = await build_common(
-            profile,
-            matches,
-            task_id=task_id,
-            ontology_version=profile.ontology_version,
+            req.profile,
+            req.matches,
+            task_id=req.task_id,
+            ontology_version=req.profile.ontology_version,
             ontology=self.ontology,
-            incidents={profile.sub or "": coding_incident},
+            incidents={req.profile.sub or "": req.coding_incident},
             task_kind="feature",
         )
-        if built.task is None or built.ctx is None:
+        task, ctx = built.task, built.ctx
+        if task is None or ctx is None:
             raise TaskGenerationFailed("선택 역량의 과제 근거가 부족합니다")
-        stack = template.manifest.stack
+        stack = req.template.manifest.stack
         if stack is not None:
-            env = built.task.tech_env.model_copy(
+            env = task.tech_env.model_copy(
                 update={
                     "languages": ["Java" if stack.language.lower() == "java" else stack.language],
                     "frameworks": [stack.framework] if stack.framework else [],
                     "basis": "직군 기본 코딩 템플릿",
                 }
             )
-            built.task = built.task.model_copy(update={"tech_env": env})
-            built.ctx.env = env
+            task = task.model_copy(update={"tech_env": env})
+            ctx.env = env
         # 인터뷰 공고 자신의 생성 — 확인된 기준 답안을 기능형 재료 블록에 넣는다 (다른 공고가 이 사례를 쓸 때는 넣지 않는다)
-        built.ctx.with_known_answers = True
+        ctx.with_known_answers = True
+        return task, ctx, built.flags
+
+    async def feature(self, req: TaskRequest) -> MadeTask:
+        base, ctx, flags = await self._context(req)
         result = await draft_feature_task(
-            built.ctx, llm=self.llm, prompts=self.prompts, reviewer_note=reviewer_note
+            ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
         )
         if result.output is None:
             raise OutputRejected("과제 초안을 만들지 못했습니다")
-        task = apply_feature(built.task, result)
+        task = apply_feature(base, result)
         if task.behavioral_anchors is None:
             raise OutputRejected("평가 행동 기준이 생성되지 않았습니다")
         if {c.competency_id for c in task.target_competencies} != {
-            c.competency_id for c in profile.competencies
+            c.competency_id for c in req.profile.competencies
         }:
             raise TaskGenerationFailed(
                 "선택한 역량 일부가 공통 과제에 포함되지 않았습니다. 역량을 다시 골라 주세요"
             )
-        analysis = await draft_analysis_request(task, built.ctx, llm=self.llm, prompts=self.prompts)
-        task = apply_analysis(task, analysis)
+        return MadeTask(task=task, provenance=list(result.provenance), flags=list(flags))
+
+    async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        _, ctx, _ = await self._context(req)
+        analysis = await draft_analysis_request(made.task, ctx, llm=self.llm, prompts=self.prompts)
+        return MadeTask(
+            task=apply_analysis(made.task, analysis),
+            provenance=[*made.provenance, *analysis.provenance],
+            flags=list(made.flags),
+        )
+
+    async def slots(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        _, ctx, _ = await self._context(req)
         slots = await build_slots(
-            profile,
-            matches,
-            task,
-            built.ctx,
+            req.profile,
+            req.matches,
+            made.task,
+            ctx,
             ontology=self.ontology,
             llm=self.llm,
             prompts=self.prompts,
         )
-        task = task.model_copy(update={"slots": slots.slots})
         return MadeTask(
-            task=task,
-            provenance=[*result.provenance, *analysis.provenance, *slots.provenance],
-            flags=[*built.flags, *slots.flags],
+            task=made.task.model_copy(update={"slots": slots.slots}),
+            provenance=[*made.provenance, *slots.provenance],
+            flags=[*made.flags, *slots.flags],
         )

@@ -74,10 +74,12 @@ from task_spec.interview.task import (
     CompetencyChoice,
     TaskGenerationFailed,
     TaskMaker,
+    TaskRequest,
     coding_template,
     copies_answer,
     evaluation_criteria,
     hidden_requirements,
+    make_task,
     mentions_artifact_id,
     prepare_coding_incident,
     pseudonymize_changes,
@@ -1099,13 +1101,16 @@ class InterviewService:
                 else:
                     coding_incident, seed_provenance = ready_coding_incident(incident, template), []
                 made = await self._llm(
-                    tasks.make(
-                        chosen,
-                        matches,
-                        coding_incident,
-                        template,
-                        task_id=f"{interview_id}-common-{row.revision}",
-                        reviewer_note=self._reviewer_note(state),
+                    make_task(
+                        tasks,
+                        TaskRequest(
+                            profile=chosen,
+                            matches=matches,
+                            coding_incident=coding_incident,
+                            template=template,
+                            task_id=f"{interview_id}-common-{row.revision}",
+                            reviewer_note=self._reviewer_note(state),
+                        ),
                     )
                 )
                 # 인터뷰 사례만 '공유 승인 전' 표시로 바꾼다 — 고른 회사 사례는 공유 승인된 것이라 생성기 표시가 맞다
