@@ -21,7 +21,10 @@ from langgraph.graph import START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
+from task_spec.interview.generation import thread_id
 from task_spec.schemas import GENERATE_STEPS, GenerateStep, InterviewGenerateState
+
+__all__ = ["GenerateService", "interview_generate_graph", "thread_id"]
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +46,6 @@ class GenerateService(Protocol):
 
 class _StepNode(Protocol):
     async def __call__(self, state: InterviewGenerateState) -> Command[Route]: ...
-
-
-def thread_id(interview_id: str, revision: int) -> str:
-    return f"interview-gen-{interview_id}-r{revision}"
 
 
 def interview_generate_graph(

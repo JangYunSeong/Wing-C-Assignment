@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,8 @@ import pytest
 
 import task_spec.interview.task as task_module
 from task_spec.api.app import create_app
+from task_spec.api.interview_generation import InterviewGenerationRunner
+from task_spec.graph.interview_generate import interview_generate_graph
 from task_spec.interview.errors import OutputRejected
 from task_spec.interview.task import (
     FLAG_ANSWER_LEAK,
@@ -161,6 +164,10 @@ class FakeTaskMaker:
     slot_scenario: str | None = None
     fail: Exception | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
+    gate: asyncio.Event | None = (
+        None  # 있으면 기능형 초안 단계가 열릴 때까지 기다린다 (생성 중 상태를 보려고)
+    )
+    entered: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def competencies(self, profile: PostingProfile) -> CompetencyChoice:
         return CompetencyChoice(
@@ -179,6 +186,9 @@ class FakeTaskMaker:
                 "reviewer_note": req.reviewer_note,
             }
         )
+        self.entered.set()
+        if self.gate is not None:
+            await self.gate.wait()
         if self.fail is not None:
             raise self.fail
         task = fake_task(
@@ -250,7 +260,7 @@ async def generated(session: Session) -> dict[str, Any]:
     selected = await session.post("competencies", competency_ids=SELECTED)
     assert selected.status_code == 200, selected.text
     session.backend.push(Completion(feature_seed_output()))
-    response = await session.post("generate", competency_ids=SELECTED)
+    response = await session.generate(competency_ids=SELECTED)
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -278,7 +288,7 @@ async def test_generate_makes_an_interview_common_task_from_the_confirmed_case(
     assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
     session.backend.push(Completion(feature_seed_output()))
     calls_before = len(session.backend.prompts)
-    response = await session.post("generate", competency_ids=SELECTED)
+    response = await session.generate(competency_ids=SELECTED)
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["stage"] == "task_review" and body["review_note"] is None
@@ -328,25 +338,37 @@ async def test_generate_makes_an_interview_common_task_from_the_confirmed_case(
 
 
 @pytest.mark.parametrize(
-    ("fail", "status", "code"),
+    ("fail", "reason"),
     [
-        (TaskGenerationFailed("선택 역량의 과제 근거가 부족합니다"), 422, "interview_invalid"),
-        (OutputRejected("과제 초안을 만들지 못했습니다"), 503, "service_unavailable"),
-        (ValueError("입력 조각이 담긴 라이브러리 오류"), 503, "service_unavailable"),
+        (
+            TaskGenerationFailed("선택 역량의 과제 근거가 부족합니다"),
+            "선택 역량의 과제 근거가 부족합니다",
+        ),
+        (
+            OutputRejected("과제 초안을 만들지 못했습니다"),
+            "과제를 만들지 못했습니다. 다시 시도해 주세요",
+        ),
+        (
+            ValueError("입력 조각이 담긴 라이브러리 오류"),
+            "과제를 만들지 못했습니다. 다시 시도해 주세요",
+        ),
     ],
 )
 async def test_generate_separates_a_bad_selection_from_retryable_failures(
-    task_session, fail: Exception, status: int, code: str
+    task_session, fail: Exception, reason: str
 ) -> None:
+    """실패는 생성 표시의 고정 문구 사유로 (#280 — 요청은 이미 202 로 끝났다). 선택을 바꿔야 하는 사유는 그 문구 그대로,
+    모델 출력·라이브러리 오류는 다시 시도 문구 — 예외 메시지(입력 조각)는 싣지 않는다."""
     session, maker, common = task_session
     await confirmed(session)
     assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
     maker.fail = fail
     session.backend.push(Completion(feature_seed_output()))
-    response = await session.post("generate", competency_ids=SELECTED)
-    assert response.status_code == status, response.text
-    error = response.json()["error"]
-    assert error["code"] == code and "입력 조각" not in error["message"]
+    response = await session.generate(competency_ids=SELECTED)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["generation"]["status"] == "failed" and body["generation"]["reason"] == reason
+    assert body["stage"] == "competencies" and body["spec"] is None
     assert common.rows == []  # 실패하면 초안을 저장하지 않는다
 
 
@@ -355,8 +377,12 @@ async def test_feature_seed_outside_the_template_is_retried_not_saved(task_sessi
     await confirmed(session)
     assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
     session.backend.push(Completion(feature_seed_output(reasons=["가상_없는_사유"])))
-    response = await session.post("generate", competency_ids=SELECTED)
-    assert response.status_code == 503 and response.json()["error"]["code"] == "service_unavailable"
+    response = await session.generate(competency_ids=SELECTED)
+    generation = response.json()["generation"]
+    assert (
+        generation["status"] == "failed"
+        and generation["reason"] == "과제를 만들지 못했습니다. 다시 시도해 주세요"
+    )
     assert common.rows == [] and session.store.rows[session.interview_id].state.spec is None
 
 
@@ -774,3 +800,145 @@ async def test_generate_is_not_ready_without_feature_seed_current(
         assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
         response = await session.post("generate", competency_ids=SELECTED)
     assert response.status_code == 503 and response.json()["error"]["code"] == "interview_not_ready"
+
+
+# ================================================================ 백그라운드 생성 (#280)
+
+
+async def _started(session: Session, maker: FakeTaskMaker) -> dict[str, Any]:
+    """역량을 고르고 과제 만들기를 시작해 기능형 초안 단계에서 멈춘다 (maker.gate)."""
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    maker.gate = asyncio.Event()
+    session.backend.push(Completion(feature_seed_output()))
+    started = await session.post("generate", competency_ids=SELECTED)
+    assert started.status_code == 202, started.text
+    await maker.entered.wait()
+    return started.json()
+
+
+def _runner(session: Session) -> InterviewGenerationRunner:
+    runner = session.service.generation
+    assert isinstance(runner, InterviewGenerationRunner)
+    return runner
+
+
+async def test_generation_runs_in_background_and_blocks_changes_until_done(task_session) -> None:
+    session, maker, common = task_session
+    started = await _started(session, maker)
+    generation = started["generation"]
+    assert generation["status"] == "running" and generation["competency_ids"] == SELECTED
+    assert started["stage"] == "competencies" and started["spec"] is None  # 과제는 아직
+    progress = (await session.client.get(f"/interviews/{session.interview_id}/generation")).json()
+    assert progress["status"] == "running" and progress["current_node"] == "feature"
+    assert progress["revision"] == session.revision
+    # 새로고침해도 생성 중이 보인다
+    view = (await session.client.get(f"/interviews/{session.interview_id}")).json()
+    assert view["generation"]["status"] == "running"
+    # 생성 중에는 그 인터뷰를 바꾸지 않는다 — 임시 저장만 된다
+    for blocked in (
+        await session.post("generate", competency_ids=SELECTED),
+        await session.post("competencies", competency_ids=SELECTED),
+        await session.client.post(f"/interviews/{session.interview_id}/discard"),
+    ):
+        assert blocked.status_code == 409, blocked.text
+        assert blocked.json()["error"]["code"] == "interview_generating"
+    drafts = await session.client.patch(
+        f"/interviews/{session.interview_id}/drafts",
+        json={
+            "draft_revision": view["draft_revision"],
+            "steps": {"8": {"values": {}, "applied": {}}},
+        },
+    )
+    assert drafts.status_code == 200, drafts.text
+    assert maker.gate is not None
+    maker.gate.set()
+    await _runner(session).wait(generation["thread_id"])
+    done = (await session.client.get(f"/interviews/{session.interview_id}")).json()
+    assert (
+        done["stage"] == "task_review" and done["spec"] is not None and done["generation"] is None
+    )
+    idle = (await session.client.get(f"/interviews/{session.interview_id}/generation")).json()
+    assert idle["status"] == "idle" and idle["current_node"] is None
+    assert len(maker.calls) == 1 and len(common.rows) == 1
+
+
+async def test_failed_generation_resumes_from_the_failed_step(task_session) -> None:
+    session, maker, common = task_session
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    maker.fail = OutputRejected("가상 형식 오류")
+    session.backend.push(Completion(feature_seed_output()))
+    failed = (await session.generate(competency_ids=SELECTED)).json()
+    assert failed["generation"]["status"] == "failed"
+    progress = (await session.client.get(f"/interviews/{session.interview_id}/generation")).json()
+    assert progress["status"] == "failed" and progress["current_node"] == "feature"
+    prompts_before = len(session.backend.prompts)
+    maker.fail = None
+    resumed = await session.post("generation/resume")
+    assert resumed.status_code == 202, resumed.text
+    assert resumed.json()["generation"]["status"] == "running"
+    assert resumed.json()["generation"]["reason"] is None
+    await _runner(session).wait(failed["generation"]["thread_id"])
+    done = (await session.client.get(f"/interviews/{session.interview_id}")).json()
+    assert done["stage"] == "task_review" and done["generation"] is None
+    # 재료 정리(seed, LLM)는 다시 하지 않고 실패한 기능형 초안부터
+    assert len(session.backend.prompts) == prompts_before and len(maker.calls) == 2
+    assert len(common.rows) == 1
+
+
+async def test_restart_leaves_an_interrupted_generation_that_resumes(task_session) -> None:
+    session, maker, _ = task_session
+    started = await _started(session, maker)
+    before = _runner(session)
+    await before.shutdown()  # 재시작·배포 — 기능형 초안 단계 중에 끊긴다
+    maker.gate = None
+    # 새 프로세스 — 같은 체크포인터에 새 실행기
+    session.service.generation = InterviewGenerationRunner(
+        interview_generate_graph(session.service, before._graph.checkpointer)
+    )
+    view = (await session.client.get(f"/interviews/{session.interview_id}")).json()
+    assert view["generation"]["status"] == "interrupted" and view["generation"]["reason"] is None
+    progress = (await session.client.get(f"/interviews/{session.interview_id}/generation")).json()
+    assert progress["status"] == "interrupted" and progress["current_node"] == "feature"
+    assert (await session.post("generation/resume")).status_code == 202
+    await _runner(session).wait(started["generation"]["thread_id"])
+    done = (await session.client.get(f"/interviews/{session.interview_id}")).json()
+    assert done["stage"] == "task_review" and done["spec"] is not None
+    assert len(maker.calls) == 2  # 끊긴 기능형 초안만 다시
+
+
+async def test_choosing_competencies_again_drops_a_failed_generation(task_session) -> None:
+    session, maker, _ = task_session
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    maker.fail = OutputRejected("가상")
+    session.backend.push(Completion(feature_seed_output()))
+    failed = (await session.generate(competency_ids=SELECTED)).json()
+    assert failed["generation"]["status"] == "failed"
+    again = await session.post("competencies", competency_ids=["comp:api", "comp:test"])
+    assert again.status_code == 200 and again.json()["generation"] is None
+    gone = await session.post("generation/resume")
+    assert gone.status_code == 409  # 버린 생성은 이어서 할 수 없다 — 새로 만든다
+
+
+async def test_generation_checkpoint_keeps_only_ids(task_session) -> None:
+    session, _, _ = task_session
+    generated_view = await generated(session)
+    runner = _runner(session)
+    saver = runner._graph.checkpointer
+    assert saver is not None
+    seen = 0
+    async for t in saver.alist(None):
+        if not t.config["configurable"]["thread_id"].startswith("interview-gen-"):
+            continue
+        seen += 1
+        values = {
+            k: v
+            for k, v in t.checkpoint["channel_values"].items()
+            if not k.startswith(("__", "branch:"))
+        }
+        assert set(values) <= {"interview_id", "thread_id", "result"}, values
+    assert seen > 0 and generated_view["spec"] is not None
+    # 단계 산출물은 끝나면 인터뷰 상태에서도 비운다 (사본을 남기지 않는다)
+    assert session.store.rows[session.interview_id].state.generation is None

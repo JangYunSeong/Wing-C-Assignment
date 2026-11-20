@@ -8,15 +8,15 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from task_spec.api.interview_generation import (
-    GenerationNotResumable,
-    GenerationProgress,
-    InterviewGenerationRunner,
-)
-from task_spec.api.launcher import RunBusy
+from task_spec.api.interview_generation import InterviewGenerationRunner
 from task_spec.graph import make_checkpointer
 from task_spec.graph.interview_generate import interview_generate_graph, thread_id
 from task_spec.interview.errors import OutputRejected
+from task_spec.interview.generation import (
+    GenerationBusy,
+    GenerationNotResumable,
+    GenerationProgress,
+)
 from task_spec.schemas import GENERATE_STEPS, GenerateStep
 
 INTERVIEW = "int-" + "0" * 31 + "2"
@@ -109,9 +109,9 @@ async def test_second_start_or_resume_while_running_is_busy(checkpointer: object
     runner = _runner(service, checkpointer)
     runner.start(INTERVIEW, THREAD)
     await service.entered["seed"].wait()
-    with pytest.raises(RunBusy):
+    with pytest.raises(GenerationBusy):
         runner.start(INTERVIEW, THREAD)
-    with pytest.raises(RunBusy):
+    with pytest.raises(GenerationBusy):
         await runner.resume(THREAD)
     gate.set()
     await runner.wait(THREAD)
