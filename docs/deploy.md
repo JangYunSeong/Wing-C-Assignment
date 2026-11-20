@@ -121,16 +121,21 @@ CORS: 다른 origin 의 프론트가 브라우저에서 직접 부를 때만. �
 한 줄에 하나(`http://203.0.113.5:3000`, 끝 `/` 없이) — 파일이 없으면 CORS 헤더를 내지 않는다. preflight(`OPTIONS`)는 인증 전에 204 로 끝낸다.
 목록을 바꾸면 `podman rm -f task-nginx` 후 `run.sh` 를 다시 실행한다 (run.sh 가 nginx map 조각으로 바꿔 마운트).
 이미 CORS 조각을 마운트해 띄운 컨테이너라면 `.allow_list` 와 `/etc/task-spec/nginx/cors_origins.conf`(`"<origin>" $http_origin;` 줄)에 같이 넣고
-`podman exec task-nginx nginx -s reload` 로도 된다 — 끊김 없음. Wing 관리 화면(admin-fe)이 쓰는 origin: `https://<공인 IP>:8443`, 로컬 개발 `http://localhost:5174`.
+`podman exec task-nginx nginx -s reload` 로도 된다 — 끊김 없음. 운영 Wing 관리 화면(admin-fe)은 443 같은 출처라 CORS 가 필요 없고,
+로컬 개발 `http://localhost:5174` 만 넣는다.
 CORS 로 부르는 브라우저는 443 에도 로그인돼 있어야 한다 (다른 origin 요청에는 로그인 창이 뜨지 않는다 — 먼저 443 을 열어 로그인하거나 프론트가 `Authorization` 헤더를 보낸다).
 `run.sh` 가 만드는 설정 조각(upstream·빈 허용 목록·CORS origin)은 `/etc/task-spec/nginx/` 에 둔다 — `/tmp` 에 두면 재부팅 뒤 재시작이 실패한다.
 `nginx.conf` 는 **파일 하나**를 바인드 마운트한다. `git pull`·`sed -i` 처럼 파일을 새로 만드는 작업 뒤에는 컨테이너가 옛 파일을 계속 보므로
 reload 로는 바뀌지 않는다 — `podman exec task-nginx md5sum /etc/nginx/nginx.conf` 를 호스트 파일과 비교하고, 다르면 `podman restart task-nginx`.
 
-Wing 코딩 테스트(`Wing-C-TEST`, pod `wing`)도 같은 nginx 가 받는다 — 8443 은 같은 인증서·같은 Basic 인증으로 `wing-web`(`127.0.0.1:8080`)에,
+Wing 코딩 테스트(`Wing-C-TEST`, pod `wing`)도 같은 nginx 가 받는다 (2026-11-20 부터) — 443 의 `/` 는 같은 Basic 인증으로 `wing-web`(`127.0.0.1:8080`)에,
+task-api 는 같은 443 의 **`/task-api/`** 가 정식 주소다(앞의 `/task-api` 를 떼고 넘김, Wing 의 `TASK_API_BASE_URL`·`WING_TASK_API_URL` = `https://<공인 IP>/task-api`).
+옛 루트 API 경로(`/builds`·`/runs`·`/postings`·`/pull/` 등 앱의 최상위 경로, `/openapi.json`·`/docs`)는 옛 주소를 쓰는 곳(팀원 로컬 Wing, 받는 쪽 `/pull`)이
+옮길 때까지 남겨 두었다 — Wing 화면 경로(`/`·`/about`·`/exam-sessions/…`·`/admin/`·`/api/`·`/assets/`)와 겹치지 않는다. 앱에 최상위 경로를 더하면 `/task-api/` 로만 쓴다.
+`/healthz` 는 컨테이너 헬스체크라 루트에 계속 둔다. 옛 Wing 주소 `https://<공인 IP>:8443` 은 443 으로 301.
 미리보기 서브도메인(`p200NN.<공인 IP 대시>.sslip.io:8443`)은 인증 없이 `127.0.0.1:200NN` 에 넘긴다 (인증서 `/etc/task-spec/certs/wing-preview/`,
 발급·갱신 훅은 Wing 레포 `.claude/docs/tooling.md`). 갱신 훅은 모든 인증서 갱신에 돌기 때문에, 이 레포의 hook 은 `task-spec` 인증서
-(`TASK_CERT_NAME`)일 때만 복사·reload 한다. 8443 을 쓰려면 방화벽·공유기에서 8443/tcp 도 연다.
+(`TASK_CERT_NAME`)일 때만 복사·reload 한다. 미리보기 때문에 방화벽·공유기에서 8443/tcp 도 연다.
 `TASK_NGINX_NETWORK=bridge` 는 예전 방식(`task-net`, 포트 전달) — 접속자 IP 를 모르게 되므로 쓰지 않는다.
 
 ### 2-7. 과제 전달 묶음 폴더 (`IMAGES_DIR`) — #115 2-a
