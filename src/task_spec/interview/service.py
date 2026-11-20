@@ -1192,8 +1192,8 @@ class InterviewService:
                 started_at=self.now().isoformat(),
                 competency_ids=list(competency_ids),
             )
-            # 표시를 저장하기 전에 띄운다 — 첫 단계는 이 잠금이 풀린 뒤 표시를 읽는다. 저장 뒤에 띄우면 그 사이 읽은 요청이
-            # 표시만 보고 '중단됨'으로 본다. 저장이 실패하면 그 thread 는 표시를 못 찾아 stale 로 끝난다
+            # 표시를 저장하기 전에 띄운다 — 단계는 표시를 이 잠금 안에서 읽으므로(generation_step) 이 저장이 끝난 뒤에 읽는다.
+            # 저장 뒤에 띄우면 그 사이 읽은 요청이 표시만 보고 '중단됨'으로 본다. 저장이 실패하면 그 thread 는 표시를 못 찾아 stale
             runner.start(interview_id, thread)
             return await self._save(row, revision, state, None, keep_generation=True)
 
@@ -1346,7 +1346,10 @@ class InterviewService:
         생성 표시가 이 thread 가 아니면 아무것도 하지 않고 False (그래프는 stale 로 끝난다)."""
         if step == "finish":
             return await self._finish_generation(interview_id, thread_id)
-        row = await self.store.get(interview_id)
+        # 표시는 잠금 안에서 읽는다 — 잠금 밖이면 시작(generate)이 표시를 저장하기 전 행을 읽어 stale 로 끝난다
+        # (Postgres 저장은 이벤트 루프에 양보한다, #280 개인정보 점검 I3)
+        async with self._lock(interview_id):
+            row = await self.store.get(interview_id)
         g = self._own_generation(row, thread_id)
         if row is None or g is None:
             return False
@@ -1359,9 +1362,9 @@ class InterviewService:
                 return False
             state = row.state.model_copy(deep=True)
             state.generation = g.model_copy(update=update)
-            # seed 는 대응표로 사례 글을 다뤘다 — 다른 저장처럼 대응표를 DB 보다 먼저 남긴다
-            mapping = inp.mapping if step == "seed" else None
-            await self._save(row, row.revision, state, mapping, keep_generation=True)
+            # 대응표는 넘기지 않는다 — 단계는 토큰을 만들지 않고(pseudo.stored), 몇 분 전에 읽은 대응표를 다시 쓰면 그 사이
+            # 더해진 토큰을 되돌린다 (개인정보 점검 L3)
+            await self._save(row, row.revision, state, None, keep_generation=True)
         return True
 
     async def _finish_generation(self, interview_id: str, thread_id: str) -> bool:
@@ -1952,6 +1955,9 @@ class InterviewService:
             state = row.state.model_copy(deep=True)
             state.stage = "approved"
             state.review_note = None
+            state.generation = (
+                None  # 실패·중단한 다시 만들기의 산출물 사본을 닫힌 인터뷰에 남기지 않는다 (#280)
+            )
             state.approval = InterviewApprovalRecord(
                 reviewer=decision.reviewer,
                 at=decision.at.isoformat(),
@@ -2169,6 +2175,7 @@ class InterviewService:
         state.stage = "discarded"
         state.discarded_at = self.now().isoformat()
         state.discard_reason = reason
+        state.generation = None  # 실패·중단한 과제 만들기의 산출물 사본도 지운다 (#280 — 초안 판을 지우는 것과 같은 이유)
         updated = await self.store.save(row.id, row.revision, state, clear_all_drafts=True)
         if updated is None:
             raise InterviewConflict(_STALE)

@@ -400,3 +400,18 @@ async def test_approval_waits_while_the_task_is_being_made_again(env) -> None:
     assert isinstance(runner, InterviewGenerationRunner)
     await runner.wait(started.json()["generation"]["thread_id"])
     assert (await approval(s)).status_code == 200
+
+
+async def test_approving_drops_a_failed_regeneration_copy(env) -> None:
+    """과제 검토 중 다시 만들기가 실패해도 지금 과제는 승인할 수 있고, 실패한 생성의 산출물 사본은 남기지 않는다 (개인정보 점검 L1)."""
+    s = env.session
+    await ready(s)
+    env.maker.fail = OutputRejected("가상")
+    s.backend.push(Completion(feature_seed_output()))
+    failed = (await s.generate(competency_ids=SELECTED)).json()
+    assert failed["generation"]["status"] == "failed" and failed["spec"] is not None
+    assert (await approval(s)).status_code == 200
+    decided = await decide(s, status="approved")
+    assert decided.status_code == 200, decided.text
+    state = s.store.rows[s.interview_id].state
+    assert state.stage == "approved" and state.generation is None

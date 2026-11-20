@@ -232,8 +232,10 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
   단계마다 결정적으로 다시 만든다.
 - **State 에는 id 만** (`interview_id`·`thread_id`·`result`) — 승인 그래프처럼 체크포인트에 사본을 두지 않는다. 단계 산출물(재료 사례·과제 초안)은
   서비스가 `InterviewState.generation` 에 저장하고, 끝나면 비운다. thread = 생성마다 `interview-gen-{id}-r{판본}` (명세 실행 목록은 run_id 꼴만).
-- 노드는 `service.generation_step` 만 부른다 — 입력 수집·LLM 은 잠금 없이, 저장은 잠금 안에서 생성 표시가 이 thread 인지 보고. 아니면 stale 로 끝.
-  실패 = 고정 문구 사유를 남기고(`generation_failed`) 다시 던짐 → 체크포인트의 다음 노드가 실패한 단계 → 같은 thread 를 입력 없이 돌리면 그 단계부터.
+- 노드는 `service.generation_step` 만 부른다 — 생성 표시 읽기·저장은 잠금 안에서(시작이 표시를 저장한 뒤에 읽게), 입력 수집·LLM 은 잠금 없이.
+  표시가 이 thread 가 아니면 stale 로 끝. 실패 = 고정 문구 사유를 남기고(`generation_failed`) **메시지 없는 `GenerationStepFailed`** 를 던짐 —
+  LangGraph 가 노드 예외를 체크포인트 쓰기(`__error__`)에 repr 로 남기므로 원래 예외(입력·모델 출력 조각이 섞일 수 있음)를 다시 던지지 않는다.
+  체크포인트의 다음 노드가 실패한 단계로 남아, 같은 thread 를 입력 없이 돌리면 그 단계부터. 승인·폐기·30일 정리는 남은 생성 표시(산출물 사본)를 비운다.
 - 진행 판정(`launcher.thread_status`): 이 프로세스에서 도는 중 = running, 사유 있음 = failed, **체크포인트가 중간인데 이 프로세스에서 안 돎 =
   interrupted**(워커 1개 전제 — 재시작·배포). 명세 실행은 같은 경우를 아직 running 으로 둔다 (#280 E).
 - 생성 중에는 그 인터뷰의 상태 변경을 409 `interview_generating` (`_expect_revision` 입구·폐기·승인 대기·결정), 임시 저장만 허용. 다른 업무 저장은

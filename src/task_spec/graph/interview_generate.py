@@ -6,8 +6,10 @@
   인터뷰 잠금 안에서 한다 (interview/service.py). State 에는 id 만 (schemas/interview_generate.py).
 - 낡은 thread: 서비스가 False 를 돌려주면(인터뷰의 생성 표시가 이 thread 가 아님 — 다시 만들기·역량 바꾸기·폐기)
   result=stale 로 끝낸다.
-- 단계가 실패하면 사유를 인터뷰 상태에 고정 문구로 남기고(generation_failed) 예외를 다시 던진다. 체크포인트의 다음 노드가
-  실패한 단계로 남아, 같은 thread 를 입력 없이 다시 돌리면 그 단계부터 잇는다 (끝난 단계는 다시 부르지 않는다).
+- 단계가 실패하면 사유를 인터뷰 상태에 고정 문구로 남기고(generation_failed) 메시지 없는 GenerationStepFailed 를 던진다.
+  체크포인트의 다음 노드가 실패한 단계로 남아, 같은 thread 를 입력 없이 다시 돌리면 그 단계부터 잇는다 (끝난 단계는 다시
+  부르지 않는다). 원래 예외를 다시 던지지 않는 것은 LangGraph 가 노드 예외를 체크포인트 쓰기(`__error__`)에 repr 로 남기기
+  때문이다 — 라이브러리 검증 오류·공급자 오류의 메시지에는 입력·모델 출력 조각이 섞일 수 있다 (개인정보 점검 M1).
 - thread 는 생성마다 하나 — `thread_id(interview_id, revision)` (생성 표시를 저장한 인터뷰 판본).
 """
 
@@ -24,7 +26,7 @@ from langgraph.types import Command
 from task_spec.interview.generation import thread_id
 from task_spec.schemas import GENERATE_STEPS, GenerateStep, InterviewGenerateState
 
-__all__ = ["GenerateService", "interview_generate_graph", "thread_id"]
+__all__ = ["GenerateService", "GenerationStepFailed", "interview_generate_graph", "thread_id"]
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,14 @@ class GenerateService(Protocol):
         ...
 
 
+class GenerationStepFailed(RuntimeError):
+    """단계 실패 — 단계 이름만 싣는다 (사유는 서비스가 고정 문구로 인터뷰 상태에 남겼다)."""
+
+    def __init__(self, step: GenerateStep) -> None:
+        super().__init__(step)
+        self.step = step
+
+
 class _StepNode(Protocol):
     async def __call__(self, state: InterviewGenerateState) -> Command[Route]: ...
 
@@ -58,13 +68,14 @@ def interview_generate_graph(
             except Exception as exc:
                 try:
                     await service.generation_failed(state.interview_id, state.thread_id, step, exc)
-                except Exception as record_exc:  # 사유를 못 남겨도 원래 실패를 가리지 않는다
+                except Exception as record_exc:  # 사유를 못 남겨도 단계는 실패로 멈춘다
                     logger.error(
                         "interview_generate failure not recorded step=%s exc=%s",
                         step,
                         type(record_exc).__name__,
                     )
-                raise
+                # 원래 예외(메시지·원인 사슬)를 싣지 않는다 — 체크포인트 오류 쓰기에 repr 로 남는다
+                raise GenerationStepFailed(step) from None
             if not current:
                 return Command(update={"result": "stale"}, goto=_END)
             if after == _END:

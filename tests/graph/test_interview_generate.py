@@ -10,7 +10,11 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from task_spec.graph import make_checkpointer
-from task_spec.graph.interview_generate import interview_generate_graph, thread_id
+from task_spec.graph.interview_generate import (
+    GenerationStepFailed,
+    interview_generate_graph,
+    thread_id,
+)
 from task_spec.interview.errors import OutputRejected
 from task_spec.schemas import GENERATE_STEPS, GenerateStep, InterviewGenerateState
 
@@ -69,7 +73,7 @@ async def test_runs_every_step_in_order_and_keeps_only_ids(checkpointer: object)
 async def test_failed_step_records_reason_and_resumes_from_that_step(checkpointer: object) -> None:
     service = FakeService(fail_at={"request": OutputRejected("가상 형식 오류")})
     graph, cfg, start = _setup(service, checkpointer)
-    with pytest.raises(OutputRejected):
+    with pytest.raises(GenerationStepFailed):
         await graph.ainvoke(start, cfg)
     assert service.failed == [("request", "OutputRejected")]
     assert (await graph.aget_state(cfg)).next == ("request",)  # 화면의 현재 단계·이어서 할 곳
@@ -86,12 +90,27 @@ async def test_stale_thread_stops_without_running_later_steps(checkpointer: obje
     assert (await graph.aget_state(cfg)).next == ()
 
 
-async def test_unrecorded_failure_still_raises_the_original_error(checkpointer: object) -> None:
+async def test_unrecorded_failure_still_stops_at_that_step(checkpointer: object) -> None:
     service = FakeService(fail_at={"feature": OutputRejected("가상")}, record_fails=True)
     graph, cfg, start = _setup(service, checkpointer)
-    with pytest.raises(OutputRejected):
+    with pytest.raises(GenerationStepFailed):
         await graph.ainvoke(start, cfg)
     assert (await graph.aget_state(cfg)).next == ("feature",)
+
+
+async def test_checkpoint_error_write_does_not_carry_the_original_message(
+    checkpointer: object,
+) -> None:
+    """LangGraph 는 노드 예외를 체크포인트 쓰기(__error__)에 repr 로 남긴다 — 라이브러리 오류 메시지에 섞인 입력 조각이
+    거기 남지 않게, 노드는 단계 이름만 실은 예외를 던진다 (개인정보 점검 M1)."""
+    marker = "가상-입력조각-표지"
+    service = FakeService(fail_at={"feature": ValueError(marker)})
+    graph, cfg, start = _setup(service, checkpointer)
+    with pytest.raises(GenerationStepFailed):
+        await graph.ainvoke(start, cfg)
+    writes = [w async for t in checkpointer.alist(cfg) for w in (t.pending_writes or [])]  # type: ignore[attr-defined]
+    assert any(channel == "__error__" for _, channel, _ in writes)  # 실패 쓰기는 있다
+    assert marker not in repr(writes)
 
 
 def test_thread_is_per_generation() -> None:

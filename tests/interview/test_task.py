@@ -828,6 +828,8 @@ async def test_generation_runs_in_background_and_blocks_changes_until_done(task_
     started = await _started(session, maker)
     generation = started["generation"]
     assert generation["status"] == "running" and generation["competency_ids"] == SELECTED
+    # 요약만 — 단계 산출물(재료 사례·과제 초안) 사본은 싣지 않는다 (개인정보 점검 I1)
+    assert set(generation) == {"status", "thread_id", "started_at", "competency_ids", "reason"}
     assert started["stage"] == "competencies" and started["spec"] is None  # 과제는 아직
     progress = (await session.client.get(f"/interviews/{session.interview_id}/generation")).json()
     assert progress["status"] == "running" and progress["current_node"] == "feature"
@@ -941,4 +943,38 @@ async def test_generation_checkpoint_keeps_only_ids(task_session) -> None:
         assert set(values) <= {"interview_id", "thread_id", "result"}, values
     assert seen > 0 and generated_view["spec"] is not None
     # 단계 산출물은 끝나면 인터뷰 상태에서도 비운다 (사본을 남기지 않는다)
+    assert session.store.rows[session.interview_id].state.generation is None
+
+
+async def test_first_step_reads_the_marker_saved_by_start(task_session, monkeypatch) -> None:
+    """Postgres 처럼 저장이 이벤트 루프에 양보해도, 첫 단계는 시작이 저장한 생성 표시를 읽는다 — 저장 전 행을 읽으면
+    stale 로 끝나 화면에 '중단됨'으로 남았다 (#280 개인정보 점검 I3)."""
+    session, _, _ = task_session
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    original = session.store.save
+
+    async def slow_save(*args: Any, **kwargs: Any) -> Any:
+        for _ in range(50):  # DB 왕복 — 그 사이 막 띄운 그래프가 첫 단계까지 간다
+            await asyncio.sleep(0)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(session.store, "save", slow_save)
+    session.backend.push(Completion(feature_seed_output()))
+    done = (await session.generate(competency_ids=SELECTED)).json()
+    assert done["stage"] == "task_review" and done["generation"] is None, done["generation"]
+
+
+async def test_discarding_drops_a_failed_generation_copy(task_session) -> None:
+    """실패·중단한 생성의 산출물 사본은 폐기한 인터뷰 행에도 남기지 않는다 (개인정보 점검 L1)."""
+    session, maker, _ = task_session
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    maker.fail = OutputRejected("가상")
+    session.backend.push(Completion(feature_seed_output()))
+    failed = (await session.generate(competency_ids=SELECTED)).json()
+    assert failed["generation"]["status"] == "failed"
+    assert session.store.rows[session.interview_id].state.generation is not None
+    discarded = await session.client.post(f"/interviews/{session.interview_id}/discard")
+    assert discarded.status_code == 200, discarded.text
     assert session.store.rows[session.interview_id].state.generation is None
