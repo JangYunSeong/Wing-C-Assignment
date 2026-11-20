@@ -182,13 +182,15 @@ async def test_node_drafts_feature_current_with_seed_ref(monkeypatch: pytest.Mon
     spec = (await draft(_state("run-a", approval=revise)))["spec"]
     task = spec.common_tasks[0]
     assert task.task_kind == "feature" and task.traps[0].trap_id == "t1"
-    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@11+{feature_ref(BACKEND)}"
+    assert spec.common_refs[0].prompt_ref == f"draft_feature_task@12+{feature_ref(BACKEND)}"
     assert FLAG_SEED_UNREVIEWED in task.review_flags
-    assert [a.req_ids for a in task.acceptance_public] == [["r1"], ["r2"]]  # v11 은 연결을 쓴다
+    assert [a.req_ids for a in task.acceptance_public] == [["r1"], ["r2"]]  # v11·v12 는 연결을 쓴다
 
 
-def test_current_feature_prompt_is_v11() -> None:
-    assert _REG.get("draft_feature_task").ref == "draft_feature_task@11"
+def test_current_feature_prompt_is_v12() -> None:
+    """v12 = v11 + 추가 요구 칸·2단계 자료 id·자료 본문 반복 (2026-11-20 사용자 결정, PROMOTIONS.md). 출력 스키마는 V6 그대로."""
+    t = _REG.get("draft_feature_task")
+    assert t.ref == "draft_feature_task@12" and t.meta.output_schema == "DraftFeatureOutputV6"
 
 
 def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
