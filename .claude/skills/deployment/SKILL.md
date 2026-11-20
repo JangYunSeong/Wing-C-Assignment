@@ -56,7 +56,7 @@ env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한
 
 ## 3-1. nginx (TLS + Basic 인증) [확정: 2026-11-03 — TLS 사용, 사내망 밖 접속]
 
-- 앱에 인증이 없으므로 **모든 경로 Basic 인증**(`/healthz` 만 예외). 승인자마다 계정. 앱 인증이 붙으면 다시 본다.
+- 앱에 인증이 없으므로 **모든 경로 Basic 인증**(`/healthz`·Wing 응시 쪽만 예외). 승인자마다 계정. 앱 인증이 붙으면 다시 본다.
 - HTTP→HTTPS, TLS 1.2+, HSTS·nosniff·frame DENY. Basic 인증 헤더는 앱으로 넘기지 않는다.
 - SSE `/runs/{id}/events`: `proxy_buffering off`, read 1h. 그 밖 read 600s (LLM_TIMEOUT_SECONDS 300 + 여유). 업로드 25 MB.
 - 접근 로그 형식에 쿼리·본문을 넣지 않는다 (지원서 경로). IP 당 10 r/s.
@@ -71,9 +71,11 @@ env 항목은 `docker/api/env.example` (= `.env.example` 중 운영에 필요한
   `run.sh` 가 만드는 설정 조각은 `/etc/task-spec/nginx/` (재부팅 후 재시작에 필요 — `/tmp` 금지).
 - 설정을 바꾸면 이 서버에서 `nginx -t` 로 문법만 확인 (더미 인증서·htpasswd, `upstream.conf` 에 `127.0.0.1:8001`).
   운영 컨테이너는 `nginx.conf` 파일 하나를 바인드한다 — `git pull` 등으로 파일이 새로 생기면 reload 가 아니라 restart 해야 반영된다 (`docs/deploy.md` 2-6).
-- 443 의 `/` 는 Wing 코딩 테스트(`wing-web` 127.0.0.1:8080, 같은 Basic 인증), task-api 는 같은 443 의 `/task-api/`(접두사 떼고 넘김) —
+- 443 의 `/` 는 Wing 코딩 테스트(`wing-web` 127.0.0.1:8080), task-api 는 같은 443 의 `/task-api/`(접두사 떼고 넘김) —
   같은 출처라 운영 CORS 없음 [확정: 2026-11-20 사용자 — 프론트를 443 으로]. 옛 루트 API 경로는 옛 주소를 쓰는 곳이 옮길 때까지 남김(`docs/deploy.md` 2-6).
   8443 은 옛 Wing 주소(443 으로 301)와 미리보기 서브도메인.
+- Wing 은 응시 쪽만 Basic 인증 없이 — `/`·`/admin` 정적 파일·`/api/exams`·`/api/exam-sessions/…` [확정: 2026-11-20 사용자].
+  나머지 `/api/` 는 Basic 인증. **열 경로만 적는다** — 막을 경로를 적으면 대소문자 변형(`/api/Admin/…`)으로 우회된다 (nginx 는 가리고 Express 는 안 가림).
 
 ## 4. 업그레이드·롤백·백업
 
