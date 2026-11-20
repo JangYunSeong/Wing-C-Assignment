@@ -115,7 +115,7 @@ install -d -m 755 /etc/task-spec/acme
 사내 CA·구매한 공인 인증서라면 3~4 대신 `/etc/task-spec/certs/{fullchain,privkey}.pem` 에 직접 둔다 (디렉토리 700, privkey 600).
 
 nginx 설정(`docker/nginx/nginx.conf`, HTTP 단계는 `nginx.http.conf`) 요점: HTTP→HTTPS(certbot 확인 경로만 예외), TLS 1.2+, HSTS·보안 헤더,
-모든 경로 Basic 인증(`/healthz`·certbot 확인 경로·Wing 응시 쪽만 예외 — 아래 Wing 문단), SSE(`/runs/{id}/events`) 버퍼링 끔·1시간, 일반 요청 600초(과제 생성),
+모든 경로 Basic 인증(`/healthz`·certbot 확인 경로·Wing 화면 정적 파일만 예외 — 아래 Wing 문단), SSE(`/runs/{id}/events`) 버퍼링 끔·1시간, 일반 요청 600초(과제 생성),
 업로드 25 MB, IP 당 10 r/s 제한(순간 20), 접근 로그에 쿼리·본문 없음, Basic 인증 헤더는 앱으로 넘기지 않음.
 CORS: 다른 origin 의 프론트가 브라우저에서 직접 부를 때만. 허용 origin 은 `docker/nginx/.allow_list`(gitignore, `TASK_NGINX_CORS` 로 경로 변경)에
 한 줄에 하나(`http://203.0.113.5:3000`, 끝 `/` 없이) — 파일이 없으면 CORS 헤더를 내지 않는다. preflight(`OPTIONS`)는 인증 전에 204 로 끝낸다.
@@ -133,11 +133,12 @@ task-api 는 같은 443 의 **`/task-api/`** 가 정식 주소다(앞의 `/task-
 옛 루트 API 경로(`/builds`·`/runs`·`/postings`·`/pull/` 등 앱의 최상위 경로, `/openapi.json`·`/docs`)는 옛 주소를 쓰는 곳(팀원 로컬 Wing, 받는 쪽 `/pull`)이
 옮길 때까지 남겨 두었다 — Wing 화면 경로(`/`·`/about`·`/exam-sessions/…`·`/admin/`·`/api/`·`/assets/`)와 겹치지 않는다. 앱에 최상위 경로를 더하면 `/task-api/` 로만 쓴다.
 `/healthz` 는 컨테이너 헬스체크라 루트에 계속 둔다. 옛 Wing 주소 `https://<공인 IP>:8443` 은 443 으로 301.
-Wing 은 **응시 쪽만 Basic 인증 없이** 연다 — 응시 화면(`/`)·관리 화면 정적 파일(`/admin`)·응시 API(`/api/exams`·`/api/exam-sessions/…`,
-세션 API 는 Wing 앱이 `X-Exam-Session-Token` 으로 막음). 그 밖의 Wing API(`/api/admin/…`·`/api/users` 등)는 Basic 인증 —
-Wing backend 에는 로그인·가드가 없어서 이 잠금이 관리 데이터(리포트·평가 로그)의 유일한 문이다.
-nginx 에는 **열 경로만** 적는다: nginx location 은 대소문자를 가리고 Wing backend(Express)는 안 가려서, 막을 경로를 적으면
-`/api/Admin/…` 처럼 대소문자만 바꿔 우회된다. 응시 화면이 공개라 누구나 응시 세션을 만들 수 있다 (IP 당 요청 제한뿐 — 세션 수 상한 없음).
+Wing 은 **화면 정적 파일만 Basic 인증 없이** 연다 — 응시 화면(`/`)·관리 화면(`/admin`). 앱 로그인 폼을 띄우려면 열려 있어야 한다.
+Wing API(`/api/` 전부 — 응시 API `/api/exams`·`/api/exam-sessions/…` 포함)는 Basic 인증 [확정: 2026-11-20 사용자 — 앱 로그인 전까지].
+Wing backend 에는 로그인·가드가 없어서 이 잠금이 관리 데이터(리포트·평가 로그)의 유일한 문이다. Basic 인증에는 계정별 권한이 없어
+맞는 계정이면 관리 데이터와 task-api 까지 열리므로, **앱 로그인이 생기기 전까지는 관리자 계정을 가진 내부 사람만 응시**한다 —
+실제 응시자에게 이 계정을 주지 않는다. 응시 API 를 다시 열 때는 nginx 에 **열 경로만** 적는다: nginx location 은 대소문자를 가리고
+Wing backend(Express)는 안 가려서, 막을 경로를 적으면 `/api/Admin/…` 처럼 대소문자만 바꿔 우회된다.
 미리보기 서브도메인(`p200NN.<공인 IP 대시>.sslip.io:8443`)은 인증 없이 `127.0.0.1:200NN` 에 넘긴다 (인증서 `/etc/task-spec/certs/wing-preview/`,
 발급·갱신 훅은 Wing 레포 `.claude/docs/tooling.md`). 갱신 훅은 모든 인증서 갱신에 돌기 때문에, 이 레포의 hook 은 `task-spec` 인증서
 (`TASK_CERT_NAME`)일 때만 복사·reload 한다. 미리보기 때문에 방화벽·공유기에서 8443/tcp 도 연다.
