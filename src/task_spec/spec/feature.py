@@ -1163,6 +1163,7 @@ async def draft_feature_task(
             repairer=cast(Any, repair_feature),
             shuffler=cast(Any, shuffle_feature),
             patch=True,
+            repair_first=True,  # 고칠 수 있는 문제는 전체 재요청 없이 (#280 D)
         )
     inc = ctx.incident
     if inc is None or inc.feature is None:
@@ -1198,6 +1199,7 @@ async def draft_feature_task(
         repairer=cast(Any, repair_feature),
         shuffler=fill_then_shuffle,
         patch=True,
+        repair_first=True,  # 고칠 수 있는 문제는 전체 재요청 없이 (#280 D)
     )
     res.incident_id = inc.incident_id
     res.seed = seed

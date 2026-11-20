@@ -6,23 +6,24 @@ import copy
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from task_spec.llm import Completion, FakeBackend, LLMClient
 from task_spec.nodes import spec as spec_mod
 from task_spec.nodes.spec import FLAG_FEATURE_DEFERRED, make_draft_spec
-from task_spec.prompting import PromptError, PromptRegistry
+from task_spec.prompting import Message, PromptError, PromptRegistry
 from task_spec.schemas import ApprovalDecision, DraftFeatureOutput, TaskItem
 from task_spec.spec.build import CommonDraft, build_common
 from task_spec.spec.common import FEATURE_DEBUG_MIN
-from task_spec.spec.draft import FLAG_DRAFT_INVALID, FLAG_DRAFT_REPAIRED, DraftResult
+from task_spec.spec.draft import FLAG_DRAFT_INVALID, FLAG_DRAFT_REPAIRED, DraftResult, draft_task
 from task_spec.spec.feature import (
     apply_feature,
     check_feature,
     clarification_overlaps,
     draft_feature_task,
+    extra_input,
     repair_feature,
     shuffle_feature,
 )
@@ -296,9 +297,8 @@ async def test_draft_feature_reasks_then_repairs() -> None:
     assert any(f.startswith(FLAG_DRAFT_INVALID) for f in res.flags)
 
 
-async def test_repaired_format_clarification_is_not_a_failure() -> None:
-    """2026-11-15 손 시범 seats-ae1029: 재요청 뒤에도 단서 아닌 추가 요구가 응답 형식을 정해(c3 '차감 실패 시 응답 형식') 고쳐 쓰기가
-    지웠는데, 지우기 전 문제로 '자동 검증 실패' 가 붙어 명세 실패로 셌다 — 다시 검사해 풀렸으면 '코드가 고침' 만."""
+def _format_clarification_draft() -> dict[str, Any]:
+    """단서 아닌 추가 요구가 응답 형식을 정한 답 (#165) — 코드 고쳐 쓰기(repair_feature)가 그 항목을 뺀다."""
     bad = copy.deepcopy(_fdraft())
     bad["clarifications"].append(
         {
@@ -308,14 +308,71 @@ async def test_repaired_format_clarification_is_not_a_failure() -> None:
             "reveals": [],
         }
     )
+    return bad
+
+
+async def test_repaired_format_clarification_is_not_a_failure() -> None:
+    """2026-11-15 손 시범 seats-ae1029: 단서 아닌 추가 요구가 응답 형식을 정해(c3 '차감 실패 시 응답 형식') 고쳐 쓰기가 지웠는데,
+    지우기 전 문제로 '자동 검증 실패' 가 붙어 명세 실패로 셌다 — 다시 검사해 풀렸으면 '코드가 고침' 만.
+    #280 D: 코드가 고칠 수 있는 문제뿐이면 전체 재요청(수 분) 없이 첫 답을 고쳐 끝낸다."""
+    bad = _format_clarification_draft()
+    fake = FakeBackend().push(Completion(json.dumps(bad, ensure_ascii=False)))
+    res = await draft_feature_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    assert len(fake.calls) == 1 and res.output is not None  # 재요청 없음
+    assert res.first_problems and "c3" in res.first_problems[0]  # 첫 답 문제는 평가용으로 남는다
+    assert [c.clarification_id for c in res.output.clarifications] == ["c1", "c2"]
+    assert not any(f.startswith(FLAG_DRAFT_INVALID) for f in res.flags), res.flags
+    assert any(f.startswith(FLAG_DRAFT_REPAIRED) and "c3" in f for f in res.flags)
+
+
+class _Capture(FakeBackend):
+    """보낸 메시지 본문도 남긴다 (재요청 메모 확인용 — 가상 데이터)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[str] = []
+
+    async def complete(
+        self, model: str, messages: list[Message], params: dict[str, Any], **kw: Any
+    ) -> Completion:
+        self.sent.append("\n".join(m.content for m in messages))
+        return await super().complete(model, messages, params, **kw)
+
+
+async def test_problems_code_cannot_fix_still_reask_with_every_first_problem() -> None:
+    """고칠 수 있는 것과 없는 것이 섞이면 지금처럼 재요청 — 메모에는 첫 답의 문제 전부 (새 답에 같은 문제가 다시 나오지 않게)."""
+    bad = _format_clarification_draft()
+    bad["accepted_designs"][1]["trap_ids"] = [
+        "t9"
+    ]  # 코드가 못 고치는 문제 (숨은 요구 하나에 허용 설계 1개)
+    fake = _Capture().push(
+        Completion(json.dumps(bad, ensure_ascii=False)),
+        Completion(json.dumps(_fdraft(), ensure_ascii=False)),
+    )
+    res = await draft_feature_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    assert len(fake.calls) == 2 and res.output is not None and res.flags == []
+    assert "c3" in fake.sent[1] and "허용 설계" in fake.sent[1]
+
+
+async def test_without_repair_first_the_first_problems_always_reask() -> None:
+    """옵션을 끄면 예전과 같다 (이슈형 과제·확장 슬롯은 켜지 않는다)."""
+    bad = _format_clarification_draft()
     fake = FakeBackend().push(
         Completion(json.dumps(bad, ensure_ascii=False)),
         Completion(json.dumps(bad, ensure_ascii=False)),
     )
-    res = await draft_feature_task(_ctx(), llm=_client(fake), prompts=PROMPTS)
+    res = await draft_task(
+        _ctx(),
+        llm=_client(fake),
+        prompts=PROMPTS,
+        task="draft_feature_task",
+        extra_input=extra_input(),
+        checker=cast(Any, check_feature),
+        repairer=cast(Any, repair_feature),
+        shuffler=cast(Any, shuffle_feature),
+        patch=True,
+    )
     assert len(fake.calls) == 2 and res.output is not None
-    assert [c.clarification_id for c in res.output.clarifications] == ["c1", "c2"]
-    assert not any(f.startswith(FLAG_DRAFT_INVALID) for f in res.flags), res.flags
     assert any(f.startswith(FLAG_DRAFT_REPAIRED) and "c3" in f for f in res.flags)
 
 
