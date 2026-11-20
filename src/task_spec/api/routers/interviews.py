@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -23,12 +23,14 @@ from pydantic import BaseModel, Field, StrictBool, StrictStr, model_validator
 from task_spec.api.deps import InterviewApprovalDep, InterviewsDep
 from task_spec.graph.interview_approval import thread_id as approval_thread
 from task_spec.interview.errors import InterviewConflict, InterviewError, InterviewInvalid
+from task_spec.postings.company import company_id as company_key
 from task_spec.schemas import InterviewApprovalState, PublicIncident, TaskItem
 from task_spec.schemas.interview_approval import COMMON_ID
 from task_spec.schemas.interview_state import (
     ANSWER_MAX,
     GeneralQuestion,
     IncidentSource,
+    Stage,
     TargetedQuestion,
 )
 
@@ -135,6 +137,62 @@ class DraftRequest(BaseModel):
 
 def _message_id(value: UUID | None) -> str | None:
     return str(value) if value is not None else None
+
+
+class InterviewApprovalSummary(BaseModel):
+    reviewer: str
+    at: str
+
+
+class InterviewSummaryView(BaseModel):
+    """인터뷰 목록 한 줄 — 공고 메타데이터·단계·시각만 (대화·사례·답안 없음)."""
+
+    interview_id: str
+    company: str
+    company_id: str | None
+    posting_id: str
+    title: str
+    stage: Stage
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+    approval: InterviewApprovalSummary | None = None
+    discarded_at: str | None = None
+    discard_reason: Literal["recruiter", "stale"] | None = None
+
+
+@router.get("")
+async def list_interviews(
+    interviews: InterviewsDep,
+    # 필수 — 인증 전에는 회사 없이 전부 보지 않는다 (목록의 id 로 상세를 열 수 있다, recruiter-interview.md 한계) [확정: 2026-11-20 사용자]
+    company: Annotated[str, Query(min_length=1, max_length=200)],
+    stage: Stage | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[InterviewSummaryView]:
+    """최근 진행 순. 승인·폐기된 인터뷰도 넣고, 방치 30일이 지난 열린 인터뷰는 discarded(사유 stale)로 보인다."""
+    rows = await interviews.summaries(company=company, stage=stage, limit=limit)
+    return [
+        InterviewSummaryView(
+            interview_id=r.id,
+            company=r.company,
+            company_id=company_key(r.company),
+            posting_id=r.posting_id,
+            title=r.title,
+            stage=r.stage,
+            revision=r.revision,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+            approval=(
+                InterviewApprovalSummary(reviewer=r.reviewer, at=r.approved_at)
+                if r.reviewer is not None and r.approved_at is not None
+                else None
+            ),
+            discarded_at=r.discarded_at
+            or ((r.updated_at + interviews.mapping_ttl).isoformat() if r.stale else None),
+            discard_reason="stale" if r.stale else r.discard_reason,
+        )
+        for r in rows
+    ]
 
 
 @router.post("", status_code=201)

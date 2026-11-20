@@ -13,11 +13,12 @@ import uuid
 from collections import defaultdict
 from typing import Any
 
+from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from task_spec.postings.search import CompanyFilter, SearchTerm
+from task_spec.postings.search import COMPANY_NOISE, CompanyFilter, SearchTerm
 from task_spec.postings.suggest import OntologyLists
 from task_spec.schemas import (
     AnalyzedLine,
@@ -82,9 +83,34 @@ def is_provisional(posting_id: str) -> bool:
     return posting_id.startswith(PROVISIONAL_PREFIX)
 
 
+def text_sha256(text: str) -> str:
+    """공고 원문 해시 — 추천 저장(posting_suggestion.text_sha256)과 같은 공고 찾기가 같은 값을 쓴다."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def rules_fingerprint(lists: OntologyLists) -> str:
     joined = "\n".join(f"{p}:{h}" for p, h in sorted(lists.rules_sha.items()))
     return hashlib.sha256(joined.encode()).hexdigest()
+
+
+class SamePostingExists(Exception):
+    """같은 회사·같은 원문의 임시 공고가 이미 있다 (create_provisional 의 unique)."""
+
+    def __init__(self, posting_ids: list[str]) -> None:
+        super().__init__(", ".join(posting_ids))
+        self.posting_ids = posting_ids
+
+
+async def _same_postings(conn: AsyncConnection[Any], company_key: str, digest: str) -> list[str]:
+    cur = await conn.execute(
+        "SELECT p.id FROM public.provisional_posting p "
+        "JOIN public.posting_suggestion s ON s.id = p.suggestion_id "
+        "LEFT JOIN public.posting_company pc ON pc.posting_id = p.id WHERE s.text_sha256 = %s "
+        "AND lower(regexp_replace(coalesce(pc.company, p.company, ''), %s, '', 'g')) = %s "
+        "ORDER BY p.created_at, p.id",
+        (digest, COMPANY_NOISE, company_key),
+    )
+    return [r[0] for r in await cur.fetchall()]
 
 
 class PostingStore:
@@ -129,7 +155,7 @@ class PostingStore:
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 sid,
-                hashlib.sha256(text.encode()).hexdigest(),
+                text_sha256(text),
                 company,
                 title,
                 method,
@@ -158,27 +184,38 @@ class PostingStore:
         ontology_version: str,
         rules_sha256: str,
         lines: list[AnalyzedLine],
+        unique: tuple[str, str] | None = None,
     ) -> str:
+        """unique=(회사 키, 원문 해시)면 같은 회사·같은 원문 공고가 있을 때 만들지 않고 SamePostingExists — 검사와 저장을 한
+        트랜잭션·잠금으로 묶어, 확정을 두 번 눌러도(동시 요청) 하나만 생긴다 (2026-11-20 리뷰)."""
         pid = f"{PROVISIONAL_PREFIX}{uuid.uuid4().hex[:12]}"
-        await self._one(
-            "INSERT INTO public.provisional_posting (id, suggestion_id, company, title, sub, secondary_sub, industry_id, "
-            "confirmed_by, ontology_version, rules_sha256, lines, n_unmatched) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (
-                pid,
-                suggestion_id,
-                company,
-                title,
-                sub,
-                secondary_sub,
-                industry_id,
-                confirmed_by,
-                ontology_version,
-                rules_sha256,
-                Jsonb([x.model_dump() for x in lines]),
-                sum(1 for x in lines if x.kind == "unmatched"),
-            ),
-        )
+        async with self._pool.connection() as conn, conn.transaction():
+            if unique is not None:
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"provisional_posting:{unique[0]}:{unique[1]}",),
+                )
+                if same := await _same_postings(conn, *unique):
+                    raise SamePostingExists(same)
+            await conn.execute(
+                "INSERT INTO public.provisional_posting (id, suggestion_id, company, title, sub, secondary_sub, industry_id, "
+                "confirmed_by, ontology_version, rules_sha256, lines, n_unmatched) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    pid,
+                    suggestion_id,
+                    company,
+                    title,
+                    sub,
+                    secondary_sub,
+                    industry_id,
+                    confirmed_by,
+                    ontology_version,
+                    rules_sha256,
+                    Jsonb([x.model_dump() for x in lines]),
+                    sum(1 for x in lines if x.kind == "unmatched"),
+                ),
+            )
         return pid
 
     async def get_provisional(self, pid: str) -> dict[str, Any] | None:
@@ -255,6 +292,30 @@ class PostingStore:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("SELECT posting_id, company FROM public.posting_company")
             return {r["posting_id"]: r["company"] for r in await cur.fetchall()}
+
+    async def same_postings(self, company_key: str, digest: str) -> list[str]:
+        """같은 회사·같은 원문의 임시 공고 id — 먼저 만든 것부터. 회사는 사람이 정한 회사(posting_company)가 먼저이고,
+        company_key 는 회사 id(postings/company.company_id — 회사가 없으면 '')로, 공고 쪽도 같은 규칙으로 맞춘다.
+        같은 공고로 다른 문제를 만들려고 따로 등록하는 일도 있어 막지 않고 알린다 (POST /postings 의 allow_duplicate)."""
+        async with self._pool.connection() as conn:
+            return await _same_postings(conn, company_key, digest)
+
+    async def similar_postings(self, company_key: str, title: str, digest: str) -> list[str]:
+        """같은 회사·같은 제목(공백·대소문자 무시)인데 원문이 다른 임시 공고 id — 막지 않고 확인 화면에 알린다."""
+        key = "".join(title.split()).casefold()
+        if not key:
+            return []
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT p.id FROM public.provisional_posting p "
+                "JOIN public.posting_suggestion s ON s.id = p.suggestion_id "
+                "LEFT JOIN public.posting_company pc ON pc.posting_id = p.id WHERE s.text_sha256 <> %s "
+                "AND lower(regexp_replace(coalesce(pc.company, p.company, ''), %s, '', 'g')) = %s "
+                "AND lower(regexp_replace(coalesce(p.title, ''), '[\\s\\u00a0\\u3000]', '', 'g')) = %s "
+                "ORDER BY p.created_at, p.id",
+                (digest, COMPANY_NOISE, company_key, key),
+            )
+            return [r[0] for r in await cur.fetchall()]
 
     async def search_provisional(
         self, terms: list[SearchTerm], limit: int | None, company: CompanyFilter | None = None

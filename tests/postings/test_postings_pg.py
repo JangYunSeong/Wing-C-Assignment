@@ -124,7 +124,9 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
         "industry_id": "ind.platform",
         "reason": "데이터 파이프라인 구축",
     }
-    fake = FakeBackend().push(Completion(json.dumps(llm_out, ensure_ascii=False)))
+    fake = FakeBackend()
+    for _ in range(3):  # 처음 추천 · 같은 원문을 다시 올린 추천 · 원문을 고쳐 올린 추천
+        fake.push(Completion(json.dumps(llm_out, ensure_ascii=False)))
     llm = LLMClient({"openai": fake})
     store = await PostingStore.open(url)
     try:
@@ -265,16 +267,50 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                     await client.post("/runs", data={"posting_id": "prov-000000000000"})
                 ).status_code == 404
 
+                # 같은 회사·같은 원문 — 확정은 409 로 알리고, 다른 문제를 만들려고 일부러 따로 등록할 때만 allow_duplicate
+                # [확정: 2026-11-20 사용자]. 운영: 같은 원문의 공고가 두 번 확정돼 목록에 두 줄 (문제는 서로 달랐다)
+                again = {
+                    "suggestion_id": sug["suggestion_id"],
+                    "sub": sub,
+                    "industry_id": "ind.it_si",
+                    "confirmed_by": "reviewer-fake",
+                }
+                refused = await client.post("/postings", json=again)
+                assert refused.status_code == 409
+                assert refused.json()["error"]["code"] == "posting_duplicate"
+                assert pid in refused.json()["error"]["message"]
+                twin = await client.post("/postings", json={**again, "allow_duplicate": True})
+                assert twin.status_code == 201, twin.text
+                assert twin.json()["posting_id"] not in (pid, None)
+                dup = await client.post(
+                    "/postings/suggest",
+                    data={"company": "(주) 가상테크", "title": "데이터 엔지니어", "text": POSTING},
+                )
+                # 확정 전에 미리 알린다 — 먼저 만든 것부터
+                assert dup.json()["existing_posting_ids"] == [pid, twin.json()["posting_id"]]
+
                 # 온톨로지에 없는 셀(data.eng|ind.platform) → 경고 + 직군 단위 NCS 로 대체한 평가 근거
+                # (원문을 고쳐 다시 올린 공고 — 같은 회사·같은 제목이라 비슷한 공고로 알리지만 막지 않는다)
+                edited = await client.post(
+                    "/postings/suggest",
+                    data={
+                        "company": "가상테크",
+                        "title": "데이터 엔지니어",
+                        "text": POSTING + "\n- 가상 사내 데이터 카탈로그 운영",
+                    },
+                )
+                assert edited.json()["existing_posting_ids"] == []
+                assert edited.json()["similar_posting_ids"] == [pid, twin.json()["posting_id"]]
                 r = await client.post(
                     "/postings",
                     json={
-                        "suggestion_id": sug["suggestion_id"],
+                        "suggestion_id": edited.json()["suggestion_id"],
                         "sub": "data.eng",
                         "industry_id": "ind.platform",
                         "confirmed_by": "reviewer-fake",
                     },
                 )
+                assert r.status_code == 201, r.text
                 pid2 = r.json()["posting_id"]
                 # 신입·경력을 고르지 않고 확인한 공고는 공고 문구 추정 — 실행을 만들려면 정해야 한다
                 prof2 = (await client.get(f"/postings/{pid2}")).json()
@@ -307,7 +343,9 @@ async def test_api_flow_suggest_confirm_run(ctx, tmp_path: Path) -> None:  # typ
                 "(SELECT id FROM public.provisional_posting WHERE company = '가상테크')"
             )
             await conn.execute("DELETE FROM public.provisional_posting WHERE company = '가상테크'")
-            await conn.execute("DELETE FROM public.posting_suggestion WHERE company = '가상테크'")
+            await conn.execute(
+                "DELETE FROM public.posting_suggestion WHERE company IN ('가상테크', '(주) 가상테크')"
+            )
         await store.close()
 
 
@@ -389,5 +427,66 @@ async def test_search_provisional_company_filter() -> None:
                 "DELETE FROM public.posting_company WHERE posting_id = ANY(%s)", (ids,)
             )
             await conn.execute("DELETE FROM public.provisional_posting WHERE id = ANY(%s)", (ids,))
+            await conn.execute("DELETE FROM public.posting_suggestion WHERE id = %s", (sid,))
+        await store.close()
+
+
+async def test_same_posting_check_and_insert_are_atomic() -> None:
+    """확정을 두 번 눌러도(동시 요청) 같은 회사·같은 원문 공고는 하나만 (2026-11-20 리뷰) — 검사와 저장이 한 트랜잭션·잠금."""
+    import asyncio
+
+    from task_spec.postings.store import SamePostingExists, text_sha256
+
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await PostingStore.open(u.get_secret_value())
+    tag = uuid.uuid4().hex[:6]
+    text = f"가상 원문 {tag}"
+    sid = await store.create_suggestion(
+        text=text,
+        company=f"가상중복{tag}",
+        title="t",
+        method="test",
+        lines=[],
+        subs=[],
+        industries=[],
+        meta={},
+        ontology_version=VERSION,
+    )
+    key = (f"가상중복{tag}".casefold(), text_sha256(text))
+
+    async def make() -> str | Exception:
+        try:
+            return await store.create_provisional(
+                suggestion_id=sid,
+                company=f"가상중복{tag}",
+                title="t",
+                sub="sw.backend",
+                secondary_sub=None,
+                industry_id="it",
+                confirmed_by="tester",
+                ontology_version=VERSION,
+                rules_sha256="x",
+                lines=[],
+                unique=key,
+            )
+        except SamePostingExists as e:
+            return e
+
+    try:
+        results = await asyncio.gather(*(make() for _ in range(4)))
+        made = [r for r in results if isinstance(r, str)]
+        refused = [r for r in results if isinstance(r, SamePostingExists)]
+        assert len(made) == 1 and len(refused) == 3
+        assert all(r.posting_ids == made for r in refused)
+        assert await store.same_postings(key[0], key[1]) == made
+    finally:
+        async with await psycopg.AsyncConnection.connect(
+            u.get_secret_value(), autocommit=True
+        ) as conn:
+            await conn.execute(
+                "DELETE FROM public.provisional_posting WHERE suggestion_id = %s", (sid,)
+            )
             await conn.execute("DELETE FROM public.posting_suggestion WHERE id = %s", (sid,))
         await store.close()

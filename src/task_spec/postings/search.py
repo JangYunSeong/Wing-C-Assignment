@@ -27,7 +27,9 @@ def like_patterns(q: str) -> list[str]:
     return out
 
 
-COMPANY_NOISE = r"\(주\)|㈜|주식회사|\(유\)|유한회사|\s"  # postings/company.company_id 와 같은 규칙 (SQL regexp_replace 용)
+# postings/company.company_id 와 같은 규칙 (SQL regexp_replace 용). Python split() 이 지우는 NBSP·전각 공백도 — 웹에서 복사한 회사 이름이
+# 어긋나지 않게 (2026-11-20 리뷰)
+COMPANY_NOISE = r"\(주\)|㈜|주식회사|\(유\)|유한회사|[\s\u00a0\u3000]"
 
 
 @dataclass(frozen=True)
