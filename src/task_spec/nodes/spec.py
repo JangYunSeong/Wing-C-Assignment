@@ -86,6 +86,14 @@ FLAG_INTERVIEW_COMMON = (
 FLAG_INTERVIEW_SWITCHED = (
     "이 공고의 공통 과제가 바뀌어(인터뷰 과제 승인·교체) 지금 인터뷰 과제로 다시 만듦 — 이전 과제: "
 )
+# 실행 만들 때 담당자가 고른 문제 [확정: 2026-11-20 사용자 — 같은 공고에 문제가 여럿이면 실행 만들 때 고른다]
+FLAG_CHOSEN_COMMON = (
+    "실행 만들 때 담당자가 고른 문제(승인된 공통 과제)를 그대로 씀 — 과제는 이 명세에서 고치지 않음 "
+    "(경험 검증만 다시 만들 수 있음): "
+)
+FLAG_CHOSEN_GONE = (
+    "실행 만들 때 고른 문제를 저장소에서 찾지 못함 — 다른 과제로 바꾸지 않고 공통 과제 없이 둠: "
+)
 
 
 def _uses_incident(prompts: PromptRegistry, task: str = DRAFT_TASK) -> bool:
@@ -177,13 +185,41 @@ def make_draft_spec(
                 state.approval if state.approval and state.approval.status == "revise" else None
             )
             redo_common = revise is not None and revise.revise_target != "verification"
-            interview = (
+            # 담당자가 고른 문제가 있으면 그것 (실행을 만든 뒤 교체돼도 이 지원자에게 고른 것 그대로) — 없으면 공고의 인터뷰 과제
+            chosen = (
+                await store.get(state.common_id)
+                if store is not None and state.common_id is not None
+                else None
+            )
+            if state.common_id is not None and chosen is None:
+                return _out(
+                    state,
+                    spec_id=spec_id,
+                    revision=revision,
+                    common=[],
+                    verification=[],
+                    refs=[],
+                    assignments=[],
+                    flags=[FLAG_CHOSEN_GONE + state.common_id],
+                    update={
+                        "errors": [
+                            NodeError(
+                                node="draft_spec",
+                                code="chosen_common_gone",
+                                message="실행 만들 때 고른 문제가 저장소에 없음 — 다른 과제로 바꾸지 않음",
+                                ref_id=state.common_id,
+                            )
+                        ]
+                    },
+                    lowered=lowered,
+                )
+            interview = chosen or (
                 await store.interview_task(state.posting_id, state.ontology_version)
                 if store is not None
                 else None
             )
             if interview is not None:
-                picked = _interview_common(state, interview, revise)
+                picked = _interview_common(state, interview, revise, chosen=chosen is not None)
                 common.append(picked.task)
                 # 경험 검증(슬롯 배정·면접 질문)은 주장과 과제 슬롯만 쓴다 — P1 골격의 서술 입력(ctx)이 없어도 만든다
                 refs.append(picked.ref)
@@ -591,7 +627,11 @@ class _Picked:
 
 
 def _interview_common(
-    state: RunState, interview: StoredCommon, revise: ApprovalDecision | None
+    state: RunState,
+    interview: StoredCommon,
+    revise: ApprovalDecision | None,
+    *,
+    chosen: bool = False,
 ) -> _Picked:
     """채용담당자 인터뷰로 승인된 공고 공통 과제를 그대로 쓴다 [확정: 2026-11-19 사용자] — 만들지도 고치지도 않는다.
 
@@ -603,8 +643,9 @@ def _interview_common(
     """
     prev = state.spec.common_refs[0].common_id if state.spec and state.spec.common_refs else None
     new_to_run = prev != interview.id  # 첫 초안·공통 과제가 없던 명세·다른 과제를 가리키던 명세
-    flags = [FLAG_INTERVIEW_COMMON]
-    if prev is not None and new_to_run:
+    # chosen: 실행 만들 때 담당자가 고른 문제 — 인터뷰 과제와 같이 그대로 쓰고 고치지 않는다 (실행 동안 바뀌지 않는다)
+    flags = [FLAG_CHOSEN_COMMON + interview.id] if chosen else [FLAG_INTERVIEW_COMMON]
+    if prev is not None and new_to_run and not chosen:
         flags.append(FLAG_INTERVIEW_SWITCHED + prev)
     seen = {p.provenance_id for p in state.provenance}
     prov = [p for p in interview.provenance if p.provenance_id not in seen] if new_to_run else []
@@ -612,13 +653,17 @@ def _interview_common(
     redo_common = revise is not None and revise.revise_target != "verification"
     if redo_common:
         assert revise is not None
+        what = "실행 만들 때 고른 문제" if chosen else "인터뷰로 승인된 공통 과제"
+        where = (
+            "다른 문제로 바꾸려면 실행을 새로 만든다" if chosen else "과제는 인터뷰 화면에서 고친다"
+        )
         update["errors"] = [
             NodeError(
                 node="draft_spec",
-                code="interview_common_locked",
-                message="인터뷰로 승인된 공통 과제는 지원자 명세에서 고치지 않음 — 수정 요청의 공통 과제 부분"
+                code="chosen_common_locked" if chosen else "interview_common_locked",
+                message=f"{what}는 지원자 명세에서 고치지 않음 — 수정 요청의 공통 과제 부분"
                 f"({revise.revise_target}{', 유형 바꾸기' if revise.task_kind else ''})은 반영하지 않음. "
-                "과제는 인터뷰 화면에서 고친다",
+                f"{where}",
                 ref_id=interview.id,
             )
         ]
@@ -774,11 +819,12 @@ def make_finalize(
             gone = await store.missing(ids)
             if gone:  # API 가 승인 전에 막지만 (409), 그 사이 지워진 경우에도 사유를 남긴다
                 raise CommonTaskMissing(gone)
-            stale = await replaced_common(store, state.spec)
+            stale = await replaced_common(store, state.spec, state.common_id)
             if stale:  # API 가 승인 전에 막는다 (409). 확인 뒤 확정 전에 교체되면 교체 직전에 확정된 명세와 같다
                 raise CommonTaskNotCurrent(stale)
             for r in state.spec.common_refs:
-                if not is_interview_ref(r.prompt_ref):
+                # 인터뷰 과제·고른 문제는 이미 승인된 과제 — 다시 승인하면 원래 승인 기록이 덮인다
+                if not is_interview_ref(r.prompt_ref) and r.common_id != state.common_id:
                     await store.approve(r.common_id, state.approval.reviewer, state.approval.at)
         return {"spec": state.spec.model_copy(update={"approval": state.approval})}
 

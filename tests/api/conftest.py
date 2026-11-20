@@ -138,6 +138,10 @@ class FakeProvisional:
         self.levels: dict[str, str] = {}
         self.set_by: dict[str, str] = {}
         self.entered: dict[str, str] = {}  # 사람이 정한 회사 (posting_company)
+        self.groups: dict[str, list[str]] = {}  # 같은 공고 묶음 (posting_link) — 공고 id → 묶음
+
+    async def posting_group(self, pid: str) -> list[str]:
+        return self.groups.get(pid, [pid])
 
     async def get_provisional(self, pid: str) -> dict[str, object] | None:
         if pid not in self.companies:

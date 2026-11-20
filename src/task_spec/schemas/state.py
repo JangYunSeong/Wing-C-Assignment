@@ -37,6 +37,9 @@ class RunState(BaseModel):
     run_id: str = Field(min_length=1)
     ontology_version: str = Field(min_length=1)  # 실행 시작 때 고정, 이후 불변
     posting_id: str = Field(min_length=1)
+    # 실행 만들 때 담당자가 고른 문제(승인된 공통 과제 id) — 이 공고·이어진 공고의 것. None 이면 공고의 인터뷰 과제·재사용·생성
+    # [확정: 2026-11-20 사용자 — 같은 공고에 문제가 여럿이면 실행 만들 때 고른다]. 예전 체크포인트는 None 으로 읽힌다
+    common_id: str | None = None
     documents: list[DocumentRef] = Field(default_factory=list)
     posting_profile: PostingProfile | None = None
     extracted: list[ExtractedRef] = Field(default_factory=list)
@@ -71,4 +74,5 @@ class RunInput(BaseModel):
     run_id: str = Field(min_length=1)
     ontology_version: str = Field(min_length=1)
     posting_id: str = Field(min_length=1)
+    common_id: str | None = None  # 담당자가 고른 문제 (RunState.common_id)
     documents: list[DocumentRef] = Field(default_factory=list)

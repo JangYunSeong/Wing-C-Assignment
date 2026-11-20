@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -143,6 +144,18 @@ class CommonTaskRepo(Protocol):
         """그 공고의 공통 과제(superseded 제외, 모든 온톨로지 판)가 쓴 사례 id. 사례 없는 과제는 "".
         순서: 승인된 과제가 있는 사례(최근 승인 순) → 초안만 있는 사례(최근 순) → 같으면 id 순.
         공고가 쓰던 사례를 계속 쓰게 한다 (spec/company_incidents.py)."""
+        ...
+
+    async def get(self, common_id: str) -> StoredCommon | None:
+        """id 로 — 실행 만들 때 담당자가 고른 문제 (상태는 부르는 쪽이 본다)."""
+        ...
+
+    async def approved_tasks(
+        self, posting_ids: Sequence[str], ontology_version: str
+    ) -> list[tuple[str, StoredCommon]]:
+        """그 공고들(이어진 공고 묶음)에 그 온톨로지 판으로 승인된 공통 과제 — (공고 id, 과제), 최근 승인 순.
+        인터뷰 과제·공고 문구로 만든 과제 모두. 같은 공고에 문제가 여럿이면 실행 만들 때 담당자가 고른다
+        [확정: 2026-11-20 사용자]."""
         ...
 
 
@@ -313,6 +326,23 @@ class InMemoryCommonStore:
         approved_first = sorted(approved, key=lambda k: (-approved[k].timestamp(), k))
         drafts = sorted((k for k in created if k not in approved), key=lambda k: (-created[k], k))
         return [*approved_first, *drafts]
+
+    async def get(self, common_id: str) -> StoredCommon | None:
+        row = next((r for r in self.rows if r["id"] == common_id), None)
+        return _normalized(_stored(row)) if row else None
+
+    async def approved_tasks(
+        self, posting_ids: Sequence[str], ontology_version: str
+    ) -> list[tuple[str, StoredCommon]]:
+        rows = [
+            r
+            for r in self.rows
+            if r["key"].posting_id in posting_ids
+            and r["key"].ontology_version == ontology_version
+            and r["status"] == "approved"
+        ]
+        rows.sort(key=lambda r: (r["approved_at"], r["id"]), reverse=True)
+        return [(r["key"].posting_id, _normalized(_stored(r))) for r in rows]
 
 
 class CommonTaskStore:
@@ -493,13 +523,42 @@ class CommonTaskStore:
             )
             return [r[0] for r in await cur.fetchall()]
 
+    async def get(self, common_id: str) -> StoredCommon | None:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM public.common_task WHERE id = %s", (common_id,))
+            r = await cur.fetchone()
+        return _normalized(self._row(r)) if r else None
 
-async def replaced_common(store: CommonTaskRepo, spec: TaskSpec) -> list[str]:
+    async def approved_tasks(
+        self, posting_ids: Sequence[str], ontology_version: str
+    ) -> list[tuple[str, StoredCommon]]:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM public.common_task WHERE posting_id = ANY(%s) AND ontology_version = %s "
+                "AND status = 'approved' ORDER BY approved_at DESC NULLS LAST, id DESC",
+                (list(posting_ids), ontology_version),
+            )
+            rows = await cur.fetchall()
+        return [(r["posting_id"], _normalized(self._row(r))) for r in rows]
+
+
+async def replaced_common(
+    store: CommonTaskRepo, spec: TaskSpec, chosen: str | None = None
+) -> list[str]:
     """명세의 공통 과제 중 이 공고가 이제 쓰지 않는 것 — 공고(같은 온톨로지 판)에 승인된 인터뷰 과제가 있으면 그 과제만 쓴다.
 
     인터뷰 과제를 가리키는데 그 과제가 교체됐거나, 인터뷰 과제가 승인되기 전에 만든 명세(P1 과제)면 여기 든다.
+    chosen(실행 만들 때 담당자가 고른 문제)이 있으면 그 과제만 쓴다 — 공고의 인터뷰 과제와 달라도 된다.
     명세 승인 전(API 409)과 확정(finalize) 때 본다.
     """
+    if chosen is not None:
+        # 고른 과제가 교체(superseded)·삭제됐거나, 명세가 그 과제를 가리키지 않으면(사라져서 공통 과제 없이 만든 명세 포함) 막는다
+        got = await store.get(chosen)
+        stale = [r.common_id for r in spec.common_refs if r.common_id != chosen]
+        usable = got is not None and got.status == "approved"
+        if not usable or chosen not in {r.common_id for r in spec.common_refs}:
+            stale = [chosen, *stale]
+        return stale
     if not spec.common_refs:
         return []
     current = await store.interview_task(spec.posting_id, spec.ontology_version)
@@ -508,12 +567,17 @@ async def replaced_common(store: CommonTaskRepo, spec: TaskSpec) -> list[str]:
     return [r.common_id for r in spec.common_refs if r.common_id != current.id]
 
 
-async def interview_lock(store: CommonTaskRepo, spec: TaskSpec) -> str | None:
+async def interview_lock(
+    store: CommonTaskRepo, spec: TaskSpec, chosen: str | None = None
+) -> str | None:
     """이 명세의 공통 과제를 지원자 명세의 수정 요청으로 고칠 수 없으면 그 인터뷰 과제 id — 명세가 인터뷰 과제를 가리키거나
     그 공고에 지금 승인된 인터뷰 과제가 있으면 (다시 만들어도 그 과제를 쓴다). 고칠 곳은 인터뷰 화면.
+    chosen(실행 만들 때 고른 문제)이면 그 과제 — 다시 만들어도 고른 과제를 쓴다.
     공통 과제가 없는 명세는 막지 않는다 — 다시 만들면 인터뷰 과제가 있을 때 그 과제를 그대로 쓴다 (nodes/spec.py)."""
     if not spec.common_refs:
         return None
+    if chosen is not None:
+        return chosen
     for r in spec.common_refs:
         if is_interview_ref(r.prompt_ref):
             return r.common_id

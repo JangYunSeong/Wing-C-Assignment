@@ -36,7 +36,8 @@ def make_posting_profile(
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     async def posting_profile(state: RunState) -> dict[str, Any]:
         pid = state.posting_id
-        if common is not None:
+        # 담당자가 문제를 골랐으면 공고의 인터뷰 과제 판은 상관없다 (고른 과제는 실행 판으로 승인된 것 — POST /runs 가 확인)
+        if common is not None and state.common_id is None:
             versions = await common.interview_versions(pid)
             if versions and state.ontology_version not in versions:
                 return {

@@ -269,6 +269,69 @@ class PostingDuplicate(DomainError):
         )
 
 
+class PostingLinkConflict(DomainError):
+    """공고를 이을 수 없다 — 사슬(기준 공고가 이어져 있음·이 공고에 이어진 공고가 있음)·이미 다른 공고에 이어짐·회사가 다름
+    (docs/design/posting-link.md)."""
+
+    code = "posting_link_conflict"
+    status_code = 409
+
+
+class ChosenTaskUnavailable(DomainError):
+    """실행 만들 때 고른 문제가 그 사이 교체(superseded)되거나 사라졌다 — 승인 전에 막는다 [확정: 2026-11-20 사용자 — 인터뷰 과제의
+    '교체 전 과제를 가리키는 명세는 승인하지 않는다'와 같게]. 실행을 새로 만들어 다시 고른다."""
+
+    code = "chosen_task_unavailable"
+    status_code = 409
+
+    def __init__(self, common_id: str, *, run_id: str) -> None:
+        super().__init__(
+            f"실행 만들 때 고른 문제({common_id})가 교체됐거나 사라졌습니다 — 실행을 새로 만들어 문제를 다시 고르세요 "
+            "(고를 수 있는 문제: GET /postings/{id}/tasks)",
+            run_id=run_id,
+        )
+
+
+class ChosenTaskLocked(DomainError):
+    """고른 문제를 지원자 명세의 수정 요청으로 고치려 한다 — 고른 과제는 그대로 쓴다."""
+
+    code = "chosen_task_locked"
+    status_code = 409
+
+    def __init__(self, common_id: str, *, run_id: str) -> None:
+        super().__init__(
+            f"이 실행은 만들 때 고른 문제({common_id})를 그대로 씁니다 — 다른 문제로 바꾸려면 실행을 새로 만들고, 이 명세는 "
+            "경험 검증만 다시 만들 수 있습니다 (revise_target=verification)",
+            run_id=run_id,
+        )
+
+
+class CommonTaskChoiceRequired(DomainError):
+    """공고 묶음(이어진 공고 포함)에 승인된 문제가 둘 이상인데 실행 만들 때 고르지 않았다 [확정: 2026-11-20 사용자]."""
+
+    code = "common_task_choice_required"
+    status_code = 422
+
+    def __init__(self, posting_id: str, common_ids: list[str]) -> None:
+        super().__init__(
+            f"공고 {posting_id} 묶음에 승인된 문제가 여럿입니다({', '.join(common_ids)}) — common_id 로 하나를 고르세요 "
+            f"(GET /postings/{posting_id}/tasks)"
+        )
+
+
+class CommonTaskNotChoosable(DomainError):
+    """실행 만들 때 고른 문제(common_id)가 이 공고(이어진 공고 포함)에 실행 온톨로지 판으로 승인된 공통 과제가 아니다 —
+    고를 수 있는 문제는 GET /postings/{id}/tasks."""
+
+    code = "common_task_not_choosable"
+    status_code = 422
+
+    def __init__(self, posting_id: str, common_id: str) -> None:
+        super().__init__(
+            f"{common_id} 는 공고 {posting_id}(이어진 공고 포함)에 승인된 문제가 아닙니다 — GET /postings/{posting_id}/tasks 에서 고르세요"
+        )
+
+
 class IncidentNotFound(DomainError):
     code = "incident_not_found"
     status_code = 404
