@@ -408,6 +408,7 @@ class InterviewService:
         self._check_revision(row, revision)
         if not keep_generation:
             state.generation = None
+        dropped = row.state.generation
         if mapping is not None:
             # 대응표를 DB 보다 먼저 저장한다. 대응표는 토큰을 더하기만 하고 같은 인터뷰 요청은 잠금으로 한 줄이라, 이 대응표는
             # 디스크의 것을 포함한다 — DB 저장이 충돌·취소·실패해도 쓰지 않는 토큰이 남을 뿐이다. 반대 순서면 DB 만 저장되고
@@ -416,7 +417,20 @@ class InterviewService:
         updated = await self.store.save(row.id, revision, state, clear_steps=steps)
         if updated is None:
             raise InterviewConflict(_STALE)
+        if dropped is not None and (
+            state.generation is None or state.generation.thread_id != dropped.thread_id
+        ):  # 버리거나 새로 시작한 생성의 thread — 이어서 할 일이 없다
+            await self._forget_generation(dropped.thread_id)
         return self.view(updated)
+
+    async def _forget_generation(self, thread_id: str) -> None:
+        """이어서 할 일이 없어진 생성 thread 의 체크포인트를 지운다 (#280 I2). 실패해도 업무 저장은 이미 됐다 — 로그만."""
+        if self.generation is None:
+            return
+        try:
+            await self.generation.forget(thread_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("interview_generation_forget_failed type=%s", type(exc).__name__)
 
     async def _llm(self, call: Awaitable[T]) -> T:
         """LLM 호출 묶음. 형식·근거 오류는 부르는 쪽이 처리하고, 그 밖의 공급자 오류(인증·요청 오류 등)는 503 (code review W3)."""
@@ -1955,9 +1969,8 @@ class InterviewService:
             state = row.state.model_copy(deep=True)
             state.stage = "approved"
             state.review_note = None
-            state.generation = (
-                None  # 실패·중단한 다시 만들기의 산출물 사본을 닫힌 인터뷰에 남기지 않는다 (#280)
-            )
+            # 실패·중단한 다시 만들기의 산출물 사본을 닫힌 인터뷰에 남기지 않는다 (#280)
+            state.generation = None
             state.approval = InterviewApprovalRecord(
                 reviewer=decision.reviewer,
                 at=decision.at.isoformat(),
@@ -2003,6 +2016,8 @@ class InterviewService:
                 )
             if not ok:
                 return ApprovalOutcome(result="stale")
+            if row.state.generation is not None:
+                await self._forget_generation(row.state.generation.thread_id)
             try:
                 # 결정 4 — 승인하면 대응표 삭제
                 await asyncio.to_thread(self.pseudo.delete, interview_id)
@@ -2179,6 +2194,8 @@ class InterviewService:
         updated = await self.store.save(row.id, row.revision, state, clear_all_drafts=True)
         if updated is None:
             raise InterviewConflict(_STALE)
+        if row.state.generation is not None:
+            await self._forget_generation(row.state.generation.thread_id)
         await asyncio.to_thread(self.pseudo.delete, row.id)
         if self.common_store is not None:
             # 폐기한 인터뷰의 과제 초안 판 — 가명화한 글뿐이지만 쓸 곳이 없다 (D2b [확정: 2026-11-19 사용자])

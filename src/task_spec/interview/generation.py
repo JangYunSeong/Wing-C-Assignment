@@ -48,3 +48,7 @@ class GenerationRunner(Protocol):
     async def progress(self, thread_id: str) -> GenerationProgress | None:
         """없는 thread 면 None."""
         ...
+
+    async def forget(self, thread_id: str) -> None:
+        """이어서 할 일이 없어진 thread 의 체크포인트를 지운다 (#280 I2 — 생성마다 쌓였다). 도는 중이면 두고, 없으면 아무것도 안 함."""
+        ...

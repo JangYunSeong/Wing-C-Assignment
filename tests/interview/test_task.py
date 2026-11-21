@@ -924,26 +924,67 @@ async def test_choosing_competencies_again_drops_a_failed_generation(task_sessio
     assert gone.status_code == 409  # 버린 생성은 이어서 할 수 없다 — 새로 만든다
 
 
-async def test_generation_checkpoint_keeps_only_ids(task_session) -> None:
-    session, _, _ = task_session
-    generated_view = await generated(session)
-    runner = _runner(session)
-    saver = runner._graph.checkpointer
+async def _gen_threads(session: Session) -> dict[str, set[str]]:
+    """생성 thread → 체크포인트 상태의 칸 이름 (이름만 — 값은 보지 않는다)."""
+    saver = _runner(session)._graph.checkpointer
     assert saver is not None
-    seen = 0
+    found: dict[str, set[str]] = {}
     async for t in saver.alist(None):
-        if not t.config["configurable"]["thread_id"].startswith("interview-gen-"):
-            continue
-        seen += 1
-        values = {
-            k: v
-            for k, v in t.checkpoint["channel_values"].items()
-            if not k.startswith(("__", "branch:"))
-        }
-        assert set(values) <= {"interview_id", "thread_id", "result"}, values
-    assert seen > 0 and generated_view["spec"] is not None
+        tid = t.config["configurable"]["thread_id"]
+        if tid.startswith("interview-gen-"):
+            found.setdefault(tid, set()).update(
+                k for k in t.checkpoint["channel_values"] if not k.startswith(("__", "branch:"))
+            )
+    return found
+
+
+async def _failed(session: Session, maker: FakeTaskMaker) -> dict[str, Any]:
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    maker.fail = OutputRejected("가상")
+    session.backend.push(Completion(feature_seed_output()))
+    failed = (await session.generate(competency_ids=SELECTED)).json()
+    assert failed["generation"]["status"] == "failed"
+    return failed
+
+
+async def test_generation_checkpoint_keeps_only_ids_and_is_forgotten_when_done(
+    task_session,
+) -> None:
+    session, maker, _ = task_session
+    failed = await _failed(session, maker)
+    kept = await _gen_threads(session)  # 실패한 thread 는 이어서 하기에 남는다 — 칸은 id·결과뿐
+    assert list(kept) == [failed["generation"]["thread_id"]]
+    assert set().union(*kept.values()) <= {"interview_id", "thread_id", "result"}
+    maker.fail = None
+    assert (await session.post("generation/resume")).status_code == 202
+    await _runner(session).wait(failed["generation"]["thread_id"])
+    done = (await session.client.get(f"/interviews/{session.interview_id}")).json()
+    assert done["stage"] == "task_review" and done["generation"] is None
+    assert await _gen_threads(session) == {}  # 끝까지 갔으면 thread 를 지운다 (#280 I2)
     # 단계 산출물은 끝나면 인터뷰 상태에서도 비운다 (사본을 남기지 않는다)
     assert session.store.rows[session.interview_id].state.generation is None
+
+
+@pytest.mark.parametrize("drop", ["regenerate", "competencies", "discard"])
+async def test_dropping_a_failed_generation_forgets_its_thread(task_session, drop: str) -> None:
+    """실패한 생성을 버리면(다시 만들기·역량 바꾸기·폐기) 그 thread 를 지운다 — 이어서 할 일이 없다 (#280 I2)."""
+    session, maker, _ = task_session
+    failed = await _failed(session, maker)
+    old = failed["generation"]["thread_id"]
+    assert old in await _gen_threads(session)
+    if drop == "regenerate":
+        maker.fail = None
+        session.backend.push(Completion(feature_seed_output()))
+        done = (await session.generate(competency_ids=SELECTED)).json()
+        assert done["stage"] == "task_review"
+    elif drop == "competencies":
+        again = await session.post("competencies", competency_ids=["comp:api", "comp:test"])
+        assert again.status_code == 200 and again.json()["generation"] is None
+    else:
+        discarded = await session.client.post(f"/interviews/{session.interview_id}/discard")
+        assert discarded.status_code == 200
+    assert old not in await _gen_threads(session)
 
 
 async def test_first_step_reads_the_marker_saved_by_start(task_session, monkeypatch) -> None:

@@ -382,6 +382,12 @@ async def test_a_feature_seed_with_a_link_is_rejected_and_a_linked_case_needs_ed
         )
 
 
+def runner_of(s: Session) -> InterviewGenerationRunner:
+    runner = s.service.generation
+    assert isinstance(runner, InterviewGenerationRunner)
+    return runner
+
+
 async def test_approval_waits_while_the_task_is_being_made_again(env) -> None:
     """과제 검토 단계에서 다시 만드는 중이면 승인 대기·결정 모두 409 (#280) — 끝나면 판본이 바뀌어 지금 과제는 낡는다."""
     s = env.session
@@ -415,3 +421,10 @@ async def test_approving_drops_a_failed_regeneration_copy(env) -> None:
     assert decided.status_code == 200, decided.text
     state = s.store.rows[s.interview_id].state
     assert state.stage == "approved" and state.generation is None
+    saver = runner_of(s)._graph.checkpointer  # 버린 생성의 thread 도 지운다 (#280 I2)
+    assert saver is not None
+    assert not [
+        t
+        async for t in saver.alist(None)
+        if t.config["configurable"]["thread_id"] == failed["generation"]["thread_id"]
+    ]
