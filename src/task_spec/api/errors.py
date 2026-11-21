@@ -105,6 +105,18 @@ class RunNotResumable(DomainError):
     status_code = 409
 
 
+class RunDeleteFailed(DomainError):
+    """실행의 지원자 파일을 지우지 못했다 — 실행(thread)은 남겨 다시 지울 수 있다. 어느 파일인지·왜인지는 응답에 넣지 않는다."""
+
+    code = "run_delete_failed"
+    status_code = 500
+
+    def __init__(self, *, run_id: str) -> None:
+        super().__init__(
+            "실행 파일을 지우지 못했습니다. 실행은 남아 있으니 다시 시도하세요", run_id=run_id
+        )
+
+
 class RunNotDeletable(DomainError):
     """멈춘 실행(failed·interrupted)만 지운다 — 도는 중·승인 대기·끝난 실행, 또는 다른 요청이 먼저 띄웠다."""
 

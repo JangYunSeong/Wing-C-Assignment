@@ -368,6 +368,48 @@ async def test_deleting_an_open_interview_runs_the_discard_cleanup_first(env) ->
     assert not await _threads(saver, gen_thread)
 
 
+async def test_a_failed_cleanup_keeps_the_interview_so_it_can_be_deleted_again(env) -> None:
+    """정리를 먼저 하고 행은 마지막에 — 정리가 실패하면 500, 인터뷰가 남아 다시 지울 수 있다 (개인정보 점검 M3)."""
+    s = env.session
+    await ready(s)
+    real = env.common.drop_interview_drafts
+
+    async def boom(ref: str, **kwargs: Any) -> None:
+        raise RuntimeError("가상 저장소 오류")
+
+    env.common.drop_interview_drafts = boom  # type: ignore[method-assign]
+    failed = await s.client.delete(f"/interviews/{s.interview_id}")
+    assert failed.status_code == 500
+    assert failed.json()["error"]["code"] == "interview_delete_failed"
+    assert s.interview_id in s.store.rows  # 행이 남는다 (폐기된 채)
+    env.common.drop_interview_drafts = real  # type: ignore[method-assign]
+    assert (await s.client.delete(f"/interviews/{s.interview_id}")).status_code == 204
+    assert s.interview_id not in s.store.rows and env.rows(s.interview_id) == []
+
+
+async def test_an_approval_racing_a_delete_does_not_leave_its_thread(env) -> None:
+    """반려 요청이 사유를 가명화한 뒤 삭제가 끼면 resume 이 지운 승인 thread 를 다시 만든다 — 404 와 함께 지운다 (개인정보 점검 M4)."""
+    s = env.session
+    await ready(s)
+    service = s.service
+    real_note = service.pseudonymize_note
+
+    async def note_then_delete(interview_id: str, text: str) -> str:
+        out = await real_note(interview_id, text)
+        deleted = await s.client.delete(
+            f"/interviews/{interview_id}"
+        )  # 사유 가명화(잠금) 뒤, resume 전에 삭제
+        assert deleted.status_code == 204, deleted.text
+        return out
+
+    service.pseudonymize_note = note_then_delete  # type: ignore[method-assign]
+    raced = await decide(s, revision=s.revision, status="rejected", comment="가상 반려 사유")
+    assert raced.status_code == 404, raced.text
+    assert raced.json()["error"]["code"] == "interview_not_found"
+    assert not await _threads(env.graph.checkpointer, f"interview-{s.interview_id}-r")
+    assert s.interview_id not in s.store.rows
+
+
 async def test_an_approved_interview_is_not_deleted(env) -> None:
     s = env.session
     await ready(s)

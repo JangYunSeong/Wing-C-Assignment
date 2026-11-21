@@ -38,6 +38,7 @@ from task_spec.api.errors import (
     PostingCompanyConflict,
     PostingCompanyInvalid,
     PostingNotFound,
+    RunDeleteFailed,
     RunNotDeletable,
     RunNotFound,
     RunNotResumable,
@@ -338,17 +339,18 @@ async def resume_run(run_id: str, graph: GraphDep, launcher: LauncherDep) -> Run
     return RunAccepted(run_id=run_id, status="running")
 
 
-# 실행 하나의 지원자 파일 — 원본·추출본·가명화본(대응표 포함). data_dir/<칸>/<run_id>
-_RUN_DIRS = ("raw", "extracted", "pseudonymized")
+# 실행 하나의 지원자 파일 — 원본·추출본·가명화본(대응표 포함)·OCR 임시 이미지(재시작으로 끊기면 남는다). data_dir/<칸>/<run_id>
+_RUN_DIRS = ("raw", "extracted", "pseudonymized", "tmp")
 
 
 @router.delete("/{run_id}", status_code=204, responses=_ERRORS)
 async def delete_run(
     run_id: str, graph: GraphDep, launcher: LauncherDep, settings: SettingsDep
 ) -> Response:
-    """멈춘 실행(failed·interrupted)을 지운다 — 체크포인트 thread 와 지원자 파일(원본·추출본·가명화본). 되돌릴 수 없다.
+    """멈춘 실행(failed·interrupted)을 지운다 — 지원자 파일(원본·추출본·가명화본·OCR 임시) 다음 체크포인트 thread. 되돌릴 수 없다.
     도는 중·승인 대기·끝난(done·rejected) 실행이면 409 — 승인·반려한 명세는 사람 판단의 근거라 지우지 않는다
-    (실패한 실행 지우기는 [확정: 2026-11-21 사용자], 끝난 실행을 막는 것은 승인한 인터뷰를 막은 기준을 따른 [제안])."""
+    (실패한 실행 지우기는 [확정: 2026-11-21 사용자], 끝난 실행을 막는 것은 승인한 인터뷰를 막은 기준을 따른 [제안]).
+    파일을 먼저 지우고 thread 는 마지막에 — 파일 삭제가 실패하면 500 이고 실행이 남아 다시 지울 수 있다 (개인정보 점검 M2)."""
     if not RUN_ID.fullmatch(run_id):  # 파일 경로에 쓰므로 실행 id 꼴만
         raise RunNotFound(run_id)
     seen = launcher.launches(run_id)
@@ -359,23 +361,28 @@ async def delete_run(
         raise RunNotDeletable(
             f"멈춘 실행(실패·중단)만 지웁니다 (현재: {view.status})", run_id=run_id
         )
-    try:
-        await launcher.delete(run_id, after=seen)
+
+    async def remove_files() -> None:
+        for sub in _RUN_DIRS:
+            try:
+                await asyncio.to_thread(shutil.rmtree, settings.data_dir / sub / run_id)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.error(
+                    "run_files_delete_failed run_id=%s dir=%s type=%s",
+                    run_id,
+                    sub,
+                    type(exc).__name__,
+                )
+                raise RunDeleteFailed(run_id=run_id) from None
+
+    try:  # 지우는 동안 실행 자리를 차지한다 — 이어서 하기·승인이 지우는 중인 실행을 띄우지 못한다
+        await launcher.delete(run_id, after=seen, before=remove_files)
     except RunBusy:
         raise RunNotDeletable(
             "다른 요청이 먼저 이 실행을 띄웠습니다. 실행 상태를 다시 확인하세요", run_id=run_id
         ) from None
-    # thread 를 지운 뒤 — 실행이 보이지 않으니 파일을 쓸 요청도 없다. 실패해도 남은 폴더는 주인 없는 지원자 파일이라 로그로 알린다
-    for sub in _RUN_DIRS:
-        path = settings.data_dir / sub / run_id
-        try:
-            await asyncio.to_thread(shutil.rmtree, path, ignore_errors=False)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            logger.error(
-                "run_files_delete_failed run_id=%s dir=%s type=%s", run_id, sub, type(exc).__name__
-            )
     return Response(status_code=204)
 
 
