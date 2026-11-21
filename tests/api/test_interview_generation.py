@@ -69,7 +69,7 @@ async def test_progress_follows_the_running_step_then_done(checkpointer: object)
     assert await runner.progress(THREAD) == GenerationProgress("running", "feature")
     gate.set()
     await runner.wait(THREAD)
-    assert await runner.progress(THREAD) == GenerationProgress("done", None)
+    assert await runner.progress(THREAD) is None  # 끝까지 간 thread 는 지운다 (#280 I2)
 
 
 async def test_failed_step_shows_failed_then_resumes_from_it(checkpointer: object) -> None:
@@ -81,7 +81,7 @@ async def test_failed_step_shows_failed_then_resumes_from_it(checkpointer: objec
     assert service.failed == ["request"]
     await runner.resume(THREAD)
     await runner.wait(THREAD)
-    assert await runner.progress(THREAD) == GenerationProgress("done", None)
+    assert await runner.progress(THREAD) is None  # 이어서 끝까지 갔으면 지운다
     assert service.calls == ["seed", "feature", "request", "request", "slots", "finish"]
 
 
@@ -99,7 +99,7 @@ async def test_restart_shows_interrupted_and_resumes_without_repeating_steps(
     assert await after.progress(THREAD) == GenerationProgress("interrupted", "request")
     await after.resume(THREAD)
     await after.wait(THREAD)
-    assert await after.progress(THREAD) == GenerationProgress("done", None)
+    assert await after.progress(THREAD) is None
     assert service.calls == ["seed", "feature", "request", "request", "slots", "finish"]
 
 
@@ -128,3 +128,27 @@ async def test_resume_needs_an_unfinished_thread(checkpointer: object) -> None:
     await runner.wait(THREAD)
     with pytest.raises(GenerationNotResumable):  # 끝난 thread
         await runner.resume(THREAD)
+
+
+async def test_failed_thread_is_kept_for_resume_until_forgotten(checkpointer: object) -> None:
+    """실패·중단한 thread 는 이어서 하기에 필요해 두고, 서비스가 그 생성을 버릴 때 forget 으로 지운다 (#280 I2)."""
+    service = GatedService(fail_at={"slots": OutputRejected("가상")})
+    runner = _runner(service, checkpointer)
+    runner.start(INTERVIEW, THREAD)
+    await runner.wait(THREAD)
+    assert await runner.progress(THREAD) == GenerationProgress("failed", "slots")
+    await runner.forget(THREAD)
+    assert await runner.progress(THREAD) is None
+
+
+async def test_forget_leaves_a_running_thread(checkpointer: object) -> None:
+    gate = asyncio.Event()
+    service = GatedService(gate={"feature": gate})
+    runner = _runner(service, checkpointer)
+    runner.start(INTERVIEW, THREAD)
+    await service.entered["feature"].wait()
+    await runner.forget(THREAD)  # 도는 중 — 두고 간다
+    assert await runner.progress(THREAD) == GenerationProgress("running", "feature")
+    gate.set()
+    await runner.wait(THREAD)
+    assert await runner.progress(THREAD) is None and service.calls == list(GENERATE_STEPS)
