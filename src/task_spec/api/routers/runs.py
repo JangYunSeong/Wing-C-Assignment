@@ -37,6 +37,7 @@ from task_spec.api.errors import (
     PostingCompanyInvalid,
     PostingNotFound,
     RunNotFound,
+    RunNotResumable,
     SpecNotFound,
 )
 from task_spec.api.launcher import RunBusy
@@ -59,7 +60,10 @@ from task_spec.spec.store import interview_lock, replaced_common
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
-_ERRORS = {404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}
+_ERRORS: dict[int | str, dict[str, Any]] = {
+    404: {"model": ErrorResponse},
+    409: {"model": ErrorResponse},
+}
 
 
 @router.get("")
@@ -304,6 +308,27 @@ async def approve_run(
         # 같은 실행에 결정이 겹쳤다 — 먼저 들어온 결정이 도는 중이거나 이미 끝나, 이 결정이 본 판은 지나갔다
         raise ApprovalNotPending(
             "승인 대기 상태가 아닙니다 — 다른 결정이 먼저 들어왔습니다. 실행 상태를 다시 확인하세요",
+            run_id=run_id,
+        ) from None
+    return RunAccepted(run_id=run_id, status="running")
+
+
+@router.post("/{run_id}/resume", status_code=202, responses=_ERRORS)
+async def resume_run(run_id: str, graph: GraphDep, launcher: LauncherDep) -> RunAccepted:
+    """재시작·배포로 끊겼거나(interrupted) 노드 오류로 멈춘(failed) 실행을 멈춘 노드부터 같은 thread 로 잇는다 (#280 E).
+    도는 중·승인 대기·끝난 실행이면 409. 같은 원인으로 다시 실패하면 다시 failed (오류 종류가 보인다)."""
+    # 상태를 읽기 전에 — 읽은 뒤 다른 요청이 이 실행을 띄웠으면 launch 가 거부한다 (승인과 같음, #247)
+    seen = launcher.launches(run_id)
+    view = await load_run_view(graph, launcher, run_id)
+    if view is None:
+        raise RunNotFound(run_id)
+    if view.status not in ("interrupted", "failed") or view.current_node is None:
+        raise RunNotResumable(f"이어서 할 단계가 없습니다 (현재: {view.status})", run_id=run_id)
+    try:
+        launcher.launch(run_id, None, after=seen)
+    except RunBusy:
+        raise RunNotResumable(
+            "다른 요청이 먼저 이 실행을 이어서 돌렸습니다. 실행 상태를 다시 확인하세요",
             run_id=run_id,
         ) from None
     return RunAccepted(run_id=run_id, status="running")
