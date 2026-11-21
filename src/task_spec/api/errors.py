@@ -105,6 +105,13 @@ class RunNotResumable(DomainError):
     status_code = 409
 
 
+class RunNotDeletable(DomainError):
+    """멈춘 실행(failed·interrupted)만 지운다 — 도는 중·승인 대기·끝난 실행, 또는 다른 요청이 먼저 띄웠다."""
+
+    code = "run_not_deletable"
+    status_code = 409
+
+
 class ApprovalRevisionMismatch(DomainError):
     """승인 결정이 가리키는 판(?revision=)이 지금 승인 대기 판이 아니다 — 그 사이 다른 결정으로 다시 만들어졌다 (#247)."""
 

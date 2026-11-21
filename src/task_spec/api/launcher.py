@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Any, Literal
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,27 @@ class RunLauncher:
                 type(exc).__name__,
                 (time.monotonic() - t0) * 1000,
             )
+
+    async def delete(self, run_id: str, *, after: int) -> None:
+        """멈춘 실행의 체크포인트 thread 를 지운다. 도는 중이거나 상태를 읽은 뒤 다른 요청이 띄웠으면 RunBusy.
+
+        지우는 동안 이 실행의 자리를 차지해(is_active) 이어서 하기·승인이 띄우지 못하고, 띄운 횟수를 올려 지우기 전에 상태를 읽은
+        요청도 launch(after=…) 에서 거부된다. 확인과 자리 차지 사이에 await 가 없다 (launch 와 같음).
+        """
+        if self.is_active(run_id) or self.launches(run_id) != after:
+            raise RunBusy("run is already active")
+        saver = self._graph.checkpointer
+        if not isinstance(saver, BaseCheckpointSaver):
+            raise RuntimeError("checkpointer is not configured")
+        self._launches[run_id] = after + 1
+        self._failures.pop(run_id, None)
+        task = asyncio.create_task(saver.adelete_thread(run_id))
+        self._tasks[run_id] = task
+        try:
+            await task
+        finally:
+            self._tasks.pop(run_id, None)
+        logger.info("run deleted run_id=%s", run_id)
 
     async def wait(self, run_id: str) -> None:
         """이 프로세스에서 띄운 실행이 끝날 때까지 (테스트·종료 정리용). 실패는 _run 이 이미 기록했다."""
