@@ -22,6 +22,23 @@ from task_spec.spec.summary import approval_summary
 RUN_ID = re.compile(r"[0-9a-f]{32}")
 
 
+_ERROR_KIND = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\(")
+
+
+def _task_error(snapshot: Any) -> str | None:
+    """멈춘 노드의 오류 종류 이름 — 체크포인트에 남은 노드 오류(LangGraph pending write)에서 읽어 재시작 뒤에도 안다.
+    예전 체크포인트는 repr 글('KeyError(...)')로 남아 있다. 이름만 — 메시지는 입력 조각이 섞일 수 있어 내지 않는다."""
+    for task in snapshot.tasks:
+        error = getattr(task, "error", None)
+        if error is None:
+            continue
+        if isinstance(error, BaseException):
+            return type(error).__name__
+        m = _ERROR_KIND.match(str(error))
+        return m.group(1) if m else "Error"
+    return None
+
+
 def _pending_interrupt(snapshot: Any) -> dict[str, Any] | None:
     for task in snapshot.tasks:
         for itr in task.interrupts:
@@ -144,12 +161,17 @@ def run_view(
             ),
         )
 
-    if launcher.failure(run_id) is not None:
-        return RunView(**base, status="failed")
+    # 노드 오류로 멈춤 — 이 프로세스의 실패 기록, 없으면(재시작 뒤) 체크포인트의 노드 오류
+    failure = launcher.failure(run_id) or _task_error(snapshot)
+    if failure is not None and snapshot.next:
+        return RunView(
+            **base, status="failed", failure=failure, revision=spec.revision if spec else None
+        )
 
     if snapshot.next:
-        # 프로세스 재시작 등으로 이어 받을 주체가 없는 중간 상태 — [미정] 복구 정책.
-        return RunView(**base, status="running", revision=spec.revision if spec else None)
+        # 체크포인트가 중간인데 이 프로세스에서 돌지 않음 — 재시작·배포로 끊김 (워커 1개 전제, #280 E).
+        # 예전에는 running 으로 두어 끊긴 실행이 '진행 중'으로 남았다 (2df170e2 — 11-12 부터). POST /runs/{id}/resume 로 잇는다
+        return RunView(**base, status="interrupted", revision=spec.revision if spec else None)
 
     approval = values.get("approval")
     revision = spec.revision if spec else None

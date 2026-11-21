@@ -108,7 +108,7 @@ def thread_status(
     """이 실행기가 띄운 thread 의 진행과 그 노드 — 없는 thread 면 None. 노드는 도는 중이면 지금 노드, 실패·중단이면 이어서 할 노드.
 
     워커 1개 전제(api/app.py): 체크포인트가 중간(next 가 있음)인데 이 프로세스에서 돌지 않으면 재시작·배포로 끊긴 것 = interrupted
-    (#280 — 명세 실행은 이 경우를 running 으로 둬 '[미정] 복구 정책'). 실패 기록은 이 프로세스의 것뿐이라 재시작 뒤엔 interrupted.
+    (#280 — 명세 실행은 api/run_view 가 따로 가른다). 실패 기록은 이 프로세스의 것뿐이라 재시작 뒤엔 interrupted.
     interrupt() 로 기다리는 그래프(승인)는 next 가 있어도 끊긴 게 아니다 — 부르는 쪽이 먼저 가른다.
     """
     values: dict[str, Any] = snapshot.values or {}

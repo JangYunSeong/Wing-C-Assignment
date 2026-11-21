@@ -239,7 +239,8 @@ draft_spec 은 선택한 기술 환경과 근거(겹친 언어 / 사용한 enabl
 - thread 정리 (#280 I2): 끝까지 간 생성(done·stale)의 thread 는 끝나자마자 실행기가 지운다. 실패·중단한 thread 는 이어서 하기에 두고,
   그 생성을 버릴 때(다시 만들기·역량 바꾸기 등 다른 업무 저장·승인·폐기·30일 정리) 서비스가 `forget` 으로 지운다 (도는 중이면 두고 끝나면 지움).
 - 진행 판정(`launcher.thread_status`): 이 프로세스에서 도는 중 = running, 사유 있음 = failed, **체크포인트가 중간인데 이 프로세스에서 안 돎 =
-  interrupted**(워커 1개 전제 — 재시작·배포). 명세 실행은 같은 경우를 아직 running 으로 둔다 (#280 E).
+  interrupted**(워커 1개 전제 — 재시작·배포). 명세 실행도 같은 경우를 interrupted 로 보고 `POST /runs/{id}/resume` 로 잇는다 (#280 E —
+  명세 실행은 노드 오류가 체크포인트에 남아 재시작 뒤에도 failed 로 안다, fastapi-service 스킬).
 - 생성 중에는 그 인터뷰의 상태 변경을 409 `interview_generating` (`_expect_revision` 입구·폐기·승인 대기·결정), 임시 저장만 허용. 다른 업무 저장은
   실패·중단한 생성을 버린다(`_save keep_generation`) — 이어서 한 생성이 그 사이 바뀐 상태를 덮지 않게.
 

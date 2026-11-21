@@ -24,7 +24,8 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 |---|---|---|
 | `POST` | `/runs` | 공고 id + 업로드 문서 (+ `career_level`) → `run_id` 발급, 백그라운드 실행 시작. `202`. 공고에 신입·경력이 정해져 있지 않으면 `career_level`(신입·경력)이 필요(`422 career_level_required`)하고 받은 값은 공고에 저장(`set_by=run:<run_id>`), 정해져 있으면 비우거나 같은 값만(`409 career_level_conflict` — 바꾸려면 `PUT /postings/{id}/career-level`). 거절은 지원서를 저장하기 전에. 공고 저장소가 없는 앱(테스트)은 보지 않음 [확정: 2026-11-19 사용자 — 명세 전에 신입·경력] |
 | `GET` | `/runs?status=&company=&limit=` | 실행 목록 — 최근에 시작한 것부터, `limit` 이 없으면 전부 [확정: 2026-11-18 사용자 — 회사의 명세를 전부]. thread 첫 체크포인트(`source=input`)와 그 그래프 입력(공고 id)으로 찾고 run_id(uuid4 hex) 꼴만 (빌드 승인 thread 제외), 상태는 `GET /runs/{id}` 와 같은 계산. 회사(`postings/company.py`): id = 표기에서 공백·법인 표기를 빼고 소문자 — 온톨로지에 없는 새 회사도 id 가 생기고, 표시 이름은 온톨로지 `company.name` 과 같으면 그 표기, `company_known` = 온톨로지 회사인지. `company` 로 거르기는 상태를 읽기 전에. 상태·현재 노드·판·공고·회사·시작/마지막 시각만 — 명세 초안·승인 요약 없음 [확정: 2026-11-18 사용자 — Wing 관리 화면의 '최근 실행'] |
-| `GET` | `/runs/{run_id}` | 상태(`running`/`awaiting_approval`/`done`/`rejected`/`failed`) + 현재 노드 + (승인 대기 시) 명세 초안 + 승인 요약(`approval_summary` — 승인 대기·`done`·`rejected`, `spec/summary.py`) |
+| `GET` | `/runs/{run_id}` | 상태(`running`/`awaiting_approval`/`interrupted`/`done`/`rejected`/`failed`) + 현재 노드(`interrupted`·`failed` 면 이어서 할 노드) + `failure`(`failed` 의 오류 종류 이름만 — 메시지는 내지 않음) + (승인 대기 시) 명세 초안 + 승인 요약(`approval_summary` — 승인 대기·`done`·`rejected`, `spec/summary.py`) |
+| `POST` | `/runs/{run_id}/resume` | `interrupted`·`failed` 실행을 멈춘 노드부터 입력 없이 다시 띄움. `202` + `running`. 그 밖의 상태(도는 중·승인 대기·끝남)나 읽은 뒤 다른 요청이 먼저 이었으면 `409` (`run_not_resumable`), 없는 실행은 `404` (#280 E) |
 | `GET` | `/runs/{run_id}/events` | SSE. 노드 진행·interrupt 발생 이벤트 |
 | `POST` | `/runs/{run_id}/approve?revision=` | `ApprovalDecision` 로 `Command(resume=...)`. 승인 대기 상태가 아니면 `409` (`approval_not_pending` — 같은 실행에 결정이 겹쳐 다른 결정이 먼저 띄웠으면, 그 결정이 이미 끝났어도). `revision`(승인자가 보고 있는 판, 화면이 보낸다)이 지금 승인 대기 판과 다르면 `409` (`approval_revision_mismatch`) — 판 번호는 체크포인트에 실리는 `ApprovalDecision` 이 아니라 요청에만 둔다 (#247) |
 | `GET` | `/runs/{run_id}/spec` | 확정 명세 (승인된 경우만, 아니면 `404`) |
@@ -38,6 +39,9 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 
 - 상태는 `graph.aget_state(config)` 에서 계산한다. 별도 상태 테이블을 두지 않는다 (체크포인터가 SSOT).
 - 승인 대기 판정: `state.tasks` 에 interrupt 가 있으면 `awaiting_approval`.
+- 중단·실패 판정 (#280 E, `api/run_view.py`): `next` 가 있는데 이 프로세스에서 돌지 않으면 — 노드 오류가 있으면 `failed`(이 프로세스의 실패 기록,
+  없으면 체크포인트에 남은 노드 오류 `tasks[].error` 의 종류 이름 — 재시작 뒤에도 안다), 없으면 `interrupted`(재시작·배포로 끊김, 워커 1개 전제).
+  예전에는 끊긴 실행을 `running` 으로 두어 '진행 중'에 계속 남았다. `interrupted` 는 `TERMINAL_STATUSES` 에 들어 SSE 를 끝낸다 — 이어서 하면 다시 `running`.
 
 ## 실행 방식
 
@@ -47,6 +51,7 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
   교체가 쉬도록 `RunLauncher` 인터페이스 하나로 감싼다.
 - 승인 resume 은 상태를 읽기 **전에** `launcher.launches(run_id)` 를 받아 `launch(after=…)` 로 넘긴다 — 읽은 뒤 다른 요청이
   띄웠으면(먼저 들어온 결정이 이미 끝났어도) `RunBusy` → `409` (#247). 프로세스 안 레지스트리라 워커 하나(`--workers 1`)에서만 막는다.
+  이어서 하기(`POST /runs/{id}/resume`)도 같은 방식 — `launch(run_id, None, after=…)`, 겹치면 `409 run_not_resumable`.
 - 그래프 `config = {"configurable": {"thread_id": run_id}}`.
 - 인터뷰 과제 만들기도 같은 방식 (#280) — `api/interview_generation.InterviewGenerationRunner` 가 `RunLauncher` 인스턴스를 하나 더 둔다.
   서비스는 `interview/generation.GenerationRunner` 프로토콜로만 안다 (인터뷰 모듈이 API 계층을 import 하지 않게). lifespan 에서 같은 체크포인터로

@@ -9,8 +9,10 @@ from pydantic import BaseModel, ConfigDict
 
 from task_spec.schemas import ApprovalSummary, CareerLevel, CareerSource, NodeError, TaskSpec
 
-RunStatus = Literal["running", "awaiting_approval", "done", "rejected", "failed"]
-TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "rejected", "failed"})
+# interrupted = 체크포인트가 중간인데 이 프로세스에서 돌지 않음 (재시작·배포로 끊김, #280 E) — POST /runs/{id}/resume 로 잇는다
+RunStatus = Literal["running", "awaiting_approval", "interrupted", "done", "rejected", "failed"]
+# 이어서 하기 전까지 바뀌지 않는 상태 — SSE 를 끝낸다 (interrupted·failed 도 이어서 하면 다시 running)
+TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "rejected", "failed", "interrupted"})
 
 
 class RunAccepted(BaseModel):
@@ -39,6 +41,9 @@ class RunView(BaseModel):
     # done·rejected = 저장된 State 에서 다시 계산 (확정 뒤에도 대조·배정을 보게). 주장 인용 없음.
     approval_summary: ApprovalSummary | None = None
     errors: list[NodeError] = []
+    # failed 일 때 멈춘 노드의 오류 종류 이름 (예: CommonTaskMissing) — 메시지는 싣지 않는다 (입력 조각이 섞일 수 있다).
+    # 멈춘 노드는 current_node (이어서 하면 거기부터)
+    failure: str | None = None
 
 
 class RunListItem(BaseModel):
