@@ -43,6 +43,13 @@ class InterviewClosed(InterviewError):
     status_code = 409
 
 
+class InterviewDeleteFailed(InterviewError):
+    """삭제 정리(대응표·thread·초안 판)를 끝내지 못했다 — 행은 남겨 다시 지울 수 있다 (개인정보 점검 M3)."""
+
+    code = "interview_delete_failed"
+    status_code = 500
+
+
 class InterviewNotReady(InterviewError):
     """인터뷰 프롬프트에 CURRENT 가 없다 (평가 전) — 새 작업은 평가를 통과한 뒤에만 돈다."""
 

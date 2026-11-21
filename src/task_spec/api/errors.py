@@ -105,6 +105,25 @@ class RunNotResumable(DomainError):
     status_code = 409
 
 
+class RunDeleteFailed(DomainError):
+    """실행의 지원자 파일을 지우지 못했다 — 실행(thread)은 남겨 다시 지울 수 있다. 어느 파일인지·왜인지는 응답에 넣지 않는다."""
+
+    code = "run_delete_failed"
+    status_code = 500
+
+    def __init__(self, *, run_id: str) -> None:
+        super().__init__(
+            "실행 파일을 지우지 못했습니다. 실행은 남아 있으니 다시 시도하세요", run_id=run_id
+        )
+
+
+class RunNotDeletable(DomainError):
+    """멈춘 실행(failed·interrupted)만 지운다 — 도는 중·승인 대기·끝난 실행, 또는 다른 요청이 먼저 띄웠다."""
+
+    code = "run_not_deletable"
+    status_code = 409
+
+
 class ApprovalRevisionMismatch(DomainError):
     """승인 결정이 가리키는 판(?revision=)이 지금 승인 대기 판이 아니다 — 그 사이 다른 결정으로 다시 만들어졌다 (#247)."""
 
@@ -165,6 +184,16 @@ class BuildNotFound(DomainError):
 
     def __init__(self, build_id: str) -> None:
         super().__init__(f"빌드를 찾을 수 없습니다: {build_id}")
+
+
+class BuildNotDeletable(DomainError):
+    """실패한 빌드만 목록에서 지운다 — 진행 중·검토·승인·배포 빌드는 그대로 (2026-11-21 사용자)."""
+
+    code = "build_not_deletable"
+    status_code = 409
+
+    def __init__(self, build_id: str, status: str) -> None:
+        super().__init__(f"실패한 빌드만 지웁니다 (현재: {status}): {build_id}")
 
 
 class CommonTaskNotFound(DomainError):

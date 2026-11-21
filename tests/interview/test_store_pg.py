@@ -125,3 +125,35 @@ async def test_interview_summaries_filter_company_stage_and_stale() -> None:
                 "DELETE FROM public.recruiter_interview WHERE id = ANY(%s)", ([mine, other],)
             )
         await store.close()
+
+
+async def test_interview_store_deletes_only_discarded_rows_at_the_revision() -> None:
+    """삭제는 폐기한 행만, 판본이 맞을 때만 — 승인·진행 중인 행은 SQL 에서도 지우지 않는다."""
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await PgInterviewStore.open(u.get_secret_value())
+    open_id, approved_id = f"int-{uuid.uuid4().hex}", f"int-{uuid.uuid4().hex}"
+    try:
+        row = await store.create(open_id, _state())
+        assert not await store.delete(open_id, row.revision)  # 진행 중
+        discarded = row.state.model_copy(deep=True)
+        discarded.stage = "discarded"
+        saved = await store.save(open_id, row.revision, discarded)
+        assert saved is not None
+        assert not await store.delete(open_id, row.revision)  # 낡은 판본
+        assert await store.delete(open_id, saved.revision)
+        assert await store.get(open_id) is None
+        other = await store.create(approved_id, _state())
+        approved = other.state.model_copy(deep=True)
+        approved.stage = "approved"
+        done = await store.save(approved_id, other.revision, approved)
+        assert done is not None and not await store.delete(approved_id, done.revision)
+        assert await store.get(approved_id) is not None
+    finally:
+        async with store.pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM public.recruiter_interview WHERE id = ANY(%s)",
+                ([open_id, approved_id],),
+            )
+        await store.close()

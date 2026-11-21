@@ -15,3 +15,4 @@ GRANT SELECT ON public.company_incident TO task_builder;                        
 GRANT SELECT, INSERT, UPDATE ON public.common_task_build TO task_builder;             -- 큐·상태·결과 (claim 은 FOR UPDATE)
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.starter_file TO task_builder;          -- 오버레이·README (죽은 작업 복구 때 지움)
 GRANT SELECT, INSERT, UPDATE ON public.build_artifact TO task_builder;                -- 묶음 등록, 확정 때 파일 목록 갱신 (#130)
+-- build_deleted(목록에서 지운 실패 빌드, 2026-11-21)는 API 만 읽고 쓴다 — builder 에는 주지 않는다 (공용 조회에 끼우지 않음)

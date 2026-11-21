@@ -1,4 +1,4 @@
-"""명세 실행 — 재시작 뒤 중단 판정(interrupted)·노드 오류(failed)·이어서 하기 (#280 E). 작은 가상 그래프 + InMemorySaver."""
+"""명세 실행 — 재시작 뒤 중단 판정(interrupted)·노드 오류(failed)·이어서 하기 (#280 E)·멈춘 실행 지우기. 작은 가상 그래프 + InMemorySaver."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from task_spec.api.app import create_app
-from task_spec.api.launcher import RunLauncher
+from task_spec.api.launcher import RunBusy, RunLauncher
 from task_spec.api.run_view import _task_error
 from task_spec.graph import make_checkpointer
 from tests.api.conftest import make_settings
@@ -162,3 +162,137 @@ def test_failure_kind_is_read_from_old_repr_errors_too() -> None:
     new = SimpleNamespace(tasks=(SimpleNamespace(error=ValueError("가상")),))
     assert _task_error(new) == "ValueError"
     assert _task_error(SimpleNamespace(tasks=(SimpleNamespace(error=None),))) is None
+
+
+def _run_files(root: Path, run_id: str) -> list[Path]:
+    """실행 하나의 지원자 파일 자리 (가상 내용)."""
+    out = []
+    for sub in (
+        "raw",
+        "extracted",
+        "pseudonymized",
+        "tmp",
+    ):  # tmp = OCR 임시 (재시작으로 끊기면 남는다)
+        d = root / sub / run_id
+        d.mkdir(parents=True)
+        (d / "doc.txt").write_text("가상", encoding="utf-8")
+        out.append(d)
+    return out
+
+
+async def test_deleting_a_failed_run_removes_its_thread_and_files(
+    tmp_path: Path, checkpointer: Any
+) -> None:
+    nodes = _Nodes(fail_b=RuntimeError("가상"))
+    graph = nodes.graph(checkpointer)
+    app = _app(tmp_path, graph)
+    run_id, other = uuid.uuid4().hex, uuid.uuid4().hex
+    dirs = _run_files(tmp_path, run_id)
+    kept = _run_files(tmp_path, other)  # 다른 실행의 파일은 그대로
+    app.state.launcher.launch(run_id, {"run_id": run_id})
+    await app.state.launcher.wait(run_id)
+    async with await _client(app) as client:
+        assert (await client.get(f"/runs/{run_id}")).json()["status"] == "failed"
+        deleted = await client.delete(f"/runs/{run_id}")
+        assert deleted.status_code == 204, deleted.text
+        assert (await client.get(f"/runs/{run_id}")).status_code == 404
+        assert run_id not in [r["run_id"] for r in (await client.get("/runs")).json()]
+        assert (await client.delete(f"/runs/{run_id}")).status_code == 404
+    assert not [d for d in dirs if d.exists()] and all(d.exists() for d in kept)
+    assert not [t async for t in checkpointer.alist({"configurable": {"thread_id": run_id}})]
+
+
+async def test_an_interrupted_run_can_be_deleted_after_a_restart(
+    tmp_path: Path, checkpointer: Any
+) -> None:
+    nodes = _Nodes(gate=asyncio.Event())
+    graph = nodes.graph(checkpointer)
+    app = _app(tmp_path, graph)
+    run_id = uuid.uuid4().hex
+    app.state.launcher.launch(run_id, {"run_id": run_id})
+    await nodes.entered_b.wait()
+    await app.state.launcher.shutdown()
+    app.state.launcher = RunLauncher(graph)
+    async with await _client(app) as client:
+        assert (await client.get(f"/runs/{run_id}")).json()["status"] == "interrupted"
+        assert (await client.delete(f"/runs/{run_id}")).status_code == 204
+        assert (await client.get(f"/runs/{run_id}")).status_code == 404
+
+
+async def test_only_stopped_runs_are_deleted(tmp_path: Path, checkpointer: Any) -> None:
+    nodes = _Nodes(gate=asyncio.Event(), wait_approval=True)
+    graph = nodes.graph(checkpointer)
+    app = _app(tmp_path, graph)
+    run_id = uuid.uuid4().hex
+    async with await _client(app) as client:
+        # 실행 id 꼴(소문자 32 hex)만 — 꼴이 아닌 id 의 폴더는 그대로 (경로 조작, 개인정보 점검 L3)
+        for bad in ("A" * 32, "a" * 31, "a" * 33, "..", "0" * 31 + "G"):
+            (tmp_path / "raw" / bad).mkdir(parents=True, exist_ok=True)
+            assert (await client.delete(f"/runs/{bad}")).status_code == 404, bad
+            assert (tmp_path / "raw" / bad).is_dir(), bad
+        assert (await client.delete(f"/runs/{uuid.uuid4().hex}")).status_code == 404
+        app.state.launcher.launch(run_id, {"run_id": run_id})
+        await nodes.entered_b.wait()
+        busy = await client.delete(f"/runs/{run_id}")  # 도는 중
+        assert busy.status_code == 409 and busy.json()["error"]["code"] == "run_not_deletable"
+        assert nodes.gate is not None
+        nodes.gate.set()
+        await app.state.launcher.wait(run_id)
+        waiting = await client.delete(f"/runs/{run_id}")  # 승인 대기
+        assert (
+            waiting.status_code == 409 and "awaiting_approval" in waiting.json()["error"]["message"]
+        )
+        assert (await client.get(f"/runs/{run_id}")).json()["status"] == "awaiting_approval"
+
+
+async def test_a_request_that_read_the_state_before_the_delete_cannot_launch_it(
+    tmp_path: Path, checkpointer: Any
+) -> None:
+    """이어서 하기·승인이 지우기 전에 상태를 읽었으면 launch(after=…) 가 거부한다 — 지운 thread 를 입력 없이 띄우지 않게."""
+    nodes = _Nodes(fail_b=RuntimeError("가상"))
+    graph = nodes.graph(checkpointer)
+    launcher = RunLauncher(graph)
+    run_id = uuid.uuid4().hex
+    launcher.launch(run_id, {"run_id": run_id})
+    await launcher.wait(run_id)
+    seen = launcher.launches(run_id)
+    await launcher.delete(run_id, after=seen)
+    for read_before in (
+        seen,
+        seen + 1,
+    ):  # 지우기 전에, 지우는 중에 상태를 읽은 요청 (개인정보 점검 L1)
+        with pytest.raises(RunBusy):
+            launcher.launch(run_id, None, after=read_before)
+    with pytest.raises(RunBusy):
+        await launcher.delete(run_id, after=seen)
+
+
+async def test_a_file_delete_failure_keeps_the_run_so_it_can_be_deleted_again(
+    tmp_path: Path, checkpointer: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """파일을 먼저 지우고 thread 는 마지막에 — 파일 삭제가 실패하면 500, 실행은 그대로 보여 다시 지울 수 있다 (개인정보 점검 M2)."""
+    import shutil
+
+    nodes = _Nodes(fail_b=RuntimeError("가상"))
+    graph = nodes.graph(checkpointer)
+    app = _app(tmp_path, graph)
+    run_id = uuid.uuid4().hex
+    dirs = _run_files(tmp_path, run_id)
+    app.state.launcher.launch(run_id, {"run_id": run_id})
+    await app.state.launcher.wait(run_id)
+    real_rmtree = shutil.rmtree
+
+    def boom(path: Any, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError("가상 권한 오류 /data/raw/비밀경로")
+
+    monkeypatch.setattr(shutil, "rmtree", boom)
+    async with await _client(app) as client:
+        failed = await client.delete(f"/runs/{run_id}")
+        assert failed.status_code == 500 and failed.json()["error"]["code"] == "run_delete_failed"
+        assert "비밀경로" not in failed.text  # 경로·오류 메시지는 내지 않는다
+        view = (await client.get(f"/runs/{run_id}")).json()
+        assert (view["status"], view["failure"]) == ("failed", "RuntimeError")  # 실패 판정도 그대로
+        monkeypatch.setattr(shutil, "rmtree", real_rmtree)
+        assert (await client.delete(f"/runs/{run_id}")).status_code == 204
+        assert (await client.get(f"/runs/{run_id}")).status_code == 404
+    assert not [d for d in dirs if d.exists()]

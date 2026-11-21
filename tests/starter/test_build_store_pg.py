@@ -11,7 +11,12 @@ from task_spec.spec.store import CommonKey, CommonTaskStore
 from task_spec.starter.store import PgBuildStore
 from tests.postings.test_postings_pg import _Urls
 from tests.spec.test_store_pg import _task
-from tests.starter.test_build_store import run_deliverable, run_failure_record, run_lifecycle
+from tests.starter.test_build_store import (
+    run_delete_failed,
+    run_deliverable,
+    run_failure_record,
+    run_lifecycle,
+)
 
 pytestmark = pytest.mark.pg
 
@@ -94,6 +99,12 @@ async def pg_common() -> AsyncIterator[tuple[PgBuildStore, str, str]]:
             )
         await store.close()
         await common.close()
+
+
+async def test_delete_failed_pg(pg_common: tuple[PgBuildStore, str, str]) -> None:
+    """목록에서 지우기 — 메모리 구현과 같은 계약 (run_delete_failed). 정리는 빌드 행을 지워 build_deleted 가 따라 지워진다."""
+    store, common_id, _ = pg_common
+    await run_delete_failed(store, common_id)
 
 
 async def test_failure_record_pg(pg_common: tuple[PgBuildStore, str, str]) -> None:

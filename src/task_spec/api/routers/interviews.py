@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -17,12 +17,18 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 from pydantic import BaseModel, Field, StrictBool, StrictStr, model_validator
 
 from task_spec.api.deps import InterviewApprovalDep, InterviewsDep
 from task_spec.graph.interview_approval import thread_id as approval_thread
-from task_spec.interview.errors import InterviewConflict, InterviewError, InterviewInvalid
+from task_spec.interview.errors import (
+    InterviewConflict,
+    InterviewError,
+    InterviewInvalid,
+    InterviewNotFound,
+)
 from task_spec.postings.company import company_id as company_key
 from task_spec.schemas import InterviewApprovalState, PublicIncident, TaskItem
 from task_spec.schemas.interview_approval import COMMON_ID
@@ -454,6 +460,44 @@ async def discard(interview_id: str, interviews: InterviewsDep) -> dict[str, Any
     return await interviews.discard(interview_id)
 
 
+async def _gone(interviews: Any, interview_id: str) -> bool:
+    try:
+        await interviews.get(interview_id)
+    except InterviewNotFound:
+        return True
+    return False
+
+
+async def _forget_approvals(graph: Any, interview_id: str, revisions: Iterable[int]) -> None:
+    """승인 thread 를 지운다 (판본마다 하나) — 반려·폐기한 판의 승인 대기 내용(가명화한 과제)·결정(승인자 이름·가명화한 사유)."""
+    saver = graph.checkpointer
+    if isinstance(saver, BaseCheckpointSaver):
+        for revision in revisions:
+            await saver.adelete_thread(approval_thread(interview_id, revision))
+
+
+@router.delete("/{interview_id}", status_code=204)
+async def delete(
+    interview_id: str, interviews: InterviewsDep, graph: InterviewApprovalDep
+) -> Response:
+    """삭제 — 폐기한 인터뷰, 또는 진행 중인 인터뷰(폐기 정리를 먼저). 목록에서도 사라지고 되돌릴 수 없다.
+    승인한 인터뷰는 409 (승인한 과제의 근거), 과제를 만드는 중이면 409 `interview_generating`,
+    정리가 실패하면 500 `interview_delete_failed`(인터뷰는 남아 다시 지울 수 있다)."""
+
+    async def forget_approvals(last: int) -> None:
+        await _forget_approvals(graph, interview_id, range(1, last + 1))
+
+    last = await interviews.delete(interview_id, forget_approvals=forget_approvals)
+    # 행을 지운 뒤 한 번 더 — 그 사이 승인 대기를 연 요청이 thread 를 만들었을 수 있다 (개인정보 점검 M4). 행은 이미 없어 실패해도 204
+    try:
+        await forget_approvals(last)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "interview_approval_threads_left id=%s type=%s", interview_id, type(exc).__name__
+        )
+    return Response(status_code=204)
+
+
 # ================================================================ ⑨ 승인 (#266 D2b) — 그래프 thread 를 시작하고 resume 만 한다 (불변식 9)
 class InterviewApproveRequest(BaseModel):
     revision: int = Field(ge=1)  # 화면이 본 인터뷰 판본 — 다르면 409
@@ -511,7 +555,15 @@ async def get_approval(
         return _closed(view)
     if view["stage"] != "task_review":
         raise InterviewConflict("과제 검토 단계에서만 승인할 수 있습니다")
-    payload = await _waiting(graph, interview_id, view["revision"], start=True)
+    try:
+        payload = await _waiting(graph, interview_id, view["revision"], start=True)
+        # 그 사이 지워졌으면 방금 만든 승인 thread 를 지운다 (M4)
+        await interviews.get(interview_id)
+    except Exception:
+        if not await _gone(interviews, interview_id):
+            raise
+        await _forget_approvals(graph, interview_id, [view["revision"]])
+        raise InterviewNotFound("인터뷰를 찾을 수 없습니다") from None
     if payload is None:
         raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
     return {**payload, "state": "awaiting"}
@@ -532,27 +584,35 @@ async def approve(
         raise InterviewConflict("이미 승인한 인터뷰입니다")
     if view["revision"] != body.revision or view["stage"] != "task_review":
         raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
-    if await _waiting(graph, interview_id, body.revision, start=True) is None:
-        raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
-    comment = (
-        await interviews.pseudonymize_note(interview_id, body.comment)
-        if body.comment and body.comment.strip()
-        else None
-    )
-    decision = {
-        "status": body.status,
-        "reviewer": body.reviewer,
-        "at": (body.at or datetime.now(UTC)).isoformat(),
-        "comment": comment,
-        "replaces": body.replaces,
-    }
-    cfg: RunnableConfig = {
-        "configurable": {"thread_id": approval_thread(interview_id, body.revision)}
-    }
-    await graph.ainvoke(Command(resume=decision), cfg)
-    # 결과는 인터뷰 행으로 판정한다 — 같은 thread 에 결정이 동시에 들어오면(두 번 누름·두 화면) 확정은 잠금·판본으로 한 번뿐이지만
-    # 체크포인트는 마지막에 쓴 쪽이 이겨, 승인한 요청이 stale 을 읽을 수 있다 (code review W2)
-    after = await interviews.get(interview_id)
+    try:
+        if await _waiting(graph, interview_id, body.revision, start=True) is None:
+            raise InterviewConflict("인터뷰 판본이 바뀌었습니다. 새로고침 후 다시 시도해 주세요")
+        comment = (
+            await interviews.pseudonymize_note(interview_id, body.comment)
+            if body.comment and body.comment.strip()
+            else None
+        )
+        decision = {
+            "status": body.status,
+            "reviewer": body.reviewer,
+            "at": (body.at or datetime.now(UTC)).isoformat(),
+            "comment": comment,
+            "replaces": body.replaces,
+        }
+        cfg: RunnableConfig = {
+            "configurable": {"thread_id": approval_thread(interview_id, body.revision)}
+        }
+        await graph.ainvoke(Command(resume=decision), cfg)
+        # 결과는 인터뷰 행으로 판정한다 — 같은 thread 에 결정이 동시에 들어오면(두 번 누름·두 화면) 확정은 잠금·판본으로 한 번뿐이지만
+        # 체크포인트는 마지막에 쓴 쪽이 이겨, 승인한 요청이 stale 을 읽을 수 있다 (code review W2)
+        after = await interviews.get(interview_id)
+    except Exception:
+        # 그 사이 인터뷰가 지워졌다 — 이 요청이 지운 승인 thread 를 다시 만들었으면 지운다 (개인정보 점검 M4).
+        # 지운 thread 에 resume 하면 그래프가 빈 입력으로 처음부터 돌아 InterviewNotFound 가 아닌 형식 오류로 끝나므로 행으로 가른다
+        if not await _gone(interviews, interview_id):
+            raise
+        await _forget_approvals(graph, interview_id, [body.revision])
+        raise InterviewNotFound("인터뷰를 찾을 수 없습니다") from None
     if after["stage"] == "approved":
         if body.status == "approved":
             return _closed(after)

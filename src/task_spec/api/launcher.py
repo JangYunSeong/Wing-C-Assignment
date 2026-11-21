@@ -10,8 +10,10 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,39 @@ class RunLauncher:
                 type(exc).__name__,
                 (time.monotonic() - t0) * 1000,
             )
+
+    async def delete(
+        self, run_id: str, *, after: int, before: Callable[[], Awaitable[None]] | None = None
+    ) -> None:
+        """멈춘 실행을 지운다 — before(지원자 파일 같은 멱등 정리) 다음 체크포인트 thread. 도는 중이거나 상태를 읽은 뒤 다른 요청이
+        띄웠으면 RunBusy. before 가 실패하면 thread 를 남긴다 — 실행이 보여 다시 지울 수 있다 (개인정보 점검 M2).
+
+        지우는 동안 이 실행의 자리를 차지해(is_active) 이어서 하기·승인이 띄우지 못한다. 띄운 횟수를 시작과 끝에 올려, 지우기 전이나
+        지우는 중에 상태를 읽은 요청도 launch(after=…) 에서 거부된다 (L1). 확인과 자리 차지 사이에 await 가 없다 (launch 와 같음).
+        """
+        if self.is_active(run_id) or self.launches(run_id) != after:
+            raise RunBusy("run is already active")
+        saver = self._graph.checkpointer
+        if not isinstance(saver, BaseCheckpointSaver):
+            raise RuntimeError("checkpointer is not configured")
+        self._launches[run_id] = after + 1
+
+        async def work() -> None:
+            if before is not None:
+                await before()
+            await saver.adelete_thread(run_id)
+
+        task = asyncio.create_task(work())
+        self._tasks[run_id] = task
+        try:
+            await task
+        finally:
+            self._tasks.pop(run_id, None)
+            self._launches[run_id] = self.launches(run_id) + 1
+        self._failures.pop(
+            run_id, None
+        )  # 다 지운 뒤에만 — 정리가 실패하면 실패 판정(failed)을 그대로 둔다
+        logger.info("run deleted run_id=%s", run_id)
 
     async def wait(self, run_id: str) -> None:
         """이 프로세스에서 띄운 실행이 끝날 때까지 (테스트·종료 정리용). 실패는 _run 이 이미 기록했다."""

@@ -50,6 +50,7 @@ from task_spec.interview.approval import (
 from task_spec.interview.errors import (
     InterviewClosed,
     InterviewConflict,
+    InterviewDeleteFailed,
     InterviewError,
     InterviewGenerating,
     InterviewInvalid,
@@ -2182,6 +2183,50 @@ class InterviewService:
                 return self.view(row)
             view = await self._close(row, "recruiter")
         return view
+
+    async def delete(
+        self,
+        interview_id: str,
+        *,
+        forget_approvals: Callable[[int], Awaitable[None]] | None = None,
+    ) -> int:
+        """담당자가 인터뷰를 지운다 — 폐기한 것, 또는 진행 중인 것(폐기 정리를 먼저). 대응표 폴더·생성 thread·승인 thread·초안 판, 마지막에 행.
+
+        승인한 인터뷰는 승인한 과제의 근거(누가 무엇을 보고 승인했는지)라 지우지 않는다 [확정: 2026-11-21 사용자].
+        멱등인 정리를 먼저 하고 행은 마지막에 지운다 — 정리가 실패하면 500 이고 행이 남아 다시 지울 수 있다 (개인정보 점검 M3).
+        forget_approvals(마지막 판본) 는 API 가 넘긴다 — 승인 thread 는 승인 그래프(API 계층)의 것이고 판본마다 하나다.
+        지운 행의 마지막 판본을 돌려준다.
+        """
+        async with self._lock(interview_id):
+            row = await self._load(interview_id, open_only=False)
+            self._ensure_idle(row)
+            if row.state.stage == "approved":
+                raise InterviewClosed(
+                    "승인한 인터뷰는 지우지 않습니다 — 승인한 과제의 근거입니다. "
+                    "과제를 바꾸려면 새 인터뷰로 교체해 주세요"
+                )
+            if row.state.stage not in CLOSED_STAGES:
+                await self._close(row, "recruiter")
+                row = await self._load(interview_id, open_only=False)
+            # 폐기 때 지운 것도 다시 — 그때 실패했을 수 있다 (없으면 아무것도 안 함). 생성 thread 는 생성 표시를 저장한 판본마다 하나
+            try:
+                await asyncio.to_thread(self.pseudo.delete, row.id)
+                if self.generation is not None:
+                    for revision in range(1, row.revision + 1):
+                        await self.generation.forget(generation_thread_id(row.id, revision))
+                if forget_approvals is not None:
+                    await forget_approvals(row.revision)
+                if self.common_store is not None:
+                    await self.common_store.drop_interview_drafts(interview_ref(row.id))
+            except Exception as exc:  # noqa: BLE001 — 어느 정리든 실패하면 행을 남긴다
+                logger.error("interview_delete_failed id=%s type=%s", row.id, type(exc).__name__)
+                raise InterviewDeleteFailed(
+                    "인터뷰 정리를 끝내지 못했습니다. 인터뷰는 남아 있으니 다시 시도해 주세요"
+                ) from None
+            if not await self.store.delete(row.id, row.revision):
+                raise InterviewConflict(_STALE)
+        logger.info("interview_deleted id=%s revision=%d", row.id, row.revision)
+        return row.revision
 
     async def _close(
         self, row: InterviewRow, reason: Literal["recruiter", "stale"]

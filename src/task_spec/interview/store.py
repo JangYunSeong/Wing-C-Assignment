@@ -156,6 +156,10 @@ class InterviewRepo(Protocol):
         """처음 쓴 때가 before 보다 오래된 원문 임시 저장을 지운다."""
         ...
 
+    async def delete(self, interview_id: str, revision: int) -> bool:
+        """폐기한 인터뷰를 revision 이 맞을 때만 행째 지운다. 승인한 인터뷰는 지우지 않는다 (서비스가 먼저 막고, 여기서도)."""
+        ...
+
     async def stale(self, before: datetime) -> list[str]:
         """닫히지 않았고 마지막 수정이 before 보다 오래된 인터뷰 id."""
         ...
@@ -280,6 +284,15 @@ class PgInterviewStore:
             )
             return cur.rowcount
 
+    async def delete(self, interview_id: str, revision: int) -> bool:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "DELETE FROM public.recruiter_interview "
+                "WHERE id = %s AND revision = %s AND state->>'stage' = 'discarded'",
+                (interview_id, revision),
+            )
+            return cur.rowcount == 1
+
     async def stale(self, before: datetime) -> list[str]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
@@ -392,6 +405,14 @@ class MemoryInterviewStore:
                 )
                 n += 1
         return n
+
+    async def delete(self, interview_id: str, revision: int) -> bool:
+        row = self.rows.get(interview_id)
+        if row is None or row.revision != revision or row.state.stage != "discarded":
+            return False
+        del self.rows[interview_id]
+        self.created.pop(interview_id, None)
+        return True
 
     async def stale(self, before: datetime) -> list[str]:
         return sorted(
