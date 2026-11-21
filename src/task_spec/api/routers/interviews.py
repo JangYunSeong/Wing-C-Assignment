@@ -17,6 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 from pydantic import BaseModel, Field, StrictBool, StrictStr, model_validator
 
@@ -452,6 +453,22 @@ async def save_step_drafts(
 async def discard(interview_id: str, interviews: InterviewsDep) -> dict[str, Any]:
     """폐기 — 이름 대응표·원문 임시 저장을 지운다. 되돌릴 수 없다 (새 인터뷰를 시작한다)."""
     return await interviews.discard(interview_id)
+
+
+@router.delete("/{interview_id}", status_code=204)
+async def delete(
+    interview_id: str, interviews: InterviewsDep, graph: InterviewApprovalDep
+) -> Response:
+    """삭제 — 폐기한 인터뷰, 또는 진행 중인 인터뷰(폐기 정리를 먼저). 목록에서도 사라지고 되돌릴 수 없다.
+    승인한 인터뷰는 409 (승인한 과제의 근거), 과제를 만드는 중이면 409 `interview_generating`."""
+    last = await interviews.delete(interview_id)
+    saver = graph.checkpointer
+    if isinstance(
+        saver, BaseCheckpointSaver
+    ):  # 판본마다 하나인 승인 thread — 반려·폐기한 판의 승인 대기 내용(가명화한 과제)
+        for revision in range(1, last + 1):
+            await saver.adelete_thread(approval_thread(interview_id, revision))
+    return Response(status_code=204)
 
 
 # ================================================================ ⑨ 승인 (#266 D2b) — 그래프 thread 를 시작하고 resume 만 한다 (불변식 9)

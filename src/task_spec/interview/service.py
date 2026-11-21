@@ -2183,6 +2183,39 @@ class InterviewService:
             view = await self._close(row, "recruiter")
         return view
 
+    async def delete(self, interview_id: str) -> int:
+        """담당자가 인터뷰를 지운다 — 폐기한 것, 또는 진행 중인 것(폐기 정리를 먼저). 행·생성 thread·대응표 폴더·초안 판까지.
+
+        승인한 인터뷰는 승인한 과제의 근거(누가 무엇을 보고 승인했는지)라 지우지 않는다 [확정: 2026-11-21 사용자].
+        지운 행의 마지막 판본을 돌려준다 — 승인 thread 는 판본마다 하나라 API 가 1..판본을 지운다.
+        """
+        async with self._lock(interview_id):
+            row = await self._load(interview_id, open_only=False)
+            self._ensure_idle(row)
+            if row.state.stage == "approved":
+                raise InterviewClosed(
+                    "승인한 인터뷰는 지우지 않습니다 — 승인한 과제의 근거입니다. "
+                    "과제를 바꾸려면 새 인터뷰로 교체해 주세요"
+                )
+            if row.state.stage not in CLOSED_STAGES:
+                await self._close(row, "recruiter")
+                row = await self._load(interview_id, open_only=False)
+            if not await self.store.delete(row.id, row.revision):
+                raise InterviewConflict(_STALE)
+            # 폐기 때 지운 것도 다시 — 그때 실패했을 수 있다 (없으면 아무것도 안 함). 생성 thread 는 생성 표시를 저장한 판본마다 하나
+            await asyncio.to_thread(self.pseudo.delete, row.id)
+            for revision in range(1, row.revision + 1):
+                await self._forget_generation(generation_thread_id(row.id, revision))
+            if self.common_store is not None:
+                try:
+                    await self.common_store.drop_interview_drafts(interview_ref(row.id))
+                except Exception as exc:  # noqa: BLE001 — 행은 이미 지웠다. 남은 초안은 지원자 실행이 쓰지 않는다
+                    logger.error(
+                        "interview_drafts_drop_failed id=%s type=%s", row.id, type(exc).__name__
+                    )
+        logger.info("interview_deleted id=%s revision=%d", row.id, row.revision)
+        return row.revision
+
     async def _close(
         self, row: InterviewRow, reason: Literal["recruiter", "stale"]
     ) -> dict[str, Any]:
