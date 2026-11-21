@@ -10,6 +10,7 @@ POST /common-tasks/{common_id}/builds : 과제 생성 요청 — 명세 승인�
 
 GET  /builds[?common_id=]        : 공통 과제의 빌드 목록 (없으면 최근 빌드 — 화면 목록용, 제목·공고 id 함께)
 DELETE /builds/{build_id}        : 실패한 빌드를 목록에서 지운다 (build_deleted 에 기록, 빌드 행은 그대로 — 2026-11-21 사용자). 이후 404
+                                   검토 중 빌드는 화면이 반려(POST …/approve rejected) 뒤 지운다 — 승인 기록이 남고 인터뷰 빌드 요청이 다시 돌려주지 않는다
 GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수·생성기 호출 요약(프롬프트 판·모델별 호출 수·비용, #233)
 GET  /builds/{build_id}/artifacts: 역할별 묶음 파일(이름·sha256·크기)·image_id
 GET  /builds/{build_id}/deliveries: 전달 기록

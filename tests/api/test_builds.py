@@ -578,6 +578,9 @@ async def test_build_reject_through_the_api(tmp_path: Path) -> None:
             )  # GET 없이도 thread 를 시작하고 resume
             assert r.status_code == 200 and r.json()["state"] == "rejected"
             assert r.json()["error"] == "승인자 반려 (가상승인자): 가상 반려 사유"
+            # 검토 중 빌드 지우기 = 화면이 반려한 뒤 지운다 (2026-11-21 사용자) — 반려하면 failed 라 지울 수 있다
+            assert (await c.delete(f"/builds/{bid}")).status_code == 204
+            assert (await c.get("/builds", params={"common_id": CID})).json() == []
     b = await store.get(bid)
     assert b is not None and b.status == "failed"
 
