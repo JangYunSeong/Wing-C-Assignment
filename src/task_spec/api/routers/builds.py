@@ -9,6 +9,7 @@ POST /common-tasks/{common_id}/builds : 과제 생성 요청 — 명세 승인�
                                    진행 중 빌드가 있으면 새로 만들지 않고 그 빌드를 돌려준다 (200, 새로 만들면 202).
 
 GET  /builds[?common_id=]        : 공통 과제의 빌드 목록 (없으면 최근 빌드 — 화면 목록용, 제목·공고 id 함께)
+DELETE /builds/{build_id}        : 실패한 빌드를 목록에서 지운다 (build_deleted 에 기록, 빌드 행은 그대로 — 2026-11-21 사용자). 이후 404
 GET  /builds/{build_id}          : 상태·검증 요약·검토 표시(+승인자 판단)·파일 수·생성기 호출 요약(프롬프트 판·모델별 호출 수·비용, #233)
 GET  /builds/{build_id}/artifacts: 역할별 묶음 파일(이름·sha256·크기)·image_id
 GET  /builds/{build_id}/deliveries: 전달 기록
@@ -36,6 +37,7 @@ GET  /delivery-targets · POST /delivery-targets : 전달 대상(이름 → 받�
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -48,6 +50,7 @@ from pydantic import BaseModel, Field
 from task_spec.api.deps import BuildApprovalDep, BuildsDep, DeliveryDep, OntologyDep
 from task_spec.api.errors import (
     BuildApprovalInvalid,
+    BuildNotDeletable,
     BuildNotFound,
     BuildRuleViolation,
     CasesNotAvailable,
@@ -85,6 +88,7 @@ from task_spec.starter.facilitator import FacilitatorView, facilitator_view
 from task_spec.starter.render import README
 from task_spec.starter.store import BuildRepo, BuildRuleError, TaskLabel
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["builds"])
 
 BuildIdPath = Annotated[str, Path(pattern=BUILD_ID)]
@@ -280,8 +284,9 @@ def _llm_calls(calls: list[BuildProvenance]) -> list[LlmCallSummary]:
 
 
 async def _build(store: BuildRepo, build_id: str) -> BuildRecord:
+    """빌드 하나 — 없거나 목록에서 지웠으면 404 (지운 빌드는 상세·묶음·승인 등 어떤 화면에도 내주지 않는다)."""
     b = await store.get(build_id)
-    if b is None:
+    if b is None or await store.deleted([build_id]):
         raise BuildNotFound(build_id)
     return b
 
@@ -325,14 +330,16 @@ async def list_builds(
     if common_id:
         builds = await store.builds(common_id)
     else:
-        builds = await store.recent(None if company else limit)
+        # 목록에서 지운 빌드를 뺀 뒤 limit — 지운 빌드가 자리를 차지하지 않게 전부 읽는다 (하루 몇 건 규모)
+        builds = await store.recent(None)
+    gone = await store.deleted(b.build_id for b in builds)
+    builds = [b for b in builds if b.build_id not in gone]
     labels = await store.task_labels({b.common_id for b in builds})
     companies = await _companies(request, ontology, labels)
     if company:
         wanted = company_id(company)
-        builds = [
-            b for b in builds if (c := companies.get(b.common_id)) and c.company_id == wanted
-        ][:limit]
+        builds = [b for b in builds if (c := companies.get(b.common_id)) and c.company_id == wanted]
+    builds = builds[:limit]
     careers = await _careers(request, ontology, labels)
     return [
         _summary(b, labels.get(b.common_id), companies.get(b.common_id), careers.get(b.common_id))
@@ -450,6 +457,19 @@ async def request_build(
         response.status_code = 200
     label = (await store.task_labels([common_id])).get(common_id)
     return BuildRequestOut(created=created, build=_summary(b, label))
+
+
+@router.delete("/builds/{build_id}", status_code=204)
+async def delete_build(build_id: BuildIdPath, store: BuildsDep) -> Response:
+    """실패한 빌드를 목록에서 지운다 → 204. 빌드 행·시작 코드 파일·묶음은 그대로 둔다 — 번호를 다시 쓰지 않고 비용·실패 기록은 남긴다
+    (2026-11-21 사용자 — 목록에서 지우기). 이후 목록에 없고 상세·묶음·승인 등은 404. 실패가 아니면 409 `build_not_deletable`."""
+    b = await _build(store, build_id)
+    if b.status != "failed":
+        raise BuildNotDeletable(build_id, b.status)
+    if not await store.delete_failed(build_id):
+        raise BuildNotFound(build_id)  # 그 사이 다른 요청이 먼저 지웠다
+    logger.info("build deleted from list build_id=%s", build_id)
+    return Response(status_code=204)
 
 
 @router.get("/builds/{build_id}")

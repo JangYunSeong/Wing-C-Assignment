@@ -299,6 +299,28 @@ async def test_failure_record_in_memory() -> None:
     await run_failure_record(InMemoryBuildStore(), "ct-0123456789ab")
 
 
+async def run_delete_failed(store: BuildRepo, common_id: str) -> None:
+    """실패한 빌드만 목록에서 지운다 (2026-11-21) — 두 구현이 같은 계약. 빌드 행은 그대로라 번호를 다시 쓰지 않는다."""
+    failed = (await store.new_build(common_id, "onto-test", AT)).build_id
+    await store.set_status(failed, "generating")
+    await store.fail(failed, "build: 가상 실패", AT)
+    live = (await store.new_build(common_id, "onto-test", AT)).build_id
+    assert not await store.delete_failed(live)  # 실패가 아니면 지우지 않는다
+    assert not await store.delete_failed(f"{common_id}-b99")  # 없는 빌드
+    assert await store.delete_failed(failed, AT)
+    assert not await store.delete_failed(failed)  # 이미 지움
+    assert await store.deleted([failed, live]) == {failed}
+    assert await store.deleted([]) == set()
+    kept = await store.get(failed)  # 빌드 행·실패 기록은 남는다 (API 가 deleted 로 거른다)
+    assert kept is not None and kept.error == "build: 가상 실패"
+    after = await store.new_build(common_id, "onto-test", AT)
+    assert after.seq == 3  # 지운 빌드의 번호를 다시 쓰지 않는다
+
+
+async def test_delete_failed() -> None:
+    await run_delete_failed(InMemoryBuildStore(), "ct-0123456789ab")
+
+
 async def test_approve_needs_readme() -> None:
     """README 를 저장하지 않은 빌드는 묶음이 다 있어도 승인하지 않는다 — 승인자가 지원자 문장을 볼 수 없다."""
     store = InMemoryBuildStore()

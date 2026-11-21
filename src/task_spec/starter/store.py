@@ -211,6 +211,13 @@ CREATE INDEX IF NOT EXISTS common_task_build_queue_origin ON public.common_task_
 -- 생성기 provenance (#233, 불변식 8) — 계약·빌드 단계 LLM 호출마다 단계·시도·provenance (BuildProvenance). 있던 빌드는 빈 목록.
 -- builder 역할 권한은 표 단위(db-role.sql)라 새 칸도 따로 GRANT 하지 않는다
 ALTER TABLE public.common_task_build ADD COLUMN IF NOT EXISTS provenance jsonb NOT NULL DEFAULT '[]'::jsonb;
+-- 목록에서 지운 빌드 (실패한 것만, 2026-11-21 사용자 — 목록에서 지우기). 빌드 행은 그대로 둬 번호(MAX(seq)+1)를 다시 쓰지 않고
+-- 비용·실패 기록은 남긴다. 빌드 표에 칸을 더하면 돌던 builder 가 예전 준비문으로 실패해(2026-11-15) 따로 표를 둔다.
+-- API 만 읽고 쓴다 — builder 역할에는 GRANT 하지 않으므로 공용 조회(get·builds·recent)에 끼우지 않는다
+CREATE TABLE IF NOT EXISTS public.build_deleted (
+    build_id text PRIMARY KEY REFERENCES public.common_task_build (id) ON DELETE CASCADE,
+    deleted_at timestamptz NOT NULL DEFAULT now()
+);
 """
 
 # `_build` 가 읽는 칸 — builder(DDL 을 돌리지 않는 역할)의 기동 확인이 이 칸 전체를 본다 (#175: #128 칸 셋만 봐서, API 가 옛 판이면
@@ -506,6 +513,14 @@ class BuildRepo(Protocol):
         """최근 빌드부터. limit=None 이면 전부."""
         ...
 
+    async def delete_failed(self, build_id: str, at: datetime | None = None) -> bool:
+        """실패한 빌드를 목록에서 지운다 (build_deleted 에 기록, 빌드 행은 그대로). 실패가 아니거나 이미 지웠으면 False. API 만 쓴다."""
+        ...
+
+    async def deleted(self, build_ids: Iterable[str]) -> set[str]:
+        """그중 목록에서 지운 빌드 id. API 만 쓴다 — builder 역할은 build_deleted 를 읽을 권한이 없다."""
+        ...
+
     async def deliverable(self) -> list[BuildRecord]:
         """전달할 수 있는 빌드 — approved·published 이고 묶음을 확정한 것 전부, 최근 빌드부터 (받는 쪽 /pull 목록).
         최근 N개에서 거르지 않는다 (#235: 더 새 빌드가 200개를 넘으면 승인·확정 빌드가 목록에서 빠졌다)."""
@@ -658,6 +673,7 @@ class InMemoryBuildStore:
         self._artifacts: dict[tuple[str, str], BuildArtifact] = {}
         self._targets: dict[str, DeliveryTarget] = {}
         self._deliveries: dict[str, Delivery] = {}
+        self._deleted: dict[str, datetime] = {}
 
     def _put(self, build: BuildRecord, **update: Any) -> BuildRecord:
         new = BuildRecord.model_validate({**build.model_dump(), **update})
@@ -690,6 +706,16 @@ class InMemoryBuildStore:
     async def recent(self, limit: int | None) -> list[BuildRecord]:
         rows = sorted(self._builds.values(), key=lambda b: (b.created_at, b.build_id), reverse=True)
         return rows[:limit]
+
+    async def delete_failed(self, build_id: str, at: datetime | None = None) -> bool:
+        build = self._builds.get(build_id)
+        if build is None or build.status != "failed" or build_id in self._deleted:
+            return False
+        self._deleted[build_id] = at or datetime.now(UTC)
+        return True
+
+    async def deleted(self, build_ids: Iterable[str]) -> set[str]:
+        return {b for b in build_ids if b in self._deleted}
 
     async def deliverable(self) -> list[BuildRecord]:
         rows = [
@@ -1233,6 +1259,26 @@ class PgBuildStore:
             )
             rows = await cur.fetchall()
         return [self._build(r) for r in rows]
+
+    async def delete_failed(self, build_id: str, at: datetime | None = None) -> bool:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "INSERT INTO public.build_deleted (build_id, deleted_at) "
+                "SELECT id, %s FROM public.common_task_build WHERE id = %s AND status = 'failed' "
+                "ON CONFLICT (build_id) DO NOTHING",
+                (at or datetime.now(UTC), build_id),
+            )
+            return cur.rowcount == 1
+
+    async def deleted(self, build_ids: Iterable[str]) -> set[str]:
+        ids = list(build_ids)
+        if not ids:
+            return set()
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT build_id FROM public.build_deleted WHERE build_id = ANY(%s)", (ids,)
+            )
+            return {r[0] for r in await cur.fetchall()}
 
     async def deliverable(self) -> list[BuildRecord]:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:

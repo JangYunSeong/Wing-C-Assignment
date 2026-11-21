@@ -33,6 +33,7 @@ api/        라우터·요청/응답 스키마·의존성. 비즈니스 로직 �
 | `GET` | `/builds?common_id=&company=&limit=` | 빌드 목록 — 최근 빌드부터, `limit` 이 없으면 전부. 회사 칸·`company` 거르기는 `GET /runs` 와 같은 규칙(`postings/company.py`, 공통 과제의 공고로) — 빌드 상세(`/builds/{id}`)에도 회사 칸 [확정: 2026-11-18 사용자 — 빌드도 선택한 회사만] |
 | `GET` | `/builds/{build_id}/approval` | 빌드(시작 코드) 승인 (#130) — review 빌드면 빌드 승인 그래프 thread(`build-<build_id>-<결과 키>`)를 시작해 interrupt 까지, 검토 표시·사유. 끝난 빌드는 결과 |
 | `POST` | `/builds/{build_id}/approve` | `BuildApprovalDecision` 으로 resume 만. review 가 아니면 `409`, 그래프가 다시 기다리면(판단 누락·저장소 규칙) `422` + 사유 |
+| `DELETE` | `/builds/{build_id}` | 실패한 빌드를 **목록에서** 지움 → `204` — `build_deleted` 표에 기록하고 빌드 행·파일·묶음은 그대로(번호 `MAX(seq)+1` 을 다시 쓰지 않고 비용·실패 기록은 남김). 이후 목록·`limit` 에서 빠지고 상세·묶음·README 등은 `404`(`_build`). 실패가 아니면 `409` (`build_not_deletable`). 빌드 표에 칸을 더하지 않은 것은 돌던 builder 가 예전 준비문으로 실패하기 때문(11-15), 공용 조회(`get`·`builds`·`recent`)에 끼우지 않은 것은 builder 역할에 이 표 권한이 없기 때문 [확정: 2026-11-21 사용자 — 목록에서 지우기] |
 | `GET` | `/healthz` | 프로세스·Postgres 연결·온톨로지 산출물 버전 (키 값은 노출하지 않고 설정 여부만) |
 | `GET` | `/postings?q=` | 공고 찾기 — 회사·직무명·id·직군 이름으로 임시 공고와 온톨로지 공고(기본 시범만, `pilot_only`), 최대 `limit` 건. 검색어는 공백으로 나눠 AND, LIKE 특수문자는 글자 그대로 [제안: 2026-11-04] |
 | `GET` | `/postings/{id}` | 공고 프로필 — 임시 공고(`prov-…`)와 온톨로지 공고 모두 (`#` 이 든 id 는 URL 인코딩) |

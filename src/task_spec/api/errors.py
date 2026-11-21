@@ -174,6 +174,16 @@ class BuildNotFound(DomainError):
         super().__init__(f"빌드를 찾을 수 없습니다: {build_id}")
 
 
+class BuildNotDeletable(DomainError):
+    """실패한 빌드만 목록에서 지운다 — 진행 중·검토·승인·배포 빌드는 그대로 (2026-11-21 사용자)."""
+
+    code = "build_not_deletable"
+    status_code = 409
+
+    def __init__(self, build_id: str, status: str) -> None:
+        super().__init__(f"실패한 빌드만 지웁니다 (현재: {status}): {build_id}")
+
+
 class CommonTaskNotFound(DomainError):
     code = "common_task_not_found"
     status_code = 404

@@ -77,6 +77,27 @@ async def test_build_views_hide_contract_plan_and_file_bodies(tmp_path: Path) ->
         assert SECRET not in everything and "class App" not in everything
 
 
+async def test_a_failed_build_is_deleted_from_the_list(tmp_path: Path) -> None:
+    """실패한 빌드만 목록에서 지운다 — 목록·limit 에서 빠지고 상세·묶음은 404, 다른 상태는 409 (2026-11-21)."""
+    store = InMemoryBuildStore()
+    live = await _review_build(store)
+    failed = (await store.new_build(CID, "onto-test", AT)).build_id
+    await store.set_status(failed, "generating")
+    await store.fail(failed, "build: 가상 실패", AT)
+    async with await _client(tmp_path, store) as c:
+        refused = await c.delete(f"/builds/{live}")
+        assert refused.status_code == 409
+        assert refused.json()["error"]["code"] == "build_not_deletable"
+        deleted = await c.delete(f"/builds/{failed}")
+        assert deleted.status_code == 204, deleted.text
+        for params in ({"common_id": CID}, {}, {"limit": 1}):
+            assert [b["build_id"] for b in (await c.get("/builds", params=params)).json()] == [live]
+        for path in ("", "/artifacts", "/deliveries", "/readme", "/facilitator", "/cases"):
+            assert (await c.get(f"/builds/{failed}{path}")).status_code == 404, path
+        assert (await c.delete(f"/builds/{failed}")).status_code == 404
+        assert (await c.delete(f"/builds/{CID}-b99")).status_code == 404
+
+
 async def test_recent_builds_without_common_id_have_titles(tmp_path: Path) -> None:
     """화면 목록용 — common_id 없이 최근 빌드, 공통 과제 제목·공고 id·템플릿 (명세 본문은 없음)."""
     store = InMemoryBuildStore()
