@@ -38,7 +38,7 @@ from task_spec.schemas.build import (
     UiElement,
 )
 from task_spec.schemas.domain import HiddenFault, TaskItem
-from task_spec.schemas.incident import FeatureSeed, HarnessRule
+from task_spec.schemas.incident import FeatureSeed, HarnessRule, MaterialInterface
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import ORDINAL_FAULT, find_terms
 from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
@@ -46,6 +46,7 @@ from task_spec.starter.feasibility import feasibility_problems
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import header_problems
+from task_spec.starter.interface import interface_problems, without_fixed
 from task_spec.starter.seed_rows import (
     case_rows_problems,
     row_target_problems,
@@ -2416,16 +2417,18 @@ def check_contract(
     manifest: TemplateManifest,
     seed: FeatureSeed | None = None,
     first_answer: bool = True,
+    interface: MaterialInterface | None = None,
 ) -> ContractCheck:
     """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유.
-    first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다)."""
+    first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다).
+    interface: 재료가 정한 명령·입출력 파일·엔티티 (#256) — 그대로인지·밖의 요소가 없는지 보고, 누설 검사에서는 그 부분을 뺀다."""
     problems = _ids(contract, plan)
     problems += _coverage(contract, plan, spec)
     problems += _naming(contract, manifest, spec)
     problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _added_marked_existing(contract, spec)
-    problems += _leaks(contract, spec, seed)
+    problems += _leaks(without_fixed(contract, interface), spec, seed)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)
     problems += _ui_load_and_background(contract)
@@ -2438,6 +2441,9 @@ def check_contract(
         plan, spec, manifest, seed.harness_rules if seed is not None else None
     )
     problems += harness_problems
+    interface_issues, interface_flags = interface_problems(contract, interface, manifest)
+    problems += interface_issues
+    flags += interface_flags
     problems += _reasons(plan, manifest, seed)
     problems += _faults(contract, plan, spec)
     problems += feasibility_problems(plan, manifest)

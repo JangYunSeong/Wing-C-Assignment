@@ -10,7 +10,9 @@ import hashlib
 from collections.abc import Mapping
 from pathlib import Path
 
-from task_spec.schemas import PublicIncident
+import yaml
+
+from task_spec.schemas import MaterialInterface, PublicIncident
 from task_spec.starter.templates import TEMPLATE_FOR_SUB
 
 NONE = "(없음)"
@@ -42,6 +44,21 @@ def load_incidents(root: Path) -> IncidentCatalog:
         if inc.sub in out:
             raise ValueError(f"직군 {inc.sub} 사례가 둘 이상입니다: {f.name}")
         out[inc.sub] = inc
+    return out
+
+
+def load_interfaces(root: Path) -> dict[str, MaterialInterface]:
+    """재료 id → 재료가 정한 공개 인터페이스 (`<root>/interfaces/*.yaml`, #256 1단계). 없는 재료는 계약 인터페이스를 LLM 이 정한다.
+    폴더가 없으면 빈 dict. 같은 재료를 두 파일이 정하면 거부한다."""
+    out: dict[str, MaterialInterface] = {}
+    folder = root / "interfaces"
+    if not folder.is_dir():
+        return out
+    for f in sorted(folder.glob("*.yaml")):
+        spec = MaterialInterface.model_validate(yaml.safe_load(f.read_text("utf-8")))
+        if spec.incident_id in out:
+            raise ValueError(f"재료 {spec.incident_id} 의 인터페이스가 둘 이상입니다: {f.name}")
+        out[spec.incident_id] = spec
     return out
 
 

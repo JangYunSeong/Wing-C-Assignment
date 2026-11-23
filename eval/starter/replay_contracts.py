@@ -27,6 +27,7 @@ from typing import Any
 from eval.starter.run_paper import template_for
 from task_spec.nodes.starter.plan_contract import fit_output
 from task_spec.schemas import GeneratedFile, HiddenPlan, PlanContractOutput, TaskContract, TaskItem
+from task_spec.spec.incidents import load_interfaces
 from task_spec.starter.contract import SpecView, check_contract
 from task_spec.starter.header_values import header_values
 from task_spec.starter.hidden_helpers import key_fields, render_contract_case
@@ -52,17 +53,19 @@ def replay(path: Path) -> dict[str, Any]:
     sub = (task.source_incident or "::").split(":")[1]
     template = template_for(sub)
     spec = SpecView.from_task(task)
+    # 재료가 정한 명령·입출력 파일·엔티티 (#256) — 파이프라인과 같은 입력으로 다시 돈다
+    interface = load_interfaces(ROOT / "incidents" / "public_v1").get(task.source_incident or "")
     raw_path = path.with_name(path.name.replace(".json", ".raw.json"))
     if raw_path.is_file():
         raw = PlanContractOutput.model_validate_json(raw_path.read_text("utf-8"))
-        out, notes = fit_output(raw, template.manifest, spec)
+        out, notes = fit_output(raw, template.manifest, spec, interface=interface)
         contract, plan, source = out.contract, out.hidden_plan, "원본→코드 다시"
     else:
         saved = json.loads(path.read_text("utf-8"))
         contract = TaskContract.model_validate(_loose(saved["contract"]))
         plan = HiddenPlan.model_validate(saved["hidden_plan"])
         notes, source = [], "저장된 맞춘 계약"
-    check = check_contract(contract, plan, spec, template.manifest)
+    check = check_contract(contract, plan, spec, template.manifest, interface=interface)
     keys = [k for k, _, numeric in key_fields(contract) if not numeric]
     missing: list[str] = []
     for audience in ("hidden", "public"):

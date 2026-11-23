@@ -35,7 +35,12 @@ from task_spec.nodes.starter.generate import BuildInputs, GenResult, gen_hidden,
 from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import CompileError, HiddenPlan, TaskContract, TaskItem
-from task_spec.spec.incidents import feature_incident, incident_by_id, load_incidents
+from task_spec.spec.incidents import (
+    feature_incident,
+    incident_by_id,
+    load_incidents,
+    load_interfaces,
+)
 from task_spec.starter.verify import verifier_for
 from task_spec.starter.verify.workspace import write_overlay as _write
 
@@ -114,7 +119,8 @@ async def run_one(
             "reused": str(reuse.relative_to(ROOT) if reuse.is_relative_to(ROOT) else reuse),
         }
         return await _tests(row, task, contract, plan, template, inc, run_dir, kw, t0, stop_after)
-    res = await plan_contract(task, template, seed=inc.feature, **kw)
+    interface = load_interfaces(ROOT / "incidents" / "public_v1").get(inc.incident_id)  # #256
+    res = await plan_contract(task, template, seed=inc.feature, interface=interface, **kw)
     row["contract"] = {
         "ok": res.ok,
         "first_ok": res.ok and not res.first_problems,

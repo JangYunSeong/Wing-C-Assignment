@@ -403,6 +403,9 @@ templates/<직군>/<스택>/CURRENT
    관문·다른 이유. 11-18 woori001 은 계약의 출력 위치가 실행 날짜 폴더(`{out_dir}/{run_date}/`)라 숨은 hc1 은 흔한 구현만 통과시키고 허용 설계 셋을 떨어뜨렸고,
    명세의 '스케줄에 등록' 요구로 계약이 지은 crontab 명령에서 모든 구현이 떨어졌다. 진단과 단계 계획은 #256 — 뼈대(입출력 위치·실행 범위)를 칸·코드 도우미로,
    재료가 고정. 0단계(2026-11-19): **CURRENT v2**(운영이 v1 인데 생성기는 v2 하네스 전제), v2 매니페스트 `repair_terms.grading_env`·`harness_scope`.
+   1단계(2026-11-23 결정): 재료가 명령·입출력 파일·엔티티 이름까지 고정 — `incidents/public_v1/interfaces/data.eng.batch-rerun.yaml`(손 예시 daily-agg-pipeline
+   에서 옮김: `pipeline/run.py --date --raw --out`, 입력 `{raw}/{date}/*.jsonl`, 출력 `{out}/daily_sales/date=YYYY-MM-DD/*.parquet`). 코드가 계약에 채우고
+   (`starter/interface.py`), 고정 밖 요소와 테스트 글의 옛 이름은 재요청. 출력 스키마·plan_contract 판·템플릿 판은 그대로 — `Fixture` 역할·파티션 칸과 템플릿 v3 는 2단계.
 7. DBA PostgreSQL.
 - 순서는 시범 공고 수와 검증 방법의 성숙도 기준. 각 단계는 템플릿 → 소재(사례 변환) 2~3건 → 빌드 검증 → 평가.
 

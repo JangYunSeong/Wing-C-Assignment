@@ -1,0 +1,57 @@
+# 재료 pub:data.eng:batch-rerun-late-partial 의 공개 인터페이스 (#256 1단계) — 이 재료로 만드는 계약의 명령·입출력 파일·엔티티를
+# 이 파일이 정하고, 코드가 계약에 채운다 (starter/interface.fit_interface). LLM 은 공개 테스트·숨은 케이스·조절값 근거만 쓴다.
+# 값은 재료 starter 인 손 예시 daily-agg-pipeline(11-09~10 손 구현 대조에 쓴 것)에서 옮겼다 — 손 구현이 이 이름으로 실행된다.
+# 지킬 것:
+# - 공개 사례(pub:)만 — 회사 사례(co:)의 내부 정보를 옮기지 않는다 (스키마가 incident_id 를 pub: 로 강제한다). 글은 LLM 입력과 공개 계약에 그대로 나간다.
+# - 설명 글에 재료의 trigger_terms·leak_terms·stage2_cause_terms 와 사례 hidden_terms 를 쓰지 않는다 (공개 계약에 그대로 나간다).
+# - 실행 한 번이 책임지는 범위를 공개 글로 정하지 않는다 — 그 범위가 숨은 요구다.
+# - 바꾸면 이 재료로 만든 기존 빌드와 손 구현이 어긋난다. 바꿀 때는 손 예시와 함께.
+incident_id: pub:data.eng:batch-rerun-late-partial
+commands:
+  - endpoint_id: e1
+    path: pipeline/run.py
+    summary: 스케줄러가 매일 실행 날짜로 부르는 매출 요약 배치 — 원시 폴더의 결제 이벤트로 날짜·매장별 요약을 만든다
+    options:
+      - {name: date, type: date, constraints: "실행 날짜 (YYYY-MM-DD) — 스케줄러가 매일 그날 날짜로 부른다"}
+      - {name: raw, type: string, constraints: "원시 폴더 — 읽기만 한다"}
+      - {name: out, type: string, constraints: "요약 폴더 — 작업이 쓰는 파일은 모두 이 아래에 둔다"}
+    responses:
+      - {status: 0, description: "성공 — 요약 폴더에 결과를 기록함"}
+      - {status: 1, description: "실패 — 오류 내용을 표준 오류에 출력함"}
+files:
+  - fixture_id: f1
+    role: input
+    path: "{raw}/{date}/*.jsonl"
+    format: jsonl
+    entity: PaymentEvent
+    summary: 원시 결제 이벤트 — 날짜 폴더마다 수집 서버가 그날 받은 jsonl 파일
+    content: >-
+      jsonl, 한 줄에 PaymentEvent 하나 (JSON 객체). 폴더 날짜는 수집 서버가 그 파일을 받은 날이다.
+      실행 날짜 D 로 부를 때 D 폴더까지는 있고, D 보다 뒤 날짜 폴더는 아직 없다.
+  - fixture_id: f2
+    role: output
+    path: "{out}/daily_sales/date=YYYY-MM-DD/*.parquet"
+    format: parquet
+    entity: DailySales
+    summary: 일별 매장 매출 요약 — 날짜 파티션 폴더(date=YYYY-MM-DD)마다 parquet 파일
+    content: >-
+      parquet, 한 행에 DailySales 하나. 파티션 폴더 date=YYYY-MM-DD 의 날짜는 결제 시각(한국 시간)의 날짜다.
+      대시보드와 재무팀 대사 도구는 날짜 파티션을 수시로 읽는다 — 파티션마다 그 안의 parquet 파일을 모두 읽고,
+      이름이 _ 나 . 으로 시작하는 파일·폴더는 읽지 않는다. 파일 이름은 자유다. 결제가 없는 매장은 행을 두지 않는다.
+entities:
+  - entity_id: m1
+    name: PaymentEvent
+    fields:
+      - {name: payment_id, type: string, constraints: "결제 번호 — 결제 한 건에 하나"}
+      - {name: store_id, type: string, constraints: "매장 (S + 세 자리)"}
+      - {name: terminal_id, type: string, constraints: "결제 단말 (<매장>-T<번호>)"}
+      - {name: paid_at, type: datetime, constraints: "결제 시각 (한국 시간, YYYY-MM-DD HH:MM:SS)"}
+      - {name: amount, type: integer, constraints: "결제 금액 (원, 정수)"}
+      - {name: method, type: "enum(card|mobile|cash)", constraints: "결제 수단"}
+      - {name: received_at, type: datetime, constraints: "수집 서버가 받은 시각 (한국 시간, YYYY-MM-DD HH:MM:SS)"}
+  - entity_id: m2
+    name: DailySales
+    fields:
+      - {name: store_id, type: string, constraints: "매장"}
+      - {name: orders, type: integer, constraints: "결제 시각(한국 시간)의 날짜가 파티션 날짜인 그 매장의 결제 건수"}
+      - {name: sales_amount, type: integer, constraints: "그 결제들의 금액 합 (원)"}
