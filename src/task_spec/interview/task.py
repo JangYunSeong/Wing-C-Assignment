@@ -42,7 +42,11 @@ from task_spec.schemas.interview_state import ANSWER_MAX, GeneralQuestion, Targe
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.spec.analysis_request import apply_analysis, draft_analysis_request
 from task_spec.spec.build import build_common
-from task_spec.spec.common import FLAG_COMPANY_INCIDENT, plan_common
+from task_spec.spec.common import (
+    FLAG_COMPANY_INCIDENT,
+    FLAG_COMPANY_INCIDENT_LEGACY,
+    plan_common,
+)
 from task_spec.spec.draft import DraftContext
 from task_spec.spec.feature import apply_feature, draft_feature_task
 from task_spec.spec.slots import build_slots
@@ -51,11 +55,16 @@ from task_spec.starter.templates import TEMPLATE_FOR_SUB, Template, load_templat
 FEATURE_SEED_PROMPT = "interview_feature_seed"
 TARGETED_PROMPT = "interview_targeted_answer"
 FLAG_ANSWER_LEAK = (
-    "기준 답안 문장이 지원자에게 보이는 글에 들어감 — 채점 근거가 새지 않았는지 승인자 확인 필요"
+    "지원자에게 표시하는 글이 기준 답안 문장을 포함함 — 채점 근거 누설이 없는지 승인자 확인 필요"
 )
-FLAG_TOKEN_VISIBLE = "지원자에게 보이는 글에 가명화 토큰([ORG_1] 같은)이 있음 — 지원자에게 그대로 보이므로 소재를 바꾸거나 지워 주세요"
-FLAG_INTERVIEW_INCIDENT = "채용담당자 인터뷰 사례 기반 — 이 공고 담당자가 확인한 사례(공유 승인 전). 원리만 가져오고 소재는 바꿈, 승인자 검토 필요"
+FLAG_TOKEN_VISIBLE = "지원자에게 표시하는 글에 가명화 토큰([ORG_1] 같은)이 있음 — 지원자에게 그대로 표시하므로 소재를 변경하거나 삭제해 주세요"
+FLAG_INTERVIEW_INCIDENT = "채용담당자 인터뷰 사례 기반 — 이 공고 담당자가 확인한 사례(공유 승인 전). 원리만 차용하고 소재는 변경함, 승인자 검토 필요"
 _COMPUTED_FLAGS = (FLAG_ANSWER_LEAK, FLAG_TOKEN_VISIBLE)  # 글이 바뀔 때마다 다시 계산하는 표시
+# 2026-11-23 문구를 바꾸기 전 글 — 이미 저장된 인터뷰 과제의 옛 표시도 다시 계산할 때 지운다 (새로 붙이지 않는다)
+_COMPUTED_FLAGS_LEGACY = (
+    "기준 답안 문장이 지원자에게 보이는 글에 들어감 — 채점 근거가 새지 않았는지 승인자 확인 필요",
+    "지원자에게 보이는 글에 가명화 토큰([ORG_1] 같은)이 있음 — 지원자에게 그대로 보이므로 소재를 바꾸거나 지워 주세요",
+)
 _LEAK_WINDOW = 14  # 기준 답안의 이 길이(공백·문장부호 뺀 글자) 이상이 그대로 보이면 샌 것으로 본다
 _SECTION_HEAD = re.compile(
     r"(?m)^\s*\[(?!(?:PERSON|CONTACT|LINK|SCHOOL|ORG|PRODUCT|COURSE)_\d+\])[^\]]+\]\s*"
@@ -287,7 +296,7 @@ def with_content_flags(
 ) -> list[str]:
     """글에서 다시 계산하는 표시(기준 답안 누설·토큰)를 지금 글 기준으로 바꾼다 — 나머지 표시는 그대로."""
     shown = list(targeted)
-    kept = [f for f in flags if not f.startswith(_COMPUTED_FLAGS)]
+    kept = [f for f in flags if not f.startswith((*_COMPUTED_FLAGS, *_COMPUTED_FLAGS_LEGACY))]
     return list(
         dict.fromkeys(
             [
@@ -308,9 +317,8 @@ def with_interview_flag(task: TaskItem, incident: PublicIncident) -> TaskItem:
     공통 과제 자신의 표시만 바꾼다 (확장 슬롯이 쓴 다른 회사 사례의 표시는 맞는 말이라 그대로)."""
     if task.source_incident != incident.incident_id:
         return task
-    flags = [
-        FLAG_INTERVIEW_INCIDENT if f == FLAG_COMPANY_INCIDENT else f for f in task.review_flags
-    ]
+    company = (FLAG_COMPANY_INCIDENT, FLAG_COMPANY_INCIDENT_LEGACY)  # 생성 중에 문구가 바뀐 초안도
+    flags = [FLAG_INTERVIEW_INCIDENT if f in company else f for f in task.review_flags]
     return task.model_copy(update={"review_flags": list(dict.fromkeys(flags))})
 
 

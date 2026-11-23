@@ -823,12 +823,12 @@ def _harness(
             if any(_same(value, raw) for raw in allowed):
                 if len(allowed) > 1:
                     flags.append(
-                        f"운영 값 {p.name} 후보가 자료에 여럿({', '.join(allowed)}) — {value} 을 썼음, 승인자 확인"
+                        f"운영 값 {p.name} 후보가 자료에 여럿({', '.join(allowed)}) — {value} 을 사용했음, 승인자 확인"
                     )
                 continue
             if cited is not None and cited.verdict == "ok" and not cited.notes:
                 flags.append(
-                    f"운영 값 {p.name}={value} 이 템플릿 표기 패턴의 값({', '.join(allowed)})과 다름 — 근거 인용 {quote!r} 로 받음, 승인자 확인"
+                    f"운영 값 {p.name}={value} 이 템플릿 표기 패턴의 값({', '.join(allowed)})과 다름 — 근거 인용 {quote!r} 로 수용함, 승인자 확인"
                 )
                 continue
             problems.append(
@@ -848,7 +848,7 @@ def _harness(
             matched = timed_matches(p.name, value, spec.visible_texts)
             if matched:
                 flags.append(
-                    f"운영 값 {p.name}={value} 의 근거를 계약이 '없음'으로 썼지만 자료의 시간 값과 환산해 맞음: "
+                    f"운영 값 {p.name}={value} 의 근거를 계약이 '없음'으로 작성함. 자료의 시간 값과 환산해 일치함: "
                     + " / ".join(matched[:3])
                     + " — 승인자 확인"
                 )
@@ -1578,7 +1578,7 @@ def _entity_existing(contract: TaskContract, plan: HiddenPlan) -> tuple[list[str
                 "바꿀 행은 이미 있는 엔티티(existing: true, 기존 API 가 다루는 대상)에 둔다. 새 엔티티는 요청으로 쌓이는 것이라 시드 행이 아니다"
             )
     flags = [
-        f"새로 만드는 엔티티 {names[s.entity_id]} 에 시드 {s.rows}행 — 이 과제 전에 없던 테이블이면 처음 0행이어야 한다 (사람 확인)"
+        f"새로 생성하는 엔티티 {names[s.entity_id]} 에 시드 {s.rows}행 — 이 과제 전에 없던 테이블이면 처음 0행이어야 한다 (사람 확인)"
         for s in contract.seed
         if s.rows > 0 and s.entity_id not in existing and s.entity_id in names
     ]
@@ -1925,7 +1925,7 @@ _ENUM_BLOCK = re.compile(r"\benum\s+\w+\s*\{([^}]*)\}")
 _PIPES = re.compile(r"""(?:["']?[A-Za-z][\w-]*["']?\s*\|\s*)+["']?[A-Za-z][\w-]*["']?""")
 _TOKEN = re.compile(r"[A-Za-z][\w-]*")
 _UPPER = re.compile(r"^[A-Z][A-Z0-9_]*$")
-FLAG_MATERIAL = "계약 상태 값이 자료와 다름 (재요청 후에도 — 요구가 새 상태를 더하는지 확인): "
+FLAG_MATERIAL = "계약 상태 값이 자료와 다름 (재요청 후에도 — 요구가 새 상태를 추가하는지 확인): "
 
 
 def material_enums(texts: Iterable[str]) -> list[list[str]]:

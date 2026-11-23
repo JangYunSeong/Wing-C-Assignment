@@ -155,7 +155,7 @@ from task_spec.spec.company_incidents import (
     feature_fit,
     new_incident_id,
 )
-from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID
+from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID, FLAG_DRAFT_INVALID_LEGACY
 from task_spec.spec.incidents import incident_block, incident_by_id, known_cases_block
 from task_spec.spec.store import CommonKey, CommonTaskRepo, InterviewTaskConflict, StoredCommon
 from task_spec.starter.store import BuildRepo, BuildRuleError
@@ -1642,7 +1642,8 @@ class InterviewService:
                 for f in spec.review_flags
                 if f not in old_flags
                 and not (
-                    f.startswith((FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID)) and f not in new_flags
+                    f.startswith((FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID, FLAG_DRAFT_INVALID_LEGACY))
+                    and f not in new_flags
                 )
             ]
             state.spec = spec.model_copy(

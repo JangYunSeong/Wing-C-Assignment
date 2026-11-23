@@ -356,7 +356,7 @@ def _operating_values(
                 )
                 if key in base and _same_value(base[key], plan.harness[p.name]):
                     flags.append(
-                        f"템플릿 기본 설정 {key} 가 운영 값과 같음 — 템플릿 기본값을 바꿀 신호"
+                        f"템플릿 기본 설정 {key} 가 운영 값과 같음 — 템플릿 기본값을 변경할 신호"
                     )
                 else:
                     problems.append(StaticProblem(o.target, msg))
@@ -2540,8 +2540,8 @@ def _duplicate_labels(o: Overlay, t: Template) -> list[str]:
         dup = sorted(f'{code} "{msg}"' for (code, msg), n in labels.items() if n > 1)
         if dup:
             flags.append(
-                f"숨은 테스트 {f.path} 에 같은 사유·문구의 단언이 둘 이상: {'; '.join(dup)} — 사유가 단언과 맞는지 확인 "
-                "(흔한 구현이 '의도한 사유'로 실패한 것처럼 보일 수 있음)"
+                f"숨은 테스트 {f.path} 에 같은 사유·문구의 단언이 둘 이상: {'; '.join(dup)} — 사유가 단언과 일치하는지 확인 "
+                "(흔한 구현이 '의도한 사유'로 실패한 것으로 오인할 수 있음)"
             )
     return flags
 
@@ -2674,7 +2674,7 @@ def readme_flags(
     ]
     out = (
         [
-            f"{README} 에 숨은 요구·운영 조건을 드러내는 말: {', '.join(dict.fromkeys(shown))} — 승인된 명세 문장에서 나옴, 명세 수정 필요"
+            f"{README} 에 숨은 요구·운영 조건을 노출하는 말: {', '.join(dict.fromkeys(shown))} — 승인한 명세 문장에서 유래함, 명세 수정 필요"
         ]
         if shown
         else []

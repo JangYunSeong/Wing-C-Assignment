@@ -43,9 +43,9 @@ CompanyResolver = Callable[
 CompanyIncidentStatus = Literal["pending", "shared", "rejected", "retired"]
 ShareStatus = Literal["shared", "rejected"]
 
-FLAG_COMPANY_REUSED = "회사 사례 {id} 는 다른 공고 {n}곳의 공통 과제에서도 씀 — 두 공고에 모두 지원한 사람은 함정·정답을 알 수 있음"
-FLAG_COMPANY_SWITCHED = "이 공고가 쓰던 회사 사례 {id} 를 더 쓸 수 없어(보관·반려 또는 과제 유형에 맞지 않음) 다른 사례로 만듦"
-FLAG_COMPANY_NO_FEATURE = "이 회사의 공유 사례에 기능형 재료가 없어 공개 사례로 만듦"
+FLAG_COMPANY_REUSED = "회사 사례 {id} 는 다른 공고 {n}곳의 공통 과제에서도 사용함 — 두 공고에 모두 지원한 사람은 함정·정답을 파악할 수 있음"
+FLAG_COMPANY_SWITCHED = "이 공고가 사용하던 회사 사례 {id} 를 더 사용할 수 없어(보관·반려 또는 과제 유형에 적합하지 않음) 다른 사례로 생성함"
+FLAG_COMPANY_NO_FEATURE = "이 회사의 공유 사례에 기능형 재료가 없어 공개 사례로 생성함"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.company_incident (

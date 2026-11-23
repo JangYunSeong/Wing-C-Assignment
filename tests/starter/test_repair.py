@@ -340,7 +340,7 @@ def test_starter_that_already_passes_a_hidden_case_is_regenerated() -> None:
     assert _keys(plan) == ["gen_starter"] and "숨은 케이스 hc1 통과" in plan.actions[0].reason
     # 이미 다시 만든 시작 코드가 또 통과하면 막지 않고 표시만 — 나머지 게이트는 그대로 본다
     again = _assign(_report(partly, *refs), gen_starter=1)
-    assert again.passed and any("다시 만든 뒤에도" in f and "hc1" in f for f in again.flags)
+    assert again.passed and any("다시 생성한 뒤에도" in f and "hc1" in f for f in again.flags)
     # 숨은 테스트가 컴파일되지 않으면 여기서 보지 않는다 (참조 구현 쪽에서 배정)
     broken = _run("starter+hidden", "starter_hidden", setup="compile_error")
     assert _assign(_report(broken, *refs)).passed
@@ -411,7 +411,7 @@ def test_gate4_accepted_designs() -> None:
     assert _keys(_assign(_report(naive, d1))) == ["gen_accepted:d1"]
     # 다시 만든 뒤에도 실패: 흔한 구현이 그 케이스를 의도한 사유로 잡으면 테스트는 제 몫 → 설계를 못 따름 (사람 확인, 2026-11-07 루프)
     plan = _assign(_report(naive, d1), gen_accepted__d1=1)
-    assert not plan.actions and any("설계를 못 따름" in u for u in plan.unresolved)
+    assert not plan.actions and any("설계를 준수하지 못함" in u for u in plan.unresolved)
     # 그런 근거가 없으면(흔한 구현 결과 없음) 허용 구현이 하나뿐일 때만 숨은 테스트를 의심
     assert _keys(_assign(_report(d1), gen_accepted__d1=1)) == ["gen_hidden"]
     plan = _assign(_report(d1), gen_accepted__d1=1, gen_hidden=1)
@@ -425,7 +425,7 @@ def test_gate4_accepted_designs() -> None:
     # 그 한 번을 썼으면 → 사람 확인 (설계를 못 따름 — 흔한 구현을 의도한 사유로 잡으므로)
     counts = {"gen_accepted:d1": 1, f"gen_hidden{DESIGN.suffix}": 1}
     plan = assign(_report(naive, d1, d2_ok), PLAN2, OVERLAYS, MISSED, counts)
-    assert not plan.actions and any("설계를 못 따름" in u for u in plan.unresolved)
+    assert not plan.actions and any("설계를 준수하지 못함" in u for u in plan.unresolved)
     # 일반 숨은 테스트 예산(③ 등)을 이미 써도 이 의심은 따로 센다
     plan = _assign(_report(naive, d1, d2_ok), gen_accepted__d1=1, gen_hidden=1)
     assert _keys(plan) == ["gen_hidden"]
@@ -605,7 +605,7 @@ async def test_single_accepted_design_regenerated_then_human() -> None:
     out = await _build(ScriptedVerifier(_one_case(NAIVE_OK, D1_FAIL)), llm)
     assert out.status == "failed" and out.rounds == 1
     assert [(r.target, r.result) for r in out.repairs] == [("gen_accepted", "regenerated")]
-    assert any("설계를 못 따름" in f for f in out.review_flags)
+    assert any("설계를 준수하지 못함" in f for f in out.review_flags)
     assert backend.calls.count("gen_accepted") == 2 and backend.calls.count("gen_hidden") == 1
     assert len(out.snapshots) == 2 and out.snapshots[0]["d1"] is not out.snapshots[1]["d1"]
 
@@ -615,7 +615,7 @@ async def test_budget_exhausted_fails_with_flag() -> None:
     llm, _ = _llm()
     out = await _build(ScriptedVerifier(_one_case(wrong, D1_OK)), llm)
     assert out.status == "failed"
-    assert any("재생성 예산을 다 씀 — gen_hidden" in f for f in out.review_flags)
+    assert any("재생성 예산을 소진함 — gen_hidden" in f for f in out.review_flags)
     assert [(r.target, r.result) for r in out.repairs] == [
         ("gen_hidden", "regenerated"),
         ("gen_hidden", "skipped"),
@@ -806,7 +806,7 @@ async def test_compile_errors_get_two_repairs() -> None:
     llm, _ = _llm()
     out = await _build(ScriptedVerifier(_compile_broken()), llm)
     assert out.status == "failed" and any(
-        "재생성 예산을 다 씀 — gen_hidden" in f for f in out.review_flags
+        "재생성 예산을 소진함 — gen_hidden" in f for f in out.review_flags
     )
 
 
@@ -881,7 +881,7 @@ def test_hidden_case_passed_by_a_starter_without_the_feature_regenerates_the_hid
     # 숨은 테스트를 이미 다시 만들었으면 막지 않고 표시만
     again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_hidden": 1})
     assert not any(a.generator == "gen_hidden" and a.gate == "②'" for a in again.actions)
-    assert any("숨은 테스트를 다시 만든 뒤에도" in f for f in again.flags)
+    assert any("숨은 테스트를 다시 생성한 뒤에도" in f for f in again.flags)
 
 
 def test_python_job_crash_blames_that_implementation_not_the_public_test() -> None:
@@ -997,7 +997,7 @@ def test_case_that_still_misses_the_naive_after_a_rewrite_is_flagged_not_failed(
     assert _keys(_assign(report)) == ["gen_hidden"]  # 처음엔 숨은 테스트를 다시
     again = _assign(report, gen_hidden=1)
     assert again.passed and not again.actions
-    assert any("hc1" in f and "hc2" in f and "채점에서 뺐다" in f for f in again.flags)
+    assert any("hc1" in f and "hc2" in f and "채점에서 제외했다" in f for f in again.flags)
     assert again.weak == [
         "hc1"
     ]  # 채점에서 뺀다 [확정: 2026-11-11 사용자] — hc2 가 함정을 잡으니 숨은 요구는 남는다
@@ -1329,7 +1329,7 @@ def test_a_new_api_public_test_passing_on_the_starter_remakes_the_starter() -> N
     acts, flags = _starter_public(run, {}, set())  # 이미 있는 API 의 테스트 — 표시만
     assert not acts and any("시작 코드에서 통과하는 공개 테스트" in f for f in flags)
     acts, flags = _starter_public(run, {"gen_starter": 1}, {"pt1"})  # 예산을 다 썼으면 표시
-    assert not acts and any("다시 만든 시작 코드에서도 새 API" in f for f in flags)
+    assert not acts and any("다시 생성한 시작 코드에서도 새 API" in f for f in flags)
 
 
 # ── ③ 숨은 요구 1개 출력 고정 (#242) ──────────────────────────
@@ -1464,8 +1464,8 @@ ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
         "actions": [],
         "unresolved": [],
         "flags": [
-            "숨은 케이스 hc1 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현(naive-all)이 통과 — 같은 숨은 요구 t1 는 hc2 가 의도한 "
-            "사유로 잡는다. hc1 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 뺐다 (무엇을 확인했나: 모두 정상 응답)"
+            "숨은 케이스 hc1 는 숨은 테스트를 다시 생성한 뒤에도 흔한 구현(naive-all)이 통과 — 같은 숨은 요구 t1 는 hc2 가 의도한 "
+            "사유로 검출한다. hc1 는 흔한 구현과 올바른 구현을 구별하지 않아 채점에서 제외했다 (무엇을 확인했나: 모두 정상 응답)"
         ],
         "weak": ["hc1"],
     },
@@ -1500,7 +1500,7 @@ ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
                 "gen_naive",
                 "naive-all",
                 "③",
-                "흔한 구현이 hc1, hc2 통과 — 정답 장치(let cancelled =)를 씀 (naive-all)",
+                "흔한 구현이 hc1, hc2 통과 — 정답 장치(let cancelled =)를 사용함 (naive-all)",
                 "이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치(let cancelled =)를 썼다 — 그 "
                 "장치를 빼고 입력의 흔한 구현 설명대로만 쓴다 (설명에 없는 장치를 더하지 않는다).",
                 "#naive-first",
@@ -1514,8 +1514,8 @@ ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
     "material": {
         "actions": [],
         "unresolved": [
-            "재료 판정: 흔한 구현(naive-all)이 다시 만든 뒤에도 허용 설계의 장치(let cancelled =)를 써 숨은 "
-            "케이스 hc1, hc2 를 통과 — AI 흔한 구현이 기본으로 정답을 쓰므로 이 함정은 AI 첫 답을 가르지 못할 수 "
+            "재료 판정: 흔한 구현(naive-all)이 다시 생성한 뒤에도 허용 설계의 장치(let cancelled =)를 사용해 숨은 "
+            "케이스 hc1, hc2 를 통과 — AI 흔한 구현이 기본으로 정답을 사용하므로 이 함정은 AI 첫 답을 구별하지 못할 수 "
             "있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
         ],
         "flags": [],
@@ -1565,8 +1565,8 @@ ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
         "unresolved": [],
         "flags": [
             "숨은 케이스 hc2 는 흔한 구현(naive-all)을 rollback_left_success 대신 "
-            "pool_acquire_timeout 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "
-            "rollback_left_success 를 확인하는 케이스가 없다 (사람 확인)"
+            "pool_acquire_timeout 로 검출함 — 같은 숨은 요구의 사유라 변별로 인정함. "
+            "rollback_left_success 를 확인하는 케이스는 없다 (사람 확인)"
         ],
         "weak": [],
     },
@@ -1574,12 +1574,12 @@ ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
         "actions": [],
         "unresolved": [],
         "flags": [
-            "숨은 케이스 hc1 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현(naive-all)이 통과 — 같은 숨은 "
-            "요구 t1 는 hc2 가 의도한 사유로 잡는다. hc1 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 "
-            "뺐다 (무엇을 확인했나: 모두 정상 응답)",
+            "숨은 케이스 hc1 는 숨은 테스트를 다시 생성한 뒤에도 흔한 구현(naive-all)이 통과 — 같은 숨은 "
+            "요구 t1 는 hc2 가 의도한 사유로 검출한다. hc1 는 흔한 구현과 올바른 구현을 구별하지 않아 채점에서 "
+            "제외했다 (무엇을 확인했나: 모두 정상 응답)",
             "숨은 케이스 hc2 는 흔한 구현(naive-all)을 rollback_left_success 대신 "
-            "record_missing 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "
-            "rollback_left_success 를 확인하는 케이스가 없다 (사람 확인)",
+            "record_missing 로 검출함 — 같은 숨은 요구의 사유라 변별로 인정함. "
+            "rollback_left_success 를 확인하는 케이스는 없다 (사람 확인)",
         ],
         "weak": ["hc1"],
     },
@@ -1645,7 +1645,8 @@ def test_gate3_does_not_let_one_hidden_need_vouch_for_another() -> None:
     ]
     [flag] = last.flags
     assert (
-        "숨은 케이스 hc1 는" in flag and "같은 숨은 요구 t1 는 hc2 가 의도한 사유로 잡는다" in flag
+        "숨은 케이스 hc1 는" in flag
+        and "같은 숨은 요구 t1 는 hc2 가 의도한 사유로 검출한다" in flag
     )
 
 
@@ -1748,5 +1749,5 @@ async def test_build_keeps_a_hidden_need_that_none_of_its_own_cases_catches() ->
     ]
     assert "hc3" in out.repairs[0].reason and "hc1" not in out.repairs[0].reason
     assert out.status == "failed" and out.dropped_cases == []  # t2 의 hc3 은 채점에서 빠지지 않는다
-    assert any("재생성 예산을 다 씀 — gen_hidden" in f and "hc3" in f for f in out.review_flags)
+    assert any("재생성 예산을 소진함 — gen_hidden" in f and "hc3" in f for f in out.review_flags)
     assert not any("t2 는 hc2" in f for f in out.review_flags)
