@@ -984,6 +984,57 @@ def test_grading_environment_error_in_every_implementation_is_escalated_not_rege
     assert not any(u.startswith("채점 환경") for u in plan.unresolved)
 
 
+def test_data_grading_environment_errors_stop_instead_of_rewriting_tests() -> None:
+    """#256 (2026-11-18 데이터 알파 woori001): 공개 테스트가 crontab 등록을 확인해 구현 4개가 모두 `FileNotFoundError: … 'crontab'` 였는데
+    '테스트 의심'으로 공개 테스트를 다시 만들고 예산을 썼다 — 데이터 매니페스트 grading_env 로 '채점 환경 확인 필요'에서 멈춘다."""
+    from task_spec.starter.templates import load_template
+
+    terms = load_template("data/python-duckdb").manifest.repair_terms
+    starter = TargetRun.model_validate(
+        {"target": "starter", "kind": "starter", "setup": "ok", "tests": []}
+    )
+
+    def every(message: str) -> VerifyReport:
+        def run(target: str, kind: str) -> TargetRun:
+            return TargetRun.model_validate(
+                {
+                    "target": target,
+                    "kind": kind,
+                    "setup": "ok",
+                    "tests": [
+                        {"group": "public", "name": "pt3", "result": "ASSERT", "message": message}
+                    ],
+                }
+            )
+
+        return VerifyReport(
+            runs=[starter, run("naive-all", "ref_naive"), run("d1", "ref_accepted")]
+        )
+
+    crontab = (
+        "AssertionError: FileNotFoundError: [Errno 2] No such file or directory: 'crontab' "
+        "assert False + where False = JobResult(code=1).ok"
+    )
+    for message in (
+        crontab,
+        "/bin/sh: 1: crontab: not found",
+        "Temporary failure in name resolution",
+    ):
+        plan = assign(every(message), PLAN2, OVERLAYS, MISSED, {}, (), terms)
+        assert plan.actions == [] and len(plan.unresolved) == 1, message
+        assert (
+            plan.unresolved[0].startswith("채점 환경 확인 필요")
+            and "public pt3" in plan.unresolved[0]
+        )
+    # 데이터 파일(확장자)·작업 폴더 경로(절대 경로)가 없는 것은 채점 환경이 아니다 — 기존 규칙대로 다시 만든다
+    for message in (
+        "FileNotFoundError: [Errno 2] No such file or directory: 'payments.csv'",
+        "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/ws/out/2024-03-14'",
+    ):
+        plan = assign(every(message), PLAN2, OVERLAYS, MISSED, {}, (), terms)
+        assert not any(u.startswith("채점 환경") for u in plan.unresolved), message
+
+
 def test_case_that_still_misses_the_naive_after_a_rewrite_is_flagged_not_failed() -> None:
     """2026-11-10 gen-item2: hc2 가 의도한 사유로 함정을 잡는데 hc1 만 다시 만든 뒤에도 흔한 구현이 통과 — 예산을 다 써 failed 였다.
     허용 구현은 모두 통과했으니 막지 않고 '변별하지 못하는 케이스'로 채점에서 뺀다 (2026-11-11 사용자 — 예전엔 표시만)."""

@@ -19,6 +19,8 @@ from task_spec.schemas.base import Schema
 InterfaceKind = Literal[
     "http", "cli", "file", "ui"
 ]  # ui = 화면 (계약 screens), 서버 API 는 endpoints
+# 계약 입력 환경(build.Fixture.kind)의 종류 — 템플릿 harness_scope 가 하네스가 깔 수 있는 것을 이 값으로 고른다
+FixtureKind = Literal["db", "file", "service", "browser", "env"]
 HarnessValueKind = Literal["int", "float", "str", "int_list"]
 
 _NAME = r"^[a-z][a-z0-9_]*$"
@@ -429,6 +431,21 @@ class ConfigPitfall(Schema):
     overlays: list[SlotKind] = Field(default_factory=lambda: _code_overlays())
 
 
+class HarnessScope(Schema):
+    """채점 하네스가 시험할 수 있는 계약의 범위 — 계약 검사 전용(starter/contract._harness_scope), 같은 vN 에서 고칠 수 있다.
+    #256 (2026-11-18 데이터 알파 woori001): 명세의 '스케줄에 등록' 요구로 계약이 `pipeline/setup_schedule.py --schedule-time` 과
+    kind env 입력 환경(crontab 줄)을 지었고, 채점 컨테이너에 crontab 이 없어 허용·흔한 구현 4개가 모두 그 공개 테스트에서 떨어졌다
+    (수리는 공개 테스트만 다시 만들다 예산을 씀). 하네스가 깔 수 없는 환경·시험할 수 없는 명령은 계약 단계에서 되돌린다."""
+
+    # 하네스가 깔 수 있는 입력 환경 종류 — 계약 fixtures 의 다른 종류는 재요청
+    fixture_kinds: list[FixtureKind] = Field(min_length=1)
+    # 명령(메서드 없는 엔드포인트)마다 파일 입력 환경 위치(path 의 {옵션})에 쓰인 옵션이 하나 이상 — 하네스가 케이스마다 임시 작업 폴더를
+    # 옵션으로 넘기므로, 파일 위치 옵션이 없는 명령은 하네스가 깐 입력·출력에 닿지 않아 시험할 수 없다
+    command_file_option: bool = False
+    # 위 검사에 걸렸을 때 재요청 끝에 붙는 안내 — 이 스택이 시험할 수 없는 것과 그 요구를 대신 담는 법
+    hint: str = ""
+
+
 class TemplateManifest(Schema):
     """템플릿 `templates/<직군>/<스택>/vN/manifest.yaml`."""
 
@@ -485,6 +502,8 @@ class TemplateManifest(Schema):
     # 계약 계획(plan_contract) 입력의 템플릿 설명 끝에 붙는 안내 — 이 스택에서 계약을 적는 법 (예: CLI 명령·옵션·종료 코드).
     # 2026-11-09 데이터 템플릿: 공용 계약 프롬프트는 HTTP·화면 중심이라 CLI·파일 과제의 칸 쓰는 법을 템플릿이 알려 준다.
     contract_guide: list[str] = Field(default_factory=list)
+    # 채점 하네스가 시험할 수 있는 계약의 범위 — 계약 검사 전용 (#256). 없으면 검사하지 않는다
+    harness_scope: HarnessScope | None = None
     repair_terms: RepairTerms = Field(default_factory=RepairTerms)  # 수리 안내 문구의 스택 이름
     # 이 스택에서 되풀이되는 API 실수 (static_check._code_pitfalls)
     code_pitfalls: list[CodePitfall] = Field(default_factory=list)
