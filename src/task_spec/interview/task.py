@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -31,6 +31,7 @@ from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     CompetencyEvidence,
     FeatureSeed,
+    MaterialInterface,
     PostingCompetency,
     PostingProfile,
     Provenance,
@@ -49,6 +50,7 @@ from task_spec.spec.common import (
 )
 from task_spec.spec.draft import DraftContext
 from task_spec.spec.feature import apply_feature, draft_feature_task
+from task_spec.spec.incidents import IncidentCatalog
 from task_spec.spec.slots import build_slots
 from task_spec.starter.templates import TEMPLATE_FOR_SUB, Template, load_template
 
@@ -436,6 +438,8 @@ class OntologyTaskMaker:
     ontology: OntologyRepository
     llm: LLMClient
     prompts: PromptRegistry
+    # 재료 id → 재료가 정한 공개 인터페이스 (#256) — 공개 재료로 만드는 인터뷰 과제도 명세가 계약과 같은 형식·칸 이름을 쓰게
+    interfaces: Mapping[str, MaterialInterface] = field(default_factory=dict)
 
     async def competencies(self, profile: PostingProfile) -> CompetencyChoice:
         matches = await evidence(
@@ -457,13 +461,17 @@ class OntologyTaskMaker:
     async def _context(self, req: TaskRequest) -> tuple[TaskItem, DraftContext, list[str]]:
         """공통 과제 뼈대·계산 맥락·표시 — 온톨로지 조회뿐이라 결정적이다. 맥락(DraftContext)은 단계 사이에 넘기지 않고
         단계마다 다시 만든다 (끊긴 단계부터 이을 때 저장해 둘 수 없는 값)."""
+        catalog = IncidentCatalog(
+            interfaces=self.interfaces
+        )  # 그 재료 하나 + 인터페이스 (회사 사례·인터뷰 재료는 없음)
+        catalog[req.profile.sub or ""] = req.coding_incident
         built = await build_common(
             req.profile,
             req.matches,
             task_id=req.task_id,
             ontology_version=req.profile.ontology_version,
             ontology=self.ontology,
-            incidents={req.profile.sub or "": req.coding_incident},
+            incidents=catalog,
             task_kind="feature",
         )
         task, ctx = built.task, built.ctx

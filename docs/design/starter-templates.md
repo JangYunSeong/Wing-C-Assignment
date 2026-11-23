@@ -406,6 +406,7 @@ templates/<직군>/<스택>/CURRENT
    1단계(2026-11-23 결정): 재료가 명령·입출력 파일·엔티티 이름까지 고정 — `incidents/public_v1/interfaces/data.eng.batch-rerun.yaml`(손 예시 daily-agg-pipeline
    에서 옮김: `pipeline/run.py --date --raw --out`, 입력 `{raw}/{date}/*.jsonl`, 출력 `{out}/daily_sales/date=YYYY-MM-DD/*.parquet`). 코드가 계약에 채우고
    (`starter/interface.py`), 고정 밖 요소와 테스트 글의 옛 이름은 재요청. 출력 스키마·plan_contract 판·템플릿 판은 그대로 — `Fixture` 역할·파티션 칸과 템플릿 v3 는 2단계.
+   명세 쪽(같은 날): 명세 입력에 인터페이스 요약, 공개 요구·수용 기준의 다른 형식·칸 이름·스케줄 등록 요구는 재요청 (`spec/interface_terms.py`).
 7. DBA PostgreSQL.
 - 순서는 시범 공고 수와 검증 방법의 성숙도 기준. 각 단계는 템플릿 → 소재(사례 변환) 2~3건 → 빌드 검증 → 평가.
 

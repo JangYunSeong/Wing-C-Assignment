@@ -113,7 +113,12 @@ def create_app(
             llm=llm,
             prompts=prompts,
             ontology_version=lists.version,
-            tasks=OntologyTaskMaker(ontology=app.state.ontology, llm=llm, prompts=prompts),
+            tasks=OntologyTaskMaker(
+                ontology=app.state.ontology,
+                llm=llm,
+                prompts=prompts,
+                interfaces=public_incidents.interfaces,  # #256 재료 인터페이스
+            ),
             common_store=common_store,
             # 승인 확정 — 인터뷰·회사 사례·공통 과제를 같은 연결로 한 트랜잭션에 (D2b)
             approvals=PgApprovalCommitter(interview_store.pool),
