@@ -191,3 +191,105 @@ class PublicIncident(Schema):
     feature: FeatureSeed | None = (
         None  # 기능 개발형 재료 (없으면 그 직군은 기능형 기본값 대상이 아님)
     )
+
+
+# ── 재료 인터페이스 (#256 1단계) ──────────────────────────────────────────
+# 데이터 과제는 숨은 요구(늦은 데이터·사본·반쯤 쓴 출력)를 시험하는 자리가 인터페이스 자체(입력 폴더·출력 파티션·실행 한 번의 범위)라,
+# LLM 이 빌드마다 정하면 판정이 뒤집힌다 (2026-11-18 알파: 출력을 실행 날짜 폴더에 둬 흔한 구현만 숨은 케이스 통과). 그래서 재료가
+# 명령·입출력 파일·엔티티를 고정하고 코드가 계약에 채운다 (starter/interface.fit_interface) [2026-11-23 사용자 결정].
+# FeatureSeed·PublicIncident 에 칸을 두지 않는다 — 둘 다 인터뷰 프롬프트(interview_feature_seed·interview_incident_extended)의 출력
+# 스키마로 렌더돼, 칸을 더하면 그 프롬프트가 새 vN 없이 바뀐다. 파일은 incidents/public_v1/interfaces/*.yaml (spec/incidents.load_interfaces).
+# refs(공개 요구·수용 기준 id)는 명세마다 달라 여기 적지 않는다 — 계약에 채울 때 LLM 답에서 가져온다.
+_SLOT = re.compile(r"\{([^{}/]*)\}")
+_FILE_FORMATS = ("jsonl", "csv", "parquet")
+
+
+class InterfaceField(Schema):
+    """옵션·엔티티 칸 하나 — 계약 ContractField 에서 refs 를 뺀 것."""
+
+    name: str = Field(min_length=1, max_length=60)
+    type: str = Field(
+        min_length=1, max_length=60
+    )  # 계약과 같은 표기 (string·integer·date·datetime·enum(a|b))
+    required: bool = True
+    constraints: str | None = Field(default=None, max_length=200)
+
+
+class InterfaceResponse(Schema):
+    status: int = Field(ge=0, le=255)  # 명령의 종료 코드
+    description: str = Field(min_length=1, max_length=200)
+
+
+class InterfaceCommand(Schema):
+    """명령 하나 — 계약의 메서드 없는 Endpoint 가 된다 (옵션은 request 칸, 명령행 --옵션 은 코드가 이름에서 만든다)."""
+
+    endpoint_id: str = Field(pattern=r"^e\d{1,2}$")
+    path: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=200)
+    options: list[InterfaceField] = Field(min_length=1)
+    responses: list[InterfaceResponse] = Field(min_length=1)
+    existing: bool = False
+
+
+class InterfaceFile(Schema):
+    """입출력 파일 하나 — 계약의 kind file Fixture 가 된다. role·format·entity 는 계약 글(summary·content)과 맞는지 검증하고, 2단계(입출력
+    도우미를 코드가 생성)가 쓴다 — 계약 Fixture 에는 아직 칸이 없다."""
+
+    fixture_id: str = Field(pattern=r"^f\d{1,2}$")
+    role: Literal["input", "output"]
+    path: str = Field(
+        min_length=1, max_length=200
+    )  # {옵션 이름} 만 자리표시자 — 출력 파티션 date=YYYY-MM-DD 는 글자
+    format: Literal["jsonl", "csv", "parquet"]
+    entity: str = Field(min_length=1, max_length=60)  # 한 줄(행)의 엔티티 이름
+    summary: str = Field(min_length=1, max_length=200)
+    content: str = Field(default="", max_length=2000)
+
+
+class InterfaceEntity(Schema):
+    """엔티티 하나 — 계약 Entity 가 된다 (관계·외래 키·상태 없음 — 데이터 파일의 행 모양)."""
+
+    entity_id: str = Field(pattern=r"^m\d{1,2}$")
+    name: str = Field(min_length=1, max_length=60)
+    fields: list[InterfaceField] = Field(min_length=1)
+    existing: bool = False
+
+
+class MaterialInterface(Schema):
+    """재료가 정한 공개 인터페이스 — 이 재료로 만드는 계약의 명령·입출력 파일·엔티티 (#256 1단계, 데이터 재료)."""
+
+    incident_id: str = Field(pattern=r"^pub:[a-z_.]+:[a-z0-9-]+$")
+    commands: list[InterfaceCommand] = Field(min_length=1)
+    files: list[InterfaceFile] = Field(min_length=1)
+    entities: list[InterfaceEntity] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> MaterialInterface:
+        """계약 검사(_file_fixtures·_naming 등)를 재료 단계에서 미리 — 코드가 채운 계약을 LLM 이 고칠 수 없으므로 여기서 막는다."""
+        ids = [
+            *(c.endpoint_id for c in self.commands),
+            *(f.fixture_id for f in self.files),
+            *(m.entity_id for m in self.entities),
+        ]
+        if dup := sorted({i for i in ids if ids.count(i) > 1}):
+            raise ValueError(f"인터페이스 id 가 겹침: {dup}")
+        names = [m.name for m in self.entities]
+        if dup := sorted({n for n in names if names.count(n) > 1}):
+            raise ValueError(f"엔티티 이름이 겹침: {dup}")
+        options = {o.name for c in self.commands for o in c.options}
+        for f in self.files:
+            if extra := [s for s in _SLOT.findall(f.path) if s not in options]:
+                raise ValueError(
+                    f"파일 {f.fixture_id} 의 위치 {f.path} 자리표시자 {extra} 가 명령 옵션이 아님"
+                )
+            if f.entity not in names:
+                raise ValueError(f"파일 {f.fixture_id} 의 행 엔티티 {f.entity} 가 entities 에 없음")
+            text = f"{f.summary} {f.content}".lower()
+            said = {x for x in _FILE_FORMATS if re.search(rf"\b{x}\b", text)}
+            if said != {f.format}:
+                raise ValueError(
+                    f"파일 {f.fixture_id} 의 글이 말하는 형식 {sorted(said)} 이 format {f.format} 과 다름 — 그 형식 하나만 적는다"
+                )
+            if not re.search(rf"\b{re.escape(f.entity)}\b", f"{f.summary} {f.content}"):
+                raise ValueError(f"파일 {f.fixture_id} 의 글에 행 엔티티 이름 {f.entity} 가 없음")
+        return self

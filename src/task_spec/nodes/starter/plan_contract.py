@@ -22,6 +22,7 @@ from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     FeatureSeed,
     HiddenPlan,
+    MaterialInterface,
     NodeError,
     PlanContractInputAll,
     PlanContractInputV3,
@@ -53,6 +54,7 @@ from task_spec.starter.contract import (
 )
 from task_spec.starter.header_values import fit_per_request
 from task_spec.starter.hidden_helpers import SETTING_MIN_ROWS, SETTING_PROBE, SETTING_PROBE_ALT
+from task_spec.starter.interface import fit_interface, interface_text, stale_name_problems
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_row_targets, fit_seed
 from task_spec.starter.state_rule import fit_state
 from task_spec.starter.templates import Template, restrict_reasons, supports_settings
@@ -389,7 +391,11 @@ def settings_text(m: TemplateManifest) -> str:
 
 
 def plan_input(
-    task: TaskItem, template: Template, note: str | None = None, seed: FeatureSeed | None = None
+    task: TaskItem,
+    template: Template,
+    note: str | None = None,
+    seed: FeatureSeed | None = None,
+    interface: MaterialInterface | None = None,
 ) -> PlanContractInputV3:
     m = template.manifest
     rx = m.naming
@@ -427,8 +433,11 @@ def plan_input(
         revision_note=note or NONE,
         seed_rules=seed_rules_text(m)
         + needs_text(seed, m.seed_rows)  # 프론트 종류는 행 시드가 없는 템플릿에도
+        # 재료가 정한 명령·입출력 파일·엔티티 (#256) — 없으면 빈 글. needs_text 처럼 seed_rules(V3 판)·row_rules(V4 판) 둘 다에
+        # 붙인다 — 판마다 둘 중 하나만 렌더된다 (for_prompt 가 판의 입력 모델로 거른다)
+        + interface_text(interface)
         + forbidden_text(seed, SpecView.from_task(task)),
-        row_rules=row_rules_text(m, seed),
+        row_rules=row_rules_text(m, seed) + interface_text(interface),
         interface_rules=interface_rules_text(m),
     )
 
@@ -474,11 +483,15 @@ def fit_output(
     spec: SpecView,
     seed: FeatureSeed | None = None,
     known: Collection[str] | None = None,
+    interface: MaterialInterface | None = None,
 ) -> tuple[PlanContractOutput, list[str]]:
     """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · 요청 번호 헤더 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다. manifest 는 재료로 좁힌 것(for_material),
-    known 은 좁히기 전 템플릿의 조절값 이름 (없으면 manifest 것)."""
-    trimmed, notes = fit_material_params(out.hidden_plan, manifest, known)
+    known 은 좁히기 전 템플릿의 조절값 이름 (없으면 manifest 것). interface 는 재료가 정한 명령·입출력 파일·엔티티 (#256) — 맨 먼저
+    계약에 채운다 (뒤 단계 맞춤이 그 위에서 돈다)."""
+    out, notes = fit_interface(out, interface, spec.req_ids, spec.public_ac_ids)
+    trimmed, param_notes = fit_material_params(out.hidden_plan, manifest, known)
+    notes += param_notes
     trimmed, free_notes = fit_unevidenced(trimmed, manifest, spec)
     notes += free_notes
     trimmed, frag_notes = fit_evidence_fragments(trimmed, manifest, spec, seed)
@@ -554,6 +567,7 @@ async def plan_contract(
     ontology_version: str,
     seed: FeatureSeed | None = None,
     reviewer_note: str | None = None,
+    interface: MaterialInterface | None = None,
 ) -> PlanResult:
     """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획."""
     res = PlanResult()
@@ -574,7 +588,7 @@ async def plan_contract(
     for attempt in range(ATTEMPTS):
         prompt = assemble(
             prompt_t,
-            for_prompt(plan_input(task, template, note, seed), prompt_t.input_model),
+            for_prompt(plan_input(task, template, note, seed, interface), prompt_t.input_model),
             ontology_version=ontology_version,
         )
         try:
@@ -598,10 +612,18 @@ async def plan_contract(
         res.provenance.append(r.provenance)
         out: PlanContractOutput = r.parsed  # type: ignore[assignment]
         raw = out
-        out, notes = fit_output(out, manifest, spec, seed, known)
+        out, notes = fit_output(out, manifest, spec, seed, known, interface)
         check = check_contract(
-            out.contract, out.hidden_plan, spec, manifest, seed, first_answer=attempt == 0
+            out.contract,
+            out.hidden_plan,
+            spec,
+            manifest,
+            seed,
+            first_answer=attempt == 0,
+            interface=interface,
         )
+        # 코드가 계약 이름을 재료 것으로 바꿨는데 테스트 글이 LLM 의 옛 이름을 쓰면 재요청 (#256) — 맞추기 전 답(raw)에서 본다
+        check.problems.extend(stale_name_problems(raw, interface))
         logger.info(
             "%s attempt=%d problems=%d gaps=%d latency_ms=%d",
             TASK,
