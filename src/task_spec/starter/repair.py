@@ -186,9 +186,7 @@ def _shared_note(
         common &= {f.path for f in o.files} if o is not None else set()
     if not common:
         return ""
-    return (
-        f" (구현 {len(runs)}개가 모두 공유 파일 {', '.join(sorted(common))} 을 다시 씀 — 원인 후보)"
-    )
+    return f" (구현 {len(runs)}개가 모두 공유 파일 {', '.join(sorted(common))} 을 다시 작성함 — 원인 후보)"
 
 
 def _gen_for(run: TargetRun) -> GeneratorName:
@@ -374,14 +372,14 @@ def _starter_public(
                     "gen_starter",
                     "",
                     "②'",
-                    "시작 코드만으로 새 기능 공개 테스트를 모두 통과 — 새 기능이 이미 들어 있음",
+                    "시작 코드만으로 새 기능 공개 테스트를 모두 통과 — 새 기능을 이미 포함함",
                     f"시작 코드에서 새 기능 공개 테스트({', '.join(passed)})가 모두 통과했다 — 공개 요구가 새로 요구하는 동작은 "
                     "자리 표시(TODO)로 둔다. 이미 있는 API 는 공개 요구 전의 동작만.",
                 )
             )
         else:
             flags.append(
-                f"다시 만든 시작 코드에서도 새 기능 공개 테스트가 모두 통과: {', '.join(passed)} (사람 확인)"
+                f"다시 생성한 시작 코드에서도 새 기능 공개 테스트가 모두 통과: {', '.join(passed)} (사람 확인)"
             )
     elif new_hits := [
         n
@@ -396,18 +394,18 @@ def _starter_public(
                     "gen_starter",
                     "",
                     "②'",
-                    f"시작 코드만으로 새 API 의 공개 테스트 통과 ({', '.join(new_hits)}) — 새 기능이 들어 있음",
+                    f"시작 코드만으로 새 API 의 공개 테스트 통과 ({', '.join(new_hits)}) — 새 기능을 포함함",
                     f"시작 코드에서 새 API(계약의 existing 이 아닌 엔드포인트)의 공개 테스트({', '.join(new_hits)})가 통과했다 — 새 API 의 "
                     "처리는 자리 표시(TODO)로 둔다. 이미 있는 API 만 공개 요구 전의 동작으로 구현한다.",
                 )
             )
         else:
             flags.append(
-                f"다시 만든 시작 코드에서도 새 API 의 공개 테스트가 통과: {', '.join(new_hits)} (사람 확인)"
+                f"다시 생성한 시작 코드에서도 새 API 의 공개 테스트가 통과: {', '.join(new_hits)} (사람 확인)"
             )
     elif passed:
         flags.append(
-            f"시작 코드에서 통과하는 공개 테스트: {', '.join(passed)} — 기존 동작을 확인하는 테스트이거나 새 기능이 일부 들어 있음 (사람 확인)"
+            f"시작 코드에서 통과하는 공개 테스트: {', '.join(passed)} — 기존 동작을 확인하는 테스트이거나 새 기능을 일부 포함함 (사람 확인)"
         )
     return acts, flags
 
@@ -444,7 +442,7 @@ def _public_refs(
                     "gen_public",
                     "",
                     "⑤",
-                    f"공개 테스트 {name} 가 하네스가 짚은 테스트 결함으로 실패 ({', '.join(defect)})",
+                    f"공개 테스트 {name} 가 하네스가 지적한 테스트 결함으로 실패 ({', '.join(defect)})",
                     f"하네스가 공개 테스트 {name} 의 결함을 짚었다: {_short(msgs[defect[0]])} — 구현 탓이 아니다. 테스트를 고친다.",
                 )
             )
@@ -504,7 +502,7 @@ def _public_refs(
                             "gen_public",
                             "",
                             "⑤",
-                            f"다시 만든 {r.target} 만 공개 테스트 {name} 실패 — 테스트가 한 구현 방식에 기댐 의심",
+                            f"다시 생성한 {r.target} 만 공개 테스트 {name} 실패 — 테스트가 한 구현 방식에 의존함 의심",
                             f"공개 테스트 {name} 가 다시 만든 구현({r.target})에서만 또 실패하고 다른 구현({', '.join(passing)})은 통과한다: "
                             f"{_short(msgs[r.target])} — 올바른 구현마다 다를 수 있는 것(처리 순서·횟수·중간 상태)에 기대지 않는지 본다. "
                             "확인할 대상이 여럿일 수 있으면 공개 수용 기준이 말하는 그것을 골라 확인하고, 그 결과만 단언한다.",
@@ -579,8 +577,8 @@ def _shared_cause(
     if terms is not None and terms.server_side and re.search(terms.server_side, msgs[0]):
         return []
     return [
-        f"모든 구현({len(runs)}개)이 공개·숨은 테스트 전부에서 같은 오류로 실패 — 따로 만든 테스트를 함께 깨는 공통 원인"
-        f"(하네스·계약·템플릿) 의심, 다시 만들지 않음: {_short(msgs[0])}{shared}"
+        f"모든 구현({len(runs)}개)이 공개·숨은 테스트 전부에서 같은 오류로 실패 — 따로 생성한 테스트를 함께 실패시키는 공통 원인"
+        f"(하네스·계약·템플릿) 의심, 다시 생성하지 않음: {_short(msgs[0])}{shared}"
     ]
 
 
@@ -618,22 +616,22 @@ def _starter_solves(
         # 시작 코드 그대로 통과, 배정은 시작 코드를 두 번 다시 만들었다.
         if exhausted(regen_counts, "gen_hidden"):
             return [], [
-                f"숨은 테스트를 다시 만든 뒤에도 기능 없는 시작 코드(공개 테스트 {', '.join(missing)} 실패)가 숨은 케이스 {ids} 를 통과 "
-                "— 그 케이스가 기능 단계에 닿지 않는다 (숨은 테스트·계약 사람 확인)"
+                f"숨은 테스트를 다시 생성한 뒤에도 기능 없는 시작 코드(공개 테스트 {', '.join(missing)} 실패)가 숨은 케이스 {ids} 를 통과 "
+                "— 그 케이스가 기능 단계에 도달하지 않는다 (숨은 테스트·계약 사람 확인)"
             ]
         return [
             RepairAction(
                 "gen_hidden",
                 "",
                 "②'",
-                f"기능 없는 시작 코드가 숨은 케이스 {ids} 통과 — 숨은 테스트가 기능 단계에 닿지 않음",
+                f"기능 없는 시작 코드가 숨은 케이스 {ids} 통과 — 숨은 테스트가 기능 단계에 도달하지 않음",
                 f"시작 코드 그대로(새 기능 없음 — 공개 테스트 {', '.join(missing)} 실패)로 숨은 케이스 {ids} 를 통과했다 — 이 케이스는 "
                 "아무것도 구현하지 않아도 통과한다. " + (terms or RepairTerms()).feature_first,
             )
         ], []
     if exhausted(regen_counts, "gen_starter"):
         return [], [
-            f"시작 코드를 다시 만든 뒤에도 시작 코드 그대로 숨은 케이스 {ids} 를 통과 — 그 케이스가 지원자의 작업을 재지 않을 수 있다 "
+            f"시작 코드를 다시 생성한 뒤에도 시작 코드 그대로 숨은 케이스 {ids} 를 통과 — 그 케이스가 지원자의 작업을 측정하지 않을 수 있다 "
             "(시작 코드 범위·숨은 테스트 사람 확인)"
         ]
     return [
@@ -641,7 +639,7 @@ def _starter_solves(
             "gen_starter",
             "",
             "②'",
-            f"시작 코드만으로 숨은 케이스 {ids} 통과 — 새 기능이 이미 들어 있음",
+            f"시작 코드만으로 숨은 케이스 {ids} 통과 — 새 기능을 이미 포함함",
             f"시작 코드 그대로(지원자가 아무것도 하지 않은 상태)로 숨은 케이스 {ids} 를 통과했다 — 지원자가 만들 새 기능이 "
             "시작 코드에 들어 있다. '이미 있는 API' 는 공개 요구 전의 동작만 남기고(공개 요구가 더하는 기록·조회·검사는 빼고), "
             "공개 요구가 새로 요구하는 API·저장·기록은 자리 표시(TODO)로 둔다. 기존 기능 테스트는 그 동작만 확인한다.",
@@ -774,8 +772,8 @@ def _contract_ambiguity(
     for broke in per_run[1:]:
         common &= {name for name, sig in broke.items() if sig == per_run[0].get(name)}
     flags = [
-        f"계약 모호 의심 — 참조 구현 {len(runs)}개가 모두 기존 테스트 {name} 를 같은 오류로 깸: {_short(next(t.message for t in runs[0].tests if t.name == name and t.group == 'existing').rsplit('Exception: ', 1)[-1])} "
-        "— 계약에서 그 경우(필드 값·기록 여부)를 정해야 한다 (구현을 다시 만들지 않음)" + shared
+        f"계약 모호 의심 — 참조 구현 {len(runs)}개가 모두 기존 테스트 {name} 를 같은 오류로 실패시킴: {_short(next(t.message for t in runs[0].tests if t.name == name and t.group == 'existing').rsplit('Exception: ', 1)[-1])} "
+        "— 계약에서 그 경우(필드 값·기록 여부)를 정해야 한다 (구현을 다시 생성하지 않음)" + shared
         for name in sorted(common)
     ]
     return flags, common
@@ -801,7 +799,7 @@ def _starter_test_broken_by_all(
             "gen_starter",
             "",
             "②",
-            f"참조 구현 {len(runs)}개가 모두 기존 테스트 {', '.join(names)} 를 깸 — 그 테스트가 계약에 없는 동작을 단언",
+            f"참조 구현 {len(runs)}개가 모두 기존 테스트 {', '.join(names)} 를 실패시킴 — 그 테스트가 계약에 없는 동작을 단언",
             "시작 코드의 기존 테스트를 따로 만든 참조 구현이 모두 깬다 — 기존 테스트는 계약이 정한 이미 있는 동작만 단언한다. 새 기능 자리의 "
             "미구현 상태(예외·실패 종료·빈 결과)나 계약에 없는 동작을 단언하지 않는다:\n" + lines,
         )
@@ -830,7 +828,7 @@ def _starter_test_context(
             "gen_starter",
             "",
             "②",
-            f"참조 구현 {len(runs)}개가 모두 기존 테스트 {', '.join(names)} 를 같은 맥락 오류로 깸 — 시작 코드 테스트가 화면을 라우터·Provider 없이 그림",
+            f"참조 구현 {len(runs)}개가 모두 기존 테스트 {', '.join(names)} 를 같은 맥락 오류로 실패시킴 — 시작 코드 테스트가 라우터·Provider 없이 화면을 렌더링함",
             f"시작 코드의 기존 테스트 {', '.join(names)} 가 화면 컴포넌트를 라우터(·데이터 Provider) 밖에서 그려, 화면이 이동 기능(useNavigate 등)을 쓰면 깨진다: {msg} — "
             "기존 테스트에서 화면을 그릴 때는 MemoryRouter(TanStack Query 를 쓰면 QueryClientProvider 도) 안에서 그린다.",
         )
@@ -849,7 +847,7 @@ def _ref_existing(
             _gen_for(run),
             run.target,
             "⑤" if run.kind == "ref_naive" else "④",
-            f"{run.target} 가 기존 테스트를 깨뜨림: " + ", ".join(t.name for t in broke),
+            f"{run.target} 가 기존 테스트를 실패시킴: " + ", ".join(t.name for t in broke),
             "시작 코드에서 통과하던 기존 기능 테스트가 이 구현에서 실패한다 — 기존 기능·필수 필드를 지킨다:\n"
             + lines,
         )
@@ -896,7 +894,7 @@ def _hidden_broken(
                     "gen_hidden",
                     "",
                     "④",
-                    f"숨은 케이스 {c.case_id} 가 하네스가 짚은 테스트 결함으로 실패 ({', '.join(defect)})",
+                    f"숨은 케이스 {c.case_id} 가 하네스가 지적한 테스트 결함으로 실패 ({', '.join(defect)})",
                     f"하네스가 숨은 케이스 {c.case_id} 의 결함을 짚었다: {_short(msg)} — 구현 탓이 아니다. 테스트를 고친다.",
                 )
             )
@@ -947,7 +945,7 @@ def _hidden_broken(
                     "gen_hidden",
                     "",
                     "④",
-                    f"다시 만든 {r.target} 만 {c.case_id} 테스트 예외 — 설계와 모순 의심",
+                    f"다시 생성한 {r.target} 만 {c.case_id} 테스트 예외 — 설계와 모순 의심",
                     f"허용 설계 구현({r.target})을 다시 만들어도 숨은 케이스 {c.case_id} 가 이 구현에서만 {what} — 다른 구현({fine})은 "
                     "판정까지 갔다. 숨은 테스트가 한 구현 방식의 진행(처리 순서·시점·횟수)을 전제로 기다리거나 막혀 있지 않은지 본다: "
                     "구현마다 다를 수 있는 진행을 기다리지 말고, 모든 허용 설계에서 같은 최종 결과(상태·기록·응답)로 판정한다. "
@@ -1042,7 +1040,7 @@ def _gate3(
                         "gen_naive",
                         run.target,
                         "③",
-                        f"흔한 구현이 {ids} 통과 — 정답 장치({found})를 씀 ({run.target})",
+                        f"흔한 구현이 {ids} 통과 — 정답 장치({found})를 사용함 ({run.target})",
                         f"이 흔한 구현은 숨은 요구를 어기는 구현이어야 하는데 허용 설계의 장치({found})를 썼다 — 그 장치를 빼고 입력의 흔한 구현 "
                         "설명대로만 쓴다 (설명에 없는 장치를 더하지 않는다).",
                         pool=NAIVE_FIRST,
@@ -1054,8 +1052,8 @@ def _gate3(
         return (
             [],
             [
-                f"{MATERIAL_VERDICT}흔한 구현({run.target})이 다시 만든 뒤에도 허용 설계의 장치({found})를 써 숨은 케이스 {ids} 를 통과 — "
-                "AI 흔한 구현이 기본으로 정답을 쓰므로 이 함정은 AI 첫 답을 가르지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
+                f"{MATERIAL_VERDICT}흔한 구현({run.target})이 다시 생성한 뒤에도 허용 설계의 장치({found})를 사용해 숨은 케이스 {ids} 를 통과 — "
+                "AI 흔한 구현이 기본으로 정답을 사용하므로 이 함정은 AI 첫 답을 구별하지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
             ],
             [],
         )
@@ -1106,8 +1104,8 @@ def _gate3(
             if r.result == "PASS" and caught[c.trap_id] and rewritten:
                 weak.append(c.case_id)
                 flags.append(
-                    f"숨은 케이스 {c.case_id} 는 숨은 테스트를 다시 만든 뒤에도 흔한 구현({run.target})이 통과 — 같은 숨은 요구 {c.trap_id} 는 "
-                    f"{', '.join(caught[c.trap_id])} 가 의도한 사유로 잡는다. {c.case_id} 는 흔한 구현과 올바른 구현을 가르지 않아 채점에서 뺐다 "
+                    f"숨은 케이스 {c.case_id} 는 숨은 테스트를 다시 생성한 뒤에도 흔한 구현({run.target})이 통과 — 같은 숨은 요구 {c.trap_id} 는 "
+                    f"{', '.join(caught[c.trap_id])} 가 의도한 사유로 검출한다. {c.case_id} 는 흔한 구현과 올바른 구현을 구별하지 않아 채점에서 제외했다 "
                     f"(무엇을 확인했나: {c.expect[:120]})"
                 )
             elif r.result == "PASS":
@@ -1159,8 +1157,8 @@ def _gate3(
         seen = {r.reason for _, r in asserted(trap) if r.reason}
         if want not in seen:
             flags.append(
-                f"숨은 케이스 {cid} 는 흔한 구현({run.target})을 {want} 대신 {got} 로 잡음 — 같은 숨은 요구의 사유라 변별로 인정했지만 "
-                f"{want} 를 확인하는 케이스가 없다 (사람 확인)"
+                f"숨은 케이스 {cid} 는 흔한 구현({run.target})을 {want} 대신 {got} 로 검출함 — 같은 숨은 요구의 사유라 변별로 인정함. "
+                f"{want} 를 확인하는 케이스는 없다 (사람 확인)"
             )
     return out, flags, weak
 
@@ -1247,7 +1245,7 @@ def _gate4(
                             "gen_accepted",
                             r.target,
                             "④",
-                            f"다시 만든 {r.target} 가 이전 판이 통과하던 {c.case_id} 에서 실패 [{res.reason or '-'}]",
+                            f"다시 생성한 {r.target} 가 이전 판이 통과하던 {c.case_id} 에서 실패 [{res.reason or '-'}]",
                             f"이 허용 설계 구현은 다른 이유{why}로 다시 만든 뒤, 이전 판이 통과하던 숨은 요구 {c.trap_id} 의 "
                             f"확인({c.case_id}, 통과 조건: {c.expect})에서 실패했다: {_short(res.message)} — 원래 고치려던 것과 "
                             "이 확인을 함께 지켜 다시 쓴다.",
@@ -1257,7 +1255,7 @@ def _gate4(
                     )
                 else:
                     unresolved.append(
-                        f"허용 설계 {r.target} 를 다시 만든 뒤 이전 판이 통과하던 {c.case_id} 에서 계속 실패: {_short(res.message)} "
+                        f"허용 설계 {r.target} 를 다시 생성한 뒤 이전 판이 통과하던 {c.case_id} 에서 계속 실패: {_short(res.message)} "
                         "— 숨은 테스트는 이전 판이 통과했으므로 구현 생성의 한계 (사람 확인)"
                     )
             elif passing and not exhausted(regen_counts, "gen_hidden", pool=DESIGN):
@@ -1268,7 +1266,7 @@ def _gate4(
                         "gen_hidden",
                         "",
                         "④",
-                        f"다시 만든 {r.target} 만 {c.case_id} 실패 — 설계와 모순 의심",
+                        f"다시 생성한 {r.target} 만 {c.case_id} 실패 — 설계와 모순 의심",
                         f"허용 설계 구현({r.target})을 다시 만들어도 숨은 케이스 {c.case_id} 에서 실패하고, 다른 허용 설계 "
                         f"구현({', '.join(passing)})은 통과한다: {_short(res.message)} — 허용 설계 {r.target} 의 정당한 동작"
                         "(입력의 허용 설계들이 서로 다르게 하는 것 — 진행·횟수·중간 값)을 단언하지 않았는지 본다. "
@@ -1286,8 +1284,8 @@ def _gate4(
                 # 2026-11-07 루프: 계약에 상태 전이 규칙이 없어 숨은 테스트가 무효한 전이를 골랐고, 사유 표시까지 잘못 붙어 흔한 구현이
                 # '의도한 사유'로 실패한 것처럼 보였다 → 허용 구현 탓의 근거로 쓰지 않는다.
                 unresolved.append(
-                    f"허용 설계 {r.target} 가 다시 만든 뒤에도 {c.case_id} 에서 흔한 구현과 같은 단언·같은 메시지로 실패: {_short(res.message)} "
-                    "— 숨은 테스트·계약 의심 (사유 표시가 단언과 맞는지, 계약에 결과를 정하는 규칙이 있는지 사람 확인)"
+                    f"허용 설계 {r.target} 가 다시 생성한 뒤에도 {c.case_id} 에서 흔한 구현과 같은 단언·같은 메시지로 실패: {_short(res.message)} "
+                    "— 숨은 테스트·계약 의심 (사유 표시가 단언과 일치하는지, 계약에 결과를 정하는 규칙이 있는지 사람 확인)"
                 )
             elif res.reason is not None and any(
                 (n_res := n.case(c.case_id)) is not None
@@ -1301,8 +1299,8 @@ def _gate4(
                 # 테스트를 한 번 의심한다 (2026-11-12 행마다 조회 알파: 흔한 구현은 request_timeout, 허용 구현은 기본 크기 목록에 사유 없는
                 # hasSize(100) 으로 떨어졌는데 허용 구현 탓으로 돌아가 '사람 확인'). 다른 사유 코드(예: record_missing)는 계속 허용 구현 탓.
                 unresolved.append(
-                    f"허용 설계 {r.target} 가 다시 만든 뒤에도 {c.case_id} 실패 [{res.reason or '-'}] — 숨은 테스트는 흔한 구현을 "
-                    f"의도한 사유({c.intended_reason})로 잡으므로 허용 구현이 설계를 못 따름: 설계·스택 조건 보강 (사람 확인)"
+                    f"허용 설계 {r.target} 가 다시 생성한 뒤에도 {c.case_id} 실패 [{res.reason or '-'}] — 숨은 테스트는 흔한 구현을 "
+                    f"의도한 사유({c.intended_reason})로 검출하므로 허용 구현이 설계를 준수하지 못함: 설계·스택 조건 보강 (사람 확인)"
                 )
             elif len(runs) == 1 and not exhausted(regen_counts, "gen_hidden"):
                 # 허용 구현이 하나뿐이라 "모두 실패"로 가를 수 없다 — 구현을 한 번 고쳐도 실패하면 테스트를 의심
@@ -1311,14 +1309,14 @@ def _gate4(
                         "gen_hidden",
                         "",
                         "④",
-                        f"다시 만든 {r.target} 도 {c.case_id} 실패",
+                        f"다시 생성한 {r.target} 도 {c.case_id} 실패",
                         f"허용 설계 구현({r.target})을 다시 만들어도 숨은 케이스 {c.case_id} 에서 실패한다: {_short(res.message)} "
                         f"— 허용 설계가 통과할 수 있게 통과 조건({c.expect})만 확인한다.",
                     )
                 )
             else:
                 unresolved.append(
-                    f"허용 설계 {r.target} 가 다시 만든 뒤에도 {c.case_id} 실패 — 설계 조건 부족 또는 숨은 테스트 과함 (사람 확인)"
+                    f"허용 설계 {r.target} 가 다시 생성한 뒤에도 {c.case_id} 실패 — 설계 조건 부족 또는 숨은 테스트 과함 (사람 확인)"
                 )
     return actions, unresolved
 
@@ -1347,7 +1345,7 @@ def _grading_env(runs: Sequence[TargetRun], terms: RepairTerms | None) -> list[s
         if all(m is not None and rx.search(m) for m in msgs):
             out.append(
                 f"채점 환경 확인 필요 — 구현 {len(runs)}개가 모두 {group} {name} 에서 채점 환경 오류: {_short(msgs[0] or '')} "
-                "(테스트·구현을 다시 만들지 않았다 — 템플릿 채점 환경에 그 기능이 있는지 확인)"
+                "(테스트·구현을 다시 생성하지 않았다 — 템플릿 채점 환경에 그 기능이 있는지 확인)"
             )
     return out
 

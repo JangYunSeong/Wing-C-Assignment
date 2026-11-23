@@ -159,7 +159,7 @@ async def test_build_flags_hidden_terms_in_the_candidate_readme(
         return out.review_flags, out.readme
 
     got, readme = await flags("커넥션 풀 크기에 맞춘 목록 한 번에 돌려줄 최대 개수")
-    leak = f"{README} 에 숨은 요구·운영 조건을 드러내는 말: 커넥션 풀, 풀 크기 — 승인된 명세 문장에서 나옴, 명세 수정 필요"
+    leak = f"{README} 에 숨은 요구·운영 조건을 노출하는 말: 커넥션 풀, 풀 크기 — 승인한 명세 문장에서 유래함, 명세 수정 필요"
     assert got == ["빌드 가상 표시", leak]
     same = static_check(
         [],

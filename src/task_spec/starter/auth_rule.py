@@ -27,7 +27,7 @@ _REASON = re.compile(r"\b(PERMISSION_DENIED|UNAUTHORIZED|FORBIDDEN|ACCESS_DENIED
 _PATH_PARAM = re.compile(r"\{(\w+)\}")
 _QUOTED = re.compile(r"""["']([A-Za-z0-9_-]+)["']""")
 _FIXED_DENIED = ("guest", "denied-user", "anonymous")
-FLAG_OTHER = "권한 규칙 자동 보장 안 됨 (kind=other — 사람 확인): "
+FLAG_OTHER = "권한 규칙 자동 보장 없음 (kind=other — 사람 확인): "
 
 
 def auth_required(e: Endpoint) -> bool:

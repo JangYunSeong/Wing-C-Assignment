@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 
 TASK = "slot_questions"
 NO_SLOT = "(슬롯 없음 — 면접 질문만)"
-FLAG_Q_FAILED = "면접 질문 생성 실패 — 면접관이 주장을 직접 보고 질문해야 함"
+FLAG_Q_FAILED = "면접 질문 생성 실패 — 면접관이 주장을 직접 확인하고 질문해야 함"
 FLAG_Q_INVALID = "면접 질문 자동 검사 실패 (재요청 후에도): "
-FLAG_NO_SLOT = "맞는 확장 슬롯 없음 — 응시 과제 없이 면접 질문만"
+FLAG_NO_SLOT = "적합한 확장 슬롯 없음 — 응시 과제 없이 면접 질문만"
 FLAG_UNAPPROVED_SLOT = (
-    "승인 전 슬롯을 배정함 — 이 명세를 승인하면 공통 과제·슬롯도 공고 단위로 승인됨"
+    "승인 전 슬롯을 배정함 — 이 명세를 승인하면 공통 과제·슬롯도 공고 단위로 승인함"
 )
 _DIGIT = re.compile(r"\d")
 
@@ -224,7 +224,7 @@ async def build_slot_verifications(
                     time_limit_min=slot.time_limit_min,
                     provenance_id=a.provenance_id,
                     review_flags=[
-                        "확장 문항 — 비교 점수에 넣지 않음 (확인됨/의심됨 + 면접 질문)",
+                        "확장 문항 — 비교 점수에 포함하지 않음 (확인/의심 + 면접 질문)",
                         f"배정 근거: {a.basis}",
                         *flags,
                     ],

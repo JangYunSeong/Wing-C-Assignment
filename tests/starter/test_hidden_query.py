@@ -153,7 +153,7 @@ def test_accepted_failing_an_untagged_assertion_suspects_the_test() -> None:
     assert (
         not plan.actions
         and plan.unresolved
-        and not any("설계를 못 따름" in u for u in plan.unresolved)
+        and not any("설계를 준수하지 못함" in u for u in plan.unresolved)
     )
     # 사유가 붙은 단언(숨은 요구를 재는 단언)에서 떨어지면 예전처럼 허용 구현 탓
     tagged = _run(
@@ -163,4 +163,4 @@ def test_accepted_failing_an_untagged_assertion_suspects_the_test() -> None:
         _t("hidden", "hc2", "ASSERT", "record_missing", "기록 없음"),
     )
     plan = assign(_report(naive, tagged), PLAN2, OVERLAYS, MISSED, {"gen_accepted:d1": 1})
-    assert not plan.actions and any("설계를 못 따름" in u for u in plan.unresolved)
+    assert not plan.actions and any("설계를 준수하지 못함" in u for u in plan.unresolved)

@@ -37,6 +37,8 @@ from task_spec.interview.task import (
     pseudonymize_changes,
     questions_for,
     token_flags,
+    with_content_flags,
+    with_interview_flag,
 )
 from task_spec.llm.backend import Completion
 from task_spec.schemas import (
@@ -55,7 +57,7 @@ from task_spec.schemas import (
 from task_spec.schemas.interview_answer import TargetedAnswerDraftOutput
 from task_spec.schemas.interview_case import KnownIncidentCase
 from task_spec.schemas.interview_state import TargetedQuestion
-from task_spec.spec.common import FLAG_COMPANY_INCIDENT
+from task_spec.spec.common import FLAG_COMPANY_INCIDENT, FLAG_COMPANY_INCIDENT_LEGACY
 from task_spec.spec.feature import seed_block
 from task_spec.spec.incidents import load_incidents
 from task_spec.spec.store import InMemoryCommonStore
@@ -553,6 +555,32 @@ def test_tokens_left_in_visible_text_are_flagged() -> None:
     assert flag.startswith(FLAG_TOKEN_VISIBLE) and "scenario" in flag
     hidden_only = task.model_copy(update={"scenario": "가상 배송", "invariant": "[ORG_1] 규칙"})
     assert token_flags(hidden_only) == []  # 숨은 칸은 지원자에게 보이지 않는다
+
+
+def test_recomputing_drops_computed_flags_saved_in_the_old_wording() -> None:
+    """2026-11-23 문구를 바꾸기 전에 저장된 인터뷰 과제 — 다시 계산할 때 옛 문구 표시도 지워 두 판이 함께 남지 않는다."""
+    old_leak = "기준 답안 문장이 지원자에게 보이는 글에 들어감 — 채점 근거가 새지 않았는지 승인자 확인 필요"
+    old_token = "지원자에게 보이는 글에 가명화 토큰([ORG_1] 같은)이 있음 — 지원자에게 그대로 보이므로 소재를 바꾸거나 지워 주세요"
+    task = fake_task(PROFILE, "t", scenario="[ORG_1] 의 배송 서비스")
+    saved = [f"{old_leak} (scenario)", f"{old_token} (scenario)", "다른 표시"]
+    flags = with_content_flags(saved, task, known_incident())
+    assert flags[0] == "다른 표시"
+    assert not any(f.startswith((old_leak, old_token)) for f in flags)
+    [token] = [f for f in flags if f.startswith(FLAG_TOKEN_VISIBLE)]  # 지금 글 기준으로 다시 붙는다
+    assert "scenario" in token
+    assert not any(f.startswith(FLAG_ANSWER_LEAK) for f in flags)  # 기준 답안은 지금 글에 없다
+
+
+def test_interview_flag_replaces_a_company_flag_in_the_old_wording() -> None:
+    """생성 중에 문구가 바뀐 초안 — 옛 문구의 회사 사례 표시도 인터뷰 사례 표시로 바꾼다."""
+    incident = known_incident()
+    task = fake_task(PROFILE, "t", scenario="가상 배송").model_copy(
+        update={
+            "source_incident": incident.incident_id,
+            "review_flags": [FLAG_COMPANY_INCIDENT_LEGACY, FLAG_COMPANY_INCIDENT],
+        }
+    )
+    assert with_interview_flag(task, incident).review_flags == [FLAG_INTERVIEW_INCIDENT]
 
 
 def test_seed_block_carries_reference_answers_only_when_asked() -> None:

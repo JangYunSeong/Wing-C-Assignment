@@ -241,7 +241,7 @@ async def test_trap_gate_rebuilds_the_hidden_case_for_a_surviving_trap() -> None
     repair_prompt = [u for n, u in backend.users if n == "gen_hidden"][-1]
     assert "함정" in repair_prompt and "hc1" in repair_prompt
     assert [r.verdict for r in out.traps] == ["caught"]
-    assert not any("가르지 못함" in f for f in out.review_flags)
+    assert not any("구별하지 못함" in f for f in out.review_flags)
 
 
 async def test_trap_gate_flags_a_trap_that_still_survives() -> None:
@@ -249,7 +249,7 @@ async def test_trap_gate_flags_a_trap_that_still_survives() -> None:
     out = await _build(TrapVerifier("PASS"), llm)
     assert out.status == "review"
     assert [r.result for r in out.repairs] == ["regenerated", "skipped"]
-    assert any("함정을 가르지 못함" in f and "다시 만든 뒤에도" in f for f in out.review_flags)
+    assert any("함정을 구별하지 못함" in f and "다시 생성한 뒤에도" in f for f in out.review_flags)
 
 
 async def test_trap_gate_restores_the_passing_state_when_the_repair_fails() -> None:
@@ -258,8 +258,8 @@ async def test_trap_gate_restores_the_passing_state_when_the_repair_fails() -> N
     llm, _ = _llm(gen_hidden=[HIDDEN_ANSWER, bad, bad, bad])
     out = await _build(TrapVerifier("PASS"), llm)
     assert out.status == "review"
-    assert any("수리 실패" in f and "되돌림" in f for f in out.review_flags)
-    assert any("함정을 가르지 못함" in f for f in out.review_flags)
+    assert any("수리 실패" in f and "복원함" in f for f in out.review_flags)
+    assert any("함정을 구별하지 못함" in f for f in out.review_flags)
 
 
 async def test_designs_without_a_trap_skip_the_gate() -> None:
@@ -354,7 +354,7 @@ async def test_a_trap_without_its_cases_is_flagged_not_repaired() -> None:
         b, (lonely,), llm=llm, prompts=PROMPTS, ontology_version="t", verifier=TrapVerifier("PASS")
     )
     assert out.status == "review" and backend.calls.count("gen_hidden") == 1
-    assert any("케이스를 찾지 못해 고치지 않음" in f for f in out.review_flags)
+    assert any("케이스를 발견하지 못해 수정하지 않음" in f for f in out.review_flags)
 
 
 async def test_a_round_broken_after_the_trap_repair_is_repaired_normally() -> None:
@@ -374,7 +374,7 @@ async def test_a_round_broken_after_the_trap_repair_is_repaired_normally() -> No
         ("⑪", "gen_hidden"),
         ("④", "gen_accepted"),
     ]
-    assert not any("되돌림" in f for f in out.review_flags)
+    assert not any("복원함" in f for f in out.review_flags)
 
 
 def test_builds_make_every_accepted_design_by_default() -> None:

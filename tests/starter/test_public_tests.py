@@ -156,7 +156,7 @@ def test_starter_public_gate() -> None:
     plan = assign(VerifyReport(runs=[solved, *refs]), PLAN2, OVERLAYS, MISSED)
     assert [a.generator for a in plan.actions] == [
         "gen_starter"
-    ] and "새 기능이 이미" in plan.actions[0].reason
+    ] and "새 기능을 이미" in plan.actions[0].reason
     ok = _run(
         "starter", "starter", _p("PersistenceCheckTest"), _p("OrderHistoryPublicTest", "ASSERT")
     )

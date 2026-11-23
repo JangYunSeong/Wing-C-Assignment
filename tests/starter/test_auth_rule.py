@@ -160,7 +160,7 @@ def test_fixed_and_other_rules() -> None:
         )
     )
     assert (
-        not auth_problems(other) and auth_flags(other) and "자동 보장 안 됨" in auth_flags(other)[0]
+        not auth_problems(other) and auth_flags(other) and "자동 보장 없음" in auth_flags(other)[0]
     )
     # other 는 값을 정하지 않으므로 예시가 없으면 헤더 검사가 말하고, 코드가 값을 정하지 않으니 실제 값을 적으라고 짚는다 (fixmt-be2).
     # #181: other 일 때만 붙이던 앞말 갈래 없이 문구 하나

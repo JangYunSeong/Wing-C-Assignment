@@ -320,7 +320,7 @@ async def test_gate_adds_a_test_class_for_a_survivor() -> None:
     labels = [f"var-{t.rule_id}-invert" for t in targets(_inputs().task, _inputs().contract)]
     assert verifier.variant_calls == [labels, labels] and verifier.ref_calls == 1
     assert {r.verdict for r in out.variants} == {"caught"}
-    assert not any("가르지 못함" in f for f in out.review_flags)
+    assert not any("구별하지 못함" in f for f in out.review_flags)
 
 
 class AddedCompiler:
@@ -363,7 +363,7 @@ async def test_an_added_class_that_does_not_compile_is_remade_with_the_errors() 
     assert "cannot find symbol" in retry and "더하려던 이유" in retry and "BROKEN" in retry
     assert {f.path: f.content for f in out.overlays["public"].files}[ADDED_PATH] == ADDED
     assert {r.verdict for r in out.variants} == {"caught"}
-    assert not any("컴파일되지 않아 버림" in f for f in out.review_flags)
+    assert not any("컴파일하지 못해 제외함" in f for f in out.review_flags)
 
 
 async def test_an_added_class_that_never_compiles_is_dropped() -> None:
@@ -383,7 +383,7 @@ async def test_an_added_class_that_never_compiles_is_dropped() -> None:
     assert (
         backend.calls.count("gen_public") == 1 + 1 + COMPILE_TEST_ATTEMPTS
     )  # 처음 + 수리 + 재요청
-    assert any("컴파일되지 않아 버림" in f for f in out.review_flags)
+    assert any("컴파일하지 못해 제외함" in f for f in out.review_flags)
     assert ADDED_PATH not in {f.path for f in out.overlays["public"].files}  # 통과한 빌드는 그대로
 
 
@@ -393,7 +393,7 @@ async def test_gate_flags_a_survivor_after_adding_tests() -> None:
     out = await _build(verifier, llm)
     assert out.status == "review" and backend.calls.count("gen_public") == 2  # 한 번만
     assert any(
-        "테스트를 더한 뒤에도" in f and "오래된 순으로 돌려줌" in f for f in out.review_flags
+        "테스트를 추가한 뒤에도" in f and "오래된 순으로 돌려줌" in f for f in out.review_flags
     )
 
 
@@ -406,10 +406,10 @@ async def test_gate_drops_an_added_class_the_references_fail() -> None:
     assert out.status == "review"
     assert ADDED_PATH not in {f.path for f in out.overlays["public"].files}
     assert any(
-        "참조 구현이 떨어지는 것은 버림" in f and "OrderHistoryEdgeTest" in f
+        "참조 구현이 실패하는 것은 제외함" in f and "OrderHistoryEdgeTest" in f
         for f in out.review_flags
     )
-    assert any("더한 테스트를 쓸 수 없음" in f for f in out.review_flags)
+    assert any("추가한 테스트를 사용할 수 없음" in f for f in out.review_flags)
     assert [r.result for r in out.repairs] == ["failed"]
 
 
@@ -422,14 +422,16 @@ async def test_gate_flags_when_nothing_new_is_added() -> None:
     llm, _ = _llm(gen_public=[PUBLIC_ANSWER, same])
     out = await _build(VariantVerifier(REPORT, "PASS"), llm)
     assert out.status == "review" and any(
-        "추가할 테스트를 만들지 못함" in f for f in out.review_flags
+        "추가할 테스트를 생성하지 못함" in f for f in out.review_flags
     )
 
 
 async def test_gate_flags_when_no_variant_is_usable() -> None:
     llm, _ = _llm(gen_variant=[_variants()])
     out = await _build(VariantVerifier(REPORT, "ASSERT"), llm)
-    assert out.status == "review" and any("쓸 수 있는 변형이 없음" in f for f in out.review_flags)
+    assert out.status == "review" and any(
+        "사용할 수 있는 변형이 없음" in f for f in out.review_flags
+    )
 
 
 def _contract_with_rows() -> Any:
@@ -533,7 +535,7 @@ async def test_gate_flags_criteria_without_a_usable_variant() -> None:
     out = await _build(verifier, llm)
     assert out.status == "review" and {r.verdict for r in out.variants} == {"invalid"}
     for t in targets(_inputs().task, _inputs().contract):
-        assert any(f"요구 {t.rule_id} 는 쓸 수 있는 변형이 없어" in f for f in out.review_flags)
+        assert any(f"요구 {t.rule_id} 는 사용할 수 있는 변형이 없어" in f for f in out.review_flags)
 
 
 async def test_gate_flags_a_verifier_without_variant_runs() -> None:

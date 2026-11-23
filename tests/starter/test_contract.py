@@ -663,7 +663,7 @@ def test_case_data_must_be_on_existing_entities_once_marked() -> None:
     }
     res = _check(c, p)
     assert _has(res.problems, "숨은 케이스 hc1 의 data 가 새로 만드는 엔티티(OrderHistory)")
-    assert any("새로 만드는 엔티티 OrderHistory 에 시드 120행" in f for f in res.review_flags)
+    assert any("새로 생성하는 엔티티 OrderHistory 에 시드 120행" in f for f in res.review_flags)
     # 표시가 하나도 없으면(옛 계약) 판단하지 않는다
     assert not _has(_check(_contract(), p).problems, "새로 만드는 엔티티")
 
