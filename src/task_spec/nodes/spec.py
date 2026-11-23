@@ -47,7 +47,7 @@ from task_spec.spec.company_incidents import (
     pick_company_incident,
 )
 from task_spec.spec.draft import TASK as DRAFT_TASK
-from task_spec.spec.draft import apply, draft_task, safe_reviewer_note
+from task_spec.spec.draft import DraftContext, apply, draft_task, safe_reviewer_note
 from task_spec.spec.feature import TASK as FEATURE_TASK
 from task_spec.spec.feature import apply_feature, draft_feature_task, uses_seed
 from task_spec.spec.incidents import feature_incident, feature_ref, incident_ref, with_incident
@@ -90,6 +90,11 @@ FLAG_CHOSEN_COMMON = (
     "(경험 검증만 다시 생성할 수 있음): "
 )
 FLAG_CHOSEN_GONE = "실행을 생성할 때 선택한 문제를 저장소에서 발견하지 못함 — 다른 과제로 변경하지 않고 공통 과제 없이 유지함: "
+
+
+def feature_key(inc: PublicIncident, ctx: DraftContext | None) -> str:
+    """기능형 판 키의 재료 지문 — 재료 인터페이스(#256)가 있으면 그 지문도 (인터페이스 전에 만든 명세를 다시 쓰지 않게)."""
+    return feature_ref(inc, ctx.interface if ctx is not None else None)
 
 
 def _uses_incident(prompts: PromptRegistry, task: str = DRAFT_TASK) -> bool:
@@ -338,7 +343,7 @@ def make_draft_spec(
                     and uses_seed(prompts)
                 ):
                     # 기능형 재료 지문 — 재료를 고치면 기능형 새 판 (이슈형 판은 그대로)
-                    prompt_ref = f"{prompt_ref}+{feature_ref(inc)}"
+                    prompt_ref = f"{prompt_ref}+{feature_key(inc, built.ctx)}"
                 elif (
                     use_llm
                     and prompts is not None

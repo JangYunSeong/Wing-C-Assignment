@@ -40,6 +40,7 @@ from task_spec.schemas import (
     FeatureSeed,
     HiddenAcceptance,
     LinkedAcceptance,
+    MaterialInterface,
     Observable,
     PublicIncident,
     TaskItem,
@@ -66,6 +67,11 @@ from task_spec.spec.draft import (
     repair,
 )
 from task_spec.spec.incidents import known_cases_block
+from task_spec.spec.interface_terms import (
+    interface_brief,
+    spec_interface_flags,
+    spec_interface_problems,
+)
 
 TASK = "draft_feature_task"
 SEED_TRAP = "t1"  # v2: 재료의 숨은 요구 하나
@@ -159,7 +165,9 @@ HOWTO_TERMS = (
 _HANGUL = re.compile(r"[가-힣]")
 
 
-def seed_block(inc: PublicIncident, *, answers: bool = False) -> str:
+def seed_block(
+    inc: PublicIncident, *, answers: bool = False, interface: MaterialInterface | None = None
+) -> str:
     """v2 프롬프트에 넣는 기능형 재료 — 원리와 사람이 적은 feature 블록만. 조직명·제목·URL·원문 증상·수치는 넣지 않는다."""
     f = inc.feature
     assert f is not None
@@ -191,6 +199,9 @@ def seed_block(inc: PublicIncident, *, answers: bool = False) -> str:
     # 인터뷰 공고 자신의 생성만 (#266, DraftContext.with_known_answers)
     if answers and inc.known_incident_cases:
         lines.append(known_cases_block(inc))
+    lines += interface_brief(
+        interface
+    )  # 재료가 정한 공개 인터페이스 (#256) — 없으면 블록이 예전과 같다
     return "\n".join(lines)
 
 
@@ -727,6 +738,12 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     clar = [c.clarification_id for c in out.clarifications]
 
     problems += check_links(out)
+    # 공개 요구·수용 기준이 재료 인터페이스와 다른 형식·칸 이름·스케줄 등록 요구 (#256) — 인터페이스 없는 재료는 빈 목록
+    problems += spec_interface_problems(
+        [(r.req_id, r.text) for r in out.requirements],
+        [(a.ac_id, a.text) for a in out.acceptance_public],
+        ctx.interface,
+    )
     problems += _dup("requirements(req_id)", [r.req_id for r in out.requirements])
     problems += _dup("acceptance_public(ac_id)", [a.ac_id for a in out.acceptance_public])
     problems += _dup("acceptance_hidden(ac_id)", [a.ac_id for a in out.acceptance_hidden])
@@ -1195,7 +1212,9 @@ async def draft_feature_task(
         task=TASK,
         extra_input={
             **extra_input(),
-            "feature_seed": seed_block(inc, answers=ctx.with_known_answers),
+            "feature_seed": seed_block(
+                inc, answers=ctx.with_known_answers, interface=ctx.interface
+            ),
         },
         checker=cast(Any, check_feature),
         repairer=cast(Any, repair_feature),
@@ -1205,6 +1224,12 @@ async def draft_feature_task(
     )
     res.incident_id = inc.incident_id
     res.seed = seed
+    if (
+        res.output is not None
+    ):  # 상황 글·1단계 자료가 재료 인터페이스와 다른 이름 — 재요청하지 않고 승인자에게 (#256)
+        res.flags += spec_interface_flags(
+            res.output.scenario, [a.content for a in res.output.artifacts], ctx.interface
+        )
     if cross := cross_family_targets(ctx):
         res.flags.append(
             FLAG_UNMEASURED + ", ".join(f"{t.label}({t.competency_id})" for t in cross)

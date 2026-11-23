@@ -9,6 +9,7 @@ from task_spec.ontology.relatedness import Relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.schemas import (
     CompetencyEvidence,
+    MaterialInterface,
     NcsCriterion,
     NcsKsa,
     PostingProfile,
@@ -25,7 +26,7 @@ from task_spec.spec.common import (
     targets,
 )
 from task_spec.spec.draft import DraftContext
-from task_spec.spec.incidents import feature_incident
+from task_spec.spec.incidents import feature_incident, interface_for
 
 KSA_PER_COMP = 3
 
@@ -35,6 +36,17 @@ class CommonDraft:
     task: TaskItem | None = None  # 골격 (역량을 못 고르면 None)
     ctx: DraftContext | None = None  # 서술 입력 (온톨로지·수행준거가 없으면 None)
     flags: list[str] = field(default_factory=list)  # 명세 단위 review_flags
+
+
+def material_for(
+    incidents: dict[str, PublicIncident] | None, sub: str, posting_id: str, task_kind: TaskKind
+) -> tuple[PublicIncident | None, MaterialInterface | None]:
+    """명세 맥락의 사례와 재료 인터페이스. 기능형은 직군 템플릿이 시험할 수 있는 사례(spec/incidents.feature_incident)와 그 재료가
+    정한 공개 인터페이스(#256 — 명세가 계약과 같은 형식·칸 이름을 쓰게), 그 밖은 직군 기본 사례만."""
+    if task_kind == "feature":
+        incident = feature_incident(incidents, sub, posting_id)
+        return incident, interface_for(incidents, incident)
+    return (incidents or {}).get(sub), None
 
 
 async def build_common(
@@ -79,6 +91,9 @@ async def build_common(
     )
     if ontology is not None and crit_all:
         sub_label, ind_label = await field_labels(ontology, profile.sub, profile.industry_id)
+        incident, interface = material_for(
+            incidents, profile.sub or "", profile.posting_id, task_kind
+        )
         out.ctx = DraftContext(
             sub_label=sub_label,
             industry_label=ind_label,
@@ -91,11 +106,7 @@ async def build_common(
             ontology_version=ontology_version,
             language_labels=await language_labels(ontology),
             sub=profile.sub,
-            # 기능형은 직군 템플릿이 시험할 수 있는 사례 (spec/incidents.feature_incident), 그 밖은 직군 기본 사례
-            incident=(
-                feature_incident(incidents, profile.sub or "", profile.posting_id)
-                if task_kind == "feature"
-                else (incidents or {}).get(profile.sub or "")
-            ),
+            incident=incident,
+            interface=interface,
         )
     return out
