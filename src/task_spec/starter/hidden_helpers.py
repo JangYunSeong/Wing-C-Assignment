@@ -15,11 +15,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Literal
 
 from task_spec.schemas.build import (
+    AuthRule,
     Endpoint,
     GeneratedFile,
     HiddenPlan,
@@ -28,7 +30,8 @@ from task_spec.schemas.build import (
     TaskContract,
 )
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.header_values import PER_REQUEST, header_values
+from task_spec.starter.auth_rule import Credential, credentials, issued_rule
+from task_spec.starter.header_values import ISSUED, PER_REQUEST, HeaderValues, header_values
 from task_spec.starter.seed_rows import allocate_rows, matches, public_free
 from task_spec.starter.seed_sql import default_value, time_kind
 from task_spec.starter.state_rule import next_states, sentence
@@ -178,7 +181,7 @@ def _setting_lines(contract: TaskContract) -> list[str]:
     for st in contract.settings:
         c = setting_const(st.key)
         lines += [
-            f"    /** {st.meaning} (기본 {st.default}) */",
+            f"    /** {st.meaning} (기본 {st.default}{st.unit_label()}) */",
             f'    protected static final String SETTING_{c}_KEY = "{st.key}";',
             f"    protected static final int SETTING_{c}_DEFAULT = {st.default};",
             f"    protected static final int SETTING_{c}_PROBE = {setting_probe(st.default)};",
@@ -285,7 +288,8 @@ def _key_lines(contract: TaskContract) -> list[str]:
 
 def _header_lines(contract: TaskContract) -> list[str]:
     """요청 헤더 값 — 테스트가 요청자 등을 지어내지 않게 (2026-11-08 알파: 지어낸 `grader` 로 모든 요청이 403).
-    값을 정할 수 없는 헤더는 상수를 두지 않는다 (지어내지 않는다)."""
+    값을 정할 수 없는 헤더는 상수를 두지 않는다 (지어내지 않는다). 로그인으로 발급받는 헤더(권한 칸 issued)는 도우미가
+    로그인해 받는다 — _session_lines."""
     values = header_values(contract)
     if not values:
         return []
@@ -294,16 +298,23 @@ def _header_lines(contract: TaskContract) -> list[str]:
         "    // ── 요청 헤더 값: 규칙(권한)을 통과하는 값(_OK)과 권한이 거절되는 값(_DENIED) — 값을 직접 쓰지 않는다 ──",
     ]
     keyed = [h for h in values if h.source == PER_REQUEST]
+    rule = issued_rule(contract)
+    session = next((h for h in values if h.source == ISSUED), None) if rule is not None else None
     for h in values:
         if h.source == PER_REQUEST:
             lines.append(
                 f"    // {h.name}: 요청마다 새 값 — okHeaders() 가 만든다, 재요청은 okHeaders(key) 로 같은 값"
             )
             continue
+        if h is session:
+            lines.append(
+                f"    // {h.name}: 로그인으로 발급받는 값 — okHeaders()·newSession() 이 받는다, 값을 지어 쓰지 않는다"
+            )
         key = _value_const(h.name)
         src = {
             "예시": "계약 공개 테스트 예시",
             "권한 규칙": "계약 권한 규칙의 요청자 행",
+            ISSUED: "발급하지 않은 값",
         }.get(h.source, "계약상 아무 값이나 받음")
         if h.ok is not None:
             lines.append(f'    protected static final String HEADER_{key}_OK = "{h.ok}"; // {src}')
@@ -312,6 +323,8 @@ def _header_lines(contract: TaskContract) -> list[str]:
                 f'    protected static final String HEADER_{key}_DENIED = "{h.denied}"; // {src}'
             )
     oks = [h for h in values if h.ok is not None]
+    if rule is not None and session is not None:
+        return lines + _session_lines(contract, rule, session.name, keyed, oks)
     if keyed:
         pairs = ", ".join(
             [
@@ -320,11 +333,7 @@ def _header_lines(contract: TaskContract) -> list[str]:
             ]
         )
         lines += [
-            "",
-            "    /** 요청마다 다른 요청 키 — 새 요청은 이 값 하나로 */",
-            "    protected static String newRequestId() {",
-            "        return java.util.UUID.randomUUID().toString();",
-            "    }",
+            *_request_id_lines(),
             "",
             "    /** 규칙(권한)을 통과하는 헤더 묶음 — 부를 때마다 새 요청 키 (서로 다른 요청). 기능 단계에 닿아야 하는 요청에 쓴다 */",
             "    protected static Map<String, String> okHeaders() {",
@@ -346,6 +355,174 @@ def _header_lines(contract: TaskContract) -> list[str]:
             "    }",
         ]
     return lines
+
+
+def _request_id_lines() -> list[str]:
+    return [
+        "",
+        "    /** 요청마다 다른 요청 키 — 새 요청은 이 값 하나로 */",
+        "    protected static String newRequestId() {",
+        "        return java.util.UUID.randomUUID().toString();",
+        "    }",
+    ]
+
+
+def _credential_fn(c: Credential) -> str:
+    return "credential" + _camel([c.name])
+
+
+def _java_scalar(v: SeedScalar) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return f"{v}L"
+    return json.dumps(v, ensure_ascii=False)
+
+
+def _credential_lines(c: Credential) -> list[str]:
+    """자격 증명 칸 하나의 행별 값 — 시드 SQL 과 같은 규칙: 그 행의 그룹 값, 없으면 기본값 (seed_sql.default_value)."""
+    if c.default == "row":
+        fallback = "return row;"
+    elif c.default == "fixed":
+        fallback = f"return {_java_scalar(c.fixed if c.fixed is not None else '')};"
+    else:
+        fallback = f'String v = "{c.name}-" + row; return v.length() > 20 ? v.substring(0, 20) : v;'
+    return [
+        "",
+        f"    private static Object {_credential_fn(c)}(long row) {{",
+        *(
+            f"        if (row >= {first} && row <= {last}) return {_java_scalar(v)};"
+            for first, last, v in c.groups
+        ),
+        f"        {fallback}",
+        "    }",
+    ]
+
+
+def _session_lines(
+    contract: TaskContract,
+    rule: AuthRule,
+    header: str,
+    keyed: list[HeaderValues],
+    oks: list[HeaderValues],
+) -> list[str]:
+    """로그인 세션 (권한 칸 issued) — 시드 행의 자격 증명으로 발급 API 를 불러 값을 받는다. 자격 증명은 행의 함수(loginBody(row))로 준다 —
+    시드 SQL 과 같은 규칙(auth_rule.credentials). 2026-11-24 세션 알파: 로그인 행 하나의 본문만 줘, 케이스·공개 몫 행마다 로그인하려던
+    테스트가 "user-"+id·"pass-"+id 로 지어 모든 구현에서 401 — 경로 키 값 <필드>Of(row) 와 같은 방식으로 도우미가 행별 값을 준다.
+    okHeaders() 는 부를 때마다 새 세션이라 인스턴스 함수다 (발급 API 를 부른다). 동시 요청(peak) 안에서 로그인하면 재려는 경로가 아니라
+    로그인이 서버 자원(DB 연결 등)을 못 얻어 실패한다 — 세션은 peak 전에 받아 sessionHeaders(session) 로 쓴다.
+    예외는 RuntimeException 으로 감싼다 — 람다·필드 초기화 등 지금 okHeaders() 를 부르는 자리가 그대로 컴파일되게."""
+    src = next((e for e in contract.endpoints if e.endpoint_id == rule.issued_by), None)
+    fn = next((name for e, name in api_functions(contract) if e is src), None)
+    creds = credentials(contract, rule)
+    if src is None or fn is None or not rule.rows or not creds:
+        return []
+    names = {m.entity_id: m.name for m in contract.entities}
+    user = names.get(rule.entity or "", rule.entity)
+    prefix = json.dumps(rule.prefix or "", ensure_ascii=False)
+    field = rule.issued_field or ""
+    others = [f'"{h.name}", HEADER_{_value_const(h.name)}_OK' for h in oks]
+    shown = "·".join(c.name for c in creds)
+    lines = [
+        "",
+        f"    // ── 로그인 세션: {header} 값은 {src.method} {src.path} 성공 응답의 {field} 로 받는다 (계약 권한 칸 issued) ──",
+        f"    // 자격 증명({shown})은 시드 {user} 행의 값 그대로 — loginBody(row) 로 만든다, 지어 쓰지 않는다",
+        f"    /** 로그인 행 — 계약 시드 끝에 코드가 덧붙인 {user} 행 (숨은 케이스·공개 몫에 쓰지 않는다). okHeaders()·newSession() 이 이 행으로 로그인한다 */",
+        f"    protected static final long SESSION_USER_ID = {rule.rows[0]}L;",
+        "",
+        f"    /** {user} 시드 행 row 의 자격 증명으로 만든 {src.method} {src.path} 요청 본문 (시드에 들어간 값 그대로).",
+        "     *  케이스·공개 몫 행마다 다른 사용자로 로그인할 때 그 행 번호로 */",
+        "    protected static String loginBody(long row) {",
+        "        return loginBody(row, null, null);",
+        "    }",
+        "",
+        f'    /** 칸 하나만 바꾼 로그인 본문 — 틀린 자격 증명(거절) 시험에 (예: loginBody(row, "{creds[-1].name}", "wrong")). field 는 {shown} 중 하나 */',
+        "    protected static String loginBody(long row, String field, Object value) {",
+        "        Map<String, Object> body = new java.util.LinkedHashMap<>();",
+        *(f'        body.put("{c.name}", {_credential_fn(c)}(row));' for c in creds),
+        "        if (field != null) {",
+        "            if (!body.containsKey(field)) {",
+        '                throw new IllegalArgumentException("로그인 요청 칸이 아님: " + field);',
+        "            }",
+        "            body.put(field, value);",
+        "        }",
+        '        StringBuilder sb = new StringBuilder("{");',
+        "        for (Map.Entry<String, Object> en : body.entrySet()) {",
+        '            sb.append(sb.length() > 1 ? ", " : "").append(jsonText(en.getKey())).append(": ");',
+        "            Object v = en.getValue();",
+        '            sb.append(v == null ? "null" : v instanceof Number || v instanceof Boolean ? v.toString() : jsonText(v.toString()));',
+        "        }",
+        '        return sb.append("}").toString();',
+        "    }",
+        "",
+        "    private static String jsonText(String s) {",
+        '        return "\\"" + s.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"") + "\\"";',
+        "    }",
+        *(line for c in creds for line in _credential_lines(c)),
+        "",
+        f"    /** 시드 행 row 의 사용자로 로그인해 새 세션 값을 받는다 ({header} 에 그대로 넣을 값) — 부를 때마다 새로 로그인한다.",
+        "     *  동시 요청(peak) 안에서 부르지 않는다: 로그인도 서버 자원을 써서 재려는 경로가 아닌 곳에서 실패한다 — peak 전에 받아 둔다 */",
+        "    protected String newSession(long row) {",
+        "        try {",
+        f"            HttpResponse<String> r = {fn}(Map.of(), loginBody(row));",
+        "            if (r.statusCode() / 100 != 2) {",
+        '                throw new IllegalStateException("로그인 실패 " + r.statusCode() + ": " + r.body());',
+        "            }",
+        f'            Object v = jsonObject(r.body()).get("{field}");',
+        "            if (v == null) {",
+        f'                throw new IllegalStateException("로그인 응답에 {field} 가 없음: " + r.body());',
+        "            }",
+        f"            return {prefix} + v;",
+        "        } catch (RuntimeException e) {",
+        "            throw e;",
+        "        } catch (Exception e) {",
+        "            throw new IllegalStateException(e);",
+        "        }",
+        "    }",
+        "",
+        "    /** 로그인 행(SESSION_USER_ID)으로 새 세션 — 사용자가 누구든 되는 요청에 */",
+        "    protected String newSession() {",
+        "        return newSession(SESSION_USER_ID);",
+        "    }",
+    ]
+    if keyed:
+        pairs = ", ".join([f'"{header}", session', *(f'"{h.name}", key' for h in keyed), *others])
+        return lines + [
+            *_request_id_lines(),
+            "",
+            "    /** 규칙(권한)을 통과하는 헤더 묶음 — 부를 때마다 새로 로그인한 세션과 새 요청 키. 기능 단계에 닿아야 하는 요청에 쓴다 */",
+            "    protected Map<String, String> okHeaders() {",
+            "        return sessionHeaders(newSession(), newRequestId());",
+            "    }",
+            "",
+            "    /** 같은 요청을 다시 보낼 때 — 처음 요청의 키를 넘긴다 (세션도 같아야 하면 sessionHeaders(session, key)) */",
+            "    protected Map<String, String> okHeaders(String key) {",
+            "        return sessionHeaders(newSession(), key);",
+            "    }",
+            "",
+            "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청·동시 요청(peak)을 보낼 때. 부를 때마다 새 요청 키 */",
+            "    protected Map<String, String> sessionHeaders(String session) {",
+            "        return sessionHeaders(session, newRequestId());",
+            "    }",
+            "",
+            "    /** 미리 받은 세션과 요청 키로 */",
+            "    protected Map<String, String> sessionHeaders(String session, String key) {",
+            f"        return Map.of({pairs});",
+            "    }",
+        ]
+    pairs = ", ".join([f'"{header}", session', *others])
+    return lines + [
+        "",
+        "    /** 규칙(권한)을 통과하는 헤더 묶음 — 부를 때마다 새로 로그인한 세션. 기능 단계에 닿아야 하는 요청에 쓴다 */",
+        "    protected Map<String, String> okHeaders() {",
+        "        return sessionHeaders(newSession());",
+        "    }",
+        "",
+        "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청·동시 요청(peak)을 보낼 때 */",
+        "    protected Map<String, String> sessionHeaders(String session) {",
+        f"        return Map.of({pairs});",
+        "    }",
+    ]
 
 
 def _inject_lines() -> list[str]:

@@ -39,6 +39,7 @@ from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContra
 from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.spec.feature import find_terms, title_allowed_text
+from task_spec.starter.auth_rule import credentials, issued_rule, locked_existing
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
@@ -885,6 +886,56 @@ def _starter_new_api_tests(
     return out
 
 
+_STRING = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+
+
+def _starter_issued_calls(
+    o: Overlay, contract: TaskContract | None, spec: SpecView
+) -> list[StaticProblem]:
+    """시작 코드의 기존 기능 테스트가, 새로 만드는 발급 API(로그인)가 주는 값이 필요한 기존 API 를 부름 — 시작 코드에는 발급 API 가
+    없어 통과하는 값을 만들 수 없고, 새 기능을 구현하면 그 요청은 거절된다 (기존 기능 테스트가 구현마다 깨진다). 새 API 를 부르는
+    것은 _starter_new_api_tests 가 본다 — 여기는 계약에서 도출한 '시작 코드가 부를 수 없는 기존 API'.
+    2026-11-24 세션 알파: 기존 API /api/items·/api/orders 를 X-Session-Id: dummy-session 으로 불러 200 을 단언 — 시작 코드는 통과,
+    참조 구현 3개는 모두 401 이라 '계약 모호 의심'으로 빌드가 멈췄다. 부르는지는 계약이 선언한 그 헤더 이름 글자와 그 엔드포인트
+    경로 글자로 본다 (manifest 의 MockMvc 모양 밖 HttpClient·URI 로 부르는 것도)."""
+    if contract is None:
+        return []
+    locked = [
+        (x.endpoint, x.rule, x.issuer)
+        for x in locked_existing(contract, existing_endpoints(contract, spec))
+    ]
+    if not locked:
+        return []
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if "/test/" not in f"/{f.path}":
+            continue
+        literals = [m.group(1).split("?", 1)[0] for m in _STRING.finditer(f.content)]
+        hits = sorted(
+            {
+                f"{e.method} {e.path}"
+                for e, rule, _ in locked
+                if rule.header in literals
+                or any(
+                    re.search(re.sub(r"\\\{[^}]*\\\}", "[^/]+", re.escape(e.path)) + "/?$", lit)
+                    or ("{" in e.path and lit.endswith(e.path.split("{", 1)[0]))
+                    for lit in literals
+                )
+            }
+        )
+        if hits:
+            _, rule, src = next(x for x in locked if f"{x[0].method} {x[0].path}" in hits)
+            out.append(
+                StaticProblem(
+                    "gen_starter",
+                    f"시작 코드의 기존 기능 테스트 {f.path} 가 {', '.join(hits)} 를 부름 — 이 API 는 새로 만드는 {src.method} {src.path} 가 "
+                    f"발급하는 {rule.header} 가 필요하다. 시작 코드에는 발급 API 가 없어 통과하는 값을 만들 수 없고, 새 기능을 구현하면 "
+                    f"이 요청은 {rule.denied_status} 이 된다 — 기존 기능 테스트는 이 API 를 부르지 않는다 (시드·저장소 수준으로 확인)",
+                )
+            )
+    return out
+
+
 def _unknown_calls(
     files: Iterable[GeneratedFile], contract: TaskContract, patterns: Sequence[str]
 ) -> list[str]:
@@ -1337,6 +1388,34 @@ def _call_args(text: str, start: int) -> list[str]:
     return [*args, cur.strip()] if cur.strip() or args else []
 
 
+def _hand_built_login(
+    cases: Sequence[GeneratedFile], contract: TaskContract, label: str
+) -> list[str]:
+    """발급 API(로그인) 요청 본문을 손으로 만듦 — 자격 증명은 시드 값이라 짐작하면 모든 구현에서 거절된다. 도우미가 loginBody(row) 를 준다.
+    2026-11-24 세션 알파: 공개 4개·숨은 1개 테스트가 모두 "user-"+id·"pass-"+id 로 지어 401. 계약이 선언한 발급 API 요청 칸 이름이
+    모두 글자로 나오면 손으로 만든 본문으로 본다 — 낱말 목록이 아니라 계약의 칸 이름, 응답 단언에 나오는 칸 하나는 잡지 않게 '모두'.
+    loginBody(…) 를 부르는 줄은 보지 않는다 (틀린 자격 증명 시험의 loginBody(row, "password", "wrong"))."""
+    rule = issued_rule(contract)
+    src = next(
+        (e for e in contract.endpoints if rule is not None and e.endpoint_id == rule.issued_by),
+        None,
+    )
+    if rule is None or src is None or not src.request or not credentials(contract, rule):
+        return []
+    names = [f.name for f in src.request]
+    rxs = [re.compile(r'\\?"' + re.escape(n) + r'\\?"') for n in names]
+    out: list[str] = []
+    for f in cases:
+        text = "\n".join(line for line in f.content.splitlines() if "loginBody(" not in line)
+        if all(rx.search(text) for rx in rxs):
+            out.append(
+                f"{label} {f.path} 가 {src.method} {src.path} 요청 본문({', '.join(names)})을 손으로 만듦 — 자격 증명은 시드 값이라 "
+                "짐작하면 모든 구현에서 거절된다. 도우미의 loginBody(row)(그 행의 자격 증명)·newSession(row)(그 행으로 로그인한 세션)을 "
+                f'쓰고, 틀린 자격 증명은 loginBody(row, "{names[-1]}", "wrong") 로'
+            )
+    return out
+
+
 def _hand_built_keys(
     cases: Sequence[GeneratedFile], contract: TaskContract, label: str
 ) -> list[str]:
@@ -1579,6 +1658,7 @@ def _hidden_cases(
         out += _hidden_tables(cases, t, contract)
         out += _literal_headers(cases, contract, "숨은 테스트")
         out += _hand_built_keys(cases, contract, "숨은 테스트")
+        out += _hand_built_login(cases, contract, "숨은 테스트")
         out += _injected_status_asserts(cases, m, contract)
     if contract is not None and rules.raw_number_asserts:
         out += _raw_number_asserts(cases, rules.raw_number_asserts, contract)
@@ -2538,6 +2618,7 @@ def _public_cases(
             )
     out += _literal_headers(cases, contract, "공개 테스트")
     out += _hand_built_keys(cases, contract, "공개 테스트")
+    out += _hand_built_login(cases, contract, "공개 테스트")
     imports = [re.compile(p, re.M) for p in m.hidden_rules.forbidden_imports]
     for f in cases:
         bad = [
@@ -2656,6 +2737,7 @@ def static_check(
             res.problems += _starter_tables(o, template, contract)
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
+            res.problems += _starter_issued_calls(o, contract, spec)
             res.problems += _starter_stub_tests(o, template, contract, spec)
             res.problems += _starter_schema(o, template, contract)
             if not is_java(template.manifest):

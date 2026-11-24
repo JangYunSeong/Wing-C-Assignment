@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract
-from task_spec.starter.contract import SpecView
+from task_spec.starter.contract import SpecView, fit_setting_units
 from task_spec.starter.hidden_helpers import render_contract_case, setting_const, setting_probe
 from task_spec.starter.render import contract_markdown
 from task_spec.starter.static_check import Overlay, static_check
@@ -155,3 +155,61 @@ def test_static_check_starter_config_and_public_override() -> None:
     assert any(
         "설정 shop.order.page-size 를 따르는지 보는 공개 테스트가 없음" in m for m in default_only
     )
+
+
+def test_time_settings_in_minutes_or_hours_become_seconds() -> None:
+    """2026-11-24 plan_contract v32 첫 평가: 세션 유효 시간을 app.session.ttl-minutes=30 으로 적었고, 재요청에도 명세의 'TTL(30분)'을
+    따라 다시 분으로 답해 계약이 실패했다. 테스트가 설정을 작은 값(SETTING_…_PROBE)으로 덮고 그만큼 기다리므로 코드가 초로 맞춘다 —
+    단위는 키 이름·뜻 글자로 짐작하지 않고 칸 unit 으로 받는다."""
+    plan = HiddenPlan.model_validate(_plan())
+
+    def fit(**over: Any) -> tuple[TaskContract, list[str]]:
+        c = _with({**PAGE, **over})
+        c["endpoints"][0]["responses"][0]["description"] = (
+            f"변경됨 — 설정 {c['settings'][0]['key']} 만큼 유지"
+        )
+        fitted, fitted_plan, notes = fit_setting_units(TaskContract.model_validate(c), plan)
+        assert fitted_plan == plan  # 계획 글에 키가 없으면 그대로
+        return fitted, notes
+
+    for keep in (
+        {},  # 개수(count, 기본)
+        {"key": "portal.session.ttl-seconds", "default": 1800, "unit": "seconds"},
+        {
+            "key": "app.session.ttl-minutes",
+            "default": 30,
+        },  # 이름은 보지 않는다 — unit 이 count 면 그대로
+        {"key": "coupon.expiry", "default": 30, "unit": "days"},  # 일 단위는 시드 날짜로 잰다
+    ):
+        fitted, notes = fit(**keep)
+        assert notes == [] and fitted.settings[0].key == keep.get("key", PAGE["key"])
+    fitted, notes = fit(
+        key="app.session.ttl-minutes", default=30, unit="minutes", meaning="세션 유효 시간"
+    )
+    st = fitted.settings[0]
+    assert (st.key, st.default, st.unit) == ("app.session.ttl-seconds", 1800, "seconds")
+    assert notes and "app.session.ttl-minutes" in notes[0] and "1800" in notes[0]
+    assert (
+        fitted.endpoints[0].responses[0].description
+        == "변경됨 — 설정 app.session.ttl-seconds 만큼 유지"
+    )
+    st = fit(key="report.window-hours", default=24, unit="hours")[0].settings[0]
+    assert (st.key, st.default, st.unit) == ("report.window-seconds", 86400, "seconds")
+    st = fit(key="portal.session.ttl", default=30, unit="minutes")[0].settings[0]
+    assert (st.key, st.default, st.unit) == ("portal.session.ttl", 1800, "seconds")
+    # 초로 바꾸면 상한(100000)을 넘으면 그대로 두고 재요청
+    c = _with({**PAGE, "key": "report.window-hours", "default": 48, "unit": "hours"})
+    fitted, _, notes = fit_setting_units(TaskContract.model_validate(c), plan)
+    assert notes == [] and fitted.settings[0].key == "report.window-hours"
+    problems = _check(c, manifest=JAVA.manifest).problems
+    assert any("설정 report.window-hours 가 hours 단위" in p for p in problems)
+    assert not any("단위인데" in p for p in _check(_with(PAGE), manifest=JAVA.manifest).problems)
+    # README 설정 표·도우미 주석에 단위 — 개수는 붙이지 않는다 (기존 README 그대로)
+    contract = TaskContract.model_validate(
+        _with(
+            PAGE, {**PAGE, "key": "portal.session.ttl-seconds", "default": 1800, "unit": "seconds"}
+        )
+    )
+    md = contract_markdown(contract)
+    assert "| `shop.order.page-size` | int | 50 |" in md
+    assert "| `portal.session.ttl-seconds` | int | 1800초 |" in md

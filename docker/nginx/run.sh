@@ -20,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 NAME="${TASK_NGINX_NAME:-task-nginx}"
-IMAGE="${TASK_NGINX_IMAGE:-docker.io/library/nginx:1.27-alpine}"
+IMAGE="${TASK_NGINX_IMAGE:-docker.io/library/nginx:1.30-alpine}"
 NET="${TASK_NET:-task-net}"
 MODE="${TASK_NGINX_MODE:-tls}"
 NETWORK="${TASK_NGINX_NETWORK:-host}"
