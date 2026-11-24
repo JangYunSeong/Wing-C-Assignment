@@ -228,6 +228,12 @@ class Fixture(Schema):
         "받은 날짜별 폴더면 그 마디가 실행 날짜 옵션(type date)",
     )
     refs: list[str] = Field(min_length=1)
+    # 재료 인터페이스가 정한 파일의 역할·형식·행 엔티티 (#256 2단계) — 코드가 채운다 (starter/interface.fit_interface).
+    # LLM 출력 스키마에는 보이지 않는다 (SkipJsonSchema — plan_contract 판 그대로). 계약 도우미(contract.py)의 입력 쓰기·출력 읽기
+    # 함수가 이 칸으로 만들어진다 (starter/py_helpers.py). 인터페이스가 없는 재료는 비어 있어 도우미도 없다.
+    role: SkipJsonSchema[Literal["input", "output"] | None] = None
+    format: SkipJsonSchema[Literal["jsonl", "csv", "parquet"] | None] = None
+    entity: SkipJsonSchema[str | None] = None
 
     @field_validator("refs")
     @classmethod

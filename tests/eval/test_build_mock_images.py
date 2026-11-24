@@ -20,7 +20,7 @@ def test_template_follows_the_job_family_and_the_pinned_version(tmp_path: Path) 
     for sub, ref in (
         ("sw.frontend", "frontend/react-vite-ts@v14"),
         ("sw.backend", "backend/java-spring-boot3-jpa@v2"),
-        ("data.eng", "data/python-duckdb@v2"),
+        ("data.eng", "data/python-duckdb@v3"),
     ):
         assert b.template_of(_run(tmp_path, sub, {"sub": sub})).manifest.ref == ref
     assert b.template_of(_run(tmp_path, "hand", {})).manifest.ref.startswith("backend/java")

@@ -1848,6 +1848,8 @@ class PySignature:
     varargs: bool  # *args
     varkw: bool  # **kwargs
     returns: str  # 돌려주는 클래스 이름 (모르면 "")
+    # 문자열 기본값 (이름, 값) — 계약 입출력 도우미의 폴더 인자(raw="raw") 를 작업 폴더 이름으로 알아보려고 (#256 2단계)
+    str_defaults: tuple[tuple[str, str], ...] = ()
 
 
 def _signature_of(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> PySignature:
@@ -1862,6 +1864,10 @@ def _signature_of(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> PySignature:
         ret = fn.returns.id
     elif isinstance(fn.returns, ast.Constant) and isinstance(fn.returns.value, str):
         ret = fn.returns.value  # 문자열 표기
+    paired = [
+        *zip([x.arg for x in a.args][len(a.args) - n_def :], a.defaults, strict=True),
+        *((x.arg, d) for x, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is not None),
+    ]
     return PySignature(
         positional=tuple(pos),
         keywords=frozenset([*kw_pos, *(x.arg for x in a.kwonlyargs)]),
@@ -1869,6 +1875,11 @@ def _signature_of(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> PySignature:
         varargs=a.vararg is not None,
         varkw=a.kwarg is not None,
         returns=ret,
+        str_defaults=tuple(
+            (name, d.value)
+            for name, d in paired
+            if isinstance(d, ast.Constant) and isinstance(d.value, str)
+        ),
     )
 
 
@@ -1948,6 +1959,9 @@ def unknown_py_keywords(
             continue  # 문법 오류는 컴파일 확인이 알린다
         funcs: dict[str, PySignature] = {}  # 이 파일이 import 한 하네스·도우미 함수 (별칭 포함)
         commands: set[str] = set()  # 그중 계약 도우미의 명령 함수 (run_…)
+        io_helpers: set[str] = (
+            set()
+        )  # 그중 계약 도우미의 입력 쓰기·출력 읽기 함수 (write_…·read_… — #256 2단계)
         objs: dict[str, str] = {}  # 이름 → 하네스 클래스 (params 같은 인스턴스, workspace() 결과)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
@@ -1965,8 +1979,10 @@ def unknown_py_keywords(
                     local = al.asname or al.name
                     if al.name in pool:
                         funcs[local] = pool[al.name]
-                        if pool is c_sigs:
+                        if pool is c_sigs and al.name.startswith("run_"):
                             commands.add(local)
+                        elif pool is c_sigs and al.name.startswith(("write_", "read_")):
+                            io_helpers.add(local)
                     elif pool is h_sigs and al.name in h_inst:
                         objs[local] = h_inst[al.name]
 
@@ -2013,6 +2029,24 @@ def unknown_py_keywords(
                 first = node.args[0].value.strip("/").removeprefix("./").split("/", 1)[0]
                 if first:
                     ws_roots.add(first)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in io_helpers
+            ):
+                # 도우미의 폴더 인자(파일 이름 name 빼고)도 작업 폴더 이름 — 넘긴 값이 없으면 기본값 (raw="raw")
+                dirs = {k: v for k, v in funcs[node.func.id].str_defaults if k != "name"}
+                given = {
+                    kw.arg: kw.value.value
+                    for kw in node.keywords
+                    if kw.arg in dirs
+                    and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, str)
+                }
+                for v in {**dirs, **given}.values():
+                    first = v.strip("/").removeprefix("./").split("/", 1)[0]
+                    if first:
+                        ws_roots.add(first)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -2080,8 +2114,8 @@ class DayFlow:
         return {day for _, k, day in self.events if k == kind}
 
 
-def _imported_commands(tree: ast.Module) -> dict[str, str]:
-    """`from …contract import run_x as y` → {y: run_x}."""
+def _imported_commands(tree: ast.Module, prefix: str = "run_") -> dict[str, str]:
+    """`from …contract import run_x as y` → {y: run_x}. prefix="write_" 면 계약 도우미의 입력 쓰기 함수 (#256 2단계)."""
     out: dict[str, str] = {}
     for node in ast.walk(tree):
         if (
@@ -2089,7 +2123,7 @@ def _imported_commands(tree: ast.Module) -> dict[str, str]:
             and (node.module or "").rsplit(".", 1)[-1] == "contract"
         ):
             out |= {
-                al.asname or al.name: al.name for al in node.names if al.name.startswith("run_")
+                al.asname or al.name: al.name for al in node.names if al.name.startswith(prefix)
             }
     return out
 
@@ -2106,6 +2140,9 @@ def day_flows(f: GeneratedFile, options: dict[str, set[str]]) -> list[DayFlow]:
     commands = {alias: name for alias, name in _imported_commands(tree).items() if name in options}
     if not commands:
         return []
+    # 계약 도우미의 입력 쓰기(write_…(ws, rows, date=…)) — 날짜 인자는 명령의 날짜 옵션과 같은 이름 (위치 패턴의 마디 = 옵션)
+    writers = set(_imported_commands(tree, "write_"))
+    dated_names = set().union(*options.values())
     flows: list[DayFlow] = []
     for fn in tree.body:
         if not (
@@ -2127,6 +2164,21 @@ def day_flows(f: GeneratedFile, options: dict[str, set[str]]) -> list[DayFlow]:
                     ]
                 else:
                     unknown = True
+            elif isinstance(node.func, ast.Name) and node.func.id in writers:
+                for kw in node.keywords:
+                    if kw.arg is None:
+                        unknown = True
+                    elif kw.arg in dated_names:
+                        v = kw.value
+                        day = (
+                            _DAY.match(v.value)
+                            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                            else None
+                        )
+                        if day is None:
+                            unknown = True
+                        else:
+                            events.append((node.lineno, "write", day.group(1)))
             elif isinstance(node.func, ast.Name) and node.func.id in commands:
                 dated = options[commands[node.func.id]]
                 for kw in node.keywords:

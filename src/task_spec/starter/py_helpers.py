@@ -15,6 +15,7 @@ from typing import Literal
 from task_spec.schemas.build import ContractField, GeneratedFile, TaskContract
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.field_types import FieldType, parse
+from task_spec.starter.seed_sql import time_kind
 
 # 계약 형식 해석(field_types.parse)의 종류 → Python 타입 (#172: 자체 형식표가 enum 따옴표를 남기고 smallint·bigdecimal 을 몰랐다)
 _PY = {
@@ -74,6 +75,145 @@ def _option_param(f: ContractField) -> str:
     )
 
 
+# 계약 형식 해석의 종류 → 하네스 write_parquet 열 형식 (string·int·float·bool·date·timestamp)
+_PARQUET = {
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "date": "date",
+    "datetime": "timestamp",
+}
+_SLOT = re.compile(r"\{(\w+)\}")
+_PARTITION = re.compile(r"^(\w+)=")
+
+
+_RESERVED = frozenset(
+    {"ws", "rows", "name"}
+)  # 도우미의 고정 인자 — 옵션 이름이 겹치면 도우미를 만들지 않는다
+
+
+def _doc(text: str) -> str:
+    """독스트링에 넣을 글 — 역슬래시·세 겹 따옴표를 이스케이프 (재료 요약·위치는 자유 글)."""
+    return text.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+
+
+def _plural(snake: str) -> str:
+    if snake.endswith("s"):
+        return snake
+    if snake.endswith("y") and not snake.endswith(("ay", "ey", "oy", "uy")):
+        return snake[:-1] + "ies"
+    return snake + "s"
+
+
+def _snake(name: str) -> str:
+    return py_ident(re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower())
+
+
+def _file_helpers(contract: TaskContract) -> tuple[list[str], list[str]]:
+    """재료 인터페이스가 역할·형식·행 엔티티를 정한 파일(Fixture.role — fit_interface)마다 입력 쓰기·출력 읽기 함수 (#256 2단계).
+    위치 패턴의 `{옵션}` 마디는 함수 인자 — 날짜 옵션은 꼭 받고, 그 밖(폴더)은 작업 폴더 기준 상대 경로로 옵션 이름이 기본값.
+    입력: 마지막 마디의 `*` 는 파일 이름 인자. 출력: `키=…` 마디가 있으면 파티션마다 {값: 행들}, 없으면 그 위치의 행 목록.
+    역할이 없는 계약(인터페이스 없는 재료)은 아무것도 만들지 않는다 — 예전 contract.py 와 같다."""
+    shapes = {m.name: m for m in contract.data_shapes()}
+    opts: dict[str, str] = {}
+    for e in contract.endpoints:
+        if e.method:
+            continue
+        for f in [*e.request, *e.query]:
+            opts[py_ident(f.name)] = time_kind(f) or "other"
+    names: list[str] = []
+    lines: list[str] = []
+    used: set[str] = set()
+    for fx in contract.fixtures:
+        if not (fx.role and fx.format and fx.entity and fx.path) or fx.entity not in shapes:
+            continue
+        entity = shapes[fx.entity]
+        typed = py_ident(entity.name)
+        segs = fx.path.strip("/").split("/")
+        slots = list(dict.fromkeys(py_ident(x) for x in _SLOT.findall(fx.path)))
+        if any("*" in x for x in segs[:-1]) or _RESERVED & set(slots):
+            continue  # 지원하지 않는 위치 모양 (가운데 마디의 *, 고정 인자와 같은 옵션 이름) — 도우미 없이 하네스로
+        dated = [x for x in slots if opts.get(x) in ("date", "datetime")]
+        dirs = [x for x in slots if x not in dated]
+        params = [f"{x}: str" for x in dated] + [f'{x}: str = "{x}"' for x in dirs]
+
+        def fmt(seg: str) -> str:
+            return _SLOT.sub(lambda m: "{" + py_ident(m.group(1)) + "}", seg)
+
+        if fx.role == "input":
+            base = _plural(_snake(entity.name))
+            name = f"write_{base}" if f"write_{base}" not in used else f"write_{fx.fixture_id}"
+            last = segs[-1]
+            default = last.replace("*", "batch-0001") if "*" in last else last
+            rel = "/".join([*(fmt(x) for x in segs[:-1]), "{name}" if "*" in last else fmt(last)])
+            if fx.format == "jsonl":
+                call = f'ws.write_jsonl(f"{rel}", list(rows))'
+            elif fx.format == "csv":
+                cols = [f.name for f in entity.fields]
+                call = f'ws.write_csv(f"{rel}", list(rows), columns={cols!r})'
+            else:
+                types = {f.name: _PARQUET.get(parse(f.type).kind, "string") for f in entity.fields}
+                call = f'ws.write_parquet(f"{rel}", list(rows), {types!r})'
+            sig = [*params, *([f'name: str = "{default}"'] if "*" in last else [])]
+            kwonly = f", *, {', '.join(sig)}" if sig else ""
+            lines += [
+                "",
+                "",
+                f"def {name}(ws: Workspace, rows: Iterable[{typed}]{kwonly}) -> Path:",
+                f'    """{fx.fixture_id} 입력 `{_doc(fx.path)}` — {_doc(fx.summary)}. 그 위치에 {fx.format} 파일 하나를 쓴다'
+                + (" (같은 폴더에 하나 더 쓰려면 name 을 바꾼다)" if "*" in last else "")
+                + ".",
+                '    폴더 인자는 작업 폴더 기준 상대 경로 — 명령에는 ws.path(그 값) 을 넘긴다."""',
+                f"    return {call}",
+            ]
+        else:
+            part = next((i for i, x in enumerate(segs) if _PARTITION.match(x)), None)
+            reader = {"parquet": "ws.read_parquet", "jsonl": "ws.read_jsonl", "csv": "ws.read_csv"}[
+                fx.format
+            ]
+            if part is not None:
+                key = _PARTITION.match(segs[part]).group(1)  # type: ignore[union-attr]
+                literal = [x for x in segs[:part] if not _SLOT.search(x)]
+                base = py_ident(literal[-1]) if literal else _plural(_snake(entity.name))
+                name = f"read_{base}" if f"read_{base}" not in used else f"read_{fx.fixture_id}"
+                root = "/".join(fmt(x) for x in segs[:part])
+                body = [
+                    f'    base = f"{root}"',
+                    "    if not ws.exists(base):",
+                    "        return {}",
+                    f'    return {{v: {reader}(f"{{base}}/{key}={{v}}") for v in ws.partitions(base, "{key}")}}',
+                ]
+                ret = f"dict[str, list[{typed}]]"
+                what = f"모든 {key} 파티션을 {{값: 행들}} 로 (읽는 쪽이 보는 것과 같게 — 이름이 _·. 로 시작하는 파일은 뺀다). 출력 폴더가 없으면 빈 dict"
+            else:
+                literal = [x for x in segs if not _SLOT.search(x) and "*" not in x]
+                base = (
+                    py_ident(literal[-1].split(".")[0]) if literal else _plural(_snake(entity.name))
+                )
+                name = f"read_{base}" if f"read_{base}" not in used else f"read_{fx.fixture_id}"
+                where = (
+                    "/".join(fmt(x) for x in segs[:-1])
+                    if "*" in segs[-1]
+                    else "/".join(fmt(x) for x in segs)
+                )
+                body = [f'    return {reader}(f"{where}")']
+                ret = f"list[{typed}]"
+                what = "그 위치의 행 목록 (없는 경로는 FileNotFoundError)"
+            lines += [
+                "",
+                "",
+                f"def {name}(ws: Workspace, *, {', '.join(params)}) -> {ret}:"
+                if params
+                else f"def {name}(ws: Workspace) -> {ret}:",
+                f'    """{fx.fixture_id} 출력 `{_doc(fx.path)}` — {_doc(fx.summary)}. {what}. 깨진 파일은 예외 — 크래시 뒤에는 try 로 '
+                '\'읽을 수 없음\'을 값으로 바꿔 단언한다."""',
+                *body,
+            ]
+        used.add(name)
+        names.append(name)
+    return names, lines
+
+
 def render_py_contract(
     contract: TaskContract, manifest: TemplateManifest, audience: Literal["hidden", "public"]
 ) -> GeneratedFile | None:
@@ -98,9 +238,22 @@ def render_py_contract(
         "__all__ = [",
     ]
     commands = [e for e in contract.endpoints if not e.method]
-    names = [py_ident(m.name) for m in contract.data_shapes()] + [
-        command_name(e.path) for e in commands
-    ]
+    io_names, io_lines = _file_helpers(contract)
+    if io_names:  # 입력 쓰기·출력 읽기 도우미 (#256 2단계) — 인터페이스가 정한 파일이 있을 때만 import 를 더한다
+        lines[lines.index("import os")] = (
+            "import os\nfrom collections.abc import Iterable\nfrom pathlib import Path"
+        )
+        lines[lines.index("from harness.grader import JobResult, run")] = (
+            "from harness.grader import JobResult, Workspace, run"
+        )
+        lines[2] = (
+            "명령은 run_…() 로, 입력 파일은 write_…() 로 쓰고 출력은 read_…() 로 읽는다 — 명령 경로·옵션 이름·파일 위치·필드 이름을 직접 쓰지 않는다."
+        )
+    names = (
+        [py_ident(m.name) for m in contract.data_shapes()]
+        + [command_name(e.path) for e in commands]
+        + io_names
+    )
     lines += [f"    {n!r}," for n in names] + ["]", ""]
     for m in contract.data_shapes():  # 테이블 엔티티 + 응답 모양
         lines += [
@@ -144,4 +297,5 @@ def render_py_contract(
         lines.append(
             f"    return run({e.path!r}, *args, crash_after_bytes=crash_after_bytes, timeout=timeout)"
         )
+    lines += io_lines
     return GeneratedFile(path=rule.path, content="\n".join(lines) + "\n")
