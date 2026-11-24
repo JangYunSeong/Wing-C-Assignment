@@ -177,7 +177,7 @@
  "plan_contract": {
   "output_schema": "PlanContractOutput",
   "schema_style": "compact",
-  "sha256": "022bb222f39bfe779be898f454bfdcb882cc7a7263861ecc631a0a88242e97c3"
+  "sha256": "98ad1a5fb1b6d547a2dafa50796a35fdbd17f3bcc921a88b4ea96e016865ea82"
  },
  "segment_posting": {
   "output_schema": "SegmentPostingOutput",

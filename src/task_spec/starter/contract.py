@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import Counter
@@ -28,6 +29,7 @@ from pathlib import PurePosixPath
 from typing import Literal
 
 from task_spec.schemas.build import (
+    AppSetting,
     ContractField,
     Endpoint,
     Entity,
@@ -1216,6 +1218,76 @@ def spec_named_fields(spec: SpecView | None) -> set[str]:
         for w in _IDENT_TOKEN.findall(t)
         if "_" in w or _CAMEL_JOIN.search(w)
     }
+
+
+# 분·시간 단위 설정 → 초로 곱할 수 (칸 unit 으로 — 키 이름·뜻 글자로 짐작하지 않는다)
+_TO_SECONDS = {"minutes": 60, "hours": 3600}
+SETTING_DEFAULT_MAX = 100_000  # AppSetting.default 상한
+
+
+def _seconds_key(key: str, unit: str) -> str:
+    """키 끝 마디가 단위 칸의 낱말(minutes·minute)이면 seconds 로 — 값이 초가 되므로 키가 다른 단위를 말하지 않게."""
+    head, sep, last = key.rpartition("-") if "-" in key.rsplit(".", 1)[-1] else key.rpartition(".")
+    return f"{head}{sep}seconds" if last in (unit, unit.removesuffix("s")) else key
+
+
+def fit_setting_units(
+    contract: TaskContract, plan: HiddenPlan
+) -> tuple[TaskContract, HiddenPlan, list[str]]:
+    """unit 이 분·시간인 설정을 초 단위로 — 기본값에 60·3600 을 곱하고, 키 끝 마디가 그 단위 낱말이면 seconds 로 바꿔 계약·숨은 계획 글의
+    옛 키도 바꾼다. 테스트는 설정을 기본값과 다른 작은 값(도우미 SETTING_…_PROBE)으로 덮고 결과가 따르는지 보는데, 시간 설정이면 덮은
+    값만큼 기다린다 — 분 단위면 수 분을 기다려 채점 시간 한도를 넘는다.
+    2026-11-24 plan_contract v32 첫 평가(세션 유지 과제): '초 단위 키' 지시에도 2회 중 1회가 app.session.ttl-minutes=30 으로 적었고,
+    재요청으로 물으니 명세의 'TTL(30분)'을 따라 다시 분으로 답해 계약이 실패했다 — 그래서 묻지 않고 코드가 맞춘다.
+    초로 바꾼 기본값이 상한을 넘거나 바꾼 키가 이미 있으면 그대로 두고 _setting_units 가 재요청한다."""
+    taken = {st.key for st in contract.settings}
+    renames: dict[str, str] = {}
+    settings: list[AppSetting] = []
+    notes: list[str] = []
+    for st in contract.settings:
+        factor = _TO_SECONDS.get(st.unit)
+        key = _seconds_key(st.key, st.unit)
+        if (
+            factor is None
+            or st.default * factor > SETTING_DEFAULT_MAX
+            or (key != st.key and key in taken)
+        ):
+            settings.append(st)
+            continue
+        default = st.default * factor
+        settings.append(st.model_copy(update={"key": key, "default": default, "unit": "seconds"}))
+        if key != st.key:
+            renames[st.key] = key
+        notes.append(
+            f"설정 {st.key} (기본 {st.default} {st.unit}) 를 초 단위로: {key} = {default} — 테스트가 설정을 작은 값으로 덮고 그만큼 기다린다"
+        )
+    if not notes:
+        return contract, plan, []
+
+    def renamed(text: str) -> str:
+        for old, new in renames.items():
+            text = re.sub(r"(?<![\w.-])" + re.escape(old) + r"(?![\w-]|\.\w)", new, text)
+        return text
+
+    body = contract.model_dump(mode="json", exclude={"settings"})
+    contract = TaskContract.model_validate(
+        {
+            **json.loads(renamed(json.dumps(body, ensure_ascii=False))),
+            "settings": [x.model_dump(mode="json") for x in settings],
+        }
+    )
+    plan = HiddenPlan.model_validate_json(renamed(plan.model_dump_json()))
+    return contract, plan, notes
+
+
+def _setting_units(contract: TaskContract) -> list[str]:
+    """fit_setting_units 가 초로 바꾸지 못한 분·시간 단위 설정 → 재요청 (초로 바꾼 기본값이 상한을 넘음 등)."""
+    return [
+        f"설정 {st.key} 가 {st.unit} 단위인데 초로 바꾸면 기본값이 {SETTING_DEFAULT_MAX} 을 넘음 — 시간 설정은 초 단위(unit seconds)로 "
+        "적는다. 테스트가 이 설정을 작은 값으로 덮고 그만큼 기다린다 — 더 긴 기간은 기다려 확인할 수 없으니 설정으로 두지 않는다"
+        for st in contract.settings
+        if st.unit in _TO_SECONDS
+    ]
 
 
 def _naming(
@@ -2425,6 +2497,7 @@ def check_contract(
     problems = _ids(contract, plan)
     problems += _coverage(contract, plan, spec)
     problems += _naming(contract, manifest, spec)
+    problems += _setting_units(contract)
     problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _added_marked_existing(contract, spec)

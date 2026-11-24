@@ -111,10 +111,15 @@ class AuthRule(Schema):
     헤더 통과·거절 값과 규칙 문장을 만든다 (starter/auth_rule.py). StateRule 과 같은 방식.
 
     2026-11-09 알파 smilegate_2026#002: 같은 명세의 계약 14개가 권한을 4가지로 정했고(8개는 '요청자 식별자'뿐), 공개 테스트 예시의
-    통과 값이 시드와 맞지 않아(통과하는 등급의 행이 없음) 계약이 거절되거나 모든 요청이 403 에서 끝났다."""
+    통과 값이 시드와 맞지 않아(통과하는 등급의 행이 없음) 계약이 거절되거나 모든 요청이 403 에서 끝났다.
 
-    kind: Literal["role", "fixed", "other"] = Field(
-        description="role: 요청자가 엔티티 한 행이고 그 행의 필드 값으로 가름 · fixed: 정해진 헤더 값만 통과 · other: 그 밖 (글로)"
+    issued [2026-11-24]: 헤더 값이 다른 API(로그인)의 응답으로 발급되는 값 — 고정 값이 없어 role·fixed·other 어느 것으로도
+    적을 수 없었다 (운영 빌드 ct-f6087a7ba679-b1: 세션 유지 과제의 계약이 로그인 401 에 auth 칸을, X-Session-Id 에 통과 값 예시를
+    요구받아 세 번 모두 실패). 코드가 시드 끝에 로그인 행 하나를 덧붙이고, 테스트 도우미가 그 행으로 로그인해 세션을 받는다."""
+
+    kind: Literal["role", "fixed", "other", "issued"] = Field(
+        description="role: 요청자가 엔티티 한 행이고 그 행의 필드 값으로 가름 · fixed: 정해진 헤더 값만 통과 · "
+        "issued: 다른 API(로그인 등)가 응답으로 발급한 값만 통과 · other: 그 밖 (글로)"
     )
     header: str = Field(
         min_length=1,
@@ -127,7 +132,9 @@ class AuthRule(Schema):
         description="권한이 없을 때 응답 코드 (401 또는 403) — 이 엔드포인트 responses 에 있어야 함",
     )
     entity: str | None = Field(
-        default=None, pattern=r"^m\d{1,2}$", description="role: 요청자 엔티티 id (예: m1)"
+        default=None,
+        pattern=r"^m\d{1,2}$",
+        description="role: 요청자 엔티티 id (예: m1) · issued: 발급 API 요청 칸을 가진 엔티티가 여럿일 때만 그중 로그인 사용자 엔티티 id (하나면 코드가 정한다)",
     )
     identifies: str | None = Field(
         default=None,
@@ -157,12 +164,29 @@ class AuthRule(Schema):
         max_length=4,
         description="role: 경로 변수와 같아야 통과하는 요청자 필드 (예: 같은 길드 — guildId). 없으면 비움",
     )
+    issued_by: str | None = Field(
+        default=None,
+        pattern=r"^e\d{1,2}$",
+        description="issued: 이 헤더 값을 발급하는 엔드포인트 id (예: 로그인 e1) — 그 요청 본문 칸이 자격 증명, "
+        "칸 이름은 entity 필드 이름과 같게",
+    )
+    issued_field: str | None = Field(
+        default=None,
+        max_length=60,
+        description="issued: 발급 엔드포인트의 성공 응답 본문에서 값이 담긴 칸 이름 (예: sessionId)",
+    )
+    prefix: str | None = Field(
+        default=None,
+        max_length=20,
+        description="issued: 헤더에 넣을 때 값 앞에 붙이는 글자 (예: 'Bearer ') — 없으면 비움",
+    )
     description: str | None = Field(
         default=None,
         max_length=200,
         description="other: 규칙 한 줄 (자동 보장 안 됨 — 사람이 확인)",
     )
-    # 코드가 채운다 (fit_auth) — 덧붙인 요청자 행 id 와 그 행의 헤더 값. LLM 출력 스키마에는 보이지 않는다
+    # 코드가 채운다 (fit_auth) — 덧붙인 요청자 행 id 와 그 행의 헤더 값 (issued 는 로그인 행 하나·거절 값만 — 통과 값은 발급받는다).
+    # LLM 출력 스키마에는 보이지 않는다
     rows: SkipJsonSchema[list[int]] = Field(default_factory=list)
     ok_value: SkipJsonSchema[str | None] = None
     denied_value: SkipJsonSchema[str | None] = None
@@ -479,6 +503,9 @@ class SeedRule(Schema):
     rules: list[str] = Field(default_factory=list)  # 그 밖의 값 규칙 (예: 송장 번호 형식)
 
 
+SettingUnit = Literal["count", "ms", "seconds", "minutes", "hours", "days"]
+
+
 class AppSetting(Schema):
     """애플리케이션 설정 1개 — 구현이 이 키에서 읽어야 하는 값 (예: 목록 한 번에 돌려줄 최대 개수). 공개 계약 — 키·뜻·기본값이 README 에 보인다.
 
@@ -503,11 +530,23 @@ class AppSetting(Schema):
     refs: list[str] = Field(
         min_length=1, description="이 설정을 따르라는 공개 요구(r*)·공개 수용 기준(p*)"
     )
+    # 2026-11-24: 테스트는 설정을 작은 값(도우미 SETTING_…_PROBE)으로 덮고 그만큼 기다리는데, 세션 유효 시간이 ttl-minutes=30 으로 와
+    # 수 분을 기다릴 뻔했다. 단위를 키 이름·뜻 글자로 짐작하지 않게 칸으로 받고, 분·시간은 코드가 초로 바꾼다 (contract.fit_setting_units)
+    unit: SettingUnit = Field(
+        default="count",
+        description="값의 단위 — 개수·건수면 count, 시간이면 ms·seconds·minutes·hours·days (분·시간이면 코드가 초로 바꾼다)",
+    )
 
     @field_validator("refs")
     @classmethod
     def _refs(cls, v: list[str]) -> list[str]:
         return _check_refs(v)
+
+    def unit_label(self) -> str:
+        """기본값 뒤에 붙이는 단위 — 개수는 붙이지 않는다 (README 설정 표·도우미 주석)."""
+        return {"ms": "ms", "seconds": "초", "minutes": "분", "hours": "시간", "days": "일"}.get(
+            self.unit, ""
+        )
 
 
 class ResponseShape(Schema):

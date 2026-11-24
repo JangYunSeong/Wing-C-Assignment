@@ -46,6 +46,7 @@ from task_spec.starter.contract import (
     fit_covers,
     fit_field_actions,
     fit_forms,
+    fit_setting_units,
     fit_traps,
     hidden_terms,
     param_unit,
@@ -485,11 +486,16 @@ def fit_output(
     known: Collection[str] | None = None,
     interface: MaterialInterface | None = None,
 ) -> tuple[PlanContractOutput, list[str]]:
-    """LLM 답 → 코드가 맞춘 계약 (조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · 요청 번호 헤더 · covers). 결정적 — 저장한 LLM 답으로
+    """LLM 답 → 코드가 맞춘 계약 (설정 단위 · 조절값 기본값 · 시드 행 수 · 상태 칸 · 권한 칸 · 요청 번호 헤더 · covers). 결정적 — 저장한 LLM 답으로
     회귀 검사(eval/starter/replay_contracts.py)가 LLM 없이 같은 결과를 다시 만든다. manifest 는 재료로 좁힌 것(for_material),
     known 은 좁히기 전 템플릿의 조절값 이름 (없으면 manifest 것). interface 는 재료가 정한 명령·입출력 파일·엔티티 (#256) — 맨 먼저
     계약에 채운다 (뒤 단계 맞춤이 그 위에서 돈다)."""
     out, notes = fit_interface(out, interface, spec.req_ids, spec.public_ac_ids)
+    timed, timed_plan, unit_notes = fit_setting_units(
+        out.contract, out.hidden_plan
+    )  # 분·시간 단위 설정은 초로 — 뒤 맞춤이 바뀐 키를 보게 먼저
+    out = out.model_copy(update={"contract": timed, "hidden_plan": timed_plan})
+    notes += unit_notes
     trimmed, param_notes = fit_material_params(out.hidden_plan, manifest, known)
     notes += param_notes
     trimmed, free_notes = fit_unevidenced(trimmed, manifest, spec)

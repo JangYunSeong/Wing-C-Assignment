@@ -23,6 +23,8 @@ NEUTRAL = "grader"
 
 
 PER_REQUEST = "요청마다"
+# 다른 API(로그인)가 응답으로 발급하는 값 — 통과 값은 도우미가 로그인해 받는다 (권한 칸 issued, auth_rule)
+ISSUED = "발급"
 # 요청 하나를 가리키는 이름·제약 — 계약 칸 per_request 의 바닥 (fit_per_request). '고유 식별자'·uuid 는 회원 id 에도 써서 넣지 않는다
 _REQUEST_KEY = re.compile(
     r"request[-_]?id|idempot|nonce|dedup|요청\s*(?:번호|id|식별자)|멱등", re.I
@@ -104,7 +106,7 @@ class HeaderValues:
     name: str
     ok: str | None
     denied: str | None
-    source: str  # "예시" · "아무 값" · "권한 규칙" — 도우미 주석에
+    source: str  # "예시" · "아무 값" · "권한 규칙" · "발급" · "요청마다" — 도우미 주석에
 
 
 def _statuses(contract: TaskContract, header: str) -> set[int]:
@@ -124,12 +126,21 @@ def header_values(contract: TaskContract) -> list[HeaderValues]:
         for e in contract.endpoints
         if e.auth is not None and e.auth.ok_value is not None
     }
+    issued = {
+        e.auth.header: e.auth
+        for e in contract.endpoints
+        if e.auth is not None and e.auth.kind == "issued"
+    }
     out: list[HeaderValues] = []
     for name in names:
         if (
             rule := ruled.get(name)
         ) is not None:  # 권한 칸에서 코드가 정한 요청자 행의 값 (auth_rule.fit_auth)
             out.append(HeaderValues(name, rule.ok_value, rule.denied_value, "권한 규칙"))
+            continue
+        # 발급받는 값(권한 칸 issued) — 통과 값은 고정 값이 없다, 도우미가 로그인해 받는다
+        if (got := issued.get(name)) is not None:
+            out.append(HeaderValues(name, None, got.denied_value, ISSUED))
             continue
         if per_request(
             contract, name
@@ -199,7 +210,7 @@ def header_problems(contract: TaskContract) -> list[str]:
         if h.source == PER_REQUEST:
             continue
         if h.ok is not None or h.name in ruled or not _statuses(contract, h.name) & set(DENIED):
-            continue  # 권한 칸(role·fixed)이 있으면 그쪽 검사가 말한다 (auth_rule.auth_problems)
+            continue  # 권한 칸(role·fixed·issued)이 있으면 그쪽 검사가 말한다 (auth_rule.auth_problems)
         # 여기 오는 헤더는 코드가 요청자 값을 정하지 않는다 (auth 칸 없음·other) — 문구 하나 (#181: other 일 때만 앞에 붙이던
         # 갈래는 지웠다. 2026-11-09 fixmt-be2 의 지시 충돌은 plan_contract v15 부터 프롬프트가 같은 말을 한다)
         msg = (
