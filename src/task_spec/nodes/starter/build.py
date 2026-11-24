@@ -57,10 +57,12 @@ from task_spec.starter.repair import (
     COMPILE_RETRIES,
     STARTER,
     WEAK_FLAG,
+    ContractSignal,
     RegenNote,
     RepairAction,
     RepairPlan,
     assign,
+    contract_signals,
     gates_of,
 )
 from task_spec.starter.repair import HAND as HAND_POOL
@@ -446,6 +448,8 @@ class BuildOutcome:
     hand: list[str] = field(default_factory=list)
     hand_kept: list[str] = field(default_factory=list)
     hand_reports: list[VerifyReport] = field(default_factory=list)
+    # 실패한 빌드의 계약 탓 꼴에 붙인 손 허용 구현 실행 (#256 4단계) — 손 관문 보고서와 따로
+    blame_reports: list[VerifyReport] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
@@ -1056,7 +1060,93 @@ def _static_actions(overlays: dict[str, Overlay], b: BuildInputs) -> RepairPlan:
     return plan
 
 
+SIGNAL_FLAG = "다른 관문 신호: "  # 실패한 빌드의 마지막 검증에서 본 계약 탓 꼴 (#256 4단계)
+MAX_SIGNALS = 4  # 승인·실패 화면 표시 상한 — 넘으면 개수만
+
+
 async def build_and_repair(
+    b: BuildInputs,
+    designs: Sequence[AcceptedDesign],
+    *,
+    llm: LLMClient,
+    prompts: PromptRegistry,
+    ontology_version: str,
+    verifier: Verifier,
+    max_rounds: int = MAX_ROUNDS,
+    compiler: TestCompiler | None = None,
+) -> BuildOutcome:
+    """빌드 루프 (_build_and_repair) — 실패로 끝나면 어느 관문에서 멈췄든 마지막 검증의 계약 탓 꼴(흔한 구현만 통과하는 숨은 케이스,
+    모든 구현이 같은 이유로 떨어지는 테스트)을 표시로 남긴다. 손 구현이 있는 재료는 손 허용 구현 결과를 근거로 붙인다 (#256 4단계)."""
+    out = await _build_and_repair(
+        b,
+        designs,
+        llm=llm,
+        prompts=prompts,
+        ontology_version=ontology_version,
+        verifier=verifier,
+        max_rounds=max_rounds,
+        compiler=compiler,
+    )
+    if out.status == "failed" and out.reports:
+        signals = contract_signals(out.reports[-1], b.plan)
+        shown = signals[:MAX_SIGNALS]
+        evidence = await _hand_evidence(out, b, verifier, shown) if shown else {}
+        flags = [f"{SIGNAL_FLAG}{s.line()}{evidence.get((s.group, s.name), '')}" for s in shown]
+        if len(signals) > MAX_SIGNALS:
+            flags.append(
+                f"{SIGNAL_FLAG}외 {len(signals) - MAX_SIGNALS}건 (보고서의 마지막 검증 참고)"
+            )
+        out.review_flags += [f for f in flags if f not in out.review_flags]
+    return out
+
+
+async def _hand_evidence(
+    out: BuildOutcome, b: BuildInputs, verifier: Verifier, signals: Sequence[ContractSignal]
+) -> dict[tuple[str, str], str]:
+    """계약 탓 꼴마다 손 허용 구현 결과 — 손 허용이 통과하면 테스트는 올바른 구현으로 통과할 수 있어 생성 구현 결함, 같이 떨어지면
+    테스트·계약 결함. 신호와 같은 판으로 — 마지막 검증 때의 오버레이 스냅샷 (그 뒤 다시 만든 산출물이 아니라). 실패해도 빌드 결과는 그대로."""
+    refs = b.references
+    run = getattr(verifier, "verify_variants", None)
+    snap = out.snapshots[-1] if out.snapshots else out.overlays
+    starter, hidden, public = (snap.get(k) for k in (STARTER, HIDDEN, PUBLIC))
+    if refs is None or refs.stale or run is None or starter is None or hidden is None:
+        return {}
+    if public is None:
+        return {}
+    accepted = [o for o in refs.overlays() if o.kind == "ref_accepted"]
+    if not accepted:
+        return {}
+    try:
+        report = await run(starter, accepted, public, hidden)
+    except Exception as exc:  # 근거 모으기 실패는 빌드 결과를 바꾸지 않는다
+        logger.warning("hand evidence failed %s", type(exc).__name__)
+        return {}
+    out.blame_reports.append(report)
+    runs = [r for r in report.runs if r.setup == "ok"]
+    evidence: dict[tuple[str, str], str] = {}
+    for s in signals:
+        got = [
+            t
+            for r in runs
+            if (t := next((x for x in r.tests if x.group == s.group and x.name == s.name), None))
+            is not None
+        ]
+        if not got:
+            continue
+        if all(t.result == "PASS" for t in got):
+            evidence[(s.group, s.name)] = (
+                f" · 손 허용 구현 {len(got)}개 통과 — 테스트는 올바른 구현으로 통과 가능, 생성 구현 결함 의심"
+            )
+        elif all(t.result != "PASS" for t in got):
+            evidence[(s.group, s.name)] = (
+                f" · 손 허용 구현 {len(got)}개도 실패 — 테스트·계약 결함 의심"
+            )
+        else:
+            evidence[(s.group, s.name)] = " · 손 허용 구현 일부만 실패"
+    return evidence
+
+
+async def _build_and_repair(
     b: BuildInputs,
     designs: Sequence[AcceptedDesign],
     *,
@@ -1392,7 +1482,7 @@ async def _regenerate(
     notes = {a.key: f"검증 실패 (게이트 {a.gate}) — {a.note}" for a in actions}
     for a in actions:  # 산출물·풀마다 센다 (RepairAction.budget_key — repair.POOLS)
         out.regen_counts[a.budget_key] = out.regen_counts.get(a.budget_key, 0) + 1
-        out.regen_log[a.key] = RegenNote(a.gate, a.cases, a.reason)
+        out.regen_log[a.key] = RegenNote(a.gate, a.cases, a.reason, a.blame)
     if any(a.generator in ("gen_hidden", "gen_starter") for a in actions):
         out.passed_before.clear()  # 테스트·시작 코드가 바뀌면 이전 판의 통과는 근거가 아니다
 
