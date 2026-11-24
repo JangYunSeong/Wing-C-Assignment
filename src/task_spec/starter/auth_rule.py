@@ -9,17 +9,23 @@
 - 헤더 constraints 문장은 칸에서 코드가 쓴다 → README·시작 코드·참조 구현이 같은 규칙을 본다.
 - 칸이 필요한지는 응답 코드로 판정한다 (401·403 또는 권한 사유 코드) — 헤더가 있다는 것만으로는 아니다 (요청자를 기록용으로만 받는 과제가 많다).
 - other: 칸 밖의 규칙은 글로 받고 '자동 보장 안 됨'으로 사람 확인에 올린다.
+- issued [2026-11-24]: 헤더 값이 다른 API(로그인)의 응답으로 발급된다 — 시드 끝에 로그인 행 하나(자격 증명은 발급 API 요청 칸과
+  같은 이름의 엔티티 필드 값)를 덧붙이고, 테스트 도우미가 그 행으로 로그인해 값을 받는다. 거절 값은 발급하지 않은 값.
+  발급 API 자체의 401(자격 증명 불일치)은 칸을 요구하지 않는다 — 가리킬 요청 헤더가 없다 (운영 빌드 ct-f6087a7ba679-b1).
 """
 
 from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
+from typing import Literal
 
 from task_spec.schemas import AuthRule, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import ContractField, Endpoint, Entity
-from task_spec.starter.field_types import enum_values
-from task_spec.starter.seed_sql import default_value
+from task_spec.starter.field_types import enum_values, non_null
+from task_spec.starter.field_types import parse as parse_field
+from task_spec.starter.seed_sql import default_value, time_kind
 from task_spec.starter.state_rule import seed_values
 
 DENIED = (401, 403)
@@ -27,6 +33,9 @@ _REASON = re.compile(r"\b(PERMISSION_DENIED|UNAUTHORIZED|FORBIDDEN|ACCESS_DENIED
 _PATH_PARAM = re.compile(r"\{(\w+)\}")
 _QUOTED = re.compile(r"""["']([A-Za-z0-9_-]+)["']""")
 _FIXED_DENIED = ("guest", "denied-user", "anonymous")
+# issued 의 거절 값 — 발급하지 않은 값은 어떤 설계든 거절해야 한다
+ISSUED_DENIED = "not-issued-session"
+_BODY_METHODS = ("POST", "PUT", "PATCH")
 FLAG_OTHER = "권한 규칙 자동 보장 없음 (kind=other — 사람 확인): "
 
 
@@ -45,6 +54,123 @@ def auth_required(e: Endpoint) -> bool:
 
 def _entity(contract: TaskContract, entity_id: str | None) -> Entity | None:
     return next((m for m in contract.entities if m.entity_id == entity_id), None)
+
+
+def _endpoint(contract: TaskContract, endpoint_id: str | None) -> Endpoint | None:
+    return next((e for e in contract.endpoints if e.endpoint_id == endpoint_id), None)
+
+
+def issuers(contract: TaskContract) -> set[str]:
+    """issued 칸이 가리키는 발급 엔드포인트 id — 그 401 은 본문 자격 증명 불일치라 칸을 요구하지 않는다."""
+    return {
+        e.auth.issued_by
+        for e in contract.endpoints
+        if e.auth is not None and e.auth.kind == "issued" and e.auth.issued_by
+    }
+
+
+def issued_rule(contract: TaskContract) -> AuthRule | None:
+    """도우미가 세션을 받을 issued 칸 — 로그인 행까지 정해진 첫 칸 (헤더가 하나뿐인지는 auth_problems 가 본다)."""
+    return next(
+        (
+            e.auth
+            for e in contract.endpoints
+            if e.auth is not None and e.auth.kind == "issued" and e.auth.rows
+        ),
+        None,
+    )
+
+
+def login_candidates(contract: TaskContract, rule: AuthRule) -> list[Entity]:
+    """발급 API 요청 칸(자격 증명)을 모두 가진 엔티티 — 로그인 사용자. 칸 이름은 계약이 선언한 것 (낱말 목록으로 짐작하지 않는다)."""
+    src = _endpoint(contract, rule.issued_by)
+    if src is None or not src.request:
+        return []
+    names = {f.name for f in src.request}
+    if "id" in names:
+        return []
+    return [m for m in contract.entities if names <= {f.name for f in m.fields}]
+
+
+def _fit_login_entity(contract: TaskContract, rule: AuthRule, notes: list[str]) -> AuthRule:
+    """entity 는 계약에서 도출한다 — 발급 API 요청 칸을 모두 가진 엔티티가 하나면 그것. 적힌 entity 가 후보면 그대로, 후보가 없거나
+    여럿인데 적힌 것이 후보가 아니면 그대로 두고 auth_problems 가 말한다.
+    2026-11-24 v32 회귀(세션 유지 과제): 재료가 세션 엔티티를 요구하자 entity 를 Session 으로 적어(로그인 칸은 User 에) 계약이 실패했다
+    — 계약만 보고 정할 수 있는 값을 묻고 틀리면 고치는 대신, 묻지 않는다 (모호할 때만 entity 로 고른다)."""
+    found = login_candidates(contract, rule)
+    if rule.entity in {m.entity_id for m in found} or len(found) != 1:
+        return rule
+    m = found[0]
+    old = _entity(contract, rule.entity)
+    note = (
+        f"issued 칸의 로그인 엔티티를 {m.name} 로"
+        + (f" ({old.name} 대신)" if old is not None else "")
+        + (" — 발급 API 요청 칸을 모두 가진 엔티티")
+    )
+    if note not in notes:
+        notes.append(note)
+    return rule.model_copy(update={"entity": m.entity_id})
+
+
+@dataclass(frozen=True)
+class Credential:
+    """발급 API 요청 칸 하나의 행별 값 — 시드 SQL 과 같은 규칙(seed_sql._value): 그 행의 그룹 값, 없으면 기본값
+    (글자 '<칸>-<행>' 20자까지 · 정수는 행 번호 · enum 첫 값 · boolean false)."""
+
+    name: str
+    groups: tuple[tuple[int, int, SeedScalar], ...]
+    default: Literal["text", "row", "fixed"]
+    fixed: SeedScalar | None = None
+
+
+def credentials(contract: TaskContract, rule: AuthRule) -> list[Credential] | None:
+    """issued 로그인 엔티티의 자격 증명 칸마다 행별 값 — 테스트 도우미가 행 번호로 로그인 본문을 만든다 (테스트가 짐작하지 않게).
+    2026-11-24 세션 알파: 도우미가 로그인 행 하나의 본문만 줘, 케이스·공개 몫 행마다 로그인하려던 테스트가 "user-"+id·"pass-"+id 로
+    지어 모든 구현에서 401. 날짜·시각·외래 키 칸처럼 값을 행으로 정할 수 없으면 None."""
+    m = _entity(contract, rule.entity)
+    src = _endpoint(contract, rule.issued_by)
+    seed = next((x for x in contract.seed if x.entity_id == rule.entity), None)
+    if m is None or src is None or seed is None or not src.request:
+        return None
+    fields = {f.name: f for f in m.fields}
+    fks = {
+        fk for fk, _ in m.fk_pairs()
+    }  # 외래 키는 시드 SQL 이 대상 행 안에서 돌린다 — 자격 증명으로 쓰지 않는다
+    out: list[Credential] = []
+    for req in src.request:
+        f = fields.get(req.name)
+        if f is None or f.name in fks:
+            return None
+        ft = non_null(parse_field(f.type))
+        groups = tuple(
+            (g.first, g.last, g.values[f.name]) for g in seed.groups if f.name in g.values
+        )
+        if time_kind(f) is not None:
+            return None
+        if ft.kind == "enum" and ft.values:
+            out.append(Credential(f.name, groups, "fixed", ft.values[0]))
+        elif ft.kind in ("integer", "number"):
+            out.append(Credential(f.name, groups, "row"))
+        elif ft.kind == "boolean":
+            out.append(Credential(f.name, groups, "fixed", False))
+        else:
+            out.append(Credential(f.name, groups, "text"))
+    return out
+
+
+def _response_fields(contract: TaskContract, e: Endpoint) -> set[str] | None:
+    """성공 응답 본문의 칸 이름 — body 칸과 returns 가 가리키는 엔티티·모양의 칸. 성공 응답이 없으면 None."""
+    ok = e.success()
+    if ok is None:
+        return None
+    names = {f.name for f in ok.body}
+    if ok.returns:
+        shape = next(
+            (m for m in contract.data_shapes() if m.entity_id == ok.returns.removesuffix("[]")),
+            None,
+        )
+        names |= {f.name for f in shape.fields} if shape is not None else set()
+    return names
 
 
 def _field(m: Entity, name: str | None) -> ContractField | None:
@@ -88,6 +214,17 @@ def sentence(rule: AuthRule, contract: TaskContract) -> str:
         tail += f" (통과 예 {rule.ok_value}, 거절 예 {rule.denied_value})"
     if rule.kind == "fixed":
         return (f"값이 {'·'.join(rule.allowed)} 이면 통과" + tail)[:200]
+    if rule.kind == "issued":
+        src = _endpoint(contract, rule.issued_by)
+        where = f"{src.method} {src.path}" if src is not None else rule.issued_by
+        put = f"앞에 '{rule.prefix}' 를 붙여" if rule.prefix else "그대로"
+        text = f"{where} 성공 응답의 {rule.issued_field} 값을 {put} 넣는다 — 없거나 발급하지 않은 값이면 {rule.denied_status}"
+        m = _entity(contract, rule.entity)
+        if src is not None and src.request and m is not None:
+            # 시드 값은 평문 — 해시로 비교하는 구현은 시드 행으로 로그인하지 못한다 (지원자에게도 같은 규칙)
+            creds = "·".join(f.name for f in src.request)
+            text += f". 자격 증명({creds})은 시드 {m.name} 행의 같은 이름 칸 값과 그대로 비교한다 (시드 값은 평문)"
+        return text[:200]
     if rule.kind == "role":
         m = _entity(contract, rule.entity)
         name = m.name if m is not None else rule.entity
@@ -118,21 +255,28 @@ def _key(rule: AuthRule) -> tuple[object, ...]:
         rule.above,
         rule.or_equal,
         tuple(rule.same_as_path),
+        rule.issued_by,
+        rule.issued_field,
+        rule.prefix,
     )
 
 
 def fit_auth(contract: TaskContract, seed_rows: bool = True) -> tuple[TaskContract, list[str]]:
     """칸이 있는 엔드포인트마다 요청자 행·헤더 값을 채우고 헤더 constraints 를 칸에서 쓴다. 두 번 불러도 같다.
-    role 은 행 시드 템플릿에서만 행을 덧붙인다 (아니면 공개 테스트 예시 값으로 — header_values)."""
+    role 은 행 시드 템플릿에서만 행을 덧붙인다 (아니면 공개 테스트 예시 값으로 — header_values).
+    화면 과제의 issued 는 그대로 둔다 — 권한 검사·도우미가 쓰지 않고(테스트가 서버 응답을 직접 정한다), 칸에서 쓴 문장이 계약의 헤더
+    설명을 덮으면 README 가 바뀐다 (2026-11-24 v32 회귀: 토큰 갱신 화면 과제에서 갱신 API 도 발급하는데 '로그인 응답의 값' 으로 덮임)."""
     notes: list[str] = []
     seeds = {s.entity_id: s for s in contract.seed}
     done: dict[tuple[object, ...], AuthRule] = {}
     endpoints: list[Endpoint] = []
     for e in contract.endpoints:
         rule = e.auth
-        if rule is None:
+        if rule is None or (rule.kind == "issued" and contract.interface_kind == "ui"):
             endpoints.append(e)
             continue
+        if rule.kind == "issued" and seed_rows:
+            rule = _fit_login_entity(contract, rule, notes)
         if rule.ok_value is None and _key(rule) in done:
             rule = rule.model_copy(
                 update={
@@ -146,6 +290,10 @@ def fit_auth(contract: TaskContract, seed_rows: bool = True) -> tuple[TaskContra
             rule = rule.model_copy(update={"ok_value": rule.allowed[0], "denied_value": denied})
         elif rule.ok_value is None and rule.kind == "role" and seed_rows:
             rule = _add_requesters(contract, rule, seeds, notes)
+        elif rule.kind == "issued" and rule.denied_value is None:
+            rule = rule.model_copy(update={"denied_value": f"{rule.prefix or ''}{ISSUED_DENIED}"})
+            if seed_rows:
+                rule = _add_login_row(contract, rule, seeds, notes)
         done.setdefault(_key(rule), rule)
         headers = [
             h.model_copy(update={"constraints": sentence(rule, contract)})
@@ -212,19 +360,59 @@ def _add_requesters(
     )
 
 
+def _add_login_row(
+    contract: TaskContract, rule: AuthRule, seeds: dict[str, SeedRule], notes: list[str]
+) -> AuthRule:
+    """시드 끝에 로그인 행 하나 — 발급 API 요청 칸마다 같은 이름 필드에 행 번호로 만든 값 (형식이 email 인 칸은 이메일 모양).
+    값을 그룹에 적어 둔다 — 필수가 아닌 칸은 그룹 값이 없으면 NULL 로 들어가 로그인할 수 없다 (seed_sql._insert_fields).
+    정할 수 없으면 칸을 그대로 두고 auth_problems 가 말한다."""
+    m = _entity(contract, rule.entity)
+    seed = seeds.get(rule.entity or "")
+    src = _endpoint(contract, rule.issued_by)
+    if m is None or seed is None or src is None or not src.request:
+        return rule
+    fields = {f.name: f for f in m.fields}
+    if any(f.name not in fields or f.name == "id" for f in src.request):
+        return rule
+    row = seed.rows + 1
+    values: dict[str, SeedScalar] = {}
+    for f in src.request:
+        mf = fields[f.name]
+        if mf.type.strip().lower() == "email":
+            values[f.name] = f"user{row}@example.com"
+        else:
+            v = default_value(mf, row)
+            values[f.name] = v if isinstance(v, (str, int, bool)) else str(v)
+    groups = [*seed.groups, SeedGroup(first=row, last=row, values=values)]
+    seeds[m.entity_id] = seed.model_copy(update={"rows": row, "groups": groups})
+    shown = ", ".join(f"{k}={v}" for k, v in values.items())
+    notes.append(
+        f"{m.name} 시드에 로그인 행 덧붙임: id {row} ({shown}) — {src.method} {src.path} 로 {rule.header} 값을 받는다, "
+        "숨은 케이스·공개 몫 배정에서 뺌"
+    )
+    return rule.model_copy(update={"rows": [row]})
+
+
 def auth_problems(contract: TaskContract, seed_rows: bool = True) -> list[str]:
     """칸이 필요한데 없음 · 칸이 계약과 안 맞음 → 재요청 사유."""
-    out: list[str] = []
+    out: list[str] = _issued_headers(contract)
+    issuing = issuers(contract)
     for e in contract.endpoints:
         rule = e.auth
         label = f"{e.method or ''} {e.path} auth".strip()
         if rule is None:
-            if auth_required(e):
-                out.append(
+            if auth_required(e) and e.endpoint_id not in issuing:
+                msg = (
                     f"{label}: 권한 실패(401·403·권한 사유 코드)를 내는데 auth 칸이 없음 — 누가 통과하는지 auth 에 적는다 "
                     '(예: {"kind": "role", "header": "X-Actor", "denied_status": 403, "entity": "m1", "identifies": "id", '
                     '"attribute": "role", "allowed": ["ADMIN"]})'
                 )
+                if not e.headers:
+                    msg += (
+                        f". 요청 헤더 없이 본문 자격 증명으로 401 을 내는 로그인·발급 API 면 이 엔드포인트에는 칸을 두지 않고, 발급한 값을 "
+                        f'헤더로 받는 엔드포인트의 auth 에 {{"kind": "issued", "issued_by": "{e.endpoint_id}", …}} 를 적는다'
+                    )
+                out.append(msg)
             continue
         if rule.header not in {h.name for h in e.headers}:
             out.append(f"{label}: header {rule.header} 가 이 엔드포인트 headers 에 없음")
@@ -238,6 +426,87 @@ def auth_problems(contract: TaskContract, seed_rows: bool = True) -> list[str]:
             out.append(f"{label}: other 인데 description(규칙 한 줄)이 비었음")
         if rule.kind == "role":
             out += _role_problems(contract, e, rule, label, seed_rows)
+        if rule.kind == "issued":
+            out += _issued_problems(contract, e, rule, label, seed_rows)
+    return out
+
+
+def _issued_headers(contract: TaskContract) -> list[str]:
+    """issued 칸은 헤더 하나·발급 방법 하나 — 도우미가 세션 하나를 받아 모든 요청에 쓴다."""
+    ways = {
+        (e.auth.header, e.auth.issued_by, e.auth.issued_field, e.auth.prefix)
+        for e in contract.endpoints
+        if e.auth is not None and e.auth.kind == "issued"
+    }
+    if len(ways) < 2:
+        return []
+    shown = "; ".join(f"{h} ← {by}.{fld}" for h, by, fld, _ in sorted(ways, key=str))
+    return [
+        f"issued 칸이 서로 다름 ({shown}) — 발급한 값을 받는 헤더·발급 엔드포인트·응답 칸·prefix 는 모든 엔드포인트에서 같게 적는다"
+    ]
+
+
+def _issued_problems(
+    contract: TaskContract, e: Endpoint, rule: AuthRule, label: str, seed_rows: bool
+) -> list[str]:
+    src = _endpoint(contract, rule.issued_by)
+    if not rule.issued_by:
+        return [f"{label}: issued 인데 issued_by(값을 발급하는 엔드포인트 id, 예: 로그인)가 비었음"]
+    if src is None:
+        return [f"{label}: issued_by {rule.issued_by} 가 계약 엔드포인트에 없음"]
+    if src.endpoint_id == e.endpoint_id:
+        return [
+            f"{label}: issued_by 가 자기 자신 — 값을 발급하는 다른 엔드포인트(로그인 등)를 적는다"
+        ]
+    out: list[str] = []
+    where = f"issued_by {src.endpoint_id}({src.method or ''} {src.path})"
+    if (src.method or "").upper() not in _BODY_METHODS or _PATH_PARAM.search(src.path):
+        out.append(
+            f"{label}: {where} 는 경로 변수 없는 POST·PUT·PATCH 여야 한다 — 자격 증명을 요청 본문으로 보낸다"
+        )
+    if not src.request:
+        out.append(f"{label}: {where} 에 요청 본문 칸(자격 증명)이 없음")
+    if not rule.issued_field:
+        out.append(f"{label}: issued 인데 issued_field(발급 응답 본문에서 값이 담긴 칸)가 비었음")
+    else:
+        names = _response_fields(contract, src)
+        if names is None:
+            out.append(f"{label}: {where} 에 성공(2xx) 응답이 없음")
+        elif rule.issued_field not in names:
+            out.append(
+                f"{label}: issued_field {rule.issued_field} 가 {where} 성공 응답 본문에 없음 — 응답 body 나 returns 에 그 칸을 적는다"
+            )
+    if not seed_rows:
+        return out
+    names = ", ".join(f.name for f in src.request)
+    found = login_candidates(contract, rule)
+    m = _entity(contract, rule.entity)
+    if src.request and not found:
+        shown = "; ".join(
+            f"{x.name}({', '.join(f.name for f in x.fields)})" for x in contract.entities
+        )
+        out.append(
+            f"{label}: {where} 요청 칸 {names} 를 모두 가진 엔티티가 없음 — 자격 증명 칸 이름은 로그인 사용자 엔티티의 필드 이름과 같게 "
+            f"(코드가 그 필드 값으로 로그인 행을 만든다. 엔티티: {shown})"
+        )
+    elif len(found) > 1 and (m is None or m not in found):
+        out.append(
+            f"{label}: {where} 요청 칸 {names} 를 가진 엔티티가 여럿 ({', '.join(f'{x.entity_id} {x.name}' for x in found)}) — "
+            "issued 의 entity 에 로그인 사용자 엔티티 id 를 적는다"
+        )
+    elif m is not None and m in found:
+        if not any(x.entity_id == m.entity_id for x in contract.seed):
+            out.append(
+                f"{label}: 로그인 엔티티 {m.name} 에 시드가 없음 — 로그인 행을 덧붙일 시드를 둔다"
+            )
+        elif credentials(contract, rule) is None:
+            out.append(
+                f"{label}: {where} 요청 칸 {names} 중 날짜·시각·외래 키 칸이 있음 — 자격 증명은 글자·정수 칸으로 (행마다 값을 코드가 정한다)"
+            )
+    if not out and not rule.rows:
+        out.append(
+            f"{label}: 로그인 행을 만들 수 없음 — issued_by 요청 칸과 로그인 사용자 엔티티를 확인한다"
+        )
     return out
 
 
