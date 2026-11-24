@@ -28,7 +28,7 @@ from task_spec.nodes.starter.plan_contract import PlanResult, plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
 from task_spec.schemas.template import TemplateManifest
-from task_spec.spec.incidents import feature_incident, load_incidents
+from task_spec.spec.incidents import feature_incident, load_incidents, load_interfaces
 from task_spec.starter.seed_rows import allocate_rows, seed_markdown
 from task_spec.starter.tables import contract_tables
 from task_spec.starter.templates import Template, select_template
@@ -197,13 +197,17 @@ async def main() -> None:
             continue
         task = TaskItem.model_validate(drafts[sub]["task"])
         template = template_for(sub)
+        inc = feature_incident(incidents, sub)
         res = await plan_contract(
             task,
             template,
             llm=llm,
             prompts=prompts,
             ontology_version="paper",
-            seed=inc.feature if (inc := feature_incident(incidents, sub)) else None,
+            seed=inc.feature if inc else None,
+            interface=load_interfaces(ROOT / "incidents" / "public_v1").get(inc.incident_id)
+            if inc
+            else None,  # #256 재료 인터페이스
         )
         row = summarize(sub, template, task, res)
         rows.append(row)

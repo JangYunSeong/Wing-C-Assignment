@@ -34,7 +34,7 @@ from task_spec.schemas import PublicIncident, TaskItem
 from task_spec.schemas.build_record import BuildFailure
 from task_spec.schemas.package import PackageHeader
 from task_spec.spec.company_incidents import CompanyIncidentReader, is_company_incident
-from task_spec.spec.incidents import incident_by_id, load_incidents
+from task_spec.spec.incidents import incident_by_id, load_incidents, load_interfaces
 from task_spec.starter.artifacts import summaries
 from task_spec.starter.contract import SpecView
 from task_spec.starter.images import (
@@ -126,6 +126,8 @@ class RealSteps:
     ) -> None:
         self.llm, self.prompts = llm, prompts
         self.incidents = load_incidents(incidents_dir)
+        # 재료가 정한 공개 인터페이스 (#256) — 공개 사례 파일만. 회사 사례(co:…)는 없어 계약 인터페이스를 LLM 이 정한다
+        self.interfaces = load_interfaces(incidents_dir)
         self.images_root = images_root
         self.designs = designs
         self.company_incidents = company_incidents
@@ -162,6 +164,7 @@ class RealSteps:
         inc = await self.incident_for(task)
         if inc is None or inc.feature is None:
             raise StepFailed(f"contract: 기능형 재료가 없는 직군 ({sub})")
+        interface = self.interfaces.get(inc.incident_id)
         res = await plan_contract(
             task,
             template,
@@ -169,6 +172,7 @@ class RealSteps:
             prompts=self.prompts,
             ontology_version=job.build.ontology_version,
             seed=inc.feature,
+            interface=interface,
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
             raise StepFailed(
@@ -182,6 +186,7 @@ class RealSteps:
             plan=res.hidden_plan,
             cost_usd=_cost(list(res.provenance)),
             seed=inc.feature,
+            interface=interface,
             avoid_terms=tuple(inc.avoid_terms),
             review_flags=tuple(res.flags),
             provenance=tuple(res.provenance),

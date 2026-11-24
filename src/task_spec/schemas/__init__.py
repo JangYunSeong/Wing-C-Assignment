@@ -151,7 +151,17 @@ from task_spec.schemas.draft import (
     LeakPoint,
     LeakPointV2,
 )
-from task_spec.schemas.incident import FeatureSeed, HarnessRule, PublicIncident
+from task_spec.schemas.incident import (
+    FeatureSeed,
+    HarnessRule,
+    InterfaceCommand,
+    InterfaceEntity,
+    InterfaceField,
+    InterfaceFile,
+    InterfaceResponse,
+    MaterialInterface,
+    PublicIncident,
+)
 from task_spec.schemas.ingest import (
     ExtractedDocument,
     ExtractedField,
@@ -349,6 +359,11 @@ __all__ = [
     "DraftFeatureOutputV2",
     "FeatureSeed",
     "HarnessRule",
+    "InterfaceCommand",
+    "InterfaceEntity",
+    "InterfaceField",
+    "InterfaceFile",
+    "InterfaceResponse",
     "DebugStageDraft",
     "DraftFeatureInput",
     "DraftFeatureOutput",
@@ -407,6 +422,7 @@ __all__ = [
     "FixedField",
     "DraftTaskInput",
     "DraftTaskInputV2",
+    "MaterialInterface",
     "PublicIncident",
     "KnownIncidentCase",
     "IncidentInterviewInput",

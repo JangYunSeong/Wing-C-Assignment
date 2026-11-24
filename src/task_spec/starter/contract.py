@@ -38,7 +38,7 @@ from task_spec.schemas.build import (
     UiElement,
 )
 from task_spec.schemas.domain import HiddenFault, TaskItem
-from task_spec.schemas.incident import FeatureSeed, HarnessRule
+from task_spec.schemas.incident import FeatureSeed, HarnessRule, MaterialInterface
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.spec.feature import ORDINAL_FAULT, find_terms
 from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
@@ -46,6 +46,7 @@ from task_spec.starter.feasibility import feasibility_problems
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.header_values import header_problems
+from task_spec.starter.interface import interface_problems, without_fixed
 from task_spec.starter.seed_rows import (
     case_rows_problems,
     row_target_problems,
@@ -1862,6 +1863,46 @@ def _file_fixtures(contract: TaskContract) -> list[str]:
     return out
 
 
+def _harness_scope(contract: TaskContract, manifest: TemplateManifest) -> list[str]:
+    """채점 하네스가 시험할 수 없는 계약 요소 (manifest harness_scope) — 깔 수 없는 종류의 입력 환경, 파일 위치 옵션이 없는 명령.
+    #256 (2026-11-18 데이터 알파 woori001): 명세의 '스케줄에 등록' 요구로 계약이 `pipeline/setup_schedule.py --schedule-time` 과
+    kind env 입력 환경(crontab 줄)을 지었고, 채점 컨테이너에 crontab 이 없어 허용·흔한 구현 4개가 모두 그 공개 테스트에서 떨어졌다
+    — 수리는 '테스트 의심'으로 공개 테스트만 다시 만들다 예산을 썼다. 안내 글(hint)은 템플릿 지식이라 매니페스트에 둔다."""
+    scope = manifest.harness_scope
+    if scope is None:
+        return []
+    out = [
+        f"입력 환경 {fx.fixture_id} 의 kind {fx.kind} 는 채점 하네스가 깔 수 없음 (깔 수 있는 것: {', '.join(scope.fixture_kinds)}) "
+        "— 이 입력 환경을 빼고, 그것으로 담던 요구는 깔 수 있는 입력 환경·명령 옵션으로 담는다"
+        for fx in contract.fixtures
+        if fx.kind not in scope.fixture_kinds
+    ]
+    files = [fx for fx in contract.fixtures if fx.kind == "file"]
+    options = command_options(contract)
+    # 파일 위치가 모두 정해지고 자리표시자가 모두 명령 옵션일 때만 명령을 판정한다 — 위치가 없거나 틀리면 _file_fixtures 가 먼저 묻는다
+    # (11-15 이전 계약처럼 path 가 없으면 본 명령까지 '파일에 닿지 않음'으로 잘못 걸린다)
+    located = (
+        {slot for fx in files for slot in path_slots(fx.path or "")}
+        if files and all(fx.path for fx in files)
+        else set()
+    )
+    if scope.command_file_option and located and located <= set(options):
+        for e in contract.endpoints:
+            if e.method is not None:
+                continue
+            names = [f.name for f in [*e.request, *e.query]]
+            if not located & set(names):
+                out.append(
+                    f"명령 {e.endpoint_id} {e.path} 의 옵션({', '.join(names) or '없음'})이 어느 파일 입력 환경의 위치(path 의 {{옵션}})에도 "
+                    "쓰이지 않음 — 채점은 케이스마다 임시 작업 폴더에 입력을 쓰고 그 위치를 명령 옵션으로 넘겨 출력을 읽으므로, 파일을 읽거나 "
+                    "쓰지 않는 명령은 시험할 수 없다. 파일 위치를 옵션으로 받게 하거나(입력 환경 path 에 그 {옵션}), 파일을 다루지 않는 명령이면 "
+                    "빼고 그 요구를 파일을 다루는 명령으로 담는다"
+                )
+    if out and scope.hint:
+        out[-1] += f" — {scope.hint}"
+    return out
+
+
 def _ui_actions(contract: TaskContract) -> list[str]:
     """조작하는 화면 요소(버튼·입력 등)에 조작 방법(action)이 없음 — 무엇을 하면 언제 서버 요청이 나가는지 계약이 정해야 테스트와 구현이
     같은 조작을 한다. 2026-11-09 React 알파(낙관적 갱신): 수량 입력의 저장 시점이 계약에 없어 테스트는 입력 즉시, 허용 구현은 포커스 이동 때 요청."""
@@ -2376,16 +2417,18 @@ def check_contract(
     manifest: TemplateManifest,
     seed: FeatureSeed | None = None,
     first_answer: bool = True,
+    interface: MaterialInterface | None = None,
 ) -> ContractCheck:
     """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유.
-    first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다)."""
+    first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다).
+    interface: 재료가 정한 명령·입출력 파일·엔티티 (#256) — 그대로인지·밖의 요소가 없는지 보고, 누설 검사에서는 그 부분을 뺀다."""
     problems = _ids(contract, plan)
     problems += _coverage(contract, plan, spec)
     problems += _naming(contract, manifest, spec)
     problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _added_marked_existing(contract, spec)
-    problems += _leaks(contract, spec, seed)
+    problems += _leaks(without_fixed(contract, interface), spec, seed)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)
     problems += _ui_load_and_background(contract)
@@ -2393,10 +2436,14 @@ def check_contract(
     problems += _ui_form_fields(contract)
     if "file" in manifest.interfaces:
         problems += _file_fixtures(contract)
+    problems += _harness_scope(contract, manifest)
     harness_problems, gaps, flags = _harness(
         plan, spec, manifest, seed.harness_rules if seed is not None else None
     )
     problems += harness_problems
+    interface_issues, interface_flags = interface_problems(contract, interface, manifest)
+    problems += interface_issues
+    flags += interface_flags
     problems += _reasons(plan, manifest, seed)
     problems += _faults(contract, plan, spec)
     problems += feasibility_problems(plan, manifest)

@@ -46,8 +46,10 @@ from task_spec.spec.incidents import (
     feature_incident,
     incident_by_id,
     load_incidents,
+    load_interfaces,
     pin_feature_incident,
 )
+from task_spec.starter.interface import interface_ref
 from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.templates import load_template, select_template
 from task_spec.starter.verify import verifier_for
@@ -214,6 +216,13 @@ async def main() -> None:
         report["template_pinned"] = template.manifest.ref
     # 어느 판의 검사·수리 칸으로 돌렸는지 (같은 vN 에서 고칠 수 있는 칸 — #176)
     report["template"] = {"ref": template.manifest.ref, "manifest_sha256": template.manifest_sha256}
+    interface = load_interfaces(s.incidents_dir).get(inc.incident_id)  # #256 재료 인터페이스
+    # 같은 프롬프트 판이라도 재료 인터페이스 파일이 바뀌면 계약 입력이 달라진다 — 어느 판으로 돌렸는지 남긴다
+    report["interface"] = (
+        {"incident_id": interface.incident_id, "sha256": interface_ref(interface)}
+        if interface
+        else None
+    )
     res = await plan_contract(
         task,
         template,
@@ -221,6 +230,7 @@ async def main() -> None:
         prompts=prompts,  # type: ignore[arg-type]
         ontology_version=version,
         seed=inc.feature,
+        interface=interface,
     )
     spent += _cost(res.provenance)
     report["contract"] = {

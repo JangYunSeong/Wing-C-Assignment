@@ -10,7 +10,9 @@ import hashlib
 from collections.abc import Mapping
 from pathlib import Path
 
-from task_spec.schemas import PublicIncident
+import yaml
+
+from task_spec.schemas import MaterialInterface, PublicIncident
 from task_spec.starter.templates import TEMPLATE_FOR_SUB
 
 NONE = "(없음)"
@@ -19,9 +21,15 @@ NONE = "(없음)"
 class IncidentCatalog(dict[str, PublicIncident]):
     """직군 → 기본 사례 (dict 그대로 쓴다). `alternates` 는 직군 → 기능형 과제용 추가 사례 (feature_incident 가 고른다)."""
 
-    def __init__(self, alternates: Mapping[str, list[PublicIncident]] | None = None) -> None:
+    def __init__(
+        self,
+        alternates: Mapping[str, list[PublicIncident]] | None = None,
+        interfaces: Mapping[str, MaterialInterface] | None = None,
+    ) -> None:
         super().__init__()
         self.alternates: dict[str, list[PublicIncident]] = dict(alternates or {})
+        # 재료 id → 재료가 정한 공개 인터페이스 (#256) — 카탈로그와 함께 다녀 명세(build_common)·빌더가 같은 것을 본다
+        self.interfaces: dict[str, MaterialInterface] = dict(interfaces or {})
 
 
 def load_incidents(root: Path) -> IncidentCatalog:
@@ -42,6 +50,22 @@ def load_incidents(root: Path) -> IncidentCatalog:
         if inc.sub in out:
             raise ValueError(f"직군 {inc.sub} 사례가 둘 이상입니다: {f.name}")
         out[inc.sub] = inc
+    out.interfaces = load_interfaces(root)
+    return out
+
+
+def load_interfaces(root: Path) -> dict[str, MaterialInterface]:
+    """재료 id → 재료가 정한 공개 인터페이스 (`<root>/interfaces/*.yaml`, #256 1단계). 없는 재료는 계약 인터페이스를 LLM 이 정한다.
+    폴더가 없으면 빈 dict. 같은 재료를 두 파일이 정하면 거부한다."""
+    out: dict[str, MaterialInterface] = {}
+    folder = root / "interfaces"
+    if not folder.is_dir():
+        return out
+    for f in sorted(folder.glob("*.yaml")):
+        spec = MaterialInterface.model_validate(yaml.safe_load(f.read_text("utf-8")))
+        if spec.incident_id in out:
+            raise ValueError(f"재료 {spec.incident_id} 의 인터페이스가 둘 이상입니다: {f.name}")
+        out[spec.incident_id] = spec
     return out
 
 
@@ -85,7 +109,10 @@ def pin_feature_incident(incidents: IncidentCatalog, sub: str, incident_id: str)
         raise ValueError(
             f"직군 {sub} 의 기능형 재료가 아님: {incident_id} (있는 추가 재료: {known})"
         )
-    out = IncidentCatalog({**getattr(incidents, "alternates", {}), sub: [chosen]})
+    out = IncidentCatalog(
+        {**getattr(incidents, "alternates", {}), sub: [chosen]},
+        getattr(incidents, "interfaces", {}),
+    )
     out.update(incidents)
     out[sub] = chosen
     return out
@@ -98,10 +125,19 @@ def with_incident(
     다른 직군은 그대로. 기능형 재료가 있으면 추가 사례에도 넣어 feature_incident 가 고르게 한다."""
     alternates = dict(getattr(incidents, "alternates", {}) or {})
     alternates[inc.sub] = [inc] if inc.feature is not None else []
-    out = IncidentCatalog(alternates)
+    out = IncidentCatalog(alternates, getattr(incidents, "interfaces", {}))
     out.update(incidents or {})
     out[inc.sub] = inc
     return out
+
+
+def interface_for(
+    incidents: Mapping[str, PublicIncident] | None, inc: PublicIncident | None
+) -> MaterialInterface | None:
+    """그 재료가 정한 공개 인터페이스 (#256) — 카탈로그(load_incidents)에 실려 온다. 회사 사례(co:…)·인터뷰 재료는 없다."""
+    if inc is None:
+        return None
+    return getattr(incidents, "interfaces", {}).get(inc.incident_id)
 
 
 def incident_by_id(
@@ -169,7 +205,14 @@ def incident_ref(inc: PublicIncident) -> str:
     return f"{inc.incident_id}#{digest}"
 
 
-def feature_ref(inc: PublicIncident) -> str:
-    """기능형 공통 과제 저장 키의 재료 지문 — 사례 원리 + 기능형 재료가 바뀌면 새 판."""
+def feature_ref(inc: PublicIncident, interface: MaterialInterface | None = None) -> str:
+    """기능형 공통 과제 저장 키의 재료 지문 — 사례 원리 + 기능형 재료가 바뀌면 새 판. 재료 인터페이스(#256)가 있으면 그 지문도 —
+    인터페이스는 사례 파일 밖(interfaces/*.yaml)이라, 넣지 않으면 인터페이스 전에 만든 명세를 그대로 다시 쓴다. 지문은 모델 JSON 이라
+    MaterialInterface 에 칸이 더해져도 바뀐다 — 그때 데이터 재료 명세가 새 판이 되는 것은 의도다 (인터페이스 정의가 바뀐 것)."""
     digest = hashlib.sha256(inc.model_dump_json().encode("utf-8")).hexdigest()[:8]
-    return f"{inc.incident_id}+feature#{digest}"
+    ref = f"{inc.incident_id}+feature#{digest}"
+    if interface is not None:
+        ref += (
+            "+iface#" + hashlib.sha256(interface.model_dump_json().encode("utf-8")).hexdigest()[:8]
+        )
+    return ref

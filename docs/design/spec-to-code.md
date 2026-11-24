@@ -158,6 +158,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 - **코드가 맞추는 것** (재요청 대신, 바꾼 것은 `adjustments` 로 승인 화면에): 빠진 숨은 조절값 → manifest 기본값 · 행 수(`fit_seed`) — 처음 값마다 **공개 테스트 몫 3행**도 숨은 범위·작은 id 밖에 (2026-11-08: 숨은 케이스가 11~172 를 다 가져가 공개 몫이 없었다) · covers 는 공개 요구(`r*`) 키만 — 수용 기준(`p*`) 키는 빼고(공개 테스트가 대응, #180), 빠진 요소를 그 요소가 적은 `r*` refs 대로 잇는다(`fit_covers` — refs 는 공개 id 만이라 숨은 요구가 들어오지 않음, refs 가 `p*` 뿐인 요소는 잇지 않고 재요청) · 화살표 글만 적은 전이를 `state` 칸으로 + 상태 필드 constraints 문장을 칸에서(`fit_state`, `starter/state_rule.py`).
 - **상태 규칙 칸** (`state_problems`): 필드가 엔티티에 있음 · 전이 양끝이 values 안 · 거절 코드가 응답에 · 시드·숨은 케이스 처음 값이 values 안 · **숨은 케이스 처음 값에서 나갈 허용 전이**가 있음 (롤백·버스트 케이스가 규칙을 통과하는 요청을 보낼 수 있게). 2026-11-08: 계약 첫 답 9개 중 5개가 전이를 빠뜨림(자유 글 시절) → 칸으로 바꾼 뒤 0/9.
 - **재료가 선언한 필요 요소** (`FeatureSeed.contract_needs` — `stateful_target` · `transition_rules` · `empty_record_entity`): 숨은 요구가 계약에 꼭 필요로 하는 것을 재료가 선언하고 코드가 대조한다 (`contract._needs`).
+- **하네스가 시험할 수 있는 범위** (manifest `harness_scope`, `contract._harness_scope`, #256): 하네스가 깔 수 없는 종류의 입력 환경(데이터 템플릿은 file 만)과, 파일 입력 환경 위치(`path` 의 `{옵션}`)에 쓰인 옵션이 하나도 없는 명령은 재요청한다 — 데이터 하네스는 케이스마다 임시 작업 폴더에 파일만 깔고 그 위치를 명령 옵션으로 넘기므로 그 밖의 것은 채점할 수 없다. 2026-11-18 데이터 알파: 명세의 '스케줄에 등록' 요구로 계약이 `setup_schedule.py`(crontab)와 kind env 입력 환경을 지었고, 공개 수용 기준마다 공개 테스트가 있어야 해서 그 테스트가 채점 컨테이너에 없는 crontab 을 불러 모든 구현이 떨어졌다. 재요청 끝에 붙는 안내(그 요구를 대신 담는 법)는 매니페스트 `hint`. 파일 위치가 정해지지 않았거나 자리표시자가 옵션이 아니면 명령은 판정하지 않는다 (`_file_fixtures` 가 먼저 묻는다).
 - **통과 조건은 HTTP 로 관찰할 수 있는 것만**: 숨은 케이스 `expect` 가 조절값 이름(풀 크기 등)을 말하면 재요청 — 연결 수 같은 내부 동작은 단언할 수 없다.
 - **테이블 이름은 템플릿 규칙으로** (2026-11-07, `starter/tables.py`, manifest `naming.table`): 숨은 테스트는 시작 코드를 보지 않으므로 오류 주입 정규식의 테이블을 계약에서 안다 — 생성 스모크에서 경로로 짐작(`deliveries`, 실제 `delivery`)해 주입이 안 걸렸다. 규칙은 스택마다 다르다 (`DeliveryAuditLog` 기준, 공식 문서·소스로 확인): Spring Boot JPA `delivery_audit_log` · Rails `delivery_audit_logs` · Django `<앱>_deliveryauditlog` · Hibernate 기본(Spring 없이, 이름 그대로·따옴표 없음 → PostgreSQL `deliveryauditlog`, 표준대로 대문자로 접는 Oracle 등 `DELIVERYAUDITLOG`) · Prisma(`@@map` 없음, PostgreSQL 기준 따옴표로 대소문자 유지) `"DeliveryAuditLog"` · 프론트엔드·파일형은 없음. 템플릿이 정한 SQL 예약어로 나오면 복수형 (`order` → `orders`). 계약(README)에 "`Delivery` — 테이블 `delivery`" 로 보인다.
 
@@ -229,6 +230,7 @@ HiddenPlan                           ← 숨은 테스트 생성기만 봄 (지�
 | `failure_reasons` | 사유 코드 → 스택별 로그·예외 패턴 (예: `pool_acquire_timeout` ← Hikari "Connection is not available" / Prisma `P2024`, `tx_start_timeout` ← Prisma `P2028` 시작 대기) | `HiddenPlan.cases` 검사, verifier 사유 대조 (게이트 ③) |
 | 결과 분류 | 실행기가 대상마다 `SETUP-ERR`(빌드·기동 실패) / `ASSERT`(단언 실패) / `HARNESS-ERR`(하네스 예외) / `PASS` 를 낸다 | 실패 배정 (§7) — Next.js 손 예시가 이미 `SETUP-ERR` 를 따로 냄 |
 | `stack_conditions` | 이 스택에서 허용 설계가 성립하는 조건 (§4.2) | `gen_accepted` |
+| `harness_scope` | 하네스가 깔 수 있는 입력 환경 종류·명령마다 파일 위치 옵션·재요청 안내 (#256, 같은 vN 에서 고칠 수 있는 검사 전용 칸) | 계약 검사 (§3.3) |
 
 ### 4.2 허용 설계의 스택 조건
 
