@@ -153,6 +153,7 @@ from task_spec.schemas.draft import (
 )
 from task_spec.schemas.incident import (
     FeatureSeed,
+    HandReference,
     HarnessRule,
     InterfaceCommand,
     InterfaceEntity,
@@ -161,6 +162,7 @@ from task_spec.schemas.incident import (
     InterfaceResponse,
     MaterialInterface,
     PublicIncident,
+    ReferenceManifest,
 )
 from task_spec.schemas.ingest import (
     ExtractedDocument,
@@ -360,6 +362,7 @@ __all__ = [
     "FeatureSeed",
     "HarnessRule",
     "InterfaceCommand",
+    "HandReference",
     "InterfaceEntity",
     "InterfaceField",
     "InterfaceFile",
@@ -423,6 +426,7 @@ __all__ = [
     "DraftTaskInput",
     "DraftTaskInputV2",
     "MaterialInterface",
+    "ReferenceManifest",
     "PublicIncident",
     "KnownIncidentCase",
     "IncidentInterviewInput",

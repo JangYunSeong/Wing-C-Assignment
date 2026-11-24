@@ -407,6 +407,12 @@ templates/<직군>/<스택>/CURRENT
    에서 옮김: `pipeline/run.py --date --raw --out`, 입력 `{raw}/{date}/*.jsonl`, 출력 `{out}/daily_sales/date=YYYY-MM-DD/*.parquet`). 코드가 계약에 채우고
    (`starter/interface.py`), 고정 밖 요소와 테스트 글의 옛 이름은 재요청. 출력 스키마·plan_contract 판·템플릿 판은 그대로 — `Fixture` 역할·파티션 칸과 템플릿 v3 는 2단계.
    명세 쪽(같은 날): 명세 입력에 인터페이스 요약, 공개 요구·수용 기준의 다른 형식·칸 이름·스케줄 등록 요구는 재요청 (`spec/interface_terms.py`).
+   1단계 알파(2026-11-23, #289 → main af9b76a): 빌드 3/3 review, 계약 첫 답 통과 3/3 — plan_contract v32 없음.
+   3단계(2026-11-24 결정): **손 구현 관문 ⑫** — 재료 손 구현 10개(허용 3·흔한 구현 3모양·사유 하나만 놓친 4, `incidents/public_v1/references/data.eng.batch-rerun/`)를
+   다른 게이트를 다 통과한 회차 끝(함정 ⑪·변별 ⑩ 뒤)에 공개·숨은 테스트로 돌린다 (`starter/hand_refs.py`·`build._hand_gate`, LLM 호출 없음). 11-06 손 예시 관문
+   ③·③'·④·⑤ 그대로: 허용이 모두 떨어지는 테스트는 결함, 흔한·하나만 놓친 구현이 떨어지는 공개 테스트는 누설, 하나만 놓친 구현을 못 잡는 사유 케이스는 다시 —
+   생성기마다 1회(수리 풀 `#hand`), 남으면 표시. 생성 흔한 구현만 통과해 '변별 못 함'인 케이스도 손 구현이 의도한 사유로 떨어뜨리면 채점에 남긴다.
+   공개 테스트 입력 범위는 인터페이스 `public_rules`(계약 입력에만)로 미리 정한다.
 7. DBA PostgreSQL.
 - 순서는 시범 공고 수와 검증 방법의 성숙도 기준. 각 단계는 템플릿 → 소재(사례 변환) 2~3건 → 빌드 검증 → 평가.
 

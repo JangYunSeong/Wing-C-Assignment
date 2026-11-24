@@ -55,6 +55,7 @@ from task_spec.schemas.build import Fault, FileKind, PublicTest
 from task_spec.schemas.template import FailureReason, HiddenHelper, SlotKind, TemplateManifest
 from task_spec.starter.config_merge import merge_config
 from task_spec.starter.contract import SpecView, existing_endpoints
+from task_spec.starter.hand_refs import HandReferences
 from task_spec.starter.hidden_helpers import (
     render_contract_case,
     render_persistence_check,
@@ -632,6 +633,8 @@ class BuildInputs:
     template: Template
     seed: FeatureSeed | None = None
     avoid_terms: tuple[str, ...] = ()
+    # 재료 손 구현 묶음 (#256 3단계, 손 구현 관문 ⑫) — 없으면 관문을 돌지 않는다. 생성기 입력에는 쓰지 않는다
+    references: HandReferences | None = None
 
     def __post_init__(self) -> None:
         # 재료가 사유를 적었으면 빌드의 모든 생성기 입력·정적 검사가 그 사유 목록만 본다 (계약 단계 plan_contract.for_material 과 같은 목록)

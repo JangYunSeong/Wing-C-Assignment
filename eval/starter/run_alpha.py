@@ -49,6 +49,7 @@ from task_spec.spec.incidents import (
     load_interfaces,
     pin_feature_incident,
 )
+from task_spec.starter.hand_refs import load_references
 from task_spec.starter.interface import interface_ref
 from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.templates import load_template, select_template
@@ -272,6 +273,7 @@ async def main() -> None:
 
     # ③ 생성기 4종 + 수리 루프 (개발 서버 Gradle)
     designs = list(task.accepted_designs)[: a.designs]
+    hand = load_references(s.incidents_dir).get(inc.incident_id)  # #256 3단계 손 구현 관문
     b = BuildInputs(
         task=task,
         contract=res.contract,
@@ -279,6 +281,7 @@ async def main() -> None:
         template=template,
         seed=inc.feature,
         avoid_terms=tuple(inc.avoid_terms),
+        references=hand.checked_against(interface) if hand is not None else None,
     )
     built_out = await build_and_repair(
         b,
@@ -346,6 +349,12 @@ async def main() -> None:
         "trap_verify": [
             [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.trap_reports
         ],
+        # 손 구현 관문 (#256 3단계) — 손 구현마다 마지막 결과 한 줄, 채점에 남긴 케이스, 실행 결과
+        "hand": built_out.hand,
+        "hand_kept": built_out.hand_kept,
+        "hand_verify": [
+            [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.hand_reports
+        ],
     }
     report["cost_usd"] = round(spent, 4)
     report["candidate_files"] = tree(out / "candidate") if starter is not None else []
@@ -358,6 +367,8 @@ async def main() -> None:
     for r in built_out.repairs:
         print(f"  수리 {r.gate} {r.target} {r.result}: {r.reason}")
     print(f"③ 빌드 {built_out.status} · 회차 {built_out.rounds} · 누적 ${spent:.4f} · {out}")
+    for line in built_out.hand:
+        print(f"  손 구현: {line}")
     for f in built_out.review_flags:
         print(f"  검토: {f}")
     for f in built_out.adjustments:
