@@ -181,7 +181,8 @@ def contract_markdown(
             "|---|---|---|---|",
         ]
         out += [
-            f"| `{st.key}` | {st.type} | {st.default} | {st.meaning} |" for st in contract.settings
+            f"| `{st.key}` | {st.type} | {st.default}{st.unit_label()} | {st.meaning} |"
+            for st in contract.settings
         ]
         out.append("")
     out += ["### 데이터", ""]
