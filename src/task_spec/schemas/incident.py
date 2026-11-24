@@ -262,6 +262,16 @@ class MaterialInterface(Schema):
     commands: list[InterfaceCommand] = Field(min_length=1)
     files: list[InterfaceFile] = Field(min_length=1)
     entities: list[InterfaceEntity] = Field(min_length=1)
+    # 공개 테스트 입력 범위 (#256 3단계) — 계약 입력 블록에만 나간다 (계약에 채우지 않고, 명세 입력·명세 저장 키에도 넣지 않는다).
+    # 손 구현 관문 ⑤: 재료의 흔한 구현(손 구현)이 모두 통과해야 하는 공개 테스트 — 숨은 요구 장면을 공개 테스트 입력에 담지 않게.
+    public_rules: list[str] = Field(default_factory=list, max_length=4)
+
+    @field_validator("public_rules")
+    @classmethod
+    def _rules(cls, v: list[str]) -> list[str]:
+        if bad := [r for r in v if not 10 <= len(r.strip()) <= 240]:
+            raise ValueError(f"public_rules 문장은 10~240자: {bad[:1]}")
+        return [r.strip() for r in v]
 
     @model_validator(mode="after")
     def _consistent(self) -> MaterialInterface:
@@ -292,4 +302,69 @@ class MaterialInterface(Schema):
                 )
             if not re.search(rf"\b{re.escape(f.entity)}\b", f"{f.summary} {f.content}"):
                 raise ValueError(f"파일 {f.fixture_id} 의 글에 행 엔티티 이름 {f.entity} 가 없음")
+        return self
+
+
+HandKind = Literal["accepted", "naive", "one_miss"]
+
+
+class HandReference(Schema):
+    """재료 손 구현 하나 (#256 3단계) — `references/<폴더>/<name>/` 의 파일을 공용 폴더 위에 얹어 손 구현 관문(⑫)에서 돌린다.
+
+    - accepted: 허용 설계 구현 — 공개·숨은 테스트를 모두 통과해야 한다 (H④)
+    - naive: 흔한 구현 한 모양 — 숨은 요구의 사유를 모두 놓친다. 공개 테스트는 통과하고(H⑤) 숨은 케이스 하나 이상에서 떨어진다(H③)
+    - one_miss: 사유 하나만 놓친 구현 — 공개 테스트는 통과하고(H⑤) 그 사유 케이스에서 떨어진다(H③). 다른 사유 케이스는 통과(H③')
+    """
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,39}$")
+    kind: HandKind
+    misses: list[str] = Field(default_factory=list)  # 놓친 사유 — 재료 feature.reasons 중
+    design: int | None = Field(
+        default=None, ge=1
+    )  # 허용 설계 번호 (재료 accepted_designs 순서, 1부터) — accepted 만
+    # 구현이 하는 일 — 숨은 테스트 수리 요청·승인 화면 표시에 나간다. 공개 테스트 수리 요청에는 넣지 않는다 (build._hand_gate)
+    note: str = Field(min_length=4, max_length=160)
+
+    @model_validator(mode="after")
+    def _by_kind(self) -> HandReference:
+        if self.kind == "accepted":
+            if self.misses or self.design is None:
+                raise ValueError(
+                    f"{self.name}: 허용 손 구현은 놓친 사유 없이 허용 설계 번호(design)를 적는다"
+                )
+        elif self.design is not None:
+            raise ValueError(f"{self.name}: 허용 설계 번호는 허용 손 구현만 적는다")
+        if self.kind == "one_miss" and len(self.misses) != 1:
+            raise ValueError(f"{self.name}: 하나만 놓친 손 구현은 놓친 사유를 하나 적는다")
+        if self.kind == "naive" and not self.misses:
+            raise ValueError(f"{self.name}: 흔한 손 구현은 놓친 사유를 적는다")
+        return self
+
+
+class ReferenceManifest(Schema):
+    """재료 손 구현 묶음 (`incidents/public_v1/references/<폴더>/references.yaml`, #256 3단계).
+
+    손 구현은 재료 인터페이스(이름·위치·형식)대로 실행된다 — 인터페이스가 바뀌면 손 구현을 다시 확인하고 지문을 고친다
+    (지문이 다르면 관문을 끈다, starter/hand_refs.HandReferences.checked_against)."""
+
+    incident_id: str = Field(pattern=r"^pub:[a-z_.]+:[a-z0-9-]+$")
+    interface_sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )  # 손 구현을 확인한 인터페이스 판 (starter.interface.interface_ref)
+    shared: str = Field(
+        default="_shared", pattern=r"^[A-Za-z0-9_.-]+$"
+    )  # 모든 손 구현 밑에 까는 공용 파일 폴더
+    refs: list[HandReference] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _refs(self) -> ReferenceManifest:
+        names = [r.name for r in self.refs]
+        if dup := sorted({n for n in names if names.count(n) > 1}):
+            raise ValueError(f"손 구현 이름이 겹침: {dup}")
+        if self.shared in names:
+            raise ValueError(f"공용 폴더 이름 {self.shared} 를 손 구현 이름으로 쓸 수 없음")
+        if not any(r.kind == "accepted" for r in self.refs):
+            raise ValueError(
+                "허용 손 구현이 하나도 없음 — 공개·숨은 테스트의 결함을 가를 기준이 없다"
+            )
         return self

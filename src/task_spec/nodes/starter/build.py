@@ -43,16 +43,27 @@ from task_spec.schemas import (
 from task_spec.schemas.build import HiddenPlan, RepairRecord, TaskContract
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
+from task_spec.starter.hand_refs import GATE as HAND_GATE
+from task_spec.starter.hand_refs import NAME as HAND_NAME
+from task_spec.starter.hand_refs import (
+    HandGate,
+    finding_flags,
+    hidden_note,
+    judge_hands,
+    public_note,
+)
 from task_spec.starter.hidden_helpers import code_written_paths
 from task_spec.starter.repair import (
     COMPILE_RETRIES,
     STARTER,
+    WEAK_FLAG,
     RegenNote,
     RepairAction,
     RepairPlan,
     assign,
     gates_of,
 )
+from task_spec.starter.repair import HAND as HAND_POOL
 from task_spec.starter.repair import TRAP_GATE as TRAP_POOL
 from task_spec.starter.repair import VARIANT as VARIANT_POOL
 from task_spec.starter.static_check import HARNESS_OVERRIDE, Overlay, static_check
@@ -431,6 +442,10 @@ class BuildOutcome:
     traps: list[TrapResult] = field(default_factory=list)
     trap_dropped: list[str] = field(default_factory=list)
     trap_reports: list[VerifyReport] = field(default_factory=list)
+    # 손 구현 관문 (⑫, #256 3단계) — 손 구현마다 마지막 결과 한 줄·채점에 남긴 케이스(구하기)·실행 보고서
+    hand: list[str] = field(default_factory=list)
+    hand_kept: list[str] = field(default_factory=list)
+    hand_reports: list[VerifyReport] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
@@ -723,20 +738,25 @@ def _trap_flags(alive: Sequence[TrapResult], why: str) -> list[str]:
 
 @dataclass(frozen=True)
 class _Passed:
-    """함정 관문(⑪)이 숨은 테스트를 다시 만들기 직전 — 모든 게이트를 통과한 오버레이·뺄 숨은 케이스·그때의 함정 결과.
+    """관문(함정 ⑪·손 구현 ⑫)이 테스트를 다시 만들기 직전 — 모든 게이트를 통과한 오버레이·뺄 숨은 케이스·그때의 함정 결과.
     숨은 테스트는 공개 테스트처럼 '더하기만'으로 고칠 수 없어(케이스 파일을 바꾼다) 수리가 실패하면 이 상태로 되돌린다 — 관문은 막지 않는다."""
 
     overlays: dict[str, Overlay]
     weak: tuple[str, ...]
     traps: list[TrapResult]
+    gate: str = TRAP_GATE  # 다시 만든 관문 — 되돌릴 때 표시에
 
 
-def _restore_passed(out: BuildOutcome, b: BuildInputs, p: _Passed, why: str) -> None:
+def _restore_passed(out: BuildOutcome, p: _Passed, why: str) -> None:
+    """관문 수리 전 통과 상태로 — 변별 못 하는 숨은 케이스는 부르는 쪽이 손 구현 관문 뒤에 뺀다 (_settle_weak)."""
     out.overlays = dict(p.overlays)
     out.traps = list(p.traps)
     out.snapshots.append(dict(out.overlays))  # 마지막 스냅샷이 끝난 상태와 같게 (리뷰 2026-11-13)
-    if p.weak:
-        _drop_cases(out, b, p.weak)
+    if p.gate == HAND_GATE:
+        out.review_flags.append(
+            f"{HAND_NAME} 수리 실패 — {why}. 관문 전(모든 게이트 통과) 상태로 복원함"
+        )
+        return
     out.review_flags.append(
         f"숨은 테스트 함정 관문({TRAP_GATE}) 수리 실패 — {why}. 관문 전(모든 게이트 통과) 숨은 테스트로 복원함"
     )
@@ -749,20 +769,135 @@ async def _finish_restored(
     kw: dict[str, object],
     verifier: Verifier,
     gate: VariantGate,
+    hgate: HandGate,
     passed: _Passed,
     why: str,
     compiler: TestCompiler | None,
 ) -> BuildOutcome:
-    """함정 관문 전 통과 상태로 되돌리고 공개 테스트 관문(⑩)까지 마쳐 review 로 끝낸다."""
-    _restore_passed(out, b, passed, why)
+    """관문 수리 전 통과 상태로 되돌리고 공개 테스트 관문(⑩)·손 구현 관문(⑫, 수리 없이)까지 마쳐 review 로 끝낸다."""
+    _restore_passed(out, passed, why)
     vplan = await _variant_gate(out, b, kw, verifier, gate)
     out.review_flags += [f for f in vplan.flags if f not in out.review_flags]
     if vplan.actions:
         out.review_flags += await _add_public_cases(
             out, b, kw, verifier, gate, vplan.actions[0], compiler
         )
+    await _hand_only(out, b, verifier, hgate, "수리 뒤 다른 게이트 실패로 되돌린 상태")
+    _settle_weak(out, b, passed.weak, hgate)
     out.status = "review"
     return out
+
+
+async def _hand_gate(
+    out: BuildOutcome, b: BuildInputs, verifier: Verifier, gate: HandGate
+) -> RepairPlan:
+    """손 구현 관문 (⑫, #256 3단계) — 다른 게이트를 다 통과한 회차의 마지막 (함정 ⑪·변별 ⑩ 뒤라 변별 관문이 더한 공개 테스트
+    클래스까지 본다). 재료 손 구현을 지금 공개·숨은 테스트에 돌려 starter/hand_refs.judge_hands 로 판정한다 (LLM 호출 없음).
+    수리는 공개 테스트 하나·숨은 테스트 하나로 합친다 (_regenerate 는 생성기마다 요청 하나). 손 구현이 없는 재료는 그대로 지나간다."""
+    plan = RepairPlan()
+    refs = b.references
+    if refs is None:
+        return plan
+    run = getattr(verifier, "verify_variants", None)
+    public, hidden = out.overlays.get(PUBLIC), out.overlays.get(HIDDEN)
+    off = (
+        refs.stale
+        or ("검증기가 변형 실행(verify_variants)을 지원하지 않음" if run is None else "")
+        or ("공개 테스트가 없음" if public is None else "")
+    )
+    if off or hidden is None or run is None or public is None:
+        if off and not gate.off_noted:
+            gate.off_noted = True
+            plan.flags.append(f"{HAND_NAME} 생략 — {off}")
+        return plan
+    report = await run(out.overlays[STARTER], refs.overlays(), public, hidden)
+    out.hand_reports.append(report)
+    j = judge_hands(report, refs, b.plan)
+    gate.findings, gate.keep = list(j.findings), j.keep
+    gate.rounds += 1
+    out.hand = list(j.lines)
+    plan.flags += j.flags
+    logger.info(
+        "hand gate round=%d findings=%d keep=%s",
+        gate.rounds,
+        len(j.findings),
+        ",".join(sorted(j.keep)),
+    )
+    pub = [f for f in j.findings if f.generator == "gen_public"]
+    hid = [f for f in j.findings if f.generator == "gen_hidden"]
+    if pub:
+        plan.actions.append(
+            RepairAction(
+                "gen_public",
+                "",
+                HAND_GATE,
+                "재료 손 구현이 짚은 공개 테스트: " + ", ".join(dict.fromkeys(f.test for f in pub)),
+                public_note(pub, refs.public_rules),
+                pool=HAND_POOL,
+            )
+        )
+    if hid:
+        cases = tuple(dict.fromkeys(c for f in hid for c in f.cases))
+        plan.actions.append(
+            RepairAction(
+                "gen_hidden",
+                "",
+                HAND_GATE,
+                "재료 손 구현이 짚은 숨은 케이스: " + (", ".join(cases) or "숨은 테스트 전체"),
+                hidden_note(hid),
+                pool=HAND_POOL,
+                cases=cases,
+            )
+        )
+    return plan
+
+
+def _hand_skipped(
+    out: BuildOutcome,
+    gate: HandGate,
+    actions: Sequence[RepairAction],
+    why: str,
+    *,
+    record: bool = True,
+) -> None:
+    """고치지 못한 손 구현 관문 행동 — 수리 기록(skipped)과 그 생성기의 발견을 승인 화면 표시로 (막지 않는다)."""
+    gens = {a.generator for a in actions}
+    if record:
+        out.repairs += [_record(a, "skipped") for a in actions]
+    out.review_flags += [
+        f
+        for f in finding_flags([x for x in gate.findings if x.generator in gens], why)
+        if f not in out.review_flags
+    ]
+
+
+async def _hand_only(
+    out: BuildOutcome, b: BuildInputs, verifier: Verifier, gate: HandGate, why: str
+) -> None:
+    """수리 없이 손 구현 관문 — 되돌린 상태로 끝낼 때 표시·구하기 판정만 (수리 기록은 _regenerate 가 이미 남겼다)."""
+    hplan = await _hand_gate(out, b, verifier, gate)
+    out.review_flags += [f for f in hplan.flags if f not in out.review_flags]
+    if hplan.actions:
+        _hand_skipped(out, gate, hplan.actions, why, record=False)
+
+
+def _settle_weak(out: BuildOutcome, b: BuildInputs, weak: Sequence[str], gate: HandGate) -> None:
+    """변별 못 하는 숨은 케이스를 채점에서 뺀다 — 손 구현이 의도한 사유로 떨어뜨리는 케이스는 남기고 '채점에서 제외' 표시를 거둔다
+    (#256 3단계: kb002 r1 hc1 처럼 생성 흔한 구현만 보고 사유 하나를 통째로 빼지 않게)."""
+    kept = [c for c in weak if c in gate.keep]
+    out.hand_kept = kept
+    if kept:
+        out.review_flags = [
+            f
+            for f in out.review_flags
+            if not (WEAK_FLAG in f and any(f.startswith(f"숨은 케이스 {c} 는 ") for c in kept))
+        ]
+        out.review_flags.append(
+            f"{HAND_NAME}: 숨은 케이스 {', '.join(kept)} 채점 유지 — 생성 흔한 구현은 통과, 재료 손 구현이 의도한 사유로 실패 (변별함)"
+        )
+    dropped = [c for c in weak if c not in gate.keep]
+    if dropped:
+        _drop_cases(out, b, dropped)
 
 
 def _survivor_flags(alive: Sequence[VariantResult], why: str) -> list[str]:
@@ -938,6 +1073,7 @@ async def build_and_repair(
     missed = {"naive-all": {t.trap_id for t in b.task.traps}}
     gate = VariantGate()  # 공개 테스트 변별 관문 상태 (#164)
     tgate = TrapGate()  # 숨은 테스트 함정 관문 상태 (#171)
+    hgate = HandGate()  # 손 구현 관문 상태 (#256 3단계)
     passed: _Passed | None = None  # 함정 관문이 숨은 테스트를 다시 만들기 직전의 통과 상태
 
     def note_static(r: GenResult) -> None:
@@ -1115,7 +1251,7 @@ async def build_and_repair(
                     if not await _regenerate(
                         tplan.actions, out, b, by_id, kw, took, drop, compiler, absorb
                     ):
-                        _restore_passed(out, b, passed, "숨은 테스트를 다시 생성하지 못함")
+                        _restore_passed(out, passed, "숨은 테스트를 다시 생성하지 못함")
                         passed = None
                     else:
                         continue
@@ -1134,15 +1270,33 @@ async def build_and_repair(
                 out.review_flags += await _add_public_cases(
                     out, b, kw, verifier, gate, vplan.actions[0], compiler
                 )
-            if plan.weak:
-                _drop_cases(out, b, plan.weak)
+            # 손 구현 관문 (⑫, #256 3단계) — 마지막 공개 테스트(변별 관문이 더한 클래스 포함)·숨은 테스트로. 수리는 생성기마다 1회,
+            # 다시 만든 테스트가 다른 게이트를 깨고 못 고치면 이 상태(함정·변별 관문을 거친)로 되돌린다
+            hplan = await _hand_gate(out, b, verifier, hgate)
+            out.review_flags += [f for f in hplan.flags if f not in out.review_flags]
+            fresh = [
+                a for a in hplan.actions if out.regen_counts.get(a.budget_key, 0) < a.pool.limit
+            ]
+            spent = [a for a in hplan.actions if a not in fresh]
+            if spent:
+                _hand_skipped(out, hgate, spent, "다시 생성 1회 뒤에도")
+            if fresh and round_no < max_rounds:
+                passed = _Passed(dict(out.overlays), tuple(plan.weak), list(out.traps), HAND_GATE)
+                if await _regenerate(fresh, out, b, by_id, kw, took, drop, compiler, absorb):
+                    continue
+                _restore_passed(out, passed, "테스트를 다시 생성하지 못함")
+                passed = None
+                _hand_skipped(out, hgate, fresh, "다시 생성 실패", record=False)
+            elif fresh:
+                _hand_skipped(out, hgate, fresh, "빌드 회차 상한으로 다시 생성하지 못함")
+            _settle_weak(out, b, plan.weak, hgate)
             out.status = "review"
             return out
         blocked = [a for a in plan.actions if out.regen_counts.get(a.budget_key, 0) >= a.pool.limit]
         if plan.unresolved or blocked or round_no == max_rounds:
             if (
                 passed is not None
-            ):  # 함정 관문 수리 뒤 고치지 못하고 끝남 — 관문 전 통과 상태로 (관문은 막지 않는다)
+            ):  # 관문(함정·손 구현) 수리 뒤 고치지 못하고 끝남 — 관문 전 통과 상태로 (관문은 막지 않는다)
                 out.repairs += [_record(a, "skipped") for a in plan.actions]
                 return await _finish_restored(
                     out,
@@ -1150,8 +1304,9 @@ async def build_and_repair(
                     kw,
                     verifier,
                     gate,
+                    hgate,
                     passed,
-                    "다시 생성한 숨은 테스트가 다른 게이트를 실패시켜 수정하지 못함",
+                    "다시 생성한 테스트가 다른 게이트를 실패시켜 수정하지 못함",
                     compiler,
                 )
             out.review_flags += plan.unresolved
@@ -1170,8 +1325,10 @@ async def build_and_repair(
                     kw,
                     verifier,
                     gate,
+                    hgate,
                     passed,
-                    "함정 관문 수리 뒤 다른 게이트 수리가 실패",
+                    ("손 구현" if passed.gate == HAND_GATE else "함정")
+                    + " 관문 수리 뒤 다른 게이트 수리가 실패",
                     compiler,
                 )
             return out

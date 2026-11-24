@@ -37,6 +37,7 @@ from task_spec.spec.company_incidents import CompanyIncidentReader, is_company_i
 from task_spec.spec.incidents import incident_by_id, load_incidents, load_interfaces
 from task_spec.starter.artifacts import summaries
 from task_spec.starter.contract import SpecView
+from task_spec.starter.hand_refs import load_references
 from task_spec.starter.images import (
     TaskImages,
     TaskMaterial,
@@ -128,6 +129,8 @@ class RealSteps:
         self.incidents = load_incidents(incidents_dir)
         # 재료가 정한 공개 인터페이스 (#256) — 공개 사례 파일만. 회사 사례(co:…)는 없어 계약 인터페이스를 LLM 이 정한다
         self.interfaces = load_interfaces(incidents_dir)
+        # 재료 손 구현 묶음 (#256 3단계) — 손 구현 관문(⑫). 인터페이스가 있는 재료만 (손 구현은 인터페이스대로 실행된다)
+        self.references = load_references(incidents_dir)
         self.images_root = images_root
         self.designs = designs
         self.company_incidents = company_incidents
@@ -194,6 +197,7 @@ class RealSteps:
 
     # ② 빌드
     async def build(self, job: Job, c: ContractResult) -> BuildResult:
+        refs = self.references.get(c.interface.incident_id) if c.interface is not None else None
         b = BuildInputs(
             task=job.task,
             contract=c.contract,
@@ -201,6 +205,7 @@ class RealSteps:
             template=c.template,
             seed=c.seed,
             avoid_terms=c.avoid_terms,
+            references=refs.checked_against(c.interface) if refs is not None else None,
         )
         g = verifier_for(c.template, job.work / "verify")
         out = await build_and_repair(

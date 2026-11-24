@@ -76,7 +76,9 @@ DESIGN = Pool("#design", 1, "suspect_test")
 NAIVE_FIRST = Pool("#naive-first", 1, "naive_first")
 VARIANT = Pool("#variant", 1, "gate")  # 공개 테스트 변별 관문 ⑩ (#164) — 테스트 클래스 더하기
 TRAP_GATE = Pool("#trap-gate", 1, "gate")  # 숨은 테스트 함정 관문 ⑪ (#171) — 숨은 케이스 다시
-POOLS = (GENERAL, COMPILE, CRASH, REGRESS, DESIGN, NAIVE_FIRST, VARIANT, TRAP_GATE)
+# 손 구현 관문 ⑫ (#256 3단계) — 재료 손 구현이 짚은 숨은·공개 테스트를 생성기마다 한 번 다시
+HAND = Pool("#hand", 1, "gate")
+POOLS = (GENERAL, COMPILE, CRASH, REGRESS, DESIGN, NAIVE_FIRST, VARIANT, TRAP_GATE, HAND)
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,8 @@ def exhausted(
     return counts.get(budget_key(generator, label, pool), 0) >= pool.limit
 
 
+# 변별하지 못해 채점에서 뺀 숨은 케이스 표시의 끝말 — 손 구현 관문(⑫)이 그 케이스를 남기면 build 가 이 표시를 거둔다
+WEAK_FLAG = "흔한 구현과 올바른 구현을 구별하지 않아 채점에서 제외했다"
 # 흔한 구현이 정답 장치를 쓴다는 재료 판정 — 막는 표시(unresolved)로 옮긴다 (assign)
 MATERIAL_VERDICT = "재료 판정: "
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
@@ -1105,7 +1109,7 @@ def _gate3(
                 weak.append(c.case_id)
                 flags.append(
                     f"숨은 케이스 {c.case_id} 는 숨은 테스트를 다시 생성한 뒤에도 흔한 구현({run.target})이 통과 — 같은 숨은 요구 {c.trap_id} 는 "
-                    f"{', '.join(caught[c.trap_id])} 가 의도한 사유로 검출한다. {c.case_id} 는 흔한 구현과 올바른 구현을 구별하지 않아 채점에서 제외했다 "
+                    f"{', '.join(caught[c.trap_id])} 가 의도한 사유로 검출한다. {c.case_id} 는 {WEAK_FLAG} "
                     f"(무엇을 확인했나: {c.expect[:120]})"
                 )
             elif r.result == "PASS":
