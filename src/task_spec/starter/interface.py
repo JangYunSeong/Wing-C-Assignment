@@ -145,6 +145,9 @@ def _fixture(
         content=f.content,
         path=f.path,
         refs=refs,
+        role=f.role,
+        format=f.format,
+        entity=f.entity,
     )
 
 
@@ -260,8 +263,17 @@ def fit_interface(
     req_ids: Sequence[str],
     public_ac_ids: Sequence[str],
 ) -> tuple[PlanContractOutput, list[str]]:
-    """LLM 답의 명령·입출력 파일·엔티티를 재료 인터페이스로 바꾼다 (고정 밖 요소는 그대로 두고 계약 검사가 재요청). 인터페이스가 없으면 그대로."""
+    """LLM 답의 명령·입출력 파일·엔티티를 재료 인터페이스로 바꾼다 (고정 밖 요소는 그대로 두고 계약 검사가 재요청). 인터페이스가 없으면 그대로
+    — 다만 파일의 역할·형식·행 엔티티(코드만 채우는 칸, LLM 스키마에 없음)를 LLM 이 냈으면 비운다 (#256 2단계 — 도우미가 생기지 않게)."""
     if interface is None:
+        if any(fx.role or fx.format or fx.entity for fx in out.contract.fixtures):
+            cleared = [
+                fx.model_copy(update={"role": None, "format": None, "entity": None})
+                for fx in out.contract.fixtures
+            ]
+            out = out.model_copy(
+                update={"contract": out.contract.model_copy(update={"fixtures": cleared})}
+            )
         return out, []
     c = out.contract
     allowed = set(req_ids) | set(public_ac_ids)

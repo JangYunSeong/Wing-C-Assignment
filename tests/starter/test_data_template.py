@@ -106,7 +106,7 @@ def _plan() -> HiddenPlan:
 
 
 def test_data_engineer_template_is_selected_and_python_only_artifacts() -> None:
-    assert select_template("data.eng").manifest.ref == "data/python-duckdb@v2"  # type: ignore[union-attr]
+    assert select_template("data.eng").manifest.ref == "data/python-duckdb@v3"  # type: ignore[union-attr]
     assert render_persistence_check(_contract(), DE.manifest) is None
     p = render_params(_plan(), DE.manifest)
     assert p.path == "grading/grader-params.json"
