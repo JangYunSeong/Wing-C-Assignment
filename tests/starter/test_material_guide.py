@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from task_spec.nodes.starter.generate import BuildInputs, accepted_input, hidden
 from task_spec.nodes.starter.plan_contract import PlanResult, for_material, plan_input
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import FailureReason, GeneratedFile, MaterialGuide
+from task_spec.spec.feature import find_terms
 from task_spec.spec.incidents import incident_by_id, load_incidents, load_interfaces
 from task_spec.starter.material_guide import (
     HIDDEN_TITLE,
@@ -42,6 +44,7 @@ from tests.starter.test_generate import _task
 
 INCIDENTS = Path("incidents/public_v1")
 BATCH = "pub:data.eng:batch-rerun-late-partial"
+DUMP = "pub:data.eng:dump-deleted-still-current"
 DE = load_template("data/python-duckdb")
 DATA_CODES = {
     "late_data_missed",
@@ -74,15 +77,34 @@ def _reason(code: str, how: str = "일으키는 법 한 줄", tag: str | None = 
 # ── 재료 파일 (git) ─────────────────────────────────────────────────────
 
 
-def test_committed_guide_covers_the_material_reasons_on_every_template() -> None:
+def test_every_committed_guide_fits_its_material_and_template() -> None:
+    """재료 안내마다 재료가 있고, 직군 템플릿과 합쳐도 표기가 같고, 재료 사유를 다 담는다 (guide_problems — builder 가 계약 단계 앞에서
+    같은 검사를 한다). 공고 배정 전 평가 전용 재료(templates 빈 것)도 직군 템플릿과 대조한다."""
     guides = load_guides(INCIDENTS)
-    assert set(guides) == {BATCH}  # 지금은 데이터 재료 하나 — 다른 재료는 안내 없이 템플릿 그대로
-    inc = incident_by_id(load_incidents(INCIDENTS), BATCH)
-    assert inc is not None and inc.feature is not None
-    for ref in inc.templates:
-        t = with_guide(load_template(ref), guides[BATCH])  # 표기(log_patterns)가 다르면 여기서 거부
-        assert set(inc.feature.reasons) <= t.manifest.reason_codes
+    assert {BATCH, DUMP} <= set(guides)
+    catalog = load_incidents(INCIDENTS)
+    for incident_id, guide in guides.items():
+        assert guide_problems(guide, incident_by_id(catalog, incident_id)) == [], incident_id
     assert guide_ref(guides[BATCH]) and guide_ref(None) is None
+
+
+def test_public_side_guide_text_never_names_the_hidden_requirement() -> None:
+    """공개 테스트 입력 규칙은 계약 입력·공개 테스트 생성기 입력으로 나간다 — 모든 재료 안내에서 재료의 숨은 낱말이 없어야 한다."""
+    catalog = load_incidents(INCIDENTS)
+    for incident_id, guide in load_guides(INCIDENTS).items():
+        inc = incident_by_id(catalog, incident_id)
+        assert inc is not None and inc.feature is not None
+        f = inc.feature
+        terms = [
+            *f.trigger_terms,
+            *f.leak_terms,
+            *f.stage2_cause_terms,
+            *inc.hidden_terms,
+            *inc.avoid_terms,
+        ]
+        assert find_terms(terms, json.dumps(guide.public_rules, ensure_ascii=False)) == [], (
+            incident_id
+        )
 
 
 def test_moving_the_guide_lost_nothing_for_batch_rerun() -> None:

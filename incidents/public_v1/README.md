@@ -12,6 +12,8 @@
 (`sw.frontend.stale-response`·`double-submit`·`optimistic-rollback` — 검색 응답 경쟁·중복 제출·낙관적 갱신 되돌리기) 중 해시 배정.
 데이터 엔지니어 기본 사례(필터 없는 메타데이터 조회로 생성 파일 행이 중복돼 크기 상한을 넘고 전파 장애)는 배치 템플릿의 숨은 테스트 재료가 아니라, 기능형은 추가 사례
 `data.eng.batch-rerun`(늦게 온 데이터·재실행·부분 출력 — Airflow Best Practices, 2026-11-09)을 쓴다 (`data/python-duckdb`).
+평가 전용 추가 사례 `data.eng.dump-history`(전체 목록으로 변경 이력을 만들 때 목록에서 빠진 키가 계속 현재로 남음 — dbt `hard_deletes` 문서,
+2026-11-24 #256 5단계)는 공고 배정 전이다 (`templates` 비움 — 배정은 운영 결정).
 
 | 필드 | 뜻 |
 |---|---|

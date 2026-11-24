@@ -29,7 +29,7 @@ from task_spec.starter.interface import (
     interface_problems,
     without_fixed,
 )
-from task_spec.starter.templates import load_template
+from task_spec.starter.templates import TEMPLATE_FOR_SUB, load_template
 from tests.builder.test_build_provenance import _job, _real_steps
 from tests.starter.test_contract import _spec
 from tests.starter.test_data_template import DE, _batch_seed, _contract, _plan
@@ -154,7 +154,9 @@ def test_every_interface_belongs_to_a_data_material_with_a_feature() -> None:
     for incident_id in interfaces:
         inc = incident_by_id(catalog, incident_id)
         assert inc is not None and inc.feature is not None, incident_id
-        assert inc.templates and all(t.startswith("data/") for t in inc.templates), incident_id
+        # 공고 배정 전(templates 가 빈 평가 전용) 재료도 빌드는 직군 템플릿으로 만든다 (#256 5단계)
+        assert TEMPLATE_FOR_SUB.get(inc.sub, "").startswith("data/"), incident_id
+        assert all(t.startswith("data/") for t in inc.templates), incident_id
 
 
 def test_interface_text_never_names_the_hidden_requirement() -> None:
