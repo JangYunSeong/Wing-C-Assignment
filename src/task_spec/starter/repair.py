@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import PurePosixPath
 from typing import Literal
 
 from task_spec.schemas import HiddenCase, HiddenPlan, TargetRun, TestResult, VerifyReport
@@ -768,6 +769,7 @@ def _contract_ambiguity(
     2026-11-07 수리 루프: 명세는 "요청마다 기록(… 이전 상태 …)"인데 계약이 이전 상태를 필수로 둬, 흔한 구현·허용 구현 모두
     없는 배송 건(404) 요청을 기록하다 같은 not-null 오류로 '없음' 테스트를 깼다 — 구현을 다시 만들어도 확실히 고칠 수 없다.
     다시 만들지 않으므로 구현이 스스로 고칠 기회(그 루프의 d1)는 잃는다 — 비용·시간을 아끼는 쪽을 택함.
+    깨진 테스트가 모두 시작 코드가 쓴 것이면 표시하기 전에 시작 코드를 한 번 다시 만든다 (_starter_test_first, 2026-11-24).
     """
     if len(runs) < 2:
         return [], set()
@@ -781,6 +783,58 @@ def _contract_ambiguity(
         for name in sorted(common)
     ]
     return flags, common
+
+
+# 시작 코드의 기존 테스트를 참조 구현이 모두 깰 때 시작 코드에 붙이는 규칙 (_starter_test_first · _starter_test_broken_by_all)
+_STARTER_TEST_RULE = (
+    "기존 테스트는 계약이 정한 이미 있는 동작만 단언한다. 새 기능 자리의 "
+    "미구현 상태(예외·실패 종료·빈 결과)나 계약에 없는 동작을 단언하지 않는다"
+)
+
+
+def _starter_wrote(name: str, starter: Overlay | None) -> bool:
+    """기존 테스트 이름이 시작 코드가 쓴 테스트 파일인가 — 이름은 스택마다 파일 경로(Python `tests/test_cli.py`)·
+    파일 이름(React `App.test.tsx`)·클래스 이름(Java `OrderControllerTest`). 템플릿에 있던 테스트는 시작 코드로 못 고친다."""
+    if starter is None:
+        return False
+    return any(
+        f.path == name or f.path.endswith("/" + name) or PurePosixPath(f.path).stem == name
+        for f in starter.files
+    )
+
+
+def _starter_test_first(
+    runs: Sequence[TargetRun],
+    starter: TargetRun,
+    names: Collection[str],
+    overlay: Overlay | None,
+    counts: Mapping[str, int],
+) -> list[RepairAction]:
+    """계약 모호 의심(_contract_ambiguity)이어도 깨진 기존 테스트가 **모두 시작 코드가 쓴 것**이면 시작 코드부터 한 번 다시 만든다
+    [확정: 2026-11-24 사용자 — 11-07 '계약 모호면 다시 만들지 않음'을 이 경우만 바꿈]. 그 테스트가 새 기능 자리의 미구현 상태를
+    단언했으면 기능을 채운 구현은 모두 같은 오류로 깬다 — 스택과 무관한 안전망 (Python 은 정적 검사 _starter_stub_tests 가 먼저 막는다).
+    참조 구현은 새 시작 코드 위에 처음부터 다시 쓰인다 (한 회차). 다시 만든 뒤에도 같으면(시작 코드 예산 소진) 예전처럼 계약 모호,
+    템플릿 테스트가 섞였으면 시작 코드로 못 고치므로 바로 계약 모호.
+    2026-11-24 #256 재료 C 알파 2회: 시작 코드가 '옵션을 주면 종료 코드 1 · NotImplementedError' 를 단언해 참조 구현 셋이 같은 오류로 깼고
+    다시 만들지 않고 빌드가 끝났다 (11-15 g187c 는 오류가 서로 달라 _starter_test_broken_by_all 로 갔다)."""
+    if not names or exhausted(counts, "gen_starter"):
+        return []
+    if not all(_starter_wrote(n, overlay) for n in names):
+        return []
+    broke = {t.name: t.message for t in _broke_existing(runs[0], starter)}
+    lines = "\n".join(f"- {n}: {_short(broke.get(n, ''))}" for n in sorted(names))
+    return [
+        RepairAction(
+            "gen_starter",
+            "",
+            "②",
+            f"참조 구현 {len(runs)}개가 모두 시작 코드가 쓴 기존 테스트 {', '.join(sorted(names))} 를 같은 오류로 실패시킴 "
+            "— 계약 모호로 보기 전에 시작 코드를 다시 생성",
+            f"시작 코드가 쓴 기존 테스트를 따로 만든 참조 구현이 모두 같은 오류로 깬다 — {_STARTER_TEST_RULE}. "
+            "그런 테스트만 고치고, 계약이 정한 동작을 확인하는 테스트는 지우거나 약하게 바꾸지 않는다:\n"
+            + lines,
+        )
+    ]
 
 
 def _starter_test_broken_by_all(
@@ -804,8 +858,8 @@ def _starter_test_broken_by_all(
             "",
             "②",
             f"참조 구현 {len(runs)}개가 모두 기존 테스트 {', '.join(names)} 를 실패시킴 — 그 테스트가 계약에 없는 동작을 단언",
-            "시작 코드의 기존 테스트를 따로 만든 참조 구현이 모두 깬다 — 기존 테스트는 계약이 정한 이미 있는 동작만 단언한다. 새 기능 자리의 "
-            "미구현 상태(예외·실패 종료·빈 결과)나 계약에 없는 동작을 단언하지 않는다:\n" + lines,
+            f"시작 코드의 기존 테스트를 따로 만든 참조 구현이 모두 깬다 — {_STARTER_TEST_RULE}:\n"
+            + lines,
         )
     ]
 
@@ -1430,6 +1484,12 @@ def assign(
         ]  # 시작 코드가 바뀌면 참조 구현은 새 시작 코드 위에 다시 쓰인다
         return res
     ambiguous, skip = _contract_ambiguity(ready, starter, shared)
+    if acts := _starter_test_first(ready, starter, skip, overlays.get(STARTER), counts):
+        res.actions = [
+            *actions,
+            *acts,
+        ]  # 참조 구현은 새 시작 코드 위에 처음부터 — 다시 만든 뒤에도 같으면 다음 회차에 계약 모호
+        return res
     res.unresolved += ambiguous
     if acts := _starter_test_broken_by_all(ready, starter, skip, counts):
         res.actions = [

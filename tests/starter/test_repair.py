@@ -685,6 +685,61 @@ def test_all_refs_breaking_the_same_test_the_same_way_is_contract_ambiguity() ->
     assert "OrderControllerTest" in plan.unresolved[0] and "beforeStatus" in plan.unresolved[0]
 
 
+def test_ambiguity_on_a_test_the_starter_wrote_remakes_the_starter_first() -> None:
+    """2026-11-24 #256 재료 C 알파 2회: 시작 코드 테스트가 '옵션을 주면 종료 코드 1' 을 단언해 참조 구현 셋이 같은 오류로 깼는데
+    계약 모호로 바로 끝났다 — 깨진 테스트가 모두 시작 코드가 쓴 것이면 먼저 시작 코드를 한 번 다시 [확정: 2026-11-24 사용자]."""
+    test_class = GeneratedFile(
+        path="src/test/java/com/example/service/order/OrderControllerTest.java", content="x"
+    )
+    wrote = {
+        **OVERLAYS,
+        "starter": Overlay(kind="starter", files=(*OVERLAYS["starter"].files, test_class)),
+    }
+    report = _report(
+        _breaks("naive-all", "ref_naive", NOT_NULL),
+        _breaks("d1", "ref_accepted", NOT_NULL.replace("999", "1000")),
+    )
+    first = assign(report, PLAN2, wrote, MISSED, {})
+    assert [(a.key, a.gate) for a in first.actions] == [("gen_starter", "②")]
+    assert not first.unresolved
+    note = first.actions[0].note
+    assert "OrderControllerTest" in note and "beforeStatus" in note
+    assert (
+        "지우거나 약하게 바꾸지 않는다" in note
+    )  # 계약이 정한 동작을 확인하는 테스트(11-07 '없음')는 그대로
+    # 다시 만든 뒤에도 같으면(시작 코드 예산 소진) 예전처럼 계약 모호 — 다시 만들지 않는다
+    again = assign(report, PLAN2, wrote, MISSED, {"gen_starter": 1})
+    assert not again.actions and len(again.unresolved) == 1
+    assert "계약 모호 의심" in again.unresolved[0]
+    # 템플릿 테스트가 섞이면 시작 코드로 못 고친다 — 바로 계약 모호 (OVERLAYS 의 시작 코드는 그 테스트를 쓰지 않음)
+    assert not _assign(report).actions
+
+    # Python(테스트 이름 = 파일 경로) · React(파일 이름)도 같은 판정
+    def same_break(name: str, files: tuple[str, ...]) -> list[str]:
+        def run(target: str, kind: str, result: str) -> TargetRun:
+            good = GOOD_NAIVE if kind == "ref_naive" else GOOD_ACC if kind == "ref_accepted" else ()
+            existing = _t("existing", name, result, msg="AssertionError: assert 0 == 1")
+            return TargetRun.model_validate(
+                {"target": target, "kind": kind, "tests": [existing, *good]}
+            )
+
+        rep = VerifyReport(
+            runs=[
+                run("starter", "starter", "PASS"),
+                run("naive-all", "ref_naive", "ASSERT"),
+                run("d1", "ref_accepted", "ASSERT"),
+            ]
+        )
+        starter = Overlay(
+            kind="starter", files=tuple(GeneratedFile(path=p, content="x") for p in files)
+        )
+        return _keys(assign(rep, PLAN2, {**OVERLAYS, "starter": starter}, MISSED, {}))
+
+    assert same_break("tests/test_cli.py", ("tests/test_cli.py",)) == ["gen_starter"]
+    assert same_break("App.test.tsx", ("src/App.test.tsx",)) == ["gen_starter"]
+    assert same_break("tests/test_cli.py", ("tests/test_reader.py",)) == []  # 템플릿의 test_cli.py
+
+
 def test_different_errors_or_one_ref_are_regenerated_as_before() -> None:
     other = "AssertionError: Status expected:<404> but was:<500>"
     plan = _assign(
