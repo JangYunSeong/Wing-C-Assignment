@@ -89,6 +89,8 @@ class RegenNote:
     gate: str
     cases: tuple[str, ...]
     reason: str
+    # 모든 구현이 떨어진 테스트 (`public:pt3` · `hidden:hc1`) — 같은 테스트로 또 오면 계약 결함 의심 (#256 4단계, _contract_suspects)
+    blame: tuple[str, ...] = ()
 
 
 def budget_key(generator: str, label: str = "", pool: Pool = GENERAL) -> str:
@@ -105,6 +107,11 @@ def exhausted(
 
 # 변별하지 못해 채점에서 뺀 숨은 케이스 표시의 끝말 — 손 구현 관문(⑫)이 그 케이스를 남기면 build 가 이 표시를 거둔다
 WEAK_FLAG = "흔한 구현과 올바른 구현을 구별하지 않아 채점에서 제외했다"
+# 모든 구현이 같은 테스트에서 떨어지는 수리의 사유 머리 (#256 4단계) — 그 테스트를 다시 만든 뒤에도 같은 꼴이면 테스트를 또 만들지 않고
+# '계약 결함 의심'으로 멈춘다 (assign 끝). 첫 번은 테스트를 다시 만든다 — 테스트 결함이 더 흔한 원인이라서.
+ALL_PUBLIC_FAIL = "모든 구현이 공개 테스트"
+ALL_ACCEPTED_FAIL = "허용 구현 모두 "
+CONTRACT_SUSPECT = "계약 결함 의심"
 # 흔한 구현이 정답 장치를 쓴다는 재료 판정 — 막는 표시(unresolved)로 옮긴다 (assign)
 MATERIAL_VERDICT = "재료 판정: "
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
@@ -132,6 +139,8 @@ class RepairAction:
     pool: Pool = GENERAL  # 재생성 예산 풀 (POOLS)
     # 이 수리가 겨냥한 숨은 케이스 — 다시 만든 뒤 다른 케이스에서 떨어지면 퇴행으로 본다 (#183, _gate4)
     cases: tuple[str, ...] = ()
+    # 모든 구현이 떨어진 테스트 (`public:pt3` · `hidden:hc1`) — 사유 글(잘리고 합쳐짐)이 아니라 이 칸으로 되풀이를 본다 (#256 4단계)
+    blame: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -228,6 +237,7 @@ def _merge(actions: list[RepairAction]) -> list[RepairAction]:
                 f"{prev.note}\n{a.note}",
                 pool=_merged_pool(prev.pool, a.pool),
                 cases=tuple(dict.fromkeys((*prev.cases, *a.cases))),
+                blame=tuple(dict.fromkeys((*prev.blame, *a.blame))),
             )
     return list(out.values())
 
@@ -545,11 +555,12 @@ def _public_refs(
                     "gen_public",
                     "",
                     "⑤",
-                    f"모든 구현이 공개 테스트 {name} 에서 실패 — 테스트 의심{shared}",
+                    f"{ALL_PUBLIC_FAIL} {name} 에서 실패 — 테스트 의심{shared}",
                     f"독립으로 만든 참조 구현 {len(runs)}개가 모두 공개 테스트 {name} 에서 실패한다: {_short(first)}"
                     + (f" — 실패한 줄: {'; '.join(sorted(set(lines.values())))}" if lines else "")
                     + " — 그 단언이 계약·시드의 실제 데이터에서 성립하는지(조회가 그 행을 돌려줄 수 있는지, 값이 그 값인지) 보고 "
                     "계약의 응답 모양·상태 코드·규칙 그대로만 확인한다." + shared,
+                    blame=(f"public:{name}",),
                 )
             )
     return out, trusted
@@ -1209,14 +1220,27 @@ def _gate4(
             and not any(exhausted(regen_counts, "gen_accepted", r.target) for r, _ in failed)
         )
         if len(runs) >= 2 and len(failed) == len(runs) and not on_trap:
+            # 흔한 구현만 통과 (11-18 뒤집힘 — 계약의 출력 위치가 실행 날짜 폴더라 숨은 케이스가 흔한 구현의 모양을 기대했다)
+            flip = bool(naive) and all(
+                (n_res := n.case(c.case_id)) is not None and n_res.result == "PASS" for n in naive
+            )
             actions.append(
                 RepairAction(
                     "gen_hidden",
                     "",
                     "④",
-                    f"허용 구현 모두 {c.case_id} 실패",
+                    f"{ALL_ACCEPTED_FAIL}{c.case_id} 실패"
+                    + (" · 흔한 구현만 통과" if flip else ""),
                     f"허용 설계 구현이 모두({labels}) 숨은 케이스 {c.case_id} 에서 실패했다: {_short(failed[0][1].message)} "
-                    f"— 허용 설계를 떨어뜨리지 않게 통과 조건({c.expect})만 확인한다.",
+                    f"— 허용 설계를 떨어뜨리지 않게 통과 조건({c.expect})만 확인한다."
+                    + (
+                        " 흔한 구현은 이 케이스를 통과한다 — 통과 조건이 흔한 구현의 모양(출력 위치·실행 범위·읽는 범위)을 "
+                        "기대하지 않는지 본다."
+                        if flip
+                        else ""
+                    ),
+                    cases=(c.case_id,),
+                    blame=(f"hidden:{c.case_id}",),
                 )
             )
             continue
@@ -1482,4 +1506,95 @@ def assign(
         else a
         for a in _merge(actions)
     ]
+    res.actions, suspects = _contract_suspects(res.actions, counts, regen_log or {})
+    res.unresolved += suspects
     return res
+
+
+def _contract_suspects(
+    actions: Sequence[RepairAction],
+    counts: Mapping[str, int],
+    log: Mapping[str, RegenNote],
+) -> tuple[list[RepairAction], list[str]]:
+    """모든 구현이 같은 테스트에서 떨어져 그 테스트를 이미 다시 만들었는데 같은 테스트가 또 — 테스트를 또 만들지 않고 계약 결함
+    의심으로 멈춘다 (#256 4단계). 예산이 남아 있지 않아 어차피 멈출 자리지만, '재생성 예산 소진'이 아니라 근거를 남긴다.
+    되풀이는 사유 글이 아니라 `blame` 칸(테스트 id)으로 본다 — 사유는 `_merge` 가 합치고 자르며, 뒤집힘 꼬리말이 회차마다 바뀐다."""
+    kept: list[RepairAction] = []
+    out: list[str] = []
+    for a in actions:
+        prev = log.get(a.key)
+        again = sorted(set(a.blame) & set(prev.blame)) if prev is not None else []
+        if (
+            a.generator in ("gen_public", "gen_hidden")
+            and again
+            and exhausted(counts, a.generator, a.label, a.pool)
+        ):
+            out.append(
+                f"{CONTRACT_SUSPECT} — {', '.join(again)} 에서 모든 구현이 그 테스트를 다시 만든 뒤에도 실패: {_short(a.note)} — "
+                "계약의 명령·입출력·규칙이 이 테스트를 성립시킬 수 있는지 사람 확인"
+            )
+            continue
+        kept.append(a)
+    return kept, out
+
+
+@dataclass(frozen=True)
+class ContractSignal:
+    """계약 탓을 가리키는 꼴 — 빌드가 어느 관문에서 멈췄든 마지막 검증에서 (#256 4단계)."""
+
+    kind: Literal["flip", "all_same"]
+    group: str  # public · hidden
+    name: str  # 공개 테스트 이름 · 숨은 케이스 id
+    message: str
+
+    def line(self) -> str:
+        what = "공개 테스트" if self.group == "public" else "숨은 케이스"
+        msg = f" ({self.message})" if self.message else ""
+        if self.kind == "flip":
+            return (
+                f"{what} {self.name}: 흔한 구현만 통과, 허용 설계 모두 실패{msg} — 계약이 흔한 구현의 모양"
+                "(입출력 위치·실행 범위)을 정했는지 확인"
+            )
+        return f"{what} {self.name}: 모든 구현이 같은 이유로 실패{msg} — 테스트·계약·공유 코드(시작 코드) 결함 의심"
+
+
+def contract_signals(report: VerifyReport, plan: HiddenPlan) -> list[ContractSignal]:
+    """마지막 검증의 계약 탓 꼴 — 흔한 구현만 통과하는 숨은 케이스, 모든 구현이 같은 서명으로 떨어지는 테스트.
+    2026-11-18 woori001: 수리가 공개 pt3(crontab)에서 멈춰 hc1 의 뒤집힘(흔한 구현만 통과)이 실패 사유에 나오지 않았다."""
+    refs = [r for r in report.runs if r.kind in ("ref_naive", "ref_accepted") and r.setup == "ok"]
+    naive = [r for r in refs if r.kind == "ref_naive"]
+    accepted = [r for r in refs if r.kind == "ref_accepted"]
+    out: list[ContractSignal] = []
+    flipped: set[tuple[str, str]] = set()
+    if naive and accepted:
+        for c in plan.cases:
+            acc = [r.case(c.case_id) for r in accepted]
+            if all(t is not None and t.result == "ASSERT" for t in acc) and all(
+                (t := n.case(c.case_id)) is not None and t.result == "PASS" for n in naive
+            ):
+                first = acc[0]
+                assert first is not None
+                flipped.add(("hidden", c.case_id))
+                out.append(ContractSignal("flip", "hidden", c.case_id, _short(first.message)))
+    if len(refs) >= 2:
+        names = sorted(
+            {
+                (t.group, t.name)
+                for r in refs
+                for t in r.tests
+                if t.group in ("public", "hidden") and t.result != "PASS"
+            }
+        )
+        for group, name in names:
+            got = [
+                next((t for t in r.tests if t.group == group and t.name == name), None)
+                for r in refs
+            ]
+            bad = [t for t in got if t is not None and t.result != "PASS"]
+            if (
+                len(bad) == len(refs)
+                and len({_signature(t.message) for t in bad}) == 1
+                and (group, name) not in flipped
+            ):
+                out.append(ContractSignal("all_same", group, name, _short(bad[0].message)))
+    return out
