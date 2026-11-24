@@ -448,6 +448,33 @@ TASK_API_IMAGE=task-api:<새 버전> docker/api/run.sh
 DB·`task_data` 볼륨은 그대로 남는다. 새 테이블은 앱이 기동할 때 만든다.
 2-7 이전 버전에서 올라올 때는 2-7 의 1)~4) 를 먼저 한다 (`run.sh` 가 볼륨 주인이 맞지 않으면 기동을 거부한다). 2-7 이후 버전에서 그 이전으로 내릴 때는 2-7 의 되돌리기.
 
+### 4-1. 기반 이미지 보안 패치 — nginx·PostgreSQL 마이너
+
+nginx 는 stable 줄 태그(`nginx:1.30-alpine`)를 따라가고, `task-db:1` 의 base `pgvector/pgvector:pg16` 은 PG 16 마이너를 따라간다.
+그래서 패치는 이미지를 다시 받아(DB 는 다시 빌드) 컨테이너만 바꾸면 된다 — 설정 파일·데이터 볼륨은 그대로.
+stable 줄이 끝나면(다음 짝수 판) `docker/nginx/run.sh`·`docker/build_release.sh` 기본값을 같이 올린다.
+실행 중인 run·빌드가 없을 때 한다 (`GET /runs`·`GET /builds` — 승인 대기는 DB 체크포인트라 남는다).
+
+```bash
+# nginx — 새 이미지로 지금 설정을 먼저 검사(지금 컨테이너와 같은 -v 들 + nginx -t), 그다음 교체 (443·8443 수 초 끊김)
+podman pull docker.io/library/nginx:1.30-alpine
+podman rm -f task-nginx
+TASK_NGINX_CERTS=/etc/task-spec/certs TASK_NGINX_AUTH=/etc/task-spec/htpasswd docker/nginx/run.sh
+
+# PostgreSQL 마이너 — 덤프 → 옛 이미지 태그 보존 → 다시 빌드 → 컨테이너 교체 → API 재시작
+#   (API 커넥션 풀은 연결 확인을 하지 않아 끊긴 연결이 남는다)
+podman exec task_db sh -c 'pg_dump -U "$POSTGRES_USER" -d task_db -Fc' > data/exports/task_db_<날짜>_pre-<새 버전>.dump
+podman tag task-db:1 task-db:1-pg<지금 버전>
+podman pull docker.io/pgvector/pgvector:pg16 && podman build -f docker/db/Dockerfile -t task-db:1 docker/db
+podman stop -t 60 task_db && podman rm task_db
+TASK_DB_PASSWORD=<기존 값> TASK_DB_SKIP_BUILD=1 docker/db/run.sh   # 볼륨이 이미 있어 비밀번호는 바뀌지 않는다
+podman restart task-api
+# 롤백: podman tag task-db:1-pg<옛 버전> task-db:1 후 교체 두 줄과 API 재시작
+```
+
+base 의 Debian 판(`postgres --version` 의 `pgdg12` = bookworm)이 바뀌면 glibc 정렬 규칙이 달라져 인덱스를 다시 만들어야 할 수 있다 — 바뀌면 이 절차로 하지 않는다.
+2026-11-24: nginx 1.27.5 → 1.30.8, PG 16.15 → 16.16 (pgvector 0.8.7 그대로).
+
 ## 5. 정해야 할 것 [미정]
 
 - 앱 인증 (지금은 nginx Basic 인증이 임시 대책 — 승인자 식별이 요청 본문의 reviewer 값뿐)
