@@ -763,6 +763,70 @@ def test_command_script_must_fix_sys_path_before_importing_its_package() -> None
     assert got(bad, path="pipeline/helpers.py") == []  # 명령 스크립트가 아니면 import 로 쓰인다
 
 
+def test_starter_test_asserting_the_new_command_stub_is_sent_back() -> None:
+    """2026-11-15 g187c · 2026-11-24 #256 재료 C 알파 2회: 시작 코드 테스트가 '옵션을 주면 종료 코드 1 · NotImplementedError' 를 단언해
+    기능을 채운 참조 구현이 모두 깼다 ('계약 모호 의심'으로 빌드 실패). 도움말·인자 오류(종료 코드 2)는 구현 뒤에도 같아 둔다."""
+    from task_spec.starter.static_check import _starter_stub_tests
+
+    head = "import subprocess\nimport sys\n\nimport pytest\n\nROOT = '.'\n\n\n"
+
+    def got(body: str, path: str = "tests/test_cli.py", template: Any = DE) -> list[str]:
+        o = Overlay(kind="starter", files=(GeneratedFile(path=path, content=head + body),))
+        return [p.message for p in _starter_stub_tests(o, template, _contract(), _spec())]
+
+    def run(*args: str) -> str:
+        argv = ", ".join(repr(a) for a in ("pipeline/run.py", *args))
+        return f"    p = subprocess.run([sys.executable, {argv}], cwd=ROOT, capture_output=True, text=True)\n"
+
+    opts = ("--date", "2024-01-08", "--raw-dir", "x", "--out", "y")
+    stub = (
+        "def test_fails() -> None:\n"
+        + run(*opts)
+        + "    assert p.returncode == 1\n    assert 'NotImplementedError' in p.stderr\n"
+    )
+    assert len(got(stub)) == 1 and "tests/test_cli.py::test_fails" in got(stub)[0]
+    assert got(stub.replace("    assert 'NotImplementedError' in p.stderr\n", ""))  # 실패 종료만
+    # 명령 경로를 모듈 상수에 둔 도우미에 옵션을 넘김 · 새 명령 모듈의 main([...]) · pytest.raises(NotImplementedError)
+    helper = (
+        "CMD = [sys.executable, 'pipeline/run.py']\n\n\ndef _run(*args: str):\n"
+        "    return subprocess.run([*CMD, *args], capture_output=True)\n\n\n"
+        "def test_x() -> None:\n    assert _run('--date', '2024-01-08').returncode != 0\n"
+    )
+    direct = (
+        "from pipeline.run import main\n\n\ndef test_x() -> None:\n"
+        "    assert main(['--date', '2024-01-08', '--raw-dir', 'x', '--out', 'y']) == 1\n"
+    )
+    raises = (
+        "from pipeline.run import run\n\n\ndef test_x(tmp_path) -> None:\n"
+        "    with pytest.raises(NotImplementedError):\n        run(None, tmp_path, tmp_path)\n"
+    )
+    for bad in (helper, direct, raises):
+        assert got(bad), bad
+    # 그대로 둔다: 도움말 · 옵션 없이 인자 오류 · 옵션을 줘도 종료 코드 2만 · 설명 글의 낱말 · 계약 명령이 아닌 스크립트
+    keep = (
+        "def test_help() -> None:\n"
+        + run("--help")
+        + "    assert p.returncode == 0 and '--date' in p.stdout\n",
+        "def test_requires() -> None:\n"
+        + run()
+        + "    assert p.returncode != 0 and '--date' in p.stderr\n",
+        "def test_bad_date() -> None:\n"
+        + run("--date", "x", "--raw-dir", "r", "--out", "o")
+        + "    assert p.returncode == 2\n",
+        'def test_help() -> None:\n    """새 명령은 NotImplementedError 자리 표시라 도움말만 본다."""\n'
+        + run("-h")
+        + "    assert p.returncode == 0\n",
+        "def test_other() -> None:\n    p = subprocess.run([sys.executable, 'scripts/load.py', '--date', 'x'])\n"
+        "    assert p.returncode == 1\n",
+    )
+    for ok in keep:
+        assert got(ok) == [], ok
+    assert got(stub, path="pipeline/check.py") == []  # 테스트 파일이 아님
+    assert (
+        got(stub, template=load_template("backend/java-spring-boot3-jpa")) == []
+    )  # Python 템플릿만
+
+
 def test_unreadable_marker_inside_a_tuple_is_also_caught() -> None:
     """2026-11-10 알파 14회차: `assert v in ("<unreadable>", {})` — == 비교만 보던 검사가 놓쳤다."""
     src = (

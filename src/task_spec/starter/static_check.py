@@ -2656,6 +2656,7 @@ def static_check(
             res.problems += _starter_tables(o, template, contract)
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
+            res.problems += _starter_stub_tests(o, template, contract, spec)
             res.problems += _starter_schema(o, template, contract)
             if not is_java(template.manifest):
                 res.problems += _starter_options(o, contract)
@@ -2793,6 +2794,202 @@ def _script_imports(o: Overlay, t: Template, contract: TaskContract | None) -> l
                 )
                 break
     return out
+
+
+_HELP_FLAGS = frozenset({"--help", "-h"})
+_CLI_OPTION = re.compile(r"^--?[A-Za-z]")
+_EXIT_ATTRS = frozenset({"returncode", "code", "exit_code"})
+_STUB_ERROR = "NotImplementedError"
+_PyFunc = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass(frozen=True)
+class _TestModule:
+    """시작 코드 테스트 파일 하나에서 새 명령을 가리키는 것들 (_starter_stub_tests)."""
+
+    commands: tuple[str, ...]  # 새 명령 스크립트 경로 (pipeline/build_revenue.py)
+    values: dict[str, ast.expr]  # 모듈 수준 이름 = 값 — 명령 경로·인자 목록 상수를 따라간다
+    funcs: dict[str, _PyFunc]  # 모듈 수준 함수
+    # 새 명령 모듈에서 가져온 이름 (from pipeline.x import main · import pipeline.x as m)
+    imported: frozenset[str]
+
+    def is_command(self, value: str) -> bool:
+        return any(
+            value in (c, PurePosixPath(c).name, c.removesuffix(".py").replace("/", "."))
+            or value.endswith("/" + c)
+            for c in self.commands
+        )
+
+    def strings(self, node: ast.AST, seen: frozenset[str] = frozenset()) -> list[str]:
+        """노드 안 문자열 상수 — 모듈 수준 이름은 그 값까지."""
+        out: list[str] = []
+        for n in ast.walk(node):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                out.append(n.value)
+            elif isinstance(n, ast.Name) and n.id in self.values and n.id not in seen:
+                out += self.strings(self.values[n.id], seen | {n.id})
+        return out
+
+    def runs_command(self, node: ast.AST) -> bool:
+        return any(self.is_command(s) for s in self.strings(node))
+
+
+def _test_module(tree: ast.Module, commands: Sequence[str]) -> _TestModule:
+    modules = {c.removesuffix(".py").replace("/", ".") for c in commands}
+    values: dict[str, ast.expr] = {}
+    funcs: dict[str, _PyFunc] = {}
+    imported: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            values.update({t.id: node.value for t in node.targets if isinstance(t, ast.Name)})
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            values[node.target.id] = node.value
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcs[node.name] = node
+        elif isinstance(node, ast.ImportFrom) and node.module in modules and not node.level:
+            imported |= {a.asname or a.name for a in node.names}
+        elif isinstance(node, ast.Import):
+            imported |= {a.asname or a.name for a in node.names if a.name in modules}
+    return _TestModule(tuple(commands), values, funcs, frozenset(imported))
+
+
+def _py_tests(tree: ast.Module) -> list[_PyFunc]:
+    """pytest 가 모으는 테스트 함수 — 모듈의 test… 와 Test… 클래스 안의 test…."""
+    out: list[_PyFunc] = []
+    for node in tree.body:
+        body = (
+            node.body if isinstance(node, ast.ClassDef) and node.name.startswith("Test") else [node]
+        )
+        out += [
+            n
+            for n in body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test")
+        ]
+    return out
+
+
+def _dotted(node: ast.expr) -> str:
+    """호출 대상의 점 이름 — main · m.main · pipeline.build_revenue.main (이름이 아니면 빈 문자열)."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    return ".".join([node.id, *reversed(parts)]) if isinstance(node, ast.Name) else ""
+
+
+def _option_args(strings: Sequence[str]) -> bool:
+    """실행 인자에 옵션이 있고 도움말 요청이 아님."""
+    return not _HELP_FLAGS.intersection(strings) and any(_CLI_OPTION.match(s) for s in strings)
+
+
+def _runs_with_options(fn: _PyFunc, m: _TestModule, runners: Collection[str]) -> bool:
+    """새 명령을 옵션과 함께 실행 — 인자 목록 그대로([sys.executable, "pipeline/x.py", "--date", …]), 그 명령을 실행하는 도우미 함수에
+    옵션을 넘김, 새 명령 모듈의 main([...]) 호출."""
+    for n in ast.walk(fn):
+        if isinstance(n, (ast.List, ast.Tuple)) and m.runs_command(n):
+            if _option_args(m.strings(n)):
+                return True
+        elif isinstance(n, ast.Call):
+            name = _dotted(n.func)
+            main = name.rpartition(".")[2] == "main" and name.split(".")[0] in m.imported
+            if name in runners or main:
+                args = [*n.args, *(k.value for k in n.keywords)]
+                if _option_args([s for a in args for s in m.strings(a)]):
+                    return True
+    return False
+
+
+def _exit2_only(fn: _PyFunc, m: _TestModule) -> bool:
+    """실행 결과를 종료 코드 2(인자 오류 — argparse)로만 확인 — 뼈대의 인자 검사라 구현 뒤에도 그대로다."""
+    codes: list[tuple[type[ast.cmpop], object]] = []
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.Compare):
+            continue
+        sides = [n.left, *n.comparators]
+        if not any(
+            (isinstance(s, ast.Attribute) and s.attr in _EXIT_ATTRS)
+            or (isinstance(s, ast.Call) and _dotted(s.func).split(".")[0] in m.imported)
+            for s in sides
+        ):
+            continue
+        for op, a, b in zip(n.ops, sides, sides[1:], strict=False):
+            const = b if isinstance(b, ast.Constant) else a if isinstance(a, ast.Constant) else None
+            codes.append((type(op), const.value if const is not None else None))
+    return bool(codes) and all(c == (ast.Eq, 2) for c in codes)
+
+
+def _asserts_stub(fn: _PyFunc, m: _TestModule, seen: frozenset[str] = frozenset()) -> bool:
+    """자리 표시의 예외를 확인 — pytest.raises(NotImplementedError)·`"NotImplementedError" in p.stderr` (부르는 모듈 함수 안까지).
+    설명 글(docstring)의 낱말은 보지 않는다."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Name):
+            if n.id == _STUB_ERROR:
+                return True
+            if (
+                n.id in m.funcs
+                and n.id not in seen
+                and _asserts_stub(m.funcs[n.id], m, seen | {n.id})
+            ):
+                return True
+        elif isinstance(n, (ast.Compare, ast.keyword)) and any(
+            isinstance(c, ast.Constant) and isinstance(c.value, str) and _STUB_ERROR in c.value
+            for c in ast.walk(n)
+        ):
+            return True
+    return False
+
+
+def _starter_stub_tests(
+    o: Overlay, t: Template, contract: TaskContract | None, spec: SpecView
+) -> list[StaticProblem]:
+    """Python 시작 코드의 기존 테스트가 새 명령의 자리 표시를 단언 — 새 명령을 옵션과 함께 실행해 실패 종료를 보거나 NotImplementedError 를
+    확인하면 기능을 채운 구현(참조 구현·지원자)에서 반드시 깨진다. 새 명령은 `--help`(계약 옵션이 보이는지)와 인자 오류(종료 코드 2)까지만.
+    2026-11-15 g187c-de-kb002 · 2026-11-24 #256 재료 C 알파 2회: '옵션을 주면 종료 코드 1 · stderr 에 NotImplementedError' 를 단언해 참조 구현이
+    모두 깼다 — 저장된 데이터 시작 코드 32개 중 3개, 셋 다 빌드 실패. Java 의 새 API 호출 검사(_starter_new_api_tests)는 HTTP 만 본다."""
+    if contract is None or not is_python(t.manifest):
+        return []
+    existing = existing_endpoints(contract, spec)
+    commands = [e.path for e in contract.endpoints if e.method is None and e not in existing]
+    if not commands:
+        return []
+    hits: list[str] = []
+    for f in o.files:
+        name = PurePosixPath(f.path).name
+        if not (f.path.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))):
+            continue
+        try:
+            tree = ast.parse(f.content)
+        except SyntaxError:
+            continue
+        m = _test_module(tree, commands)
+        runners = {
+            k
+            for k, fn in m.funcs.items()
+            if not k.startswith("test")
+            and any(
+                isinstance(n, (ast.List, ast.Tuple)) and m.runs_command(n) for n in ast.walk(fn)
+            )
+        }
+        for fn in _py_tests(tree):
+            touches = m.runs_command(fn) or any(
+                isinstance(n, ast.Name) and (n.id in m.imported or n.id in runners)
+                for n in ast.walk(fn)
+            )
+            if touches and (
+                _asserts_stub(fn, m)
+                or (_runs_with_options(fn, m, runners) and not _exit2_only(fn, m))
+            ):
+                hits.append(f"{f.path}::{fn.name}")
+    if not hits:
+        return []
+    return [
+        StaticProblem(
+            o.target,
+            f"시작 코드의 기존 테스트가 새 명령({', '.join(commands)})의 자리 표시를 단언함: {', '.join(hits[:4])} — "
+            "새 명령을 옵션과 함께 실행해 실패 종료를 보거나 NotImplementedError 를 확인하면 기능을 채운 구현에서 반드시 깨진다. "
+            "새 기능 테스트는 쓰지 않는다 (지원자 몫) — 새 명령은 `--help` 가 계약 옵션을 보여 주는지까지만 확인한다",
+        )
+    ]
 
 
 def _skipped_tests(o: Overlay, t: Template) -> list[StaticProblem]:
