@@ -334,3 +334,28 @@ def test_starter_tests_do_not_call_apis_locked_behind_a_new_login() -> None:
     c["endpoints"][2]["existing"] = True
     o = _overlay("starter", "src/test/java/com/example/service/ExistingApiTest.java", http_client)
     assert not _starter_issued_calls(o, _fit(c), spec)
+
+
+def test_starter_generator_is_told_which_existing_apis_are_locked() -> None:
+    """2026-11-24 운영 빌드 ct-f6087a7ba679-b2: 시작 코드 검사만 잠긴 기존 API 를 알고 생성기는 몰라, '기존 API 로 기존 기능 테스트를
+    하나 이상'(gen_starter)과 '이 API 는 부르지 않는다'(검사)가 부딪쳐 시작 코드 생성이 재시도 한도에서 끝났다 (기존 API 가 모두 잠김).
+    생성기 입력의 기존 API 줄에 같은 판정(auth_rule.locked_existing)으로 표시한다 — 줄은 그대로 둔다 (구현은 해야 한다)."""
+    from task_spec.nodes.starter.generate import existing_apis
+    from tests.starter.test_plan_contract import _task
+
+    c = _session()
+    for e in c["endpoints"][:2]:  # 주문 상태 변경·이력 조회 둘 다 기존 API, 이력 조회도 세션이 필요
+        e["existing"] = True
+    c["endpoints"][1]["headers"] = [{"name": HEADER, "type": "string", "refs": ["r1"]}]
+    c["endpoints"][1]["responses"].append({"status": 401, "description": "세션 없음"})
+    c["endpoints"][1]["auth"] = ISSUED_RULE
+    fitted = _fit(c)
+    lines = existing_apis(_task(), fitted)
+    assert len(lines) == 2  # 잠긴 API 도 목록에 남는다
+    assert all(
+        "기존 기능 테스트에서 부르지 않는다" in x and "POST /api/auth/login" in x for x in lines
+    )
+    assert all("시드·저장소 수준으로 확인" in x for x in lines)
+    # 로그인이 기존 API 면 시작 코드도 로그인할 수 있다 — 표시하지 않는다
+    c["endpoints"][2]["existing"] = True
+    assert not any("부르지 않는다" in x for x in existing_apis(_task(), _fit(c)))
