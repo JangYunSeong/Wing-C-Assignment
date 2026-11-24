@@ -54,6 +54,20 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("핵심 원인 개념이 제목·상황·제출물", ("title", "scenario", "deliverables")),
     ("원 사례의 원인 용어가 제목·상황·제출물", ("title", "scenario", "deliverables")),
     ("본문에 기술 환경 밖 언어가 나옴", ("title", "scenario", "deliverables", "artifact_titles")),
+    # 원 사례 고유어(avoid_terms) — 검사가 보는 칸 전부 (spec/draft.py check: 글·불변식·함정·자료 본문, spec/feature.py check_feature:
+    # 2단계·허용 설계·숨은 수용 기준). 이름 하나를 바꾸면 끝나는 꼴이라 재요청(전체를 다시 씀) 대신 걸린 칸만 (#229, 2026-11-23 알파 'Airflow')
+    (
+        "원 사례의 고유어가 나옴",
+        (
+            *VISIBLE,
+            *STAGE2,
+            "artifact_contents",
+            "invariant",
+            "traps",
+            "accepted_designs",
+            "acceptance_hidden",
+        ),
+    ),
 )
 
 _TERMS = re.compile(r"(?:나옴|드러남)[^:]*:\s*([^—\n]+)|지시함 \(([^)]*)\)")
@@ -94,6 +108,28 @@ def _fields(out: Any, group: str) -> Iterator[tuple[str, str]]:
     elif dbg is not None and group == "debug_artifact_titles":
         yield from (
             (f"debug_stage.artifacts[{i}].title", a.title) for i, a in enumerate(dbg.artifacts)
+        )
+    elif group == "artifact_contents":
+        yield from ((f"artifacts[{i}].content", a.content) for i, a in enumerate(out.artifacts))
+        if dbg is not None:
+            yield from (
+                (f"debug_stage.artifacts[{i}].content", a.content)
+                for i, a in enumerate(dbg.artifacts)
+            )
+    elif group == "invariant":
+        yield "invariant", getattr(out, "invariant", "") or ""
+    elif group == "traps":
+        for i, t in enumerate(getattr(out, "traps", [])):
+            yield f"traps[{i}].description", t.description
+            yield f"traps[{i}].why_ai_fails", t.why_ai_fails
+    elif group == "accepted_designs":
+        for i, d in enumerate(getattr(out, "accepted_designs", [])):
+            yield f"accepted_designs[{i}].summary", d.summary
+            yield f"accepted_designs[{i}].conditions", d.conditions
+    elif group == "acceptance_hidden":
+        yield from (
+            (f"acceptance_hidden[{i}].text", h.text)
+            for i, h in enumerate(getattr(out, "acceptance_hidden", []))
         )
 
 
@@ -160,11 +196,36 @@ def _conclusion_target(out: Any, problem: str) -> Target | None:
     return None
 
 
+# 자료 하나의 제목이 결론을 암시함 — 그 자료(1·2단계 어느 쪽이든 id 로) 제목만 고친다 (spec/draft.py check_artifact_list).
+# 낱말 검사에는 예외를 두지 않기로 해서(#223) 고치는 쪽에서 받는다 — 2026-11-23 알파 명세 5회 중 4회 첫 답이 '…차이 목록' 제목으로 걸렸고,
+# 재요청이 같은 제목을 다시 내 2회가 멈췄다 (#229).
+_TITLE_TELL = re.compile(
+    r"^(?:2단계 )?자료 (?P<aid>a\d+) 제목이 결론을 암시함 \((?P<terms>[^)]*)\)"
+)
+
+
+def _title_tell_target(out: Any, problem: str) -> Target | None:
+    m = _TITLE_TELL.match(problem.strip())
+    if m is None:
+        return None
+    terms = tuple(t.strip() for t in m.group("terms").split(",") if t.strip())
+    dbg = getattr(out, "debug_stage", None)
+    for prefix, arts in (
+        ("artifacts", out.artifacts),
+        ("debug_stage.artifacts", dbg.artifacts if dbg else []),
+    ):
+        for i, a in enumerate(arts):
+            if a.artifact_id == m.group("aid"):
+                why = "자료 제목이 결론을 암시함 — 결론 낱말을 빼고 자료 종류(로그·목록·설정·기록 등)만 쓸 것"
+                return Target(f"{prefix}[{i}].title", a.title, terms, why)
+    return None
+
+
 def targets(out: Any, problems: list[str]) -> list[Target]:
     """고칠 칸 — 문제마다 그 검사가 보는 칸 중 걸린 낱말이 든 칸. 같은 칸은 낱말을 모은다."""
     found: dict[str, Target] = {}
     for p in problems:
-        hint = _conclusion_target(out, p) or _clar_hint_target(out, p)
+        hint = _conclusion_target(out, p) or _clar_hint_target(out, p) or _title_tell_target(out, p)
         if hint is not None:
             old = found.get(hint.path)
             found[hint.path] = Target(
