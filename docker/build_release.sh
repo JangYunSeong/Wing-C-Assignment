@@ -20,7 +20,7 @@ mkdir -p "$OUT"
 podman build -f docker/api/Dockerfile -t "task-api:${VER}" .
 podman build -f docker/builder/Dockerfile -t "task-builder:${VER}" .
 podman build -q -f docker/db/Dockerfile -t task-db:1 docker/db >/dev/null
-NGINX_IMAGE="docker.io/library/nginx:1.27-alpine"   # docker/nginx/run.sh 기본값과 같게
+NGINX_IMAGE="docker.io/library/nginx:1.30-alpine"   # docker/nginx/run.sh 기본값과 같게
 podman pull -q "$NGINX_IMAGE" >/dev/null
 
 # 이미지에 비밀값·지원자 데이터가 없는지 확인
