@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -67,6 +68,31 @@ def issuers(contract: TaskContract) -> set[str]:
         for e in contract.endpoints
         if e.auth is not None and e.auth.kind == "issued" and e.auth.issued_by
     }
+
+
+@dataclass(frozen=True)
+class LockedApi:
+    """시작 코드가 부를 수 없는 기존 API — 새로 만드는 발급 API(로그인)가 주는 값이 필요하다."""
+
+    endpoint: Endpoint
+    rule: AuthRule
+    issuer: Endpoint
+
+
+def locked_existing(contract: TaskContract, existing: Sequence[Endpoint]) -> list[LockedApi]:
+    """기존 API 중 새 발급 API 의 값이 필요한 것 — 시작 코드에는 발급 API 가 없어 통과하는 값을 만들 수 없고, 새 기능을 구현하면
+    그 요청은 거절된다. 시작 코드 생성기 입력(generate.existing_apis)과 시작 코드 검사(static_check._starter_issued_calls)가 함께 쓴다
+    — 2026-11-24 운영 빌드 ct-f6087a7ba679-b2: 검사만 알고 생성기는 몰라, '기존 API 로 기존 기능 테스트를 하나 이상'(gen_starter)과
+    '이 API 는 부르지 않는다'(검사)가 부딪쳐 시작 코드 생성이 재시도 한도에서 끝났다 (기존 API 가 모두 잠긴 계약)."""
+    by_id = {e.endpoint_id: e for e in contract.endpoints}
+    return [
+        LockedApi(e, e.auth, by_id[e.auth.issued_by])
+        for e in existing
+        if e.auth is not None
+        and e.auth.kind == "issued"
+        and e.auth.issued_by in by_id
+        and by_id[e.auth.issued_by] not in existing
+    ]
 
 
 def issued_rule(contract: TaskContract) -> AuthRule | None:

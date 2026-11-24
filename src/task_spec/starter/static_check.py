@@ -39,7 +39,7 @@ from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContra
 from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.spec.feature import find_terms, title_allowed_text
-from task_spec.starter.auth_rule import credentials, issued_rule
+from task_spec.starter.auth_rule import credentials, issued_rule, locked_existing
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
@@ -900,16 +900,9 @@ def _starter_issued_calls(
     경로 글자로 본다 (manifest 의 MockMvc 모양 밖 HttpClient·URI 로 부르는 것도)."""
     if contract is None:
         return []
-    existing = existing_endpoints(contract, spec)
-    by_id = {e.endpoint_id: e for e in contract.endpoints}
     locked = [
-        (e, e.auth, by_id[e.auth.issued_by])
-        for e in contract.endpoints
-        if e in existing
-        and e.auth is not None
-        and e.auth.kind == "issued"
-        and e.auth.issued_by in by_id
-        and by_id[e.auth.issued_by] not in existing
+        (x.endpoint, x.rule, x.issuer)
+        for x in locked_existing(contract, existing_endpoints(contract, spec))
     ]
     if not locked:
         return []

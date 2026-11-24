@@ -53,6 +53,7 @@ from task_spec.schemas import (
 )
 from task_spec.schemas.build import Fault, FileKind, PublicTest
 from task_spec.schemas.template import FailureReason, HiddenHelper, SlotKind, TemplateManifest
+from task_spec.starter.auth_rule import locked_existing
 from task_spec.starter.config_merge import merge_config
 from task_spec.starter.contract import SpecView, existing_endpoints
 from task_spec.starter.hand_refs import HandReferences
@@ -250,11 +251,22 @@ def fault_text(f: Fault, apis: Mapping[str, str] | None = None) -> str:
 
 def existing_apis(task: TaskItem, contract: TaskContract) -> list[str]:
     """이미 있는 기능 (시작 코드가 완전히 동작하게 만든다) — 판정은 contract.existing_endpoints (계약 표시 + 명세에 나온 경로).
-    2026-11-07 알파 테스트: 명세가 "거래 상태 변경 API" 라고만 써 목록이 비자 시작 코드가 범위를 짐작했다 → 계약 표시를 먼저."""
-    return [
-        f"{e.method or ''} {e.path} — {e.summary}".strip()
-        for e in existing_endpoints(contract, SpecView.from_task(task))
-    ]
+    2026-11-07 알파 테스트: 명세가 "거래 상태 변경 API" 라고만 써 목록이 비자 시작 코드가 범위를 짐작했다 → 계약 표시를 먼저.
+    새 발급 API(로그인)의 값이 필요한 기존 API 는 목록에 두되(구현은 해야 한다) 기존 기능 테스트에서 부르지 않는다고 줄에 적는다
+    (auth_rule.locked_existing — 시작 코드 검사와 같은 판정)."""
+    existing = existing_endpoints(contract, SpecView.from_task(task))
+    locked = {x.endpoint.endpoint_id: x for x in locked_existing(contract, existing)}
+    out: list[str] = []
+    for e in existing:
+        line = f"{e.method or ''} {e.path} — {e.summary}".strip()
+        if (x := locked.get(e.endpoint_id)) is not None:
+            line += (
+                f" [기존 기능 테스트에서 부르지 않는다 — 새로 만드는 {x.issuer.method} {x.issuer.path} 가 발급하는 {x.rule.header} 가 "
+                f"필요해 시작 코드로는 통과하는 값을 만들 수 없고, 새 기능을 구현하면 이 요청은 {x.rule.denied_status} 이 된다. "
+                "이 API 의 기존 동작은 시드·저장소 수준으로 확인한다]"
+            )
+        out.append(line)
+    return out
 
 
 def _lines(items: Sequence[str]) -> str:
