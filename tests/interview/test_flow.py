@@ -11,7 +11,7 @@ import httpx
 
 from task_spec.api.app import create_app
 from task_spec.interview.incident import incident_digest
-from task_spec.interview.text import CASE_OPENING, SCOPE_QUESTIONS
+from task_spec.interview.text import CASE_OPENING, SCOPE_QUESTIONS, TRAP_FOLLOW_UP_LEAD
 from task_spec.llm.backend import Completion
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import PublicIncident
@@ -125,6 +125,56 @@ async def test_followup_then_confirmation_and_invalidation(session: Session) -> 
     assert revised.status_code == 200 and revised.json()["incident_confirmed"] is None
     assert revised.json()["stage"] == "incident_review"
     assert revised.json()["review_note"] == "원인 설명 정정"
+
+
+async def test_trap_that_reopens_the_case_explains_why_before_the_question(
+    session: Session,
+) -> None:
+    """③ 이 처음 대응만 빠진 채 끝났는데 처음 대응을 넣어 다시 정리하니 원인이 빠졌다 — ③ 으로 돌아가며 이유를 앞에 붙인다."""
+    await session.start()
+    session.push(
+        complete_output(
+            incident=None,
+            missing_fields=["naive_fix", "why_naive_fails"],
+            evidence={
+                k: [v] for k, v in FACTS.items() if k not in ("naive_fix", "why_naive_fails")
+            },
+        )
+    )
+    first = await session.post("project", text=PROJECT)
+    assert first.status_code == 200, first.text
+    assert first.json()["stage"] == "trap_interview" and first.json()["incident_draft"] is None
+    assert first.json()["incident_messages"] == []  # ④ 화면이 이어받아 질문을 붙이지 않는다
+    session.push(
+        complete_output(
+            incident=None, missing_fields=["root_cause"], question="원인은 어떻게 확인했나요?"
+        )
+    )
+    trapped = await session.post(
+        "trap",
+        attempted_fix=FACTS["naive_fix"],
+        observed_result="복구가 막힘",
+        why_failed=FACTS["why_naive_fails"],
+    )
+    assert trapped.status_code == 200, trapped.text
+    body = trapped.json()
+    assert body["stage"] == "incident_interview" and body["incident_missing"] == ["root_cause"]
+    assert body["incident_messages"][-1] == {
+        "role": "assistant",
+        "text": f"{TRAP_FOLLOW_UP_LEAD} 원인은 어떻게 확인했나요?",
+        "message_id": None,
+    }
+    # 안내는 ④ 에서 돌아올 때만 — ③ 대화의 다음 질문에는 붙지 않는다
+    session.push(
+        complete_output(incident=None, missing_fields=["conditions"], question="언제 생기나요?")
+    )
+    again = await session.post("messages", text=FACTS["root_cause"])
+    assert again.json()["incident_messages"][-1]["text"] == "언제 생기나요?"
+    session.push(complete_output())
+    done = await session.post("messages", text=FACTS["conditions"])
+    assert done.status_code == 200, done.text
+    # 처음 대응은 이미 받았다 — ④ 를 다시 묻지 않는다
+    assert done.json()["stage"] == "success_interview"
 
 
 async def test_continue_without_reviewer_keeps_validation_and_records_the_version(

@@ -100,6 +100,7 @@ from task_spec.interview.task import (
 from task_spec.interview.text import (
     CASE_OPENING,
     SCOPE_QUESTIONS,
+    TRAP_FOLLOW_UP_LEAD,
     UNSET,
     numbers,
     parse_project,
@@ -614,9 +615,17 @@ class InterviewService:
         return answer
 
     async def _incident_turn(
-        self, state: InterviewState, mapping: RunMapping, *, on_delta: TextCallback | None = None
+        self,
+        state: InterviewState,
+        mapping: RunMapping,
+        *,
+        on_delta: TextCallback | None = None,
+        lead: str = "",
     ) -> None:
-        """대화 전체를 모델에 보내 다음 질문 또는 사례 초안을 받는다. 근거 인용이 담당자 말에 없으면 그 칸을 다시 묻는다."""
+        """대화 전체를 모델에 보내 다음 질문 또는 사례 초안을 받는다. 근거 인용이 담당자 말에 없으면 그 칸을 다시 묻는다.
+
+        lead 는 다음 질문 앞에 붙이는 고정 안내 (질문이 없으면 붙이지 않는다).
+        """
         llm, prompts = self._require_ready()
         context: dict[str, Any] = {
             "brief": [],  # 포크의 채용 방향 문답(D3) — 기존 공고에서 시작하면 비어 있다
@@ -703,7 +712,7 @@ class InterviewService:
         if question:
             state.incident_messages = [
                 *state.incident_messages,
-                ChatMessage(role="assistant", text=question),
+                ChatMessage(role="assistant", text=f"{lead} {question}" if lead else question),
             ]
 
     async def project(
@@ -785,7 +794,8 @@ class InterviewService:
                 state.incident_draft = attach_interview_cases(incident, state)
                 state.stage = "success_interview"
             else:
-                await self._incident_turn(state, mapping)
+                # ③ 이 처음 대응만 빠진 채 끝나 초안이 없다 — 처음 대응을 넣어 다시 정리하고, 다른 칸이 빠지면 ③ 으로 돌아간다
+                await self._incident_turn(state, mapping, lead=TRAP_FOLLOW_UP_LEAD)
             return await self._save(row, revision, state, mapping, steps=(STEP_TRAP,))
 
     # ================================================================ ⑤ 성공 기준 → 기준 답안 → 검증
