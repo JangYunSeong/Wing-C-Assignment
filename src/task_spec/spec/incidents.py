@@ -33,7 +33,8 @@ class IncidentCatalog(dict[str, PublicIncident]):
 
 
 def load_incidents(root: Path) -> IncidentCatalog:
-    """직군 → 기본 사례(`<직군>.json`). 그 밖의 파일은 기능형 과제용 추가 사례 — `templates` 가 비면 거부.
+    """직군 → 기본 사례(`<직군>.json`). 그 밖의 파일은 기능형 과제용 추가 사례. 추가 사례의 `templates` 가 비면 공고 배정 후보가
+    아니다 — 재료를 고정한 평가(`pin_feature_incident`)에만 쓰인다 (#256 5단계: 새 재료를 공고 배정과 떼어 평가한다 — 배정은 운영 결정).
     폴더가 없으면 빈 카탈로그 (사례 없이 v1 처럼 생성)."""
     out = IncidentCatalog()
     if not root.is_dir():
@@ -41,9 +42,9 @@ def load_incidents(root: Path) -> IncidentCatalog:
     for f in sorted(root.glob("*.json")):
         inc = PublicIncident.model_validate_json(f.read_text("utf-8"))
         if f.stem != inc.sub:
-            if not inc.templates:
+            if inc.feature is None:
                 raise ValueError(
-                    f"직군 {inc.sub} 의 추가 사례 {f.name} 에 templates 가 없습니다 — 기본 사례는 {inc.sub}.json"
+                    f"직군 {inc.sub} 의 추가 사례 {f.name} 에 기능형 재료(feature)가 없습니다 — 기본 사례는 {inc.sub}.json"
                 )
             out.alternates.setdefault(inc.sub, []).append(inc)
             continue

@@ -21,7 +21,7 @@ from task_spec.nodes.starter.build import BuildOutcome
 from task_spec.nodes.starter.generate import BuildInputs, accepted_input, hidden_input, public_input
 from task_spec.nodes.starter.plan_contract import PlanResult, for_material, plan_input
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import FailureReason, MaterialGuide
+from task_spec.schemas import FailureReason, GeneratedFile, MaterialGuide
 from task_spec.spec.incidents import incident_by_id, load_incidents, load_interfaces
 from task_spec.starter.material_guide import (
     HIDDEN_TITLE,
@@ -33,7 +33,7 @@ from task_spec.starter.material_guide import (
     public_rules,
     with_guide,
 )
-from task_spec.starter.static_check import Overlay
+from task_spec.starter.static_check import Overlay, _code_pitfalls
 from task_spec.starter.templates import load_template, restrict_reasons
 from tests.builder.test_build_provenance import _job, _real_steps
 from tests.builder.test_runner import FakeSteps, _cfg, _claimed
@@ -370,3 +370,44 @@ async def test_a_build_records_the_guide_it_used(tmp_path: Path) -> None:
     store, b = await _claimed()
     plain = await run_job(store, FakeSteps(tmp_path), _cfg(tmp_path), b)
     assert plain.outcome is not None and plain.outcome.guide_sha256 is None
+
+
+def test_eval_only_materials_are_checked_against_the_sub_template() -> None:
+    """공고 배정 전(templates 가 빈 평가 전용) 재료도 빌드는 직군 템플릿으로 만든다 — 대조도 그 템플릿과 (#256 5단계)."""
+    inc = incident_by_id(load_incidents(INCIDENTS), BATCH)
+    assert inc is not None
+    unassigned = inc.model_copy(update={"templates": []})
+    assert guide_problems(_guide(), unassigned) == []
+    tagged = _guide().model_copy(
+        update={"failure_reasons": [_reason("late_data_missed", tag=r"\[why:late\]")]}
+    )
+    assert any("표기" in p for p in guide_problems(tagged, unassigned))  # 대조가 돈다
+
+
+def test_read_rows_on_a_single_file_is_a_code_pitfall() -> None:
+    """#256 5단계 woori001: 생성 구현 셋이 data_files 를 돌며 read_rows(파일) — 실행 전에 바른 쓰는 법과 함께 되돌린다."""
+    bad = Overlay(
+        kind="ref_accepted",
+        files=(
+            GeneratedFile(
+                path="pipeline/build.py",
+                content=(
+                    "from pipeline.inputs import data_files, read_rows\n"
+                    "def load(d):\n    rows = []\n    for f in data_files(d):\n        rows.extend(read_rows(f))\n    return rows\n"
+                ),
+            ),
+        ),
+        label="d1",
+    )
+    good = Overlay(
+        kind="ref_accepted",
+        files=(
+            GeneratedFile(
+                path="pipeline/build.py",
+                content="from pipeline.inputs import data_files, read_rows\nrows = read_rows(data_files('x'))\n",
+            ),
+        ),
+        label="d1",
+    )
+    assert any("read_rows([파일])" in p.message for p in _code_pitfalls(bad, DE))
+    assert _code_pitfalls(good, DE) == []

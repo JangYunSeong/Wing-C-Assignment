@@ -26,7 +26,7 @@ import yaml
 from task_spec.schemas.incident import MaterialGuide, PublicIncident
 from task_spec.schemas.template import FailureReason
 from task_spec.starter.feasibility import names
-from task_spec.starter.templates import Template, load_template
+from task_spec.starter.templates import TEMPLATE_FOR_SUB, Template, load_template
 
 FOLDER = (
     "hidden"  # incidents/public_v1/ 아래 — 이름·내용이 숨은 쪽이라 공개 사례 파일(*.json)과 나눈다
@@ -104,8 +104,11 @@ def guide_problems(
     재료 사유의 실현 조건(feasible)이 템플릿에 없는 조절값을 씀 (템플릿 정의는 manifest 검증을 거치지만 재료 사유는 합칠 때 들어온다)."""
     if incident is None or incident.feature is None:
         return [f"재료 안내의 재료 {guide.incident_id} 가 없거나 기능형 칸이 없음"]
+    # 빌드는 직군 템플릿(TEMPLATE_FOR_SUB)으로 만든다 — 공고 배정 전(templates 가 빈 평가 전용) 재료도 그 템플릿과 대조한다 (#256 5단계)
+    by_sub = TEMPLATE_FOR_SUB.get(incident.sub)
+    refs = list(dict.fromkeys([*incident.templates, *([by_sub] if by_sub else [])]))
     out: list[str] = []
-    for ref in incident.templates:
+    for ref in refs:
         try:
             t = with_guide(load(ref), guide)
         except ValueError as exc:
