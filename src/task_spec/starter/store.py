@@ -193,6 +193,8 @@ ALTER TABLE public.common_task_build
     ADD COLUMN IF NOT EXISTS packages_final_at timestamptz,
     ADD COLUMN IF NOT EXISTS stage_log jsonb NOT NULL DEFAULT '[]',  -- 단계 진행 기록 (StageMark)
     ADD COLUMN IF NOT EXISTS manifest_sha256 text;  -- 검사·수리 칸 판 (#176 — 같은 vN 에서 고칠 수 있는 칸)
+-- 빌드가 쓴 재료 숨은 안내 지문 (#256 재료 옮기기 — incidents/public_v1/hidden/ 은 판 번호가 없다). 안내 없는 재료는 NULL
+ALTER TABLE public.common_task_build ADD COLUMN IF NOT EXISTS guide_sha256 text;
 -- 빌드 출처 (#175) — '생성 요청 빌드' 표지를 requested_at 대신 칸 하나로. 있던 행은 requested_at 으로 채운다 (몇 번 돌려도 같다)
 ALTER TABLE public.common_task_build ADD COLUMN IF NOT EXISTS origin text;
 UPDATE public.common_task_build SET origin = CASE WHEN requested_at IS NULL THEN 'eval' ELSE 'request' END
@@ -231,6 +233,7 @@ BUILD_COLUMNS = (
     "template_ref",
     "template_sha256",
     "manifest_sha256",
+    "guide_sha256",
     "tree_sha256",
     "grader_sha256",
     "contract",
@@ -1117,6 +1120,7 @@ class PgBuildStore:
                 template_ref=r["template_ref"],
                 template_sha256=r["template_sha256"],
                 manifest_sha256=r["manifest_sha256"],
+                guide_sha256=r["guide_sha256"],
                 tree_sha256=r["tree_sha256"],
                 grader_sha256=r["grader_sha256"],
                 contract=TaskContract.model_validate(r["contract"]),
@@ -1355,12 +1359,13 @@ class PgBuildStore:
             o = outcome.model_dump(mode="json")
             await cur.execute(
                 "UPDATE public.common_task_build SET template_ref = %s, template_sha256 = %s, "
-                "manifest_sha256 = %s, tree_sha256 = %s, grader_sha256 = %s, contract = %s, hidden_plan = %s, "
-                "verification = %s, review_flags = %s, repairs = %s WHERE id = %s RETURNING *",
+                "manifest_sha256 = %s, guide_sha256 = %s, tree_sha256 = %s, grader_sha256 = %s, contract = %s, "
+                "hidden_plan = %s, verification = %s, review_flags = %s, repairs = %s WHERE id = %s RETURNING *",
                 (
                     o["template_ref"],
                     o["template_sha256"],
                     o["manifest_sha256"],
+                    o["guide_sha256"],
                     o["tree_sha256"],
                     o["grader_sha256"],
                     Jsonb(o["contract"]),
@@ -1824,7 +1829,8 @@ class PgBuildStore:
                     await cur.execute(
                         "UPDATE public.common_task_build SET status = 'pending', worker = NULL, "
                         "lease_until = NULL, stage = NULL, error = %s, template_ref = NULL, "
-                        "template_sha256 = NULL, manifest_sha256 = NULL, tree_sha256 = NULL, grader_sha256 = NULL, "
+                        "template_sha256 = NULL, manifest_sha256 = NULL, guide_sha256 = NULL, tree_sha256 = NULL, "
+                        "grader_sha256 = NULL, "
                         "contract = NULL, hidden_plan = NULL, verification = '{}'::jsonb, "
                         "review_flags = '[]'::jsonb, repairs = '[]'::jsonb WHERE id = %s RETURNING *",
                         (LEASE_EXPIRED, r["id"]),

@@ -229,9 +229,12 @@ def test_several_frontend_materials_are_assigned_by_posting_id_hash() -> None:
 
 
 def test_alternate_feature_seeds_are_well_formed() -> None:
-    """추가 사례(기능형)도 기본 사례와 같은 검사 — 허용 설계 2개 이상, 보이는 글에 누설 말 없음, 실패 사유는 템플릿 코드."""
+    """추가 사례(기능형)도 기본 사례와 같은 검사 — 허용 설계 2개 이상, 보이는 글에 누설 말 없음, 실패 사유는 템플릿 코드
+    (재료 숨은 안내가 있으면 그 사유와 합친 목록 — #256 재료 옮기기)."""
+    from task_spec.starter.material_guide import load_guides, with_guide
     from task_spec.starter.templates import load_template
 
+    guides = load_guides(ROOT)
     for alts in load_incidents(ROOT).alternates.values():
         for inc in alts:
             f = inc.feature
@@ -242,8 +245,8 @@ def test_alternate_feature_seeds_are_well_formed() -> None:
             ], inc.incident_id
             assert not set(f.leak_terms) & set(f.trigger_terms), inc.incident_id
             for ref in inc.templates:
-                codes = set(load_template(ref).manifest.reason_codes)
-                assert set(f.reasons) <= codes, (inc.incident_id, f.reasons)
+                t = with_guide(load_template(ref), guides.get(inc.incident_id))
+                assert set(f.reasons) <= t.manifest.reason_codes, (inc.incident_id, f.reasons)
 
 
 def test_backend_base_incident_stays_in_the_hash_pool() -> None:

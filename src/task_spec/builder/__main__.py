@@ -52,7 +52,7 @@ async def main(once: bool) -> None:
             daily_budget_usd=s.build_daily_budget_usd,
             poll_seconds=s.build_poll_seconds,
             max_attempts=s.build_max_attempts,
-            finalizer=PackageFinalizer(store, s.images_dir.resolve()),
+            finalizer=PackageFinalizer(store, s.images_dir.resolve(), s.incidents_dir),
         )
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):

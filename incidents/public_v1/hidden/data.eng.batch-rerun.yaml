@@ -1,0 +1,72 @@
+# 재료 pub:data.eng:batch-rerun-late-partial 의 숨은 안내 (#256 재료 옮기기, 2026-11-24) — 이 재료로 만드는 빌드의 생성기 입력 가운데
+# 재료에 묶인 것. 데이터 템플릿 v1~v3 의 하네스 문서·실패 사유·허용 구현 조건과 숨은·공개 테스트 프롬프트(gen_hidden_py v4~v8·
+# gen_public_py v4~v6)에 일반 규칙처럼 들어 있던 이 재료의 함정(사본·늦은 데이터·날짜 폴더)을 옮겼다. 템플릿 v4·프롬프트 v9/v7 에는
+# 그 스택에서 늘 맞는 일반 규칙만 남는다. 코드가 빌드의 템플릿에 합친다 (starter/material_guide.with_guide — 계약 단계와 빌드가 같게).
+# 지킬 것:
+# - 공개 사례(pub:)만. 지원자 데이터 없음.
+# - failure_reasons 는 템플릿 사유와 code 가 같으면 그 정의를 바꾼다 (log_patterns 는 템플릿과 같게 — 하네스 표기). 아래 셋은 템플릿 v3 의
+#   정의 그대로다 (이 재료로 만든 빌드의 계약·숨은 테스트 입력이 옮기기 전과 같다).
+# - hidden_rules·hidden_example 은 숨은 테스트 생성기 입력에만, accepted_conditions 는 허용 구현 생성기 입력에만 나간다.
+# - public_rules 는 공개 쪽(계약 계획 입력·공개 테스트 생성기 입력·손 구현 관문의 공개 테스트 수리 요청)으로 나간다 — 재료의
+#   trigger_terms·leak_terms·stage2_cause_terms·hidden_terms 를 쓰지 않는다 (#256 3단계에 인터페이스 파일에 있던 것을 옮겼다).
+incident_id: pub:data.eng:batch-rerun-late-partial
+failure_reasons:
+  - code: late_data_missed
+    description: 나중에 들어온 앞 날짜(또는 앞 구간) 데이터가 결과에 반영되지 않음
+    log_patterns: ['\[reason:late_data_missed\]']
+    how: 앞 날짜로 실행해 출력이 정의대로인 것을 (사유 없이) 확인한 뒤, 다음 날짜 입력 폴더에 앞 날짜 레코드를 넣고 다음 날짜로 실행. 사유는 "앞 날짜 출력이 늦게 온 레코드까지 반영했는지" 단언에
+  - code: duplicate_counted
+    description: 같은 레코드의 사본(재전송)이 두 번 이상 집계됨
+    log_patterns: ['\[reason:duplicate_counted\]']
+    how: 같은 식별자의 레코드를 같은 폴더·다음 날짜 폴더에 다시 넣고 실행. 사유는 "출력 값이 한 번만 센 값인지" 단언에
+  - code: partial_output_visible
+    description: 실행 도중 죽은(실패한) 실행이 반쯤 쓴 출력을 남겨 읽는 쪽이 틀린 값을 봄
+    log_patterns: ['\[reason:partial_output_visible\]']
+    how: 정상 실행 뒤 다음 실행을 run_…(…, crash_after_bytes=128) 로 쓰는 중에 죽이고(상한은 파일 하나의 크기 — 출력 파일이 그보다 커지는 입력으로, 안 죽으면 하네스가 CrashNotTriggered), 읽는 쪽 화면(출력)의 날짜·구간마다 '직전 성공 값' 또는 '이번 실행이 성공했을 때의 값' 인지 단언. 그 뒤 다시 실행하면 정상 값인지도. 다른 숨은 요구(늦은 데이터·사본)를 같은 케이스에 섞지 않는다
+hidden_rules:
+  - 이 재료의 숨은 요구 장면은 사본(같은 payment_id 를 다시 받음)·늦은 레코드(앞 날짜 결제가 다음 날짜 폴더에 옴)·쓰기 중 크래시다. 동작 확인 실행의 입력에는 넣지 않고, 사본·늦은 레코드는 동작 확인 다음 날짜의 폴더에 넣어 그 결과를 사유를 붙인 단언으로 본다.
+  - 사본 케이스는 실행하는 날짜의 폴더 안에 같은 레코드를 두 벌 넣는다 — 다른 날짜 폴더에만 두면 '앞 폴더도 읽기'(늦은 데이터)가 섞여, 실행 날짜 폴더만 읽는 구현은 사본을 보지 못한다.
+  - 늦게 온 데이터는 앞 날짜를 실행한 뒤, 다음 날짜 폴더에 앞 날짜 레코드(paid_at 이 앞 날짜)를 넣고 다음 날짜를 실행한다. 여러 날짜 폴더를 미리 써 두고 마지막 날짜로 한 번만 실행하지 않는다 — '이번 폴더에 나온 날짜만 다시 계산'하는 허용 설계도 통과해야 한다.
+  - 크래시 케이스에 늦은 데이터·사본을 넣지 않는다 — 다른 요구를 놓친 구현이 크래시 사유로 떨어진다.
+  - 출력은 모든 날짜 파티션을 읽어 정의대로 계산한 전체와 비교한다 — 사본·늦은 레코드를 실행 날짜 파티션에 넣은 구현은 한 날짜만 보면 놓친다.
+hidden_example: |-
+  """hc1 늦게 들어온 앞 날짜 결제가 그 날짜 요약에 반영된다"""
+
+  from harness.grader import reason, workspace
+  from cases.contract import PaymentEvent, read_daily_sales, run_pipeline_run, write_payment_events
+
+
+  def pay(pid: str, paid_at: str, amount: int, received_at: str) -> PaymentEvent:
+      return PaymentEvent(payment_id=pid, store_id="S001", terminal_id="S001-T1", paid_at=paid_at,
+                          amount=amount, method="card", received_at=received_at)
+
+
+  def totals(ws) -> dict:
+      """출력 전체 — {날짜: {매장: (건수, 금액)}} (파티션 안 여러 파일·행은 더한다)."""
+      out: dict = {}
+      for day, rows in read_daily_sales(ws).items():
+          for r in rows:
+              o, a = out.setdefault(day, {}).get(r["store_id"], (0, 0))
+              out[day][r["store_id"]] = (o + r["orders"], a + r["sales_amount"])
+      return out
+
+
+  def test_hc1_late_payment_restates_earlier_day() -> None:
+      ws = workspace()
+      write_payment_events(ws, [pay("P1", "2026-09-01 10:00:00", 1000, "2026-09-01 10:00:05")], date="2026-09-01")
+      assert run_pipeline_run(date="2026-09-01", raw=ws.path("raw"), out=ws.path("out")).ok
+      assert totals(ws) == {"2026-09-01": {"S001": (1, 1000)}}  # 동작 확인 (사유 없이)
+      late = pay("P2", "2026-09-01 23:50:00", 500, "2026-09-02 00:20:00")
+      write_payment_events(ws, [late], date="2026-09-02")  # 다음 날 폴더에 앞 날짜 결제
+      assert run_pipeline_run(date="2026-09-02", raw=ws.path("raw"), out=ws.path("out")).ok
+      got = totals(ws)
+      assert got.get("2026-09-01") == {"S001": (2, 1500)}, reason("late_data_missed", f"9/1 요약 {got.get('2026-09-01')}")
+accepted_conditions:
+  - 늦게 온 데이터는 이번 입력 폴더만이 아니라 영향 받은 앞 날짜·구간을 다시 계산해야 반영된다 (지금까지 받은 입력 전체, 또는 이번에 나온 날짜만 다시 계산).
+  - 같은 레코드의 사본은 식별자로 하나만 남긴다 (DISTINCT ON·GROUP BY 식별자·dict) — 폴더를 가로질러서도.
+# 공개 테스트 입력 범위 — 재료의 흔한 구현·사유 하나만 놓친 구현(references/data.eng.batch-rerun 손 구현)이 모두 통과해야 하는 공개 테스트를
+# 만들게 (손 구현 관문 ⑫ 의 H⑤ 와 같은 기준). 숨은 요구 장면(다른 날짜·같은 번호·실행 중단)을 공개 입력에서 뺀다.
+public_rules:
+  - 공개 테스트의 PaymentEvent 는 paid_at 날짜(한국 시간)를 그 레코드를 둔 입력 폴더 날짜와 같게 둔다 — 폴더 날짜와 paid_at 날짜가 다른 레코드는 넣지 않는다.
+  - 공개 테스트 입력에는 같은 payment_id 를 두 번 이상 넣지 않는다.
+  - 공개 테스트는 명령을 끝까지 실행한다 — 실행을 멈추는 주입(crash_after_bytes)을 쓰지 않는다.

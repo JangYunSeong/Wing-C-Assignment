@@ -9,6 +9,7 @@ from pydantic import Field, field_validator, model_validator
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.interview_case import KnownIncidentCase
+from task_spec.schemas.template import FailureReason
 
 NeedKind = Literal[
     "stateful_target",
@@ -262,16 +263,8 @@ class MaterialInterface(Schema):
     commands: list[InterfaceCommand] = Field(min_length=1)
     files: list[InterfaceFile] = Field(min_length=1)
     entities: list[InterfaceEntity] = Field(min_length=1)
-    # 공개 테스트 입력 범위 (#256 3단계) — 계약 입력 블록에만 나간다 (계약에 채우지 않고, 명세 입력·명세 저장 키에도 넣지 않는다).
-    # 손 구현 관문 ⑤: 재료의 흔한 구현(손 구현)이 모두 통과해야 하는 공개 테스트 — 숨은 요구 장면을 공개 테스트 입력에 담지 않게.
-    public_rules: list[str] = Field(default_factory=list, max_length=4)
-
-    @field_validator("public_rules")
-    @classmethod
-    def _rules(cls, v: list[str]) -> list[str]:
-        if bad := [r for r in v if not 10 <= len(r.strip()) <= 240]:
-            raise ValueError(f"public_rules 문장은 10~240자: {bad[:1]}")
-        return [r.strip() for r in v]
+    # 공개 테스트 입력 범위는 재료 안내(MaterialGuide.public_rules, incidents/public_v1/hidden/)로 옮겼다 (#256 재료 옮기기) —
+    # 이 파일은 공개 계약에 채워지는 것만 둔다
 
     @model_validator(mode="after")
     def _consistent(self) -> MaterialInterface:
@@ -367,4 +360,49 @@ class ReferenceManifest(Schema):
             raise ValueError(
                 "허용 손 구현이 하나도 없음 — 공개·숨은 테스트의 결함을 가를 기준이 없다"
             )
+        return self
+
+
+class MaterialGuide(Schema):
+    """재료가 정한 숨은 안내 (`incidents/public_v1/hidden/<재료>.yaml`, #256 재료 옮기기) — 생성기 입력 가운데 재료에 묶인 것.
+
+    템플릿(하네스 문서·실패 사유·허용 구현 조건)과 생성기 프롬프트에는 그 스택에서 늘 맞는 일반 규칙만 두고, 한 재료의 함정에 묶인
+    판정 문장·시험법·예시·공개 테스트 입력 범위는 여기 둔다 (starter/material_guide.with_guide 가 빌드의 템플릿에 합친다).
+    2026-11-24 점검: data.eng 빌드 알파 22건이 모두 한 재료라 데이터 템플릿 v1~v3 하네스 문서·사유 how·숨은 테스트 프롬프트에 그 재료의
+    함정(사본·늦은 데이터·날짜 폴더)이 일반 규칙처럼 들어 있었다 — 두 번째 재료에서는 엉뚱한 안내가 된다.
+
+    - failure_reasons: 템플릿 사유와 code 가 같으면 그 사유를 재료 정의(설명·일으키는 법)로 바꾸고, 새 code 면 더한다.
+      재료 feature.reasons 는 템플릿 ∪ 이 목록 안이어야 한다. 같은 code 의 log_patterns 는 템플릿과 같아야 한다 (하네스 표기).
+    - hidden_rules·hidden_example: 숨은 테스트 생성기 입력의 하네스 문서 뒤 '재료 안내' 절 — 숨은 쪽에만 나간다.
+    - accepted_conditions: 허용 구현 생성기의 스택 조건 뒤에 붙는다 — 숨은 요구를 푸는 조건이라 흔한 구현·시작 코드에는 가지 않는다.
+    - public_rules: 공개 테스트 입력 범위 — 계약 계획 입력·공개 테스트 생성기 입력·손 구현 관문의 공개 테스트 수리 요청에 나간다.
+      공개 쪽으로 나가므로 재료의 trigger_terms·leak_terms·stage2_cause_terms·hidden_terms 를 쓰지 않는다.
+    """
+
+    incident_id: str = Field(pattern=r"^pub:[a-z_.]+:[a-z0-9-]+$")
+    failure_reasons: list[FailureReason] = Field(default_factory=list)
+    hidden_rules: list[str] = Field(default_factory=list, max_length=8)
+    hidden_example: str = Field(default="", max_length=4000)
+    accepted_conditions: list[str] = Field(default_factory=list, max_length=6)
+    public_rules: list[str] = Field(default_factory=list, max_length=4)
+
+    @field_validator("hidden_rules", "accepted_conditions")
+    @classmethod
+    def _sentences(cls, v: list[str]) -> list[str]:
+        if bad := [r for r in v if not 10 <= len(r.strip()) <= 400]:
+            raise ValueError(f"문장은 10~400자: {bad[:1]}")
+        return [r.strip() for r in v]
+
+    @field_validator("public_rules")
+    @classmethod
+    def _public(cls, v: list[str]) -> list[str]:
+        if bad := [r for r in v if not 10 <= len(r.strip()) <= 240]:
+            raise ValueError(f"public_rules 문장은 10~240자: {bad[:1]}")
+        return [r.strip() for r in v]
+
+    @model_validator(mode="after")
+    def _unique(self) -> MaterialGuide:
+        codes = [r.code for r in self.failure_reasons]
+        if dup := sorted({c for c in codes if codes.count(c) > 1}):
+            raise ValueError(f"failure_reasons code 가 겹침: {dup}")
         return self

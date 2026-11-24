@@ -22,6 +22,7 @@ from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     FeatureSeed,
     HiddenPlan,
+    MaterialGuide,
     MaterialInterface,
     NodeError,
     PlanContractInputAll,
@@ -55,6 +56,7 @@ from task_spec.starter.contract import (
 from task_spec.starter.header_values import fit_per_request
 from task_spec.starter.hidden_helpers import SETTING_MIN_ROWS, SETTING_PROBE, SETTING_PROBE_ALT
 from task_spec.starter.interface import fit_interface, interface_text, stale_name_problems
+from task_spec.starter.material_guide import contract_rules_text, with_guide
 from task_spec.starter.seed_rows import RESERVED_ROWS, fit_row_targets, fit_seed
 from task_spec.starter.state_rule import fit_state
 from task_spec.starter.templates import Template, restrict_reasons, supports_settings
@@ -105,11 +107,15 @@ def plan_evidence_missing(plan: HiddenPlan, name: str) -> bool:
     return name in plan.harness and (not quote or quote.strip() == NO_EVIDENCE)
 
 
-def for_material(template: Template, seed: FeatureSeed | None) -> Template:
+def for_material(
+    template: Template, seed: FeatureSeed | None, guide: MaterialGuide | None = None
+) -> Template:
     """재료가 선언한 조절값(FeatureSeed.harness)만 필수이고, 지원자가 자료에서 찾을 운영 조건이라 보이는 값 — 명세 자료의 근거
     인용으로 값을 확인한다. 재료가 harness 를 적지 않으면(None) 템플릿 그대로 (예전과 같음).
     2026-11-10 nplus1-d: query_delay_ms·request_timeout_s 가 템플릿에서 안 보이는 값이라 명세의 '쿼리당 11ms·응답 한도 1초' 대신
-    하네스 기본값(20ms·30초)이 들어가, 지연 로딩 흔한 구현(200건 ≈ 8초)도 hc1 을 통과했다."""
+    하네스 기본값(20ms·30초)이 들어가, 지연 로딩 흔한 구현(200건 ≈ 8초)도 hc1 을 통과했다.
+    guide: 재료 숨은 안내 (#256 재료 옮기기) — 재료 사유를 템플릿 사유에 합친 뒤 좁힌다 (빌드 BuildInputs 와 같은 순서)."""
+    template = with_guide(template, guide)
     if seed is None:
         return template
     template = restrict_reasons(
@@ -436,8 +442,11 @@ def plan_input(
         # 재료가 정한 명령·입출력 파일·엔티티 (#256) — 없으면 빈 글. needs_text 처럼 seed_rules(V3 판)·row_rules(V4 판) 둘 다에
         # 붙인다 — 판마다 둘 중 하나만 렌더된다 (for_prompt 가 판의 입력 모델로 거른다)
         + interface_text(interface)
+        + contract_rules_text(template)  # 재료 안내의 공개 테스트 입력 범위 (#256) — 없으면 빈 글
         + forbidden_text(seed, SpecView.from_task(task)),
-        row_rules=row_rules_text(m, seed) + interface_text(interface),
+        row_rules=row_rules_text(m, seed)
+        + interface_text(interface)
+        + contract_rules_text(template),
         interface_rules=interface_rules_text(m),
     )
 
@@ -568,14 +577,15 @@ async def plan_contract(
     seed: FeatureSeed | None = None,
     reviewer_note: str | None = None,
     interface: MaterialInterface | None = None,
+    guide: MaterialGuide | None = None,
 ) -> PlanResult:
-    """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획."""
+    """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획. guide: 재료 숨은 안내 (사유·공개 테스트 입력 범위 — for_material)."""
     res = PlanResult()
     spec = SpecView.from_task(task)
     known = {
         p.name for p in template.manifest.harness_params
     }  # 좁히기 전 — 템플릿에 없는 키는 검사가 말한다
-    template = for_material(template, seed)
+    template = for_material(template, seed, guide)
     manifest = template.manifest
     # 2026-11-07: 템플릿 표기 패턴으로 못 찾으면 LLM 전에 실패시켰는데, 패턴이 한 예시 표현에만 맞아 값이 있는 명세도 막혔다
     # → LLM 이 값 + 근거 인용을 내고 코드가 확인한다 (check_contract). 근거가 "없음"이면 그때 명세 결함.

@@ -37,10 +37,11 @@ from task_spec.schemas.build_record import (
     BuildRecord,
     StarterFile,
 )
-from task_spec.schemas.incident import FeatureSeed, MaterialInterface
+from task_spec.schemas.incident import FeatureSeed, MaterialGuide, MaterialInterface
 from task_spec.schemas.package import VerifySummary
 from task_spec.schemas.provenance import Provenance
 from task_spec.starter.artifacts import merged_flags
+from task_spec.starter.material_guide import guide_ref
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.store import BuildRepo, TaskLabel
 from task_spec.starter.templates import Template
@@ -89,6 +90,8 @@ class ContractResult:
     seed: FeatureSeed | None = None  # 재료의 기능형 칸 — 생성기 입력 그대로 넘긴다
     # 재료가 정한 명령·입출력 파일·엔티티 (#256) — 계약에는 이미 채워져 있다. 입출력 도우미·손 구현 대조(#256 2·3단계)가 쓴다
     interface: MaterialInterface | None = None
+    # 재료 숨은 안내 (#256 재료 옮기기) — 계약 단계와 같은 것을 빌드 입력(BuildInputs)에 넘긴다
+    guide: MaterialGuide | None = None
     avoid_terms: tuple[str, ...] = ()
     # 계약 단계의 승인자 표시 (plan_contract flags — '운영 값 후보가 여럿', 근거 조각 등). 예전에는 운영 경로가 버려 승인 화면에
     # 나오지 않았다 (평가 러너에서만 보였다)
@@ -242,6 +245,7 @@ async def run_job(
             BuildOutcome(
                 template_ref=i.template_ref,
                 manifest_sha256=i.manifest_sha256,
+                guide_sha256=guide_ref(c.guide),  # 재료 숨은 안내 지문 (#256)
                 tree_sha256=i.tree_sha256,
                 grader_sha256=i.grader_sha256,
                 contract=c.contract,

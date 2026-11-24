@@ -41,6 +41,7 @@ from task_spec.spec.incidents import (
     load_incidents,
     load_interfaces,
 )
+from task_spec.starter.material_guide import load_guides
 from task_spec.starter.verify import verifier_for
 from task_spec.starter.verify.workspace import write_overlay as _write
 
@@ -120,7 +121,12 @@ async def run_one(
         }
         return await _tests(row, task, contract, plan, template, inc, run_dir, kw, t0, stop_after)
     interface = load_interfaces(ROOT / "incidents" / "public_v1").get(inc.incident_id)  # #256
-    res = await plan_contract(task, template, seed=inc.feature, interface=interface, **kw)
+    guide = load_guides(ROOT / "incidents" / "public_v1").get(
+        inc.incident_id
+    )  # #256 재료 숨은 안내
+    res = await plan_contract(
+        task, template, seed=inc.feature, interface=interface, guide=guide, **kw
+    )
     row["contract"] = {
         "ok": res.ok,
         "first_ok": res.ok and not res.first_problems,
@@ -180,6 +186,7 @@ async def _tests(
         template=template,
         seed=inc.feature,
         avoid_terms=tuple(inc.avoid_terms),
+        guide=load_guides(ROOT / "incidents" / "public_v1").get(inc.incident_id),  # #256
     )
     use_public = template.manifest.public_helper is not None
     results = await asyncio.gather(  # 테스트 먼저 — 공개·숨은 테스트는 서로 보지 않고 따로

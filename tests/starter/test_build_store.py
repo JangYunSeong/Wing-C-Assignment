@@ -533,6 +533,7 @@ def test_build_columns_are_exactly_what_a_row_mapping_reads() -> None:
         "template_ref": o.template_ref,
         "template_sha256": o.template_sha256,
         "manifest_sha256": o.manifest_sha256,
+        "guide_sha256": o.guide_sha256,
         "tree_sha256": o.tree_sha256,
         "grader_sha256": o.grader_sha256,
         "contract": o.contract.model_dump(),

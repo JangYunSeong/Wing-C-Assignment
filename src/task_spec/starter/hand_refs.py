@@ -48,9 +48,6 @@ class HandReferences:
     files: Mapping[str, tuple[GeneratedFile, ...]]
     folder: str = ""
     stale: str = ""  # 관문을 끈 이유 — 비어 있으면 돈다 (checked_against)
-    public_rules: tuple[
-        str, ...
-    ] = ()  # 인터페이스의 공개 테스트 입력 규칙 — 공개 테스트 수리 요청에 붙인다
 
     @property
     def refs(self) -> list[HandReference]:
@@ -70,15 +67,13 @@ class HandReferences:
         """손 구현은 인터페이스 이름·위치·형식대로 실행된다 — 확인한 판과 지금 인터페이스가 다르면 관문을 끈다."""
         if interface is None:
             return replace(self, stale="재료 인터페이스가 없음 (손 구현은 인터페이스대로 실행된다)")
-        rules = tuple(interface.public_rules)
         if interface_ref(interface) != self.manifest.interface_sha256:
             return replace(
                 self,
                 stale="손 구현을 확인한 인터페이스 판과 지금 인터페이스가 다름 — 손 구현을 다시 확인하고 "
                 f"references/{self.folder}/{MANIFEST} 의 지문을 고칠 것",
-                public_rules=rules,
             )
-        return replace(self, stale="", public_rules=rules)
+        return replace(self, stale="")
 
 
 def load_references(root: Path) -> dict[str, HandReferences]:

@@ -1,0 +1,93 @@
+# 채점 하네스 API (data/python-duckdb v4)
+
+P1 내부 문서다 (`gen_hidden` 입력에 들어감). 채점용 이미지에만 있고 응시용 이미지에는 없다.
+
+숨은 테스트는 **숨은 요구가 지켜졌는지**를 배치 작업의 공개 계약(명령·옵션·종료 코드·입력 파일·출력 파일)으로 확인하는 pytest 테스트다.
+케이스마다 임시 작업 폴더에 **작은 입력 파일을 직접 쓰고**, 작업을 별도 프로세스로 실행한 뒤, 출력 파일을 계약 형식으로 읽어 판정한다.
+실행 순서(날짜 순서·다시 실행·쓰기 중 크래시)는 테스트가 정한다 — 실제 시간 지연이나 무작위에 기대지 않는다.
+이 문서 뒤에 **'재료 안내'** 절이 붙어 있으면 이 과제 재료의 숨은 요구를 시험하는 법(장면·입력 배치·예시)이다 — 아래 일반 규칙과 함께 지킨다.
+
+## 케이스 파일
+
+- 위치 `grading/cases/test_<케이스 id>_<이름>.py`. **HiddenPlan 케이스 하나 = 파일 하나**, 테스트 함수 이름·모듈 설명(docstring) 첫 줄에 케이스 id(`hc1` …).
+- import 는 하네스(`from harness.grader import …`), **이 과제의 계약 도우미(`from cases.contract import …`)**, pytest·표준 라이브러리만.
+  **지원자 구현(`pipeline/…`)을 import 하지 않는다** — 공개 계약으로만 판정한다. 조절값 파일(`grading/grader-params.json`)은 쓰지 않는다.
+
+## 계약 도우미 (`from cases.contract import …`)
+
+빌드 파이프라인이 공개 계약에서 만든다 (이 문서 끝에 붙은 `contract.py` — 쓰지 않는다). 명령·옵션·데이터 모양을 손으로 쓰지 않고 이것을 쓴다.
+- `run_<명령>(…옵션…, crash_after_bytes=None, timeout=None)` → `JobResult` — 계약의 명령을 계약의 옵션으로 실행 (옵션 이름은 계약 필드 이름 그대로).
+- 데이터 모양 `TypedDict` (계약 entities) — 입력 레코드를 만들 때 필드 이름을 틀리지 않게.
+- **입력 쓰기 `write_<입력>(ws, 행들, *, 날짜=…, 폴더=기본값, name=…)` · 출력 읽기 `read_<출력>(ws, *, 폴더=기본값)`** — 계약의 입출력 파일(위치·형식·행 엔티티)에서
+  만들어진다 (있을 때만 — 재료가 파일을 정한 과제). **있으면 이것을 쓴다** — 파일 위치·형식을 손으로 쓰지 않는다. 폴더 인자는 작업 폴더 기준 상대 경로이고
+  기본값이 옵션 이름이다 (`raw`·`out`) — 명령에는 `ws.path("raw")` 처럼 넘긴다. 같은 날짜 폴더에 파일을 하나 더 쓰려면 `name` 을 바꾼다.
+  출력 읽기는 파티션 출력이면 **모든 파티션을 `{값: 행들}`** 로 돌려준다 (출력 폴더가 없으면 빈 dict) — "출력 전체를 비교한다"를 그대로 하는 함수다.
+  없을 때만 아래 하네스의 `ws.write_…`·`ws.read_…`·`ws.partitions` 로 계약의 위치 그대로 쓴다.
+
+## 하네스 (`from harness.grader import …`)
+
+**작업 폴더 — `ws = workspace()`** (케이스마다 새 임시 폴더, 이름은 과제를 드러내지 않음)
+- 입력 쓰기: `ws.write_jsonl(상대경로, 행들)` · `ws.write_csv(상대경로, 행들, columns=None)`(머리글은 열 이름으로 늘 씀) · `ws.write_parquet(상대경로, 행들, {"열": "string|int|float|bool|date|timestamp"})` · `ws.write_text` · `ws.write_json`
+- 경로: `ws.path("raw")`(만들지 않음 — 출력 폴더처럼 작업이 만들 곳) · `ws.dir("raw")`(만듦) — `ws / "raw"`·`str(ws)`·`f"{ws}/raw"` 도 같은 작업 폴더 경로다. 명령에는 늘 이렇게 만든 경로를 넘긴다 (문자열 `"raw"` 그대로는 저장소 루트 기준이 된다)
+- 출력 읽기: `ws.read_parquet(파일 또는 폴더)`(폴더면 하위 파티션 폴더 `date=…/` 까지 `*.parquet` 모두 — 읽는 쪽이 보는 것과 같게, 이름이 `_`·`.` 로 시작하는 파일·폴더는 뺌) · `ws.read_jsonl` · `ws.read_csv` · `ws.read_json`
+  읽기의 뜻은 형식마다 같다: **없는 경로는 `FileNotFoundError`**(없음과 빈 결과를 가른다 — 출력이 아직 없는지 볼 때는 `ws.exists(경로)`), **깨진 파일은 예외**(반쯤 쓴 CSV — 칸 수가 머리글과 다른 줄 — 는 `ValueError`, JSONL 은 `JSONDecodeError`, parquet 은 읽기 오류), 있는 폴더에 데이터 파일이 없으면 빈 목록.
+  · `ws.partitions(상대경로, "date")`(`<경로>/date=<값>/` 의 값들) · `ws.snapshot(상대경로)`(파일마다 해시 — 실패 전후 비교) · `ws.files(폴더)`(하위 폴더까지 파일 `Path` 목록)
+- 깨진 출력 파일을 읽으면 예외가 난다 — 크래시 뒤 화면을 볼 때는 `try/except` 로 "읽을 수 없음"을 값으로 바꾸고, **그 값이 보이면 실패**로 단언한다 (예외로 끝내지 않는다 — 아래 판정 규칙 "크래시 뒤").
+
+**실행 결과 — `JobResult`**: `code`(종료 코드, 시간 초과면 None, 시그널로 죽으면 음수) · `ok`(code == 0) · `crashed` · `timed_out` · `stdout` · `stderr` · `last_error()`
+- 쓰기 중 크래시: `run_…(…, crash_after_bytes=128)` — **파일 하나**가 그 크기를 넘으려는 쓰기에서 프로세스가 죽는다 (파일마다 따로, 합이 아님 · DuckDB·pyarrow 쓰기도 걸림 · 정리 코드도 돌지 않음 — 실제 장애처럼). 출력 파일이 모두 그보다 작으면 죽지 않는다 — 그때 작업이 끝까지 성공하면 하네스가 `CrashNotTriggered` 를 낸다(케이스가 시험하려던 실패가 일어나지 않음). 출력이 상한보다 충분히 커지는 입력으로 쓴다.
+
+**실패 사유 — `reason(code, description)`**: `assert 값 == 기대, reason('<사유 코드>', '무엇이 틀렸는지')`.
+코드는 아래 숨은 테스트 입력의 "실패 사유 코드" 목록 안의 것만. **조절값 — `params.int(name, fallback)`·`params.str`·`params.list`**.
+
+## 판정 규칙
+
+- **기대 값은 계약의 정의에서만**: 입력 레코드로 정의대로 계산한 값을 테스트 안에서 만들어 비교한다 (작은 입력이라 손으로 셀 수 있게).
+- **출력 전체를 비교한다**: 모든 날짜(파티션)를 읽어 정의대로 계산한 전체와 비교한다 — 한 날짜만 보면 다른 날짜에 잘못 들어간 값을 놓친다.
+- **판정 전에 작업이 동작했는지 먼저 확인한다** — 정상 입력으로 실행해 종료 코드 0 과 출력이 정의대로인 것을 (사유 없이) 단언한 뒤 숨은 요구를 시험한다.
+  동작 확인 실행에는 숨은 요구의 장면(케이스가 시험할 입력·쓰기 중 크래시 같은 실행 조건)을 넣지 않는다 — 넣으면 흔한 구현이 사유 없는 단언에서 떨어져 의도한 사유가 남지 않는다.
+  숨은 요구의 장면은 동작 확인 다음 실행에 넣고, 그 결과를 사유를 붙인 단언으로 본다.
+  "출력이 없다"만 단언하면 아무것도 안 하는 시작 코드도 통과한다.
+- **의도한 사유는 그 실패만 걸리는 단언에 붙인다.** 한 케이스에 다른 숨은 요구를 섞지 않는다 — 다른 요구를 놓친 구현이 이 사유로 떨어진다.
+  케이스의 입력은 **그 케이스의 숨은 요구만 어겨도 결과가 드러나게** 둔다 — 다른 요구를 지키는지에 따라 그 입력이 보이고 안 보이는 배치는 피한다.
+- **공정하게**: 허용 설계(숨은 테스트 입력의 허용 설계 목록)는 모두 통과해야 한다. 출력의 파일 이름·개수·쓰는 방식은 재지 않고,
+  계약이 정한 읽는 방법으로 읽은 **값**만 비교한다.
+- **입력이 날짜 폴더로 쌓이는 계약이면 정상 흐름은 받은 날짜 순서대로 하루씩 실행한다.** 날짜 폴더를 썼으면 그 날짜로 한 번 실행한다 — 여러 날짜 폴더를
+  써 두고 마지막 날짜로 한 번만 실행해 앞 날짜 출력까지 기대하지 않는다 (받은 날짜만 처리하는 허용 설계가 떨어질 수 있다. 정적 검사가 되돌려 보낸다).
+  **입력은 받은 순서대로** — 날짜 폴더는 그 날짜를 실행하기 직전에 쓴다. 실행 날짜보다 뒤 날짜 폴더를 미리 두지 않는다 (아직 받지 않은 입력이라,
+  공개 계약에 없는 '뒤 폴더는 읽지 않는다'를 시험하게 된다 — 받은 폴더를 모두 읽는 허용 구현이 떨어진다).
+- **크래시 뒤**: 실패한 실행 뒤 읽는 쪽이 보는 출력은 **직전 성공 상태 그대로**여야 한다 — 직전에 없던 날짜는 없음, 있던 날짜는 직전 값.
+  읽을 수 없는 파일(읽기 예외 — 값으로 바꿀 때까지 한 `try` 로)·반쯤 쓴 값·빈 결과가 보이면 그것이 실패(partial_output_visible)다. 직전에 없던 날짜는 `ws.exists(…)` 가 거짓이어도 통과다. 이어서 같은 날짜를 다시 실행하면 완전한 값.
+- 테스트끼리 서로 독립 — 케이스마다 `workspace()` 를 새로 만든다.
+
+## 예시 (모양만 — 과제마다 계약에 맞춘다)
+
+```python
+"""hc1 같은 날짜를 같은 입력으로 다시 실행해도 출력이 그대로다"""
+
+from harness.grader import reason, workspace
+from cases.contract import Order, read_daily_totals, run_pipeline_run, write_orders
+
+
+def totals(ws) -> dict:
+    """출력 전체 — {날짜: {상품: 수량}} (파티션 안 여러 파일·행은 더한다)."""
+    out: dict = {}
+    for day, rows in read_daily_totals(ws).items():
+        for r in rows:
+            out.setdefault(day, {})
+            out[day][r["item_id"]] = out[day].get(r["item_id"], 0) + r["quantity"]
+    return out
+
+
+def test_hc1_rerun_keeps_the_output() -> None:
+    ws = workspace()
+    write_orders(ws, [Order(order_id="O1", item_id="A", quantity=2)], date="2026-09-01")
+    r = run_pipeline_run(date="2026-09-01", raw=ws.path("raw"), out=ws.path("out"))
+    assert r.ok, r.last_error()
+    assert totals(ws) == {"2026-09-01": {"A": 2}}  # 동작 확인 (사유 없이)
+    again = run_pipeline_run(date="2026-09-01", raw=ws.path("raw"), out=ws.path("out"))  # 같은 입력·같은 옵션으로 한 번 더
+    assert again.ok, again.last_error()
+    got = totals(ws)
+    # 사유 코드는 그 케이스의 intended_reason — 이 예시는 케이스의 사유가 rerun_not_idempotent 일 때
+    assert got == {"2026-09-01": {"A": 2}}, reason("rerun_not_idempotent", f"다시 실행 뒤 {got}")
+```

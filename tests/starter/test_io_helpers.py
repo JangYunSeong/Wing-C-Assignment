@@ -250,13 +250,14 @@ def test_helper_folders_are_workspace_paths_but_commands_need_ws_path() -> None:
     assert len(got) == 1 and "write_payment_events(day=…)" in got[0]
 
 
-def test_template_v3_documents_the_helpers() -> None:
-    assert DE.manifest.ref == "data/python-duckdb@v3"
+def test_template_documents_the_helpers() -> None:
+    """v3 부터 하네스 문서가 도우미를 먼저 쓴다. v4 는 예시를 재료와 무관한 모양으로 (재료 예시는 재료 숨은 안내 — #256 재료 옮기기)."""
+    assert DE.manifest.ref == "data/python-duckdb@v4"
     harness_doc = (DE.hidden / "HARNESS.md").read_text("utf-8")
     public_doc = (DE.hidden / "PUBLIC.md").read_text("utf-8")
     assert "write_<입력>(ws, 행들" in harness_doc and "read_<출력>(ws" in harness_doc
-    assert "read_daily_sales(ws)" in harness_doc and "write_payments(ws" in harness_doc
-    assert "write_<입력>(ws, 행들" in public_doc and "read_daily_sales(ws)" in public_doc
+    assert "read_daily_totals(ws)" in harness_doc and "write_orders(ws" in harness_doc
+    assert "write_<입력>(ws, 행들" in public_doc and "read_daily_totals(ws)" in public_doc
 
 
 def test_odd_locations_still_compile_or_get_no_helper() -> None:

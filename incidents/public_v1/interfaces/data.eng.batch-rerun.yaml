@@ -55,10 +55,4 @@ entities:
       - {name: store_id, type: string, constraints: "매장"}
       - {name: orders, type: integer, constraints: "결제 시각(한국 시간)의 날짜가 파티션 날짜인 그 매장의 결제 건수"}
       - {name: sales_amount, type: integer, constraints: "그 결제들의 금액 합 (원)"}
-# 공개 테스트 입력 범위 (#256 3단계) — 계약 입력 블록에만 나간다 (계약·명세에는 넣지 않고, 명세 저장 키에서도 뺀다).
-# 재료의 흔한 구현·사유 하나만 놓친 구현(references/data.eng.batch-rerun 손 구현)이 모두 통과해야 하는 공개 테스트를 만들게 —
-# 손 구현 관문 ⑫ 의 H⑤ 와 같은 기준. 위 '지킬 것'의 낱말 규칙을 그대로 따른다.
-public_rules:
-  - 공개 테스트의 PaymentEvent 는 paid_at 날짜(한국 시간)를 그 레코드를 둔 입력 폴더 날짜와 같게 둔다 — 폴더 날짜와 paid_at 날짜가 다른 레코드는 넣지 않는다.
-  - 공개 테스트 입력에는 같은 payment_id 를 두 번 이상 넣지 않는다.
-  - 공개 테스트는 명령을 끝까지 실행한다 — 실행을 멈추는 주입(crash_after_bytes)을 쓰지 않는다.
+# 공개 테스트 입력 범위(public_rules)는 재료 숨은 안내 hidden/data.eng.batch-rerun.yaml 로 옮겼다 (#256 재료 옮기기) — 이 파일은 공개 계약에 채워지는 것만.
