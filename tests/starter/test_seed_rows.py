@@ -10,18 +10,24 @@ from pydantic import ValidationError
 
 from task_spec.schemas import HiddenPlan, TaskContract
 from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.auth_rule import fit_auth
 from task_spec.starter.hidden_helpers import row_use_consts
 from task_spec.starter.seed_rows import (
+    PUBLIC_PER_GROUP,
     RESERVED_ROWS,
     allocate_rows,
     case_rows_problems,
     fit_seed,
+    peak_reasons,
     public_free,
+    public_per_group,
     row_use_problems,
     seed_markdown,
     seed_problems,
+    unique_fields,
 )
 from task_spec.starter.templates import load_template
+from tests.starter.test_auth_issued import _session
 from tests.starter.test_contract import _check, _contract, _manifest, _plan
 from tests.starter.test_templates import JAVA
 
@@ -43,12 +49,22 @@ def _with_seed(*seeds: dict[str, Any]) -> TaskContract:
 
 
 def _cases(*cases: tuple[str, list[dict[str, Any]]]) -> HiddenPlan:
+    """버스트 행이 없는 케이스는 동시 요청이 필요 없는 사유로 — 기본 케이스의 pool_acquire_timeout 을 그대로 두면 '동시 요청 사유인데
+    버스트 행 없음'(case_rows_problems)에 걸린다."""
     base = _plan()["cases"][0]
     return HiddenPlan.model_validate(
         _plan(
             harness={"pool_size": 8, "concurrency": 32, "bursts": 3, "query_delay_ms": 20},
             cases=[
-                base | {"case_id": cid, "ac_id": f"h{n}", "data": data}
+                base
+                | {
+                    "case_id": cid,
+                    "ac_id": f"h{n}",
+                    "data": data,
+                    "intended_reason": base["intended_reason"]
+                    if any(d.get("burst") for d in data)
+                    else "record_mismatch",
+                }
                 for n, (cid, data) in enumerate(cases, 1)
             ],
         )
@@ -559,3 +575,99 @@ def test_one_answer_to_what_a_response_lists() -> None:
     e["responses"][0] |= {"body": [{"name": "id", "type": "integer", "refs": ["r1"]}]}
     contract = TaskContract.model_validate(c)
     assert response_list_target(contract.endpoints[1], contract) is None
+
+
+# ── 고유 칸 (#308 버그 A) · 동시 요청 사유의 버스트 행 (#308 버그 B) ─────────────
+
+
+def _login_contract(**login_row: Any) -> TaskContract:
+    """로그인(issued) 엔티티 Member(m3 — username·password·nickname)에 공개 테스트 pt1 이 로그인할 행을 쓰는 계약 (가상).
+    운영 세션 과제(#308)의 모양 — 공개 테스트가 쓰는 로그인 행을 코드가 시드 끝에 덧붙인다."""
+    c = fit_auth(TaskContract.model_validate(_session()))[0].model_dump()
+    c["public_tests"][0]["rows"] = [{"entity_id": "m3", "values": login_row}]
+    return TaskContract.model_validate(c)
+
+
+def test_unique_fields_are_marked_ones_and_login_identifiers() -> None:
+    """고유 칸 = 제약 글이 고유를 말하는 칸 + 로그인 엔티티의 식별 칸. 비밀번호는 여러 행이 같아도 된다."""
+    c = _login_contract(username="user-1", password="pass-1")
+    assert unique_fields(c, "m3") == {"username"}
+    assert unique_fields(c, "m1") == frozenset()
+    assert public_per_group(c, "m3", {"username": "user-1", "password": "pass-1"}) == 1
+    assert public_per_group(c, "m3", {"password": "pass-1"}) == PUBLIC_PER_GROUP
+    d = c.model_dump()
+    fields = d["entities"][0]["fields"]
+    fields.append(
+        {"name": "orderNo", "type": "string", "constraints": "주문 번호 — 고유", "refs": ["r1"]}
+    )
+    fields.append({"name": "memo", "type": "string", "constraints": "중복 허용", "refs": ["r1"]})
+    fields.append({"name": "code", "type": "string", "constraints": "UNIQUE", "refs": ["r1"]})
+    assert unique_fields(TaskContract.model_validate(d), "m1") == {"orderNo", "code"}
+
+
+def test_public_rows_for_a_login_are_one_row() -> None:
+    """#308 알파 1·3: 공개 테스트 pt1 이 로그인할 행(username user-1·password pass-1)을 3행 덧붙여, 'username 으로 찾기' 구현이 500 으로
+    떨어지고(알파 1) USERS(USERNAME) 고유 인덱스 위반으로 시작 코드가 기동하지 못했다(알파 3). 고유 칸이 든 처음 값은 1행만 — 작은 id
+    쪽이면 그 행이 공개 몫이다."""
+    java = load_template(JAVA).manifest
+    contract = _login_contract(username="user-1", password="pass-1")
+    fitted, fplan, notes = fit_seed(contract, _cases(("hc1", [_rows(2, status="READY")])), java)
+    member = next(s for s in fitted.seed if s.entity_id == "m3")
+    login = [g for g in member.groups if g.values.get("username") == "user-1"]
+    assert [(g.first, g.last) for g in login] == [(7, 7)]  # fit_auth 의 로그인 행 6 다음 한 행
+    assert not seed_problems(fitted)
+    assert _has(notes, "공개 테스트 pt1", "고유 칸(username)이라 1행")
+    free = {(e, v.get("username")): ids for e, v, ids in public_free(fitted, fplan)}
+    assert free[("m3", "user-1")] == [7]  # 작은 id(10행) 안이어도 그 행이 공개 몫
+    # 공개 몫을 채우는 단계(_fit_public)도 고유 칸 그룹은 덧붙이지 않는다 — 같은 username 의 행이 둘이 되지 않는다
+    names = [
+        g.values["username"]
+        for g in member.groups
+        if "username" in g.values
+        for _ in range(g.first, g.last + 1)
+    ]
+    assert len(names) == len(set(names))
+
+
+def test_llm_groups_and_hidden_data_must_not_repeat_a_unique_value() -> None:
+    """LLM 이 시드 범위나 숨은 케이스 처음 값에 고유 칸을 같은 값으로 여러 행 두어도 같은 실패가 난다 — 계약 단계에서 재요청."""
+    d = _login_contract(username="user-1", password="pass-1").model_dump()
+    member = next(s for s in d["seed"] if s["entity_id"] == "m3")
+    member["groups"][0]["values"]["username"] = "same"  # m3 범위 1~5 가 모두 username=same
+    contract = TaskContract.model_validate(d)
+    assert _has(seed_problems(contract), "시드 m3 범위 1~5", "고유 칸 username", "5행")
+    plan = _cases(("hc1", [_rows(3, entity="m3", username="x")]))
+    problems = case_rows_problems(contract, plan, load_template(JAVA).manifest)
+    assert _has(problems, "숨은 케이스 hc1 data", "고유 칸 username", "3행")
+
+
+def test_peak_reasons_need_burst_rows() -> None:
+    """#308 알파 1: pool_acquire_timeout 케이스 data 가 모두 burst=false 라 hc1 이 Burst.fire(1, …) 한 건이 됐고, 풀이 고갈될 수 없으니
+    흔한 구현이 매 회차 통과했다. 성립 조건이 동시 요청 수(burst_rows)를 쓰는 사유는 버스트 행이 있어야 한다 — 계약 단계에서 재요청."""
+    java = load_template(JAVA).manifest
+    assert peak_reasons(java) == {"pool_acquire_timeout": ["concurrency"]}
+    assert peak_reasons(load_template("data/python-duckdb").manifest) == {}
+    contract = _with_seed(TWO_GROUPS)
+    base = _plan()["cases"][0]
+
+    def plan(reason: str, *data: dict[str, Any]) -> HiddenPlan:
+        case = base | {
+            "case_id": "hc1",
+            "ac_id": "h1",
+            "intended_reason": reason,
+            "data": list(data),
+        }
+        harness = {"pool_size": 8, "concurrency": 32, "bursts": 3, "query_delay_ms": 20}
+        return HiddenPlan.model_validate(_plan(harness=harness, cases=[case]))
+
+    single = plan("pool_acquire_timeout", _rows(2, status="READY"))
+    assert _has(
+        case_rows_problems(contract, single, java),
+        "hc1",
+        "pool_acquire_timeout 는 동시 요청으로만 재현",
+        "버스트 행이 없음",
+        "concurrency",
+    )
+    burst = plan("pool_acquire_timeout", _rows(96, burst=True, status="READY"))
+    assert not case_rows_problems(contract, burst, java)
+    assert not case_rows_problems(contract, plan("request_timeout", _rows(2, status="READY")), java)

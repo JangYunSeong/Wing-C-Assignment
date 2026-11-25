@@ -32,10 +32,10 @@ from task_spec.starter.calibrate import (
 from task_spec.starter.repair import MATERIAL_VERDICT, RepairPlan, assign
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template, load_template
-from tests.starter.test_generate import D1, _inputs
+from tests.starter.test_generate import D1, _files, _inputs
 from tests.starter.test_repair import MISSED, OVERLAYS, PLAN2, PROMPTS, _llm, _report, _run, _t
+from tests.starter.test_static_check import CASES, HC1, PLAN
 from tests.starter.test_static_check import JAVA as JAVA_V1
-from tests.starter.test_static_check import PLAN
 
 JAVA = "backend/java-spring-boot3-jpa"
 V4 = load_template(JAVA, 4).manifest
@@ -311,8 +311,26 @@ def no_variant_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(build_mod, "_variant_gate", nothing)
 
 
+# 보정 칸이 있는 판의 숨은 케이스는 하네스 문서대로 지연 값을 읽어 켠다 — 읽지 않으면 정적 검사가 숨은 테스트를 다시 요청한다
+# (static_check.case_applied_tunes, #308 팩트체크)
+HIDDEN_DELAY = _files(
+    (
+        f"{CASES}/OrderStatusBurstTest.java",
+        HC1.replace(
+            '        int n = GraderParams.intValue("concurrency", 32);',
+            '        GraderJdbcHarness.queryDelayMs = GraderParams.longValue("query_delay_ms", 20);\n'
+            '        int n = GraderParams.intValue("concurrency", 32);',
+        ).replace(
+            "import com.example.service.grading.Burst;",
+            "import com.example.service.grading.Burst;\n"
+            "import com.example.service.grading.GraderJdbcHarness;",
+        ),
+    )
+)
+
+
 async def _loop(verifier: QueueVerifier, max_rounds: int = 3) -> tuple[Any, Any]:
-    llm, backend = _llm()
+    llm, backend = _llm(gen_hidden=[HIDDEN_DELAY])
     hidden_plan = PLAN.model_copy(update={"harness": {"pool_size": 8, "concurrency": 32}})
     out = await build_and_repair(
         _inputs(template=_tuned(), plan=hidden_plan),
