@@ -1335,6 +1335,7 @@ async def _build_and_repair(
                 regen_log=out.regen_log,
                 passed_before=out.passed_before,
                 new_tests=new_api_tests(b.contract),
+                contract=b.contract,
             )
             # 조절값 보정 (#301 PR 2) — 다시 검증할 회차가 남아 있을 때만 (보정한 값은 다음 회차의 전체 검증이 판정한다, ③)
             tunable = _calibratable(out, b, verifier, report) if round_no < max_rounds else ()
