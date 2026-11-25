@@ -62,7 +62,7 @@ def test_a_material_that_may_not_reproduce_is_flagged_with_what_is_missing() -> 
         _analysis(reproducible="no", split_params=[], gaps=["요청 하나의 DB 문장 수"]), JAVA, SEED
     )
     assert flags == [
-        f"{FLAG}빌드 하네스로 재현되지 않을 수 있음 — 요청마다 연결을 쥔 채 두 번째 연결을 기다려 동시 요청이 풀보다 많으면 "
+        f"{FLAG}빌드 하네스로 재현 불가 가능성 있음 — 요청마다 연결을 쥔 채 두 번째 연결을 기다려 동시 요청이 풀보다 많으면 "
         "모두 멈춤 (사유 pool_acquire_timeout, 갈림 조절값 없음) · 빠진 정보: 요청 하나의 DB 문장 수"
     ]
     unsure = analysis_flags(_analysis(reproducible="unsure"), JAVA, SEED)
@@ -139,7 +139,7 @@ async def test_generation_flags_a_material_that_may_not_reproduce(analysis_sessi
     calls = len(session.backend.prompts)
     analysis = _analysis(reproducible="no", gaps=["요청 하나의 DB 문장 수"])
     spec = await _generate(session, Completion(analysis.model_dump_json()))
-    assert any(f.startswith(FLAG) and "재현되지 않을 수 있음" in f for f in spec["review_flags"])
+    assert any(f.startswith(FLAG) and "재현 불가 가능성 있음" in f for f in spec["review_flags"])
     sent = session.backend.prompts[-1]  # 재료 분석 — 가명화한 재료 블록만 간다
     assert "재료:" in sent and FACTS["naive_fix"] in sent and "가상테크" not in sent
     assert len(session.backend.prompts) > calls

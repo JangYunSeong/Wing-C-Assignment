@@ -160,6 +160,12 @@ P1 쪽 (구현됨)
   기준 답안 블록(`known_cases_block`)은 인터뷰 공고 자신의 기능형 생성 입력(`seed_block`)에만 넣고 이슈형 `incident_block` 에는 넣지 않는다 —
   회사 사례 모음으로 다른 공고가 써도 채점 근거가 생성 프롬프트로 가지 않게(`DraftContext.with_known_answers` 는 인터뷰 생성기만 켠다).
   무거운 생성기(build_common → draft_feature_task → 요청 글 → 슬롯)는 `TaskMaker` 로 묶어 테스트는 가짜로 바꾼다 — 실제 경로는 D2 평가에서.
+  - **재료 재현 분석 (2026-11-25, #301).** 인터뷰 사례로 기능형 재료를 새로 만들 때(seed 단계, `interview_feature_seed` 뒤) `analyze_material` 이
+    그 재료가 빌드 하네스에서 재현되는지 짚는다 — 공개 재료를 그대로 쓰면 부르지 않는다. 입력은 가명화한 재료 블록(제목·조직·출처 제외, 저장본 검사
+    `stored_json`)과 직군 템플릿 정보(`interview/task.template_json` — 템플릿 CURRENT). 재현 가능이 '예'가 아니거나, 템플릿에 없는 이름을 쓰거나,
+    재료 사유와 분석 사유가 다르면 과제 검토 표시('재료 재현 분석: …')로 남기고 승인을 막지 않는다. 분석이 실패해도 과제는 만들고 고정 문구를 남긴다.
+    표시는 `InterviewGeneration.seed_flags` 로 생성 마무리까지 넘겨 과제 review_flags 에 합친다. 프롬프트 CURRENT 가 없으면 건너뛴다.
+    코드 `interview/material_analysis.py`, 평가 `eval/interview/run_material_analysis.py` — 기록 `prompts/analyze_material/PROMOTIONS.md`.
   - **보이는 글 검사(결정적).** 과제 JSON 전체에서 채점·승인용 칸(유지할 구조·함정·관찰·행동 기준·숨김 수용 기준·허용 설계·id)만 빼고
     전부 본다 — 확장 슬롯·2단계·면접 확인 질문 포함, 새 칸은 기본 검사 대상. 짚은 질문의 답(지원자가 정확히 물으면 그대로 준다)도 본다.
     기준 답안 조각(공백·문장부호 빼고 14자)이 있으면 '기준 답안 누설', 가명화 토큰이 남으면 '토큰 노출' 표시 — 공통 과제는 지원자에게
