@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: service
+  jpa:
+    hibernate:
+      ddl-auto: none   # 스키마는 schema.sql 로 관리한다
+  sql:
+    init:
+      mode: always

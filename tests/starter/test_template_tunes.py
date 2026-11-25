@@ -211,3 +211,31 @@ def test_guide_problems_flag_tunes_that_are_not_hidden_params() -> None:
     assert any("tunes pool_size 이 보이는 조절값" in p for p in probs), probs
     ok = bad.model_copy(update={"failure_reasons": [_pool_reason()]})
     assert guide_problems(ok, incident, load=lambda ref: V4) == []
+
+
+# ── 템플릿 v5 ─────────────────────────────────────────────────────────
+
+
+def test_java_v5_adds_only_the_unique_key_claim_stack_condition() -> None:
+    """v5 = v4 + 허용 구현 스택 조건 한 항목 (유일 키 충돌로 중복 막기). 재시도 중복 알파 두 번 모두 허용 구현 d2 가 이 패턴에서 실패했다
+    — 11-25 는 직접 정한 @Id 의 save = merge 로 확인, 11-14 는 EntityManager 충돌 예외 종류로 보인다 (로그로 단정하지 않음).
+    세 사실을 한 항목에 함께 둔다. 그 밖은 v4 와 같다."""
+    v5 = load_template(JAVA, 5)
+    assert check_template(v5) == [] and v5.manifest.tune_problems() == []
+    extra = [c for c in v5.manifest.stack_conditions if c not in V4.manifest.stack_conditions]
+    assert len(extra) == 1
+    assert len(v5.manifest.stack_conditions) == len(V4.manifest.stack_conditions) + 1
+    for fact in (
+        "merge",
+        "EntityManager.persist",
+        "DataIntegrityViolationException",
+        "ConstraintViolationException",
+        "새 트랜잭션",
+    ):
+        assert fact in extra[0], fact
+    same = {"version", "stack_conditions"}
+    assert V4.manifest.model_dump(exclude=same) == v5.manifest.model_dump(exclude=same)
+    for sub in ("project", "hidden"):
+        assert v5.files(sub) == V4.files(sub)
+        for rel in v5.files(sub):
+            assert (v5.root / sub / rel).read_bytes() == (V4.root / sub / rel).read_bytes(), rel
