@@ -129,7 +129,7 @@ async def test_no_window_when_the_accepted_design_fails_where_the_naive_does() -
         1000,
         500,
     ]
-    assert "2배 창이 없음" in cal.verdict() and "connection_timeout_ms: 500, 250" in cal.verdict()
+    assert "2배 창 없음" in cal.verdict() and "connection_timeout_ms: 500, 250" in cal.verdict()
     worse = await search(
         k, _queue(accepted_statements=6), ["hc1"]
     )  # 지연 50 에서 1000 부터 허용 구현 실패
@@ -359,7 +359,7 @@ async def test_no_window_stops_the_build_for_a_person() -> None:
     assert out.status == "failed" and out.calibration is not None
     assert out.calibration.status == "no_window" and out.hidden_plan is None
     assert any(
-        f.startswith(MATERIAL_VERDICT) and "조절값으로 재현되지 않음" in f for f in out.review_flags
+        f.startswith(MATERIAL_VERDICT) and "조절값으로 재현 불가" in f for f in out.review_flags
     )
     assert backend.calls.count("gen_naive") == 1  # 다시 만들지 않았다
 
