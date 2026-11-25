@@ -264,6 +264,11 @@ class PseudonymizedText(str):
   원 값으로 되돌려 다시 가명화하지 않는다 — 고용 문맥에서만 잡히는 회사명이 다른 문장에서 다시 안 잡혀 원문이 남는다.
 - LLM 이 쓴 글(질문·사례 초안·기준 답안)과 DB 에서 다시 읽은 가명화 글은 `derived`/`stored*` — 패턴 탐지기·위조 토큰 검사만(이름 탐지기는 LLM 글에서 오탐).
   LLM 입력은 `stored_json` 이 만든 `PseudonymizedText` 만 (인터뷰 입력 스키마 칸은 `PseudoTextField`).
+- 공유 승인된 회사 사례 재료(co:)를 다른 인터뷰에서 다시 LLM 입력으로 쓸 때는 `shared_json` (2026-11-25 #308) — 재료에 등록한
+  인터뷰의 토큰이 남아(승인 때 되돌리지 않음) `stored_json` 은 위조로 거절한다. 허용 토큰 = 그 재료에 실제로 있는 토큰 ∪ 이 인터뷰
+  토큰 (토큰 모양 전부가 아님), 그 입력으로 LLM 이 쓴 글도 `derived(…, shared=)` 로 같은 집합. 부르는 쪽은 먼저 등록 규칙
+  (`interview/approval.blocked_findings` — LLM 입력 칸의 연락처·링크, `asyncio.to_thread`)으로 다시 보고, 입력에는 그 규칙이 LLM
+  입력으로 승인한 칸만 넣는다 (notes 제외 — `interview/material_analysis.material_block(shared=True)`).
 - 상태(DB)에는 일반 `str` 로 둔다 — `PseudonymizedText` 는 깊은 복사·검증에서 다시 만들어지지 못한다.
 - 저장: DB 에는 가명화한 글만. 대응표는 `data/interviews/<id>/mapping.json`(700/600) — 과제 승인·인터뷰 폐기 때 삭제,
   방치 30일(업무 저장 기준 — 임시 저장은 활동 아님) = 폐기. 대응표는 DB 저장보다 **먼저** 쓴다(토큰은 더하기만 — DB 저장이 끊겨도 쓰지 않는 토큰만 남음).

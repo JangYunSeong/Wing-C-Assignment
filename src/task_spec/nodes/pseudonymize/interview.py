@@ -9,6 +9,8 @@
 - DB 에는 가명화한 글만 저장한다. 다시 LLM 입력으로 쓸 때는 `stored*` 로 패턴 탐지기·위조 토큰을 다시 검사한다.
 - LLM 이 가명화 입력으로 쓴 글(질문·사례 초안·기준 답안)은 `derived` — `derive_pseudonymized` 와 같은 규칙
   (패턴 탐지기에 걸리면 거부, 대응표에 없는 토큰 거부). 이름 탐지기(Kiwi)는 LLM 글에 쓰지 않는다 — 오탐으로 막힌다.
+- 공유 승인된 회사 사례 재료(co:)를 다른 인터뷰에서 다시 LLM 입력으로 쓸 때는 `shared_json` — 등록한 인터뷰의 토큰이
+  남아 있어, 허용 토큰을 그 재료에 실제로 있는 토큰까지 넓힌다. 그 입력으로 LLM 이 쓴 글도 같은 집합으로 `derived` (#308).
 - 담당자가 화면에 보인 가명화 글을 고쳐 보내면 대응표에 있는 토큰은 살리고, 없는 토큰 모양만 무력화한다.
   한계: 진짜 토큰 바로 뒤에 붙여 쓴 라벨 값(예: '담당자: [PERSON_1] 실명')은 라벨 탐지기가 건너뛸 수 있다 — 담당자는
   신뢰하는 사용자이고 실수로 넣은 개인정보를 막는 것이 목표다.
@@ -21,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Collection, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -156,12 +159,17 @@ class InterviewPseudonymizer:
         return PseudonymizedText(restored.strip(), _token=_MINT)
 
     # ------------------------------------------------------------------ 저장된 가명화 글·LLM 글
-    def derived(self, text: str, mapping: RunMapping) -> str:
+    def derived(self, text: str, mapping: RunMapping, shared: Collection[str] = ()) -> str:
         """LLM 이 가명화 입력으로 쓴 글을 저장·표시 전에 검사한다. 통과하면 그대로 돌려준다.
-        시스템 id(uuid·사례 id)는 가린 뒤 패턴을 본다 — id 는 개인정보가 아니고, 우연히 전화번호 모양이 될 뿐이다."""
+        시스템 id(uuid·사례 id)는 가린 뒤 패턴을 본다 — id 는 개인정보가 아니고, 우연히 전화번호 모양이 될 뿐이다.
+        shared: 입력으로 쓴 공유 회사 사례 재료에 실제로 있던 토큰(`shared_json` 이 돌려준 것) — 출력이 그 토큰을 옮겨 쓴 것만
+        더 허용한다. 지어낸 토큰은 그대로 거절한다."""
         if detect_patterns(_SYSTEM_ID.sub("ID", text)):
             raise InterviewTextRejected("생성한 글에 연락처·링크 같은 개인정보 형식이 있습니다")
-        if any(m.group(0) not in mapping.tokens for m in TOKEN_RE.finditer(text)):
+        if any(
+            m.group(0) not in mapping.tokens and m.group(0) not in shared
+            for m in TOKEN_RE.finditer(text)
+        ):
             raise InterviewTextRejected("생성한 글에 인터뷰에 없는 가명화 토큰이 있습니다")
         return text
 
@@ -174,22 +182,47 @@ class InterviewPseudonymizer:
     ) -> PseudonymizedText:
         """저장된 가명화 글들로 만든 구조(dict·list)를 JSON 입력으로. 글 잎과 dict 키마다 `derived` 검사.
         compact=True 는 공백 없는 구분자 (포크가 model_dump_json() 으로 넘기던 입력과 같은 모양)."""
+        return self._json(value, mapping, compact=compact)
 
-        def walk(v: Any) -> None:
-            if isinstance(v, str):
-                self.derived(v, mapping)
-            elif isinstance(v, dict):
-                for key, item in v.items():
-                    self.derived(str(key), mapping)  # 키도 글이다 (privacy-auditor H1)
-                    walk(item)
-            elif isinstance(v, list | tuple):
-                for item in v:
-                    walk(item)
-            elif v is not None and not isinstance(v, bool | int | float):
-                raise TypeError(f"JSON 으로 묶을 수 없는 값: {type(v).__name__}")
+    def shared_json(
+        self, value: Any, mapping: RunMapping
+    ) -> tuple[PseudonymizedText, frozenset[str]]:
+        """공유 승인된 회사 사례 재료(co:)를 다른 인터뷰의 LLM 입력으로 — (JSON 입력, 그 재료에 있던 토큰) (#308).
 
-        walk(value)
+        회사 사례로 등록한 재료에는 등록한 인터뷰의 토큰이 남는다 (승인 때 되돌리지 않는다). 이 인터뷰 대응표만 보는 `stored_json`
+        은 그 토큰을 위조로 보고 거절한다 — 허용 토큰을 그 재료에 실제로 있는 토큰과 이 인터뷰 토큰의 합으로 넓힌다 (토큰 모양
+        전부가 아니다). 출력 검사(`derived(…, shared=)`)도 돌려준 같은 집합을 쓴다. 패턴 검사는 그대로 한다.
+        부르는 쪽 몫: 등록 규칙(interview.approval.blocked_findings — LLM 입력 칸의 연락처·링크)으로 재료를 먼저 다시 보고,
+        입력에는 그 규칙이 LLM 입력으로 승인한 칸만 담는다 (interview.material_analysis.material_block(shared=True))."""
+        shared = frozenset(m.group(0) for text in _texts(value) for m in TOKEN_RE.finditer(text))
+        return self._json(value, mapping, shared=shared), shared
+
+    def _json(
+        self,
+        value: Any,
+        mapping: RunMapping,
+        *,
+        compact: bool = False,
+        shared: Collection[str] = (),
+    ) -> PseudonymizedText:
+        for text in _texts(value):
+            self.derived(text, mapping, shared)
         separators = (",", ":") if compact else None
         return PseudonymizedText(
             json.dumps(value, ensure_ascii=False, separators=separators), _token=_MINT
         )
+
+
+def _texts(value: Any) -> Iterator[str]:
+    """JSON 으로 묶을 구조 안의 글 — 글 잎과 dict 키 (키도 글이다, privacy-auditor H1). 수·참거짓·None 밖의 값은 거절."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _texts(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            yield from _texts(item)
+    elif value is not None and not isinstance(value, bool | int | float):
+        raise TypeError(f"JSON 으로 묶을 수 없는 값: {type(value).__name__}")

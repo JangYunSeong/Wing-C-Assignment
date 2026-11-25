@@ -166,6 +166,7 @@ from task_spec.spec.company_incidents import (
     CompanyIncidentRepo,
     Detect,
     feature_fit,
+    is_company_incident,
     new_incident_id,
 )
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID, FLAG_DRAFT_INVALID_LEGACY
@@ -1355,17 +1356,32 @@ class InterviewService:
         return MadeTask(task=g.task, provenance=list(g.task_provenance), flags=list(g.task_flags))
 
     async def _material_check(
-        self, coding: PublicIncident, inp: _GenerationInputs
+        self, coding: PublicIncident, inp: _GenerationInputs, *, shared: bool = False
     ) -> tuple[list[str], list[Provenance]]:
         """재료 입구 분석 (#301 PR 3) — 회사 재료가 빌드 하네스에서 재현되는지 짚어 과제 검토 표시로 (승인을 막지 않음).
         프롬프트 CURRENT 가 없으면(평가 전) 건너뛴다. 분석이 실패해도 과제 만들기는 이어 간다 — 실패도 표시로 남긴다.
-        입력은 저장본 검사(stored_json)를 거친 가명화 글, 표시는 LLM 이 쓴 글이라 저장 전에 다시 검사한다 (derived)."""
+        입력은 저장본 검사(stored_json)를 거친 가명화 글, 표시는 LLM 이 쓴 글이라 저장 전에 다시 검사한다 (derived).
+
+        shared=True: 공유 승인된 회사 사례를 다시 쓸 때 (#308). 재료에 등록한 인터뷰의 토큰이 남아 있어 `shared_json` 으로 그 재료에
+        있는 토큰까지 허용하고, 표시 검사도 같은 집합을 쓴다. 그 전에 등록 규칙(blocked_findings — LLM 입력 칸의 연락처·링크)으로
+        재료를 다시 보고, 입력 칸은 그 규칙이 LLM 입력으로 승인한 칸만 (notes 제외). 보관·반려된 재료는 _company_case 가 이미 막는다."""
         if not inp.prompts.has_current(MATERIAL_TASK):
             return [], []
         try:
+            block = material_block(coding, shared=shared)
+            tokens: frozenset[str] = frozenset()
+            if shared:
+                # 등록 때와 같은 규칙·탐지기 — 탐지기가 블로킹이라 스레드에서 (_approval_check 와 같이)
+                if await asyncio.to_thread(blocked_findings, coding, self.detect):
+                    raise InterviewTextRejected(
+                        "공유 재료의 LLM 입력 칸에 연락처·링크 형식이 있습니다"
+                    )
+                material, tokens = self.pseudo.shared_json(block, inp.mapping)
+            else:
+                material = self.pseudo.stored_json(block, inp.mapping)
             analysis, provenance = await self._llm(
                 analyze_material(
-                    self.pseudo.stored_json(material_block(coding), inp.mapping),
+                    material,
                     inp.template,
                     llm=inp.llm,
                     prompts=inp.prompts,
@@ -1373,7 +1389,7 @@ class InterviewService:
                 )
             )
             flags = [
-                self.pseudo.derived(f, inp.mapping)
+                self.pseudo.derived(f, inp.mapping, tokens)
                 for f in analysis_flags(analysis, inp.template, coding.feature)
             ]
         except (*_LLM_ERRORS, InterviewError) as exc:
@@ -1412,7 +1428,13 @@ class InterviewService:
                     "seed_flags": seed_flags,
                 }
             coding = ready_coding_incident(inp.incident, inp.template)
-            return {"coding_incident": coding, "seed_provenance": [], "seed_flags": []}
+            if not is_company_incident(coding.incident_id):
+                # 공개 재료는 서비스에서 보지 않는다 — 평가(eval/interview/run_material_analysis.py)로 한 번 본다 (#301)
+                return {"coding_incident": coding, "seed_provenance": [], "seed_flags": []}
+            # 회사 사례도 재료 입구 분석 — 재료는 고치지 않고 표시만 (물을 담당자가 없다). 2026-11-25 #308 4차: 이 분기는 분석을
+            # 부르지 않아 #311 전에 등록한 회사 재료를 다시 쓰면 재현 의문이 보이지 않았다. 재현 여부는 템플릿 판에 따라 달라 쓸 때마다 본다
+            seed_flags, checked = await self._material_check(coding, inp, shared=True)
+            return {"coding_incident": coding, "seed_provenance": checked, "seed_flags": seed_flags}
         req = TaskRequest(
             profile=inp.chosen,
             matches=inp.matches,
