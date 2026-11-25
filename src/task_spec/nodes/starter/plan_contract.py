@@ -382,6 +382,30 @@ def fit_material_params(
     ]
 
 
+def fit_tuned_params(plan: HiddenPlan, m: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
+    """빌드가 실험으로 맞출 숨긴 조절값(사유의 tunes)을 계약 LLM 이 넣으면 뺀다 — 수치는 LLM 이 아니라 실험이 정한다
+    (#301 [확정: 2026-11-25 사용자]). 계약 검사(contract._harness)는 숨긴 값의 범위만 보므로 넣은 값이 그대로 채점 조건이 된다.
+    m 은 재료로 좁힌 매니페스트(for_material) — 재료가 나열한 값은 거기서 보이는 값이라 빼지 않는다 (명세 근거로 확인한 운영 조건).
+    뺀 값은 템플릿 기본값이 맡는다 (성립 검사 feasibility.harness_env 와 하네스 대체값이 같다)."""
+    tuned = {name for r in m.failure_reasons for name in r.tunes}
+    drop = sorted(
+        p.name
+        for p in m.harness_params
+        if p.name in tuned and not p.visible and p.name in plan.harness
+    )
+    if not drop:
+        return plan, []
+    removed = ", ".join(f"{k}={plan.harness[k]}" for k in drop)
+    fixed = plan.model_copy(
+        update={
+            "harness": {k: v for k, v in plan.harness.items() if k not in drop},
+            "evidence": {k: v for k, v in plan.evidence.items() if k not in drop},
+            "evidence_value": {k: v for k, v in plan.evidence_value.items() if k not in drop},
+        }
+    )
+    return fixed, [f"빌드가 실험으로 정할 숨긴 조절값 뺌: {removed} (사유의 tunes)"]
+
+
 def settings_text(m: TemplateManifest) -> str:
     """템플릿 정보의 설정 칸 줄 — 쓸 수 있는지(templates.supports_settings)·키 형식·그 조건의 시드 행 수(hidden_helpers 상수)를 코드가.
     #185: 프롬프트가 'Java 템플릿일 때만'·'4행 이상'을 글로 박아, 덮는 값이 바뀌면 조용히 어긋났다."""
@@ -507,6 +531,8 @@ def fit_output(
     notes += unit_notes
     trimmed, param_notes = fit_material_params(out.hidden_plan, manifest, known)
     notes += param_notes
+    trimmed, tuned_notes = fit_tuned_params(trimmed, manifest)
+    notes += tuned_notes
     trimmed, free_notes = fit_unevidenced(trimmed, manifest, spec)
     notes += free_notes
     trimmed, frag_notes = fit_evidence_fragments(trimmed, manifest, spec, seed)

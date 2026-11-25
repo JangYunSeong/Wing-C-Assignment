@@ -66,6 +66,9 @@ def merged_reasons(base: list[FailureReason], guide: MaterialGuide) -> list[Fail
             raise ValueError(
                 f"재료 {guide.incident_id} 의 사유 {r.code} 표기(log_patterns)가 템플릿과 다름 — 하네스 표기는 템플릿이 정한다"
             )
+        if mine is not None and not mine.tunes and r.tunes:
+            # 보정할 숨긴 조절값은 하네스 것 — 재료가 사유를 다시 써도 tunes 를 적지 않았으면 템플릿 것을 잇는다 (#301)
+            mine = mine.model_copy(update={"tunes": r.tunes})
         out.append(mine or r)
     return [*out, *own.values()]
 
@@ -121,6 +124,8 @@ def guide_problems(
             for f in r.feasible:
                 if extra := sorted(names(f.when) - params):
                     out.append(f"{ref}: 사유 {r.code} 의 실현 조건이 없는 조절값 {extra} 를 씀")
+        # 재료 사유의 tunes 도 그 템플릿의 숨긴 int 조절값이어야 한다 (#301 — 합친 사유는 매니페스트 검증을 다시 거치지 않는다)
+        out += [f"{ref}: {p}" for p in t.manifest.tune_problems()]
     return out
 
 
