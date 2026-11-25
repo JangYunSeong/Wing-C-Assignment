@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from task_spec.nodes.pseudonymize.detectors import TOKEN_RE
-from task_spec.schemas.interview_state import ProjectTags, ScopeField, TeamContext
+from task_spec.schemas.interview_state import ChatMessage, ProjectTags, ScopeField, TeamContext
 
 SCOPE_QUESTIONS: dict[ScopeField, str] = {
     "expected_outcome_90_days": (
@@ -25,6 +25,21 @@ CASE_OPENING = (
     "선택한 공고의 업무 중 이번 과제로 다룰 실제 문제 한 가지를 알려주세요. "
     "공고와 앞선 답변에 없는 사례 내용을 보태 주세요."
 )
+# 서버가 사례 대화에 넣는 고정 안내 — 화면에는 보이고 모델 입력에서는 뺀다 (model_conversation)
+# ④ 처음 대응을 넣어 사례를 다시 정리했는데 다른 칸이 빠져 ③ 으로 돌아갈 때 — 질문 앞에 붙여 왜 돌아왔는지 알린다
+TRAP_FOLLOW_UP_LEAD = "처음 시도한 대응을 반영해 사례를 정리하다 보니 더 확인할 내용이 있습니다."
+TRAP_UNKNOWN_FOLLOW_UP_LEAD = (
+    "처음 시도한 대응은 모름으로 두고 사례를 정리하다 보니 더 확인할 내용이 있습니다."
+)
+# ③ 에서 처음 대응을 받았는데도 사례에 담기지 않을 때 — ③ 대화로는 채울 수 없어 ④ 로 돌려보낸다
+TRAP_RETRY_NOTICE = (
+    "처음 시도한 대응을 사례에 반영하지 못했습니다. "
+    "처음 시도한 대응 단계에서 내용을 보완해 다시 보내 주세요."
+)
+# 초안 전에 ④ 에서 사례로 돌아왔는데 마지막 글이 담당자 답이라 답할 질문이 없을 때
+CASE_REOPEN_QUESTION = "사례에서 고치거나 보탤 내용을 알려 주세요."
+_LEADS = (TRAP_FOLLOW_UP_LEAD, TRAP_UNKNOWN_FOLLOW_UP_LEAD)
+_NOTICES = (TRAP_RETRY_NOTICE, CASE_REOPEN_QUESTION)
 UNSET = ("미정", "아직 미정")
 
 _TAGS = {
@@ -92,3 +107,20 @@ def posting_team_context(jd_text: str) -> TeamContext:
 def numbers(text: str) -> set[str]:
     """글 속 숫자 (가명화 토큰의 번호는 빼고) — 원문에 없는 수치를 만들었는지 대조한다."""
     return set(re.findall(r"\d+(?:\.\d+)?", TOKEN_RE.sub("", text)))
+
+
+def model_conversation(messages: list[ChatMessage]) -> list[dict[str, str]]:
+    """모델에 보낼 사례 대화 — 서버가 넣은 고정 안내는 뺀다. 저장된 대화(화면)는 그대로.
+
+    고정 문구가 모델 입력이 되면 프롬프트 버전 밖에서 입력이 바뀐다 (CLAUDE.md 불변식 7). 시작 안내(CASE_OPENING)는 예전처럼 둔다.
+    """
+    turns: list[dict[str, str]] = []
+    for m in messages:
+        text = m.text
+        if m.role == "assistant":
+            if text in _NOTICES:
+                continue
+            for lead in _LEADS:
+                text = text.removeprefix(f"{lead} ")
+        turns.append({"role": m.role, "text": text})
+    return turns

@@ -11,7 +11,15 @@ import httpx
 
 from task_spec.api.app import create_app
 from task_spec.interview.incident import incident_digest
-from task_spec.interview.text import CASE_OPENING, SCOPE_QUESTIONS
+from task_spec.interview.service import NOTE_TRAP_UNKNOWN
+from task_spec.interview.text import (
+    CASE_OPENING,
+    CASE_REOPEN_QUESTION,
+    SCOPE_QUESTIONS,
+    TRAP_FOLLOW_UP_LEAD,
+    TRAP_RETRY_NOTICE,
+    TRAP_UNKNOWN_FOLLOW_UP_LEAD,
+)
 from task_spec.llm.backend import Completion
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import PublicIncident
@@ -23,6 +31,7 @@ from tests.interview.conftest import (
     PROJECT,
     REPO,
     Session,
+    case,
     complete_output,
     make_service,
 )
@@ -125,6 +134,162 @@ async def test_followup_then_confirmation_and_invalidation(session: Session) -> 
     assert revised.status_code == 200 and revised.json()["incident_confirmed"] is None
     assert revised.json()["stage"] == "incident_review"
     assert revised.json()["review_note"] == "원인 설명 정정"
+
+
+REAL_TRAP = {
+    "attempted_fix": "요청마다 재시도 횟수를 줄였다",
+    "observed_result": "복구가 막힘",
+    "why_failed": "응답 유실 뒤 복구할 길이 없어짐",
+}
+
+
+async def _trap_without_draft(session: Session) -> None:
+    """③ 이 처음 대응만 빠진 채 끝난다 — 초안 없이 ④ 로."""
+    await session.start()
+    session.push(
+        complete_output(
+            incident=None,
+            missing_fields=["naive_fix", "why_naive_fails"],
+            evidence={
+                k: [v] for k, v in FACTS.items() if k not in ("naive_fix", "why_naive_fails")
+            },
+        )
+    )
+    first = await session.post("project", text=PROJECT)
+    assert first.status_code == 200, first.text
+    assert first.json()["stage"] == "trap_interview" and first.json()["incident_draft"] is None
+    assert first.json()["incident_messages"] == []  # ④ 화면이 이어받아 질문을 붙이지 않는다
+
+
+async def test_trap_that_reopens_the_case_explains_why_before_the_question(
+    session: Session,
+) -> None:
+    """처음 대응을 넣어 다시 정리하니 원인이 빠졌다 — ③ 으로 돌아가며 이유를 앞에 붙이고, 그 안내는 모델에 보내지 않는다."""
+    await _trap_without_draft(session)
+    session.push(
+        complete_output(
+            incident=None, missing_fields=["root_cause"], question="원인은 어떻게 확인했나요?"
+        )
+    )
+    trapped = await session.post("trap", **REAL_TRAP)
+    assert trapped.status_code == 200, trapped.text
+    body = trapped.json()
+    assert body["stage"] == "incident_interview" and body["incident_missing"] == ["root_cause"]
+    assert body["incident_messages"][-1] == {
+        "role": "assistant",
+        "text": f"{TRAP_FOLLOW_UP_LEAD} 원인은 어떻게 확인했나요?",
+        "message_id": None,
+    }
+    # 안내는 ④ 에서 돌아올 때만 — ③ 대화의 다음 질문에는 붙지 않는다
+    session.push(
+        complete_output(incident=None, missing_fields=["conditions"], question="언제 생기나요?")
+    )
+    again = await session.post("messages", text=FACTS["root_cause"])
+    assert again.status_code == 200, again.text
+    assert again.json()["incident_messages"][-1]["text"] == "언제 생기나요?"
+    sent = session.backend.prompts[-1]
+    assert "원인은 어떻게 확인했나요?" in sent and TRAP_FOLLOW_UP_LEAD not in sent
+    # 모델이 흔한 대응을 고쳐 써도 사례에는 담당자 답 그대로 — 초안이 ④ 전에 있던 경로와 같다
+    session.push(complete_output(incident=case().model_copy(update={"naive_fix": "모델 요약"})))
+    done = await session.post("messages", text=FACTS["conditions"])
+    assert done.status_code == 200, done.text
+    # 처음 대응은 이미 받았다 — ④ 를 다시 묻지 않는다
+    assert done.json()["stage"] == "success_interview"
+    draft = done.json()["incident_draft"]
+    assert draft["naive_fix"] == REAL_TRAP["attempted_fix"]
+    assert draft["why_naive_fails"] == REAL_TRAP["why_failed"]
+
+
+async def test_trap_that_completes_the_case_adds_no_lead_and_keeps_the_answer(
+    session: Session,
+) -> None:
+    await _trap_without_draft(session)
+    session.push(complete_output(incident=case().model_copy(update={"naive_fix": "모델 요약"})))
+    trapped = await session.post("trap", **REAL_TRAP)
+    assert trapped.status_code == 200, trapped.text
+    body = trapped.json()
+    assert body["stage"] == "success_interview" and body["incident_messages"] == []
+    assert body["incident_draft"]["naive_fix"] == REAL_TRAP["attempted_fix"]
+
+
+async def test_unknown_trap_that_reopens_the_case_says_so_and_notes_it_once(
+    session: Session,
+) -> None:
+    await _trap_without_draft(session)
+    session.push(
+        complete_output(
+            incident=None, missing_fields=["root_cause"], question="원인은 어떻게 확인했나요?"
+        )
+    )
+    trapped = await session.post("trap", unknown=True)
+    assert trapped.status_code == 200, trapped.text
+    last = trapped.json()["incident_messages"][-1]["text"]
+    assert last == f"{TRAP_UNKNOWN_FOLLOW_UP_LEAD} 원인은 어떻게 확인했나요?"
+    # 모델이 비고를 빠뜨려도 서버가 한 줄 넣는다 — 가상 함정 후보(모델의 흔한 대응)는 그대로 둔다
+    session.push(complete_output())
+    done = await session.post("messages", text=FACTS["root_cause"])
+    assert done.status_code == 200, done.text
+    draft = done.json()["incident_draft"]
+    assert draft["notes"].split("\n").count(NOTE_TRAP_UNKNOWN) == 1
+    assert draft["naive_fix"] == FACTS["naive_fix"]
+
+
+async def test_trap_still_missing_in_the_case_chat_goes_back_to_the_trap_step(
+    session: Session,
+) -> None:
+    """③ 대화로는 처음 대응을 채울 수 없다 — 오류로 막지 않고 ④ 로 돌려보낸다. ④ 에서 그러면 저장하지 않고 오류."""
+    await _trap_without_draft(session)
+    session.push(
+        complete_output(
+            incident=None, missing_fields=["root_cause"], question="원인은 어떻게 확인했나요?"
+        )
+    )
+    assert (await session.post("trap", **REAL_TRAP)).status_code == 200
+    session.push(
+        complete_output(
+            incident=None,
+            missing_fields=["naive_fix"],
+            evidence={k: [v] for k, v in FACTS.items() if k != "naive_fix"},
+        )
+    )
+    back = await session.post("messages", text=FACTS["root_cause"])
+    assert back.status_code == 200, back.text
+    body = back.json()
+    assert body["stage"] == "trap_interview" and body["trap_answers"]["attempted_fix"]
+    assert body["incident_messages"][-1]["text"] == TRAP_RETRY_NOTICE
+    # ④ 에서 다시 내도 여전히 빠지면 — 저장하지 않는다 (④ 를 고쳐 다시 내면 된다)
+    before = copy.deepcopy(session.store.rows[session.interview_id])
+    session.push(
+        complete_output(
+            incident=None,
+            missing_fields=["naive_fix"],
+            evidence={k: [v] for k, v in FACTS.items() if k != "naive_fix"},
+        )
+    )
+    failed = await session.post("trap", **REAL_TRAP)
+    assert failed.status_code == 503 and failed.json()["error"]["code"] == "service_unavailable"
+    assert session.store.rows[session.interview_id] == before
+    session.push(complete_output())
+    done = await session.post("trap", **REAL_TRAP)
+    assert done.status_code == 200, done.text
+    assert done.json()["stage"] == "success_interview"
+    sent = session.backend.prompts[-1]
+    assert TRAP_RETRY_NOTICE not in sent and TRAP_FOLLOW_UP_LEAD not in sent
+
+
+async def test_back_to_the_case_before_a_draft_asks_what_to_add(session: Session) -> None:
+    """④ 에서 사례로 돌아왔는데 마지막 글이 담당자 답이면 답할 질문이 없다 — 고정 안내를 붙이고 모델에는 보내지 않는다."""
+    await _trap_without_draft(session)
+    back = await session.post("revise", target="incident", note="원인 보충")
+    assert back.status_code == 200, back.text
+    assert back.json()["stage"] == "incident_interview"
+    assert back.json()["incident_messages"][-1]["text"] == CASE_REOPEN_QUESTION
+    again = await session.post("revise", target="incident", note="원인 보충")
+    assert again.status_code == 200, again.text
+    assert [m["text"] for m in again.json()["incident_messages"]].count(CASE_REOPEN_QUESTION) == 1
+    session.push(complete_output(incident=None, missing_fields=["naive_fix", "why_naive_fails"]))
+    await session.post("messages", text=FACTS["root_cause"])
+    assert CASE_REOPEN_QUESTION not in session.backend.prompts[-1]
 
 
 async def test_continue_without_reviewer_keeps_validation_and_records_the_version(
