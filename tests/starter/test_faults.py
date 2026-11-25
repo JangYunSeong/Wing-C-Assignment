@@ -228,9 +228,10 @@ def test_material_listing_params_keeps_only_those() -> None:
     assert fixed.harness == {"query_delay_ms": 12, "request_timeout_s": 1, "pool": 3}
     assert not any(d.burst for c in fixed.cases for d in c.data)
     assert "concurrency, pool_size" in notes[0] and "버스트 표시도 끔" in notes[0]
-    # 갱신 손실 재료는 concurrency 만 나열 — 다른 운영 값은 빼지만 버스트 장치(bursts)는 남아 버스트 표시를 끄지 않는다
+    # 갱신 손실 재료는 concurrency 만 나열 — 다른 운영 값은 빼지만 버스트 장치(bursts)는 남아 버스트 표시를 끄지 않는다.
+    # 지연(query_delay_ms)은 v4 부터 숨은 장치(기본값 20)라 재료 나열과 무관하게 남는다 (template_mechanics)
     fixed, notes = fit_material_params(plan, lt.manifest, known)
-    assert fixed.harness == {"concurrency": 1, "pool": 3}
+    assert fixed.harness == {"query_delay_ms": 12, "concurrency": 1, "pool": 3}
     assert all(d.burst for c in fixed.cases for d in c.data)
     assert "버스트 표시도 끔" not in notes[0]
 

@@ -26,6 +26,7 @@ from task_spec.starter.templates import (
 )
 
 JAVA = "backend/java-spring-boot3-jpa"
+CUR = f"v{current_version(JAVA)}"  # 복사한 템플릿에서 고칠 판 — load_template 이 CURRENT 를 읽는다
 
 
 @pytest.fixture(scope="module")
@@ -34,8 +35,8 @@ def java():  # type: ignore[no-untyped-def]
 
 
 def test_java_template_is_registered_and_clean(java) -> None:  # type: ignore[no-untyped-def]
-    assert JAVA in available() and current_version(JAVA) == 2
-    assert java.manifest.ref == f"{JAVA}@v2"
+    assert JAVA in available() and current_version(JAVA) == 5
+    assert java.manifest.ref == f"{JAVA}@{CUR}"
     assert check_template(java) == []
     assert "build.gradle" in java.files("project")
     assert {"GraderSupport.java", "GraderJdbcHarness.java", "GraderParams.java"} <= set(
@@ -109,7 +110,7 @@ def test_java_spec_patterns_read_materials_like_the_hand_example(java) -> None: 
     got = {p.name: extract_values(p, [a2, a3, answer]) for p in m.harness_params if p.visible}
     assert got == {
         "pool_size": ["8"],
-        "connection_timeout_ms": ["5000"],
+        # 연결 대기 한도(connection_timeout_ms)는 v4 부터 숨긴 값 (빌드 보정) — 자료에서 읽지 않는다
         "server_threads": ["32"],
         "concurrency": ["32", "30"],
     }
@@ -187,7 +188,7 @@ def test_candidate_image_must_not_hold_harness_or_manifest(java) -> None:  # typ
 def test_check_template_catches_layer_rule_violations(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    manifest = root / JAVA / "v2" / "manifest.yaml"
+    manifest = root / JAVA / CUR / "manifest.yaml"
     text = manifest.read_text("utf-8")
     manifest.write_text(
         text.replace("template_layer: [project/]", "template_layer: [project/, hidden/]").replace(
@@ -205,7 +206,7 @@ def test_check_template_catches_unknown_observable_param(tmp_path: Path) -> None
     """#180: expect 에 써도 되는 조절값 선언은 실제 조절값 이름이어야 한다 — 오타면 아무것도 면제하지 못한 채 조용히 지나간다."""
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    manifest = root / JAVA / "v2" / "manifest.yaml"
+    manifest = root / JAVA / CUR / "manifest.yaml"
     text = manifest.read_text("utf-8")
     assert "observable_params: [request_timeout_s, await_timeout_ms]" in text
     manifest.write_text(
@@ -224,8 +225,8 @@ def test_check_template_catches_unknown_observable_param(tmp_path: Path) -> None
 def test_check_template_catches_missing_harness_and_locked(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    shutil.rmtree(root / JAVA / "v2" / "hidden" / "selftest")
-    (root / JAVA / "v2" / "project" / "settings.gradle").unlink()
+    shutil.rmtree(root / JAVA / CUR / "hidden" / "selftest")
+    (root / JAVA / CUR / "project" / "settings.gradle").unlink()
     problems = check_template(load_template(JAVA, root=root))
     assert any("selftest" in p for p in problems)
     assert any("settings.gradle" in p for p in problems)

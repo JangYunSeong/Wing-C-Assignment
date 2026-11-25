@@ -21,8 +21,8 @@ def test_only_arithmetic_comparisons_and_max_min_are_allowed(bad: str) -> None:
 
 
 def test_defaults_follow_the_harness() -> None:
-    """계획에 없으면 하네스가 실제로 쓰는 값 — 쿼리 지연 0, 요청 한도 max(30, 연결 대기 × 2 + 5) (GraderSupport.requestTimeout)."""
-    assert harness_env({}, JAVA)["query_delay_ms"] == 0
+    """계획에 없으면 하네스가 실제로 쓰는 값 — 쿼리 지연 20 (v4 부터, HARNESS.md 대체값), 요청 한도 max(30, 연결 대기 × 2 + 5) (GraderSupport.requestTimeout)."""
+    assert harness_env({}, JAVA)["query_delay_ms"] == 20
     assert harness_env({}, JAVA)["request_timeout_s"] == 30
     assert harness_env({"connection_timeout_ms": 20000}, JAVA)["request_timeout_s"] == 45
     assert harness_env({"request_timeout_s": 2}, JAVA)["request_timeout_s"] == 2
