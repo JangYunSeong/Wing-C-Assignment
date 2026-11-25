@@ -216,15 +216,31 @@ def test_guide_problems_flag_tunes_that_are_not_hidden_params() -> None:
 # ── 템플릿 v5 ─────────────────────────────────────────────────────────
 
 
-def test_java_v5_adds_only_the_unique_key_claim_stack_condition() -> None:
-    """v5 = v4 + 허용 구현 스택 조건 한 항목 (유일 키 충돌로 중복 막기). 재시도 중복 알파 두 번 모두 허용 구현 d2 가 이 패턴에서 실패했다
+V5 = load_template(JAVA, 5)
+# v5 가 v4 와 다른 조절값 설명 — 실험 문구를 연결 대기 사유로 한정(지연)·v3 설명 그대로(요청 한도)
+RETOLD = ("query_delay_ms", "request_timeout_s")
+
+
+def _beside_v5_changes(m: TemplateManifest) -> dict[str, Any]:
+    """v5 가 바꾼 칸(판·스택 조건·request_timeout 의 tunes·조절값 설명 둘)을 지운 매니페스트 — 나머지는 v4 와 같아야 한다."""
+    d = m.model_dump(exclude={"version", "stack_conditions"})
+    for r in d["failure_reasons"]:
+        if r["code"] == "request_timeout":
+            r["tunes"] = []
+    for p in d["harness_params"]:
+        if p["name"] in RETOLD:
+            p["description"] = ""
+    return d
+
+
+def test_java_v5_adds_the_unique_key_claim_stack_condition() -> None:
+    """v5 ① 허용 구현 스택 조건 한 항목 (유일 키 충돌로 중복 막기). 재시도 중복 알파 두 번 모두 허용 구현 d2 가 이 패턴에서 실패했다
     — 11-25 는 직접 정한 @Id 의 save = merge 로 확인, 11-14 는 EntityManager 충돌 예외 종류로 보인다 (로그로 단정하지 않음).
-    세 사실을 한 항목에 함께 둔다. 그 밖은 v4 와 같다."""
-    v5 = load_template(JAVA, 5)
-    assert check_template(v5) == [] and v5.manifest.tune_problems() == []
-    extra = [c for c in v5.manifest.stack_conditions if c not in V4.manifest.stack_conditions]
+    세 사실을 한 항목에 함께 둔다."""
+    assert check_template(V5) == [] and V5.manifest.tune_problems() == []
+    extra = [c for c in V5.manifest.stack_conditions if c not in V4.manifest.stack_conditions]
     assert len(extra) == 1
-    assert len(v5.manifest.stack_conditions) == len(V4.manifest.stack_conditions) + 1
+    assert len(V5.manifest.stack_conditions) == len(V4.manifest.stack_conditions) + 1
     for fact in (
         "merge",
         "EntityManager.persist",
@@ -233,9 +249,42 @@ def test_java_v5_adds_only_the_unique_key_claim_stack_condition() -> None:
         "새 트랜잭션",
     ):
         assert fact in extra[0], fact
-    same = {"version", "stack_conditions"}
-    assert V4.manifest.model_dump(exclude=same) == v5.manifest.model_dump(exclude=same)
+
+
+def test_java_v5_tunes_only_what_the_build_calibrates() -> None:
+    """v5 ② 빌드 보정에 요청 한도 사다리가 없어 request_timeout 사유의 tunes 를 뺐다 — v4 는 계약이 뺀 요청 한도·지연을 아무도 다시 정하지
+    않아 30초·20ms 로 굳었다 (성립에 행 1500개 이상). 요청 한도 설명은 v3 그대로, 지연 설명의 '실험으로 정한다'는 연결 대기 사유로 한정.
+    그 밖의 매니페스트와 project/·hidden/ 은 v4 와 같다."""
+    m = V5.manifest
+    assert {r.code: r.tunes for r in m.failure_reasons if r.tunes} == {
+        "pool_acquire_timeout": POOL_TUNES
+    }
+    for name in RETOLD:
+        mine, old = m.param(name), V4.manifest.param(name)
+        assert mine is not None and old is not None and mine.description != old.description
+    timeout, v3_timeout = (
+        m.param("request_timeout_s"),
+        load_template(JAVA, 3).manifest.param("request_timeout_s"),
+    )
+    assert timeout is not None and v3_timeout is not None
+    assert timeout.description == v3_timeout.description
+    delay = m.param("query_delay_ms")
+    assert delay is not None and "pool_acquire_timeout" in delay.description
+    assert "실험으로 정한다" in delay.description
+    assert _beside_v5_changes(V4.manifest) == _beside_v5_changes(m)
     for sub in ("project", "hidden"):
-        assert v5.files(sub) == V4.files(sub)
-        for rel in v5.files(sub):
-            assert (v5.root / sub / rel).read_bytes() == (V4.root / sub / rel).read_bytes(), rel
+        assert V5.files(sub) == V4.files(sub)
+        for rel in V5.files(sub):
+            assert (V5.root / sub / rel).read_bytes() == (V4.root / sub / rel).read_bytes(), rel
+
+
+def test_v5_contract_keeps_request_timeout_values_a_material_does_not_list() -> None:
+    """요청 한도 사유 재료가 값을 나열하지 않으면(FeatureSeed.harness 비움) v4 는 계약 LLM 이 정한 요청 한도·지연을 빼고, v5 는 그대로 둔다.
+    재료가 나열하면 두 판 모두 보이는 값이라 빼지 않는다 (test_contract_keeps_tuned_values_the_material_lists)."""
+    seed = _incident("sw.backend.n-plus-one.json").feature
+    assert seed is not None
+    bare = seed.model_copy(update={"harness": []})
+    plan = _plan({"query_delay_ms": 5, "request_timeout_s": 1})
+    assert fit_tuned_params(plan, for_material(V5, bare).manifest) == (plan, [])
+    fixed, notes = fit_tuned_params(plan, for_material(V4, bare).manifest)
+    assert fixed.harness == {} and len(notes) == 1
