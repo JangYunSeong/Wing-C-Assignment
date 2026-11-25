@@ -186,6 +186,7 @@ class FakeTaskMaker:
                 "template": req.template.manifest.template_id,
                 "task_id": req.task_id,
                 "reviewer_note": req.reviewer_note,
+                "frame": req.frame,
             }
         )
         self.entered.set()

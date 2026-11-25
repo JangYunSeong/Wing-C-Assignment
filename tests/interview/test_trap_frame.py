@@ -23,6 +23,7 @@ from task_spec.interview.trap_frame import (
     frame_block,
     frame_flags,
     frame_problems,
+    keeps_hidden,
 )
 from task_spec.llm.backend import Completion
 from task_spec.prompting import PromptRegistry
@@ -43,12 +44,14 @@ from tests.interview.test_task import (
 
 JAVA = load_template("backend/java-spring-boot3-jpa")
 SEED = FeatureSeed.model_validate_json(feature_seed_output())
+# design 틀의 숨은 요구 = 재료 숨은 요구 그대로 + 설계 조건 한 문장 (trap_frame v2)
+HIDDEN = SEED.hidden_requirement + " 세션 확인 경로는 요청마다 DB 연결을 쥐지 않는다."
 
 
 def _frame(**over: Any) -> TrapFrame:
     base: dict[str, Any] = {
         "kind": "design",
-        "hidden_requirement": "세션 확인 경로는 요청마다 DB 연결을 쥐지 않는다",
+        "hidden_requirement": HIDDEN,
         "public_rules": ["DB 연결 풀은 20개, 피크에 동시 요청 100건"],
         "forbidden_terms": ["세션 테이블", "커넥션 풀"],
         "forbidden_storage": [{"entity": "Session", "why": "흔한 구현이 세션을 DB 테이블에 둔다"}],
@@ -105,7 +108,7 @@ def test_the_framed_material_overwrites_only_what_the_frame_decides() -> None:
     """§3.2: 숨은 요구 ← 틀 · 사유 ← 틀 사유(조절값은 템플릿 필수값) · 상태 대상 요구를 뺌(D4, 전이 규칙도) · 금지 낱말을 더함.
     업무 요구·2단계 칸·허용 설계는 그대로 (사람이 빼지 않았다)."""
     framed, notes = apply_frame(SEED, _frame())
-    assert framed.hidden_requirement == "세션 확인 경로는 요청마다 DB 연결을 쥐지 않는다"
+    assert framed.hidden_requirement == HIDDEN
     assert framed.reasons == ["pool_acquire_timeout"] and framed.harness is None
     assert {n.kind for n in framed.contract_needs} == {"empty_record_entity"}
     assert framed.leak_terms[: len(SEED.leak_terms)] == SEED.leak_terms
@@ -120,6 +123,26 @@ def test_the_framed_material_overwrites_only_what_the_frame_decides() -> None:
     # 상태 대상이 흔한 구현의 저장 방식이 아니면 재료 요구 그대로
     kept, _ = apply_frame(SEED, _frame(stateful_target_forbidden=False))
     assert kept.contract_needs == SEED.contract_needs
+
+
+def test_a_design_frame_cannot_drop_the_conditions_of_the_material_hidden_requirement() -> None:
+    """2026-11-25 trap_frame v1 평가: 평범한 재료의 숨은 요구를 다시 쓰며 조건을 뺐다 — design 틀은 재료 숨은 요구를 글자 그대로
+    담아야 틀 것을 쓴다 (띄어쓰기·문장 부호 차이는 같게). 아니면 재료 것을 그대로 두고 검토 표시로 남긴다."""
+    first = SEED.hidden_requirement.split(".")[0]
+    dropped = _frame(
+        hidden_requirement=first + ". 세션 확인 경로는 요청마다 DB 연결을 쥐지 않는다."
+    )
+    assert not keeps_hidden(SEED, dropped)
+    framed, notes = apply_frame(SEED, dropped)
+    assert framed.hidden_requirement == SEED.hidden_requirement
+    assert any("숨은 요구를 재료 것으로 유지" in n for n in notes)
+    assert any("재료 조건 누락" in f for f in frame_flags(dropped, notes))
+    spaced = _frame(hidden_requirement=SEED.hidden_requirement.replace(" ", "  ").replace("—", "-"))
+    assert keeps_hidden(SEED, spaced)
+    assert apply_frame(SEED, spaced)[0].hidden_requirement == spaced.hidden_requirement
+    # behavior 틀은 숨길 동작 자체를 바꾼다 — 재료 숨은 요구를 담지 않아도 틀 것
+    moved = _frame(kind="behavior", hidden_requirement="의존 서비스가 실패하면 503 을 준다")
+    assert apply_frame(SEED, moved)[0].hidden_requirement == "의존 서비스가 실패하면 503 을 준다"
 
 
 def test_behavior_frames_rewrite_the_trigger_and_people_remove_designs() -> None:
@@ -210,6 +233,9 @@ async def test_the_draft_uses_the_framed_material_and_the_common_task_keeps_it(
     session, maker, common = frame_env
     spec = await _generate_framed(session, ANALYSIS, Completion(_frame().model_dump_json()))
     used = maker.calls[-1]["incident"].feature
+    assert (
+        maker.calls[-1]["frame"] == _frame()
+    )  # 공개 쪽은 명세 초안 입력으로 (draft_feature_task v13)
     assert used.hidden_requirement == _frame().hidden_requirement
     assert {n.kind for n in used.contract_needs} == {"empty_record_entity"}
     assert spec["coding_incident"]["feature"]["hidden_requirement"] == SEED.hidden_requirement

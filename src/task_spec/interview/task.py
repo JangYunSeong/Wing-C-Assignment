@@ -37,6 +37,7 @@ from task_spec.schemas import (
     Provenance,
     PublicIncident,
     TaskItem,
+    TrapFrame,
 )
 from task_spec.schemas.interview_incident import InterviewFeatureSeedInput
 from task_spec.schemas.interview_state import ANSWER_MAX, GeneralQuestion, TargetedQuestion
@@ -403,6 +404,8 @@ class TaskRequest:
     template: Template
     task_id: str
     reviewer_note: str | None = None
+    # 이 공고의 함정 틀 (#318) — 명세 초안이 공개 쪽을 받는다 (draft_feature_task v13). coding_incident 는 이미 틀 적용 재료다
+    frame: TrapFrame | None = None
 
 
 class TaskMaker(Protocol):
@@ -490,6 +493,7 @@ class OntologyTaskMaker:
             ctx.env = env
         # 인터뷰 공고 자신의 생성 — 확인된 기준 답안을 기능형 재료 블록에 넣는다 (다른 공고가 이 사례를 쓸 때는 넣지 않는다)
         ctx.with_known_answers = True
+        ctx.trap_frame = req.frame
         return task, ctx, built.flags
 
     async def feature(self, req: TaskRequest) -> MadeTask:

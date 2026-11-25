@@ -143,6 +143,15 @@ class DraftFeatureInputV2(DraftTaskInput):
     )  # spec/feature.py seed_block — 원 사례 조직명·제목·URL·원문 수치 없음
 
 
+class DraftFeatureInputV3(DraftFeatureInputV2):
+    """기능형 v13 입력 — v2 + 함정 틀의 공개 쪽 (#318, spec/feature.py frame_public_text). 틀이 없는 공고는 '없음'.
+
+    숨은 쪽(틀이 다듬은 숨은 요구·금지 낱말)은 틀 적용 재료로 feature_seed 에 이미 들어간다. 허용 설계를 빼는 일은 사람이 정한다.
+    """
+
+    trap_frame: str = Field(min_length=1)
+
+
 class DraftFeatureOutputV2(Schema):
     """기능형 v2 출력 — 숨은 요구(traps)·허용 설계는 없다 (재료에서 코드가 채움, spec/feature.py fill_from_seed).
     숨은 요구 id 는 t1 하나 (재료의 숨은 요구)."""

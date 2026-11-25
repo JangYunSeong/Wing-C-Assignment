@@ -128,6 +128,18 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _key(text: str) -> str:
+    """글자 대조용 — 영숫자·한글만 남긴다 (띄어쓰기·문장 부호·대소문자 차이는 같게)."""
+    return re.sub(r"[^0-9a-z가-힣]", "", text.lower())
+
+
+def keeps_hidden(seed: FeatureSeed, frame: TrapFrame) -> bool:
+    """design 틀의 숨은 요구가 재료의 숨은 요구를 글자 그대로 담는가 (덧붙이기만 했는가).
+    2026-11-25 trap_frame v1 평가: 평범한 재료의 숨은 요구를 다시 쓰며 조건을 뺐다(풀 교착 '롤백된 변경은 성공으로 기록되지 않는다')
+    거나 허용 설계 하나를 배제하는 조건을 더했다(갱신 손실 '하나의 원자 작업으로') — 숨은 케이스가 재료와 다른 것을 재게 된다."""
+    return _key(seed.hidden_requirement) in _key(frame.hidden_requirement)
+
+
 def apply_frame(
     seed: FeatureSeed,
     frame: TrapFrame,
@@ -136,6 +148,7 @@ def apply_frame(
     """틀 적용 재료 — 틀이 바꾸는 칸만 덮어쓴 재료 사본과 바꾼 것 (문서 §3.2). 나머지 칸(business_need·stage2_* 등)은 원 재료 그대로.
 
     - hidden_requirement ← 틀. behavior 면 trigger·why_naive_breaks 도 틀 것으로 (빈 글이면 원 재료).
+      design 틀이 재료의 숨은 요구를 글자 그대로 담지 않으면(keeps_hidden) 재료 것을 그대로 두고 적는다 — 재료 조건이 빠지지 않게.
     - accepted_designs ← 사람이 뺀 설계(removed_designs)를 제외. 둘 미만이 되면 원 재료 그대로 두고 적는다 (스키마 하한).
     - reasons ← 틀 사유가 재료 사유와 다르면 [틀 사유]·harness 는 템플릿 필수값(None) — 조절값은 사유마다 다르다.
     - contract_needs ← 틀이 상태 대상을 흔한 구현의 저장 방식이라 하면 stateful_target·transition_rules 를 뺀다 (D4).
@@ -143,7 +156,11 @@ def apply_frame(
     - leak_terms ← 공개 쪽 금지 낱말을 더한다 — 명세 검사·계약 입력(forbidden_text)·계약 검사(_leaks)가 같은 목록을 받는다.
     """
     notes: list[str] = []
-    update: dict[str, Any] = {"hidden_requirement": frame.hidden_requirement}
+    update: dict[str, Any] = {}
+    if frame.kind == "design" and not keeps_hidden(seed, frame):
+        notes.append("숨은 요구를 재료 것으로 유지 — 틀의 숨은 요구에 재료 조건 누락")
+    else:
+        update["hidden_requirement"] = frame.hidden_requirement
     if frame.kind == "behavior":
         if frame.trigger:
             update["trigger"] = frame.trigger

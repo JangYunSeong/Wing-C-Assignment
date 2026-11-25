@@ -33,7 +33,8 @@ class ForbiddenStorage(Schema):
     entity: str = Field(
         min_length=1,
         max_length=60,
-        description="공개 계약에 엔티티(테이블)로 두면 안 되는 것의 이름 — 흔한 구현이 저장하는 대상 (예: Session)",
+        description="공개 계약에 엔티티(테이블)로 두면 안 되는 것 — 계약에 쓸 엔티티 이름 그대로, 영문 PascalCase 단수 (예: Session, "
+        "RequestUsage). 계약 검사가 엔티티 이름으로 대조한다",
     )
     why: str = Field(
         min_length=1,
@@ -66,7 +67,8 @@ class TrapFrame(Schema):
     hidden_requirement: str = Field(
         min_length=1,
         max_length=400,
-        description="이 공고의 숨은 요구 한두 문장 — design 이면 설계 조건, behavior 면 관찰 가능한 동작(특정 상태 코드 등)",
+        description="이 공고의 숨은 요구 — design 이면 재료의 숨은 요구를 글자 그대로 두고, 틀이 공개 쪽 저장 방식을 막았을 때만 그 설계 "
+        "조건 한 문장을 덧붙인다. behavior 면 관찰 가능한 동작(특정 상태 코드 등)",
     )
     public_rules: list[str] = Field(
         default_factory=list,

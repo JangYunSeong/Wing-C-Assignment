@@ -45,6 +45,7 @@ from task_spec.schemas import (
     PublicIncident,
     TaskItem,
     Trap,
+    TrapFrame,
 )
 from task_spec.spec.common import (
     FEATURE_BUILD_MIN,
@@ -203,6 +204,27 @@ def seed_block(
         interface
     )  # 재료가 정한 공개 인터페이스 (#256) — 없으면 블록이 예전과 같다
     return "\n".join(lines)
+
+
+NO_FRAME = "없음"
+
+
+def frame_public_text(frame: TrapFrame | None) -> str:
+    """draft_feature_task v13 입력 — 함정 틀의 공개 쪽 (#318). 틀이 없으면 '없음'.
+
+    숨은 요구·금지 낱말은 넣지 않는다 — 틀 적용 재료로 feature_seed('지원자 화면에 쓰면 안 되는 말')에 이미 들어간다.
+    허용 설계 대조도 넣지 않는다 — 설계를 빼는 일은 사람이 정한다 (문서 §7)."""
+    if frame is None:
+        return NO_FRAME
+    lines = []
+    if frame.public_rules:
+        lines.append("공개할 것: " + " / ".join(frame.public_rules))
+    if frame.forbidden_storage:
+        lines.append(
+            "엔티티(테이블)로 두지 않을 것: "
+            + ", ".join(f"{s.entity} ({s.why})" for s in frame.forbidden_storage)
+        )
+    return "\n".join(lines) or NO_FRAME
 
 
 def _design(i: int, text: str) -> AcceptedDesign:
@@ -1204,18 +1226,19 @@ async def draft_feature_task(
             full = out
         return prune_match_terms(shuffle_feature(full, key))
 
+    extra = {
+        **extra_input(),
+        "feature_seed": seed_block(inc, answers=ctx.with_known_answers, interface=ctx.interface),
+    }
+    if "trap_frame" in prompts.get(TASK).input_model.model_fields:  # v13~ (#318)
+        extra["trap_frame"] = frame_public_text(ctx.trap_frame)
     res = await draft_task(
         ctx,
         llm=llm,
         prompts=prompts,
         reviewer_note=reviewer_note,
         task=TASK,
-        extra_input={
-            **extra_input(),
-            "feature_seed": seed_block(
-                inc, answers=ctx.with_known_answers, interface=ctx.interface
-            ),
-        },
+        extra_input=extra,
         checker=cast(Any, check_feature),
         repairer=cast(Any, repair_feature),
         shuffler=fill_then_shuffle,

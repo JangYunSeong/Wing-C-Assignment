@@ -1565,6 +1565,7 @@ class InterviewService:
             template=inp.template,
             task_id=f"{interview_id}-common-{g.revision}",
             reviewer_note=inp.reviewer_note,
+            frame=g.trap_frame,  # 공개 쪽을 명세 초안에 (#318 — draft_feature_task v13)
         )
         if step == "feature":
             made = await self._llm(inp.tasks.feature(req))
