@@ -127,6 +127,22 @@ class TargetedQuestion(Schema):
     answer: str | None = Field(default=None, min_length=1, max_length=ANSWER_MAX)
 
 
+class ReinforceQuestion(Schema):
+    """보강 질문 (#308 검사 5) — 인터뷰 사례의 재료 재현 분석이 짚은 빠진 정보(gaps)를 ⑧ 에서 담당자에게 한 번 묻는다.
+    LLM 이 쓴 글이라 가명화 검사(derived)를 거친 글만. 답하지 않아도 승인은 막지 않는다."""
+
+    question_id: str = Field(pattern=r"^r\d$")
+    question: str = Field(min_length=1)
+
+
+class ReinforceAnswer(Schema):
+    """보강 질문에 담당자가 준 답 — 가명화한 글, 모르면 None. 다음 과제 만들기의 기능형 재료 입력과 재료 분석 입력에 들어간다."""
+
+    question_id: str = Field(pattern=r"^r\d$")
+    question: str = Field(min_length=1)
+    answer: str | None = Field(default=None, min_length=1, max_length=ANSWER_MAX)
+
+
 class InterviewApprovalRecord(Schema):
     """⑨ 승인 기록 (#266 D2b) — 승인 그래프의 finalize 가 인터뷰 판본 확정과 같은 트랜잭션에 남긴다.
     reviewer 는 직원 식별자(원문 예외, incident_confirmation.reviewer 와 같다) — LLM 입력에는 넣지 않는다."""
@@ -170,6 +186,8 @@ class InterviewSpec(Schema):
     evaluation_criteria: list[str] = Field(default_factory=list)
     generation_provenance: list[Provenance] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
+    # 보강 질문 (#308) — 인터뷰 사례의 재료 분석에 빠진 정보가 있고 아직 답한 적이 없을 때만 (최대 2개)
+    reinforce_questions: list[ReinforceQuestion] = Field(default_factory=list, max_length=2)
 
 
 class InterviewGeneration(_State):
@@ -188,6 +206,8 @@ class InterviewGeneration(_State):
     seed_provenance: list[Provenance] = Field(default_factory=list)
     # seed: 재료 입구 분석 표시 (#301 PR 3, interview/material_analysis) — 생성을 마칠 때 과제 검토 표시에 합친다 (막지 않음)
     seed_flags: list[str] = Field(default_factory=list)
+    # seed: 재료 분석이 짚은 빠진 정보 (가명화 검사를 거친 글) — 인터뷰 사례면 생성을 마칠 때 보강 질문으로 (#308)
+    seed_gaps: list[str] = Field(default_factory=list)
     task: TaskItem | None = None  # feature → request → slots 를 거치며 갱신
     task_provenance: list[Provenance] = Field(default_factory=list)
     task_flags: list[str] = Field(default_factory=list)
@@ -233,6 +253,8 @@ class InterviewState(_State):
     template_id: str | None = None  # 직군 기본 코딩 템플릿
     spec: InterviewSpec | None = None  # ⑧ 생성한 과제와 평가 맥락
     generation: InterviewGeneration | None = None  # ⑧ 과제 만들기 진행 (#280)
+    # ⑧ 보강 질문에 준 답 (#308, 가명화) — 다시 만들 때 기능형 재료·재료 분석 입력에 넣고, 있으면 다시 묻지 않는다 (한 번만)
+    reinforce_answers: list[ReinforceAnswer] = Field(default_factory=list)
     approval: InterviewApprovalRecord | None = None  # ⑨ 승인 기록 (D2b)
     discarded_at: str | None = None
     discard_reason: Literal["recruiter", "stale"] | None = None
@@ -245,6 +267,7 @@ class InterviewState(_State):
         self.spec = None
         self.generation = None
         self.competency_ids = []
+        self.reinforce_answers = []  # 사례가 바뀌면 그 재료에 물은 보강 질문의 답도 맞지 않는다
 
     def reset_answers(self) -> None:
         """기준 답안·답안 검증을 지운다 (사례·처음 시도한 대응이 바뀌면)."""

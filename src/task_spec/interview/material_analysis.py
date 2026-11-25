@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from task_spec.interview.task import template_json
@@ -23,6 +24,7 @@ from task_spec.schemas import (
     Provenance,
     PublicIncident,
 )
+from task_spec.schemas.interview_state import ReinforceAnswer, ReinforceQuestion
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.spec.company_incidents import LLM_FIELDS
 from task_spec.starter.templates import Template
@@ -33,6 +35,10 @@ FAILED = FLAG + "자동 분석 실패 — 빌드에서 재현 여부 확인"
 # 재현 가능 판정이어도 빠진 정보가 있으면 내는 표시 머리 — 판정 표시와 갈라 센다 (평가 eval/interview/run_material_analysis.py)
 GAPS = FLAG + "재현 가능 판정 · 빠진 정보 확인 필요"
 _VERDICT = {"no": "빌드 하네스로 재현 불가 가능성 있음", "unsure": "재현 여부 판단 불가"}
+# 보강 질문 (#308 검사 5) — 인터뷰 사례의 빠진 정보를 ⑧ 에서 한 번에 최대 둘 묻는다 (담당자 부담). 모르면 '모름'
+MAX_REINFORCE = 2
+UNKNOWN = "모름"
+REINFORCED = FLAG + "보강 답 반영 — 답 {answered}개 · 모름 {unknown}개"
 
 
 def material_block(incident: PublicIncident, *, shared: bool = False) -> dict[str, Any]:
@@ -111,3 +117,34 @@ def analysis_flags(a: MaterialAnalysis, template: Template, seed: FeatureSeed | 
             f"{FLAG}재료 사유({', '.join(seed.reasons)})와 분석 사유({a.reason}) 불일치 — {a.mechanism}"
         )
     return out
+
+
+# ── 보강 질문 (#308 검사 5) ──────────────────────────────────────────
+
+
+def reinforce_questions(gaps: Sequence[str]) -> list[ReinforceQuestion]:
+    """재료 분석이 짚은 빠진 정보 → ⑧ 보강 질문. 첫 판은 gaps 글 그대로, 앞의 MAX_REINFORCE 개만.
+    gaps 는 LLM 이 쓴 글이라 부르는 쪽이 가명화 검사(derived)를 거친 것만 넘긴다."""
+    return [
+        ReinforceQuestion(question_id=f"r{i}", question=gap)
+        for i, gap in enumerate(gaps[:MAX_REINFORCE], 1)
+    ]
+
+
+def reinforce_lines(answers: Sequence[ReinforceAnswer]) -> list[dict[str, str]]:
+    """재료 분석 입력에 붙이는 보강 문답 (재료 블록의 reinforcement 칸) — 모르면 '모름'."""
+    return [{"question": a.question, "answer": a.answer or UNKNOWN} for a in answers]
+
+
+def reinforce_block(answers: Sequence[ReinforceAnswer]) -> str:
+    """기능형 재료(interview_feature_seed) 입력에 붙이는 보강 문답 — 재료를 정리할 때 담당자가 채운 빠진 정보를 함께 본다."""
+    lines = ["재료 재현 분석이 짚은 빠진 정보에 담당자가 답한 것 (보강 질문):"]
+    for a in answers:
+        lines += [f"- 빠진 정보: {a.question}", f"  담당자 답: {a.answer or UNKNOWN}"]
+    return "\n".join(lines)
+
+
+def reinforced_flag(answers: Sequence[ReinforceAnswer]) -> str:
+    """보강 답을 넣고 다시 만든 과제의 검토 표시 — 승인자가 문답(인터뷰 상태의 reinforce_answers)을 함께 보게."""
+    answered = sum(1 for a in answers if a.answer)
+    return REINFORCED.format(answered=answered, unknown=len(answers) - answered)

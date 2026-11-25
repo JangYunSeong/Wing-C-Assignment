@@ -213,3 +213,55 @@ def test_time_settings_in_minutes_or_hours_become_seconds() -> None:
     md = contract_markdown(contract)
     assert "| `shop.order.page-size` | int | 50 |" in md
     assert "| `portal.session.ttl-seconds` | int | 1800초 |" in md
+
+
+TTL = {
+    "key": "portal.session.ttl-seconds",
+    "default": 1800,
+    "meaning": "세션 유효 시간",
+    "unit": "seconds",
+    "refs": ["r1"],
+}
+
+
+def test_time_rule_functions_only_for_second_settings_in_both_helpers() -> None:
+    """#308 r3 (운영 분석 2026-11-25): 허용 구현이 만료를 정수 초로 다뤄 실제 유효 시간이 TTL~TTL+1초였는데 공개 테스트가 TTL+0.1~0.5초에
+    단언해, 연장을 빼먹은 변형이 약 40~45% 확률로 통과했다. 거꾸로 'TTL 뒤 401'을 TTL+0.x초에 재면 정직한 정수 초 구현이 떨어진다.
+    초 단위 설정이 있으면 경계 ±1초 밖에서만 재는 함수를 숨은·공개 도우미에 둔다 (개수·밀리초 설정에는 두지 않는다)."""
+    plan = HiddenPlan.model_validate(_plan())
+    contract = TaskContract.model_validate(_with(PAGE, TTL))
+    for audience in ("hidden", "public"):
+        helper = render_contract_case(contract, plan, JAVA.manifest, audience=audience)  # type: ignore[arg-type]
+        assert helper is not None
+        body = helper.content
+        assert (
+            "protected static void assertRenewedWhileUsed(long seconds, int expectedStatus," in body
+        )
+        assert "for (long elapsed = 1; elapsed <= 2 * seconds; elapsed++) {" in body
+        assert "Thread.sleep(Math.max(0, seconds - 1) * 1000);" in body  # beforeExpiry
+        assert "Thread.sleep((seconds + 2) * 1000);" in body  # afterExpiry
+        assert "±1초 안에서 단언하지 않는다" in body
+    for other in (PAGE, {**TTL, "key": "portal.lock.wait-ms", "unit": "ms", "default": 500}):
+        helper = render_contract_case(
+            TaskContract.model_validate(_with(other)), plan, JAVA.manifest
+        )
+        assert helper is not None and "assertRenewedWhileUsed" not in helper.content
+
+
+def test_variant_repair_points_time_rules_at_the_helper() -> None:
+    """연장을 빼먹은 변형이 살아남자 재생성이 다시 0.1초 여유로 단언했다 — 시간 함수가 도우미에 있으면 재생성 안내가 그 함수를 가리킨다."""
+    from task_spec.starter.variants import VariantResult, repair_note
+
+    alive = [
+        VariantResult(
+            label="var-r3-omit",
+            rule_id="r3",
+            op="omit",
+            note="접근 때 만료를 연장하지 않음",
+            verdict="survived",
+        )
+    ]
+    plain = repair_note(alive, {})
+    timed = repair_note(alive, {}, timed=True)
+    assert "assertRenewedWhileUsed" not in plain
+    assert "assertRenewedWhileUsed·beforeExpiry·afterExpiry" in timed and "±1초" in timed

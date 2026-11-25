@@ -56,7 +56,7 @@ from task_spec.starter.hidden_helpers import (
 from task_spec.starter.py_helpers import command_name, py_ident
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_rows import peak_reasons
-from task_spec.starter.seed_sql import schema_problems, time_kind
+from task_spec.starter.seed_sql import schema_problems, seed_column_values, time_kind
 from task_spec.starter.skeleton import (
     APP,
     ENDPOINTS,
@@ -932,6 +932,60 @@ def _starter_issued_calls(
                     f"시작 코드의 기존 기능 테스트 {f.path} 가 {', '.join(hits)} 를 부름 — 이 API 는 새로 만드는 {src.method} {src.path} 가 "
                     f"발급하는 {rule.header} 가 필요하다. 시작 코드에는 발급 API 가 없어 통과하는 값을 만들 수 없고, 새 기능을 구현하면 "
                     f"이 요청은 {rule.denied_status} 이 된다 — 기존 기능 테스트는 이 API 를 부르지 않는다 (시드·저장소 수준으로 확인)",
+                )
+            )
+    return out
+
+
+# 저장소 조회에 넘긴 글자 값 — findByUsername("user1")·existsByEmail("…")·findAllByStatus("READY") (그룹 1 = 칸, 2 = 값)
+_FINDER_LITERAL = re.compile(
+    r"\.(?:find|exists|count|delete)(?:All|First|Top\d*)?By([A-Z][A-Za-z0-9]*?)(?:IgnoreCase)?"
+    r"\(\s*\"((?:[^\"\\]|\\.)*)\"\s*\)"
+)
+
+
+def _natural(value: str) -> list[object]:
+    """'username-2' 가 'username-10' 앞에 오게 — 실제 값 예를 행 순서대로 보이려고."""
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", value)]
+
+
+def _starter_seed_literals(o: Overlay, contract: TaskContract | None) -> list[StaticProblem]:
+    """시작 코드의 기존 기능 테스트가 저장소 조회에 시드에 없는 글자 값을 넘김 — 그 값의 행이 없어 시작 코드에서 떨어진다.
+    시드 값은 코드가 렌더한다 (seed_sql.seed_column_values — render_seed_sql 과 같은 규칙).
+    2026-11-25 prod-b4 (운영): findByUsername("user1") — 시드의 username 은 'username-<id>' 였다 (계약 규칙 글이 'user1~user20 형식'이라
+    잘못 말함). 같은 입력으로 다시 만들어도 같은 테스트를 써 재생성 예산을 다 썼다 — 실제 값 예를 붙여 처음부터 정확한 이유를 준다."""
+    if contract is None or not contract.seed:
+        return []
+    fields = {f.name.lower(): f.name for m in contract.entities for f in m.fields}
+    values: dict[str, set[str]] | None = None
+    out: list[StaticProblem] = []
+    for f in o.files:
+        if "/test/" not in f"/{f.path}" or not f.path.endswith(".java"):
+            continue
+        misses: list[tuple[str, str, str]] = []
+        for m in _FINDER_LITERAL.finditer(f.content):
+            name = fields.get(m.group(1).lower())
+            if name is None:
+                continue  # 칸 이름이 아닌 조회 (중첩 경로·여러 칸 조건)
+            if values is None:
+                values = seed_column_values(contract)
+            literal = m.group(2)
+            if name not in values:
+                continue
+            if "IgnoreCase(" in m.group(0):
+                found = literal.lower() in {v.lower() for v in values[name]}
+            else:
+                found = literal in values[name]
+            if not found:
+                misses.append((m.group(0).lstrip("."), name, literal))
+        for call, name, literal in list(dict.fromkeys(misses))[:3]:
+            assert values is not None
+            sample = ", ".join(f"'{v}'" for v in sorted(values[name], key=_natural)[:3])
+            out.append(
+                StaticProblem(
+                    "gen_starter",
+                    f"시작 코드의 기존 기능 테스트 {f.path} 가 {call} — 시드에 {name} 가 '{literal}' 인 행이 없다 "
+                    f"(실제 값 예: {sample}). 시드 값은 README 시드 줄을 따른다 — 규칙 글·이름으로 값을 짐작하지 않는다",
                 )
             )
     return out
@@ -2774,6 +2828,7 @@ def static_check(
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
             res.problems += _starter_issued_calls(o, contract, spec)
+            res.problems += _starter_seed_literals(o, contract)
             res.problems += _starter_stub_tests(o, template, contract, spec)
             res.problems += _starter_schema(o, template, contract)
             if not is_java(template.manifest):

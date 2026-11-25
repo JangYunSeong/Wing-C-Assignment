@@ -201,6 +201,88 @@ async def test_a_failed_analysis_does_not_stop_the_task(analysis_session: Any) -
     assert FAILED in spec["review_flags"]
 
 
+# ── 보강 질문 (#308 검사 5) ─────────────────────────────────────────
+
+GAPS_FOUND = ["요청 하나가 DB 에 가는 횟수", "커넥션을 쥐는 시간", "세 번째 빠진 정보"]
+
+
+async def test_gaps_of_an_interview_material_become_up_to_two_questions(
+    analysis_session: Any,
+) -> None:
+    """빠진 정보가 있으면 ⑧ 에서 최대 둘을 묻는다 — 분석 표시는 그대로 남고, 빠진 정보가 없으면 묻지 않는다."""
+    session, _ = analysis_session
+    spec = await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
+    assert spec["reinforce_questions"] == [
+        {"question_id": "r1", "question": GAPS_FOUND[0]},
+        {"question_id": "r2", "question": GAPS_FOUND[1]},
+    ]
+    assert any(f.startswith(GAPS) for f in spec["review_flags"])
+
+
+async def test_no_gaps_means_no_questions(analysis_session: Any) -> None:
+    session, _ = analysis_session
+    spec = await _generate(session, Completion(_analysis().model_dump_json()))
+    assert spec["reinforce_questions"] == []
+
+
+async def test_answers_go_back_to_competencies_and_into_the_next_material(
+    analysis_session: Any,
+) -> None:
+    """답하면 가명화해 저장하고 과제를 버린 뒤 ⑦ 로. 다시 만들 때 문답이 기능형 재료 입력과 재료 분석 입력에 들어가고,
+    빠진 정보가 또 나와도 다시 묻지 않는다 (한 번만) — 답을 넣어 만들었다는 표시만 남긴다."""
+    session, _ = analysis_session
+    await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
+    answered = await session.post(
+        "reinforce", answers={"r1": "가상테크 세션 테이블을 요청마다 두 번 읽었다", "r2": None}
+    )
+    assert answered.status_code == 200, answered.text
+    body = answered.json()
+    assert body["stage"] == "competencies" and body["spec"] is None
+    stored = body["reinforce_answers"]
+    assert [a["question_id"] for a in stored] == ["r1", "r2"] and stored[1]["answer"] is None
+    assert "가상테크" not in stored[0]["answer"] and "두 번 읽었다" in stored[0]["answer"]
+
+    calls = len(session.backend.prompts)
+    session.backend.push(
+        Completion(feature_seed_output()), Completion(_analysis(gaps=GAPS_FOUND).model_dump_json())
+    )
+    regenerated = await session.generate(competency_ids=SELECTED)
+    assert regenerated.status_code == 200, regenerated.text
+    spec = regenerated.json()["spec"]
+    seed_prompt, analysis_prompt = session.backend.prompts[calls:]
+    for sent in (seed_prompt, analysis_prompt):
+        assert "두 번 읽었다" in sent and "모름" in sent and "가상테크" not in sent
+    assert "보강 질문" in seed_prompt and "reinforcement" in analysis_prompt
+    assert spec["reinforce_questions"] == []  # 두 번째는 묻지 않는다
+    assert f"{FLAG}보강 답 반영 — 답 1개 · 모름 1개" in spec["review_flags"]
+
+
+async def test_reinforce_checks_the_stage_and_the_question_ids(analysis_session: Any) -> None:
+    session, _ = analysis_session
+    await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
+    missing = await session.post("reinforce", answers={"r1": "가상 답"})
+    assert missing.status_code == 422  # 모든 질문에 답이나 모름
+    wrong = await session.post("reinforce", answers={"q1": "가상 답"})
+    assert wrong.status_code == 422
+    done = await session.post("reinforce", answers={"r1": None, "r2": None})
+    assert done.status_code == 200
+    again = await session.post("reinforce", answers={"r1": None, "r2": None})
+    assert again.status_code == 409  # ⑦ 에서는 보강 답을 받지 않는다
+
+
+async def test_the_answers_are_cleared_when_the_material_changes(analysis_session: Any) -> None:
+    """사례 확인이 취소되면(사례가 바뀌면) 그 재료에 물은 질문의 답도 맞지 않는다 — 비우고 다음 재료에 다시 묻는다."""
+    session, _ = analysis_session
+    await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
+    assert (await session.post("reinforce", answers={"r1": None, "r2": None})).status_code == 200
+    service = session.service
+    row = await service.store.get(session.interview_id)
+    assert row is not None and row.state.reinforce_answers
+    state = row.state.model_copy(deep=True)
+    state.unconfirm()
+    assert state.reinforce_answers == []
+
+
 # ── 공개·회사 사례 (#308) ───────────────────────────────────────────
 
 
@@ -307,3 +389,14 @@ async def test_a_public_case_is_not_analyzed_here(source_env: Env) -> None:
     """공개 재료는 서비스에서 보지 않는다 — 평가로 한 번 본다 (#301 결정 그대로)."""
     spec, sent = await _source_spec(source_env, "public_fixed", PUBLIC_DEFAULT)
     assert sent == [] and not any(f.startswith(FLAG) for f in spec["review_flags"])
+
+
+async def test_a_company_case_shows_gaps_but_asks_nothing(source_env: Env) -> None:
+    """회사 사례는 물을 담당자가 없다 — 빠진 정보는 분석 표시로만 보이고 보강 질문은 없다."""
+    inc = await _shared_case(source_env)
+    analysis = _analysis(gaps=GAPS_FOUND)
+    spec, sent = await _source_spec(
+        source_env, "company", inc.incident_id, Completion(analysis.model_dump_json())
+    )
+    assert len(sent) == 1 and spec["reinforce_questions"] == []
+    assert any(f.startswith(GAPS) for f in spec["review_flags"])

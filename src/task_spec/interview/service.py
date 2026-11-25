@@ -24,7 +24,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Literal, NamedTuple, Protocol, TypeVar
 
 from pydantic import BaseModel, RootModel, ValidationError
 
@@ -80,6 +80,10 @@ from task_spec.interview.material_analysis import (
     analysis_flags,
     analyze_material,
     material_block,
+    reinforce_block,
+    reinforce_lines,
+    reinforce_questions,
+    reinforced_flag,
 )
 from task_spec.interview.store import CLOSED_STAGES, InterviewRepo, InterviewRow, InterviewSummary
 from task_spec.interview.stream import QuestionStream
@@ -155,6 +159,7 @@ from task_spec.schemas.interview_state import (
     InterviewSpec,
     InterviewState,
     PostingContext,
+    ReinforceAnswer,
     Stage,
     SuccessAnswers,
     TargetedQuestion,
@@ -217,6 +222,16 @@ class _GenerationInputs:
     matches: list[CompetencyEvidence]
     template: Template
     reviewer_note: str | None
+    # ⑧ 보강 질문의 답 (#308, 인터뷰 사례만) — seed 가 기능형 재료·재료 분석 입력에 넣는다
+    reinforce: tuple[ReinforceAnswer, ...] = ()
+
+
+class _MaterialCheck(NamedTuple):
+    """재료 입구 분석 결과 — 검토 표시 · provenance · 빠진 정보(가명화 검사를 거친 글, 보강 질문 재료)."""
+
+    flags: list[str]
+    provenance: list[Provenance]
+    gaps: list[str]
 
 
 def _with_trap(incident: PublicIncident, trap: TrapAnswers) -> PublicIncident:
@@ -1337,6 +1352,7 @@ class InterviewService:
             matches=[e for e in choice.matches if e.competency_id in selected],
             template=coding_template(profile.sub or ""),
             reviewer_note=self._reviewer_note(state),
+            reinforce=tuple(state.reinforce_answers) if interview else (),
         )
 
     @staticmethod
@@ -1357,18 +1373,23 @@ class InterviewService:
 
     async def _material_check(
         self, coding: PublicIncident, inp: _GenerationInputs, *, shared: bool = False
-    ) -> tuple[list[str], list[Provenance]]:
+    ) -> _MaterialCheck:
         """재료 입구 분석 (#301 PR 3) — 회사 재료가 빌드 하네스에서 재현되는지 짚어 과제 검토 표시로 (승인을 막지 않음).
         프롬프트 CURRENT 가 없으면(평가 전) 건너뛴다. 분석이 실패해도 과제 만들기는 이어 간다 — 실패도 표시로 남긴다.
         입력은 저장본 검사(stored_json)를 거친 가명화 글, 표시는 LLM 이 쓴 글이라 저장 전에 다시 검사한다 (derived).
 
         shared=True: 공유 승인된 회사 사례를 다시 쓸 때 (#308). 재료에 등록한 인터뷰의 토큰이 남아 있어 `shared_json` 으로 그 재료에
         있는 토큰까지 허용하고, 표시 검사도 같은 집합을 쓴다. 그 전에 등록 규칙(blocked_findings — LLM 입력 칸의 연락처·링크)으로
-        재료를 다시 보고, 입력 칸은 그 규칙이 LLM 입력으로 승인한 칸만 (notes 제외). 보관·반려된 재료는 _company_case 가 이미 막는다."""
+        재료를 다시 보고, 입력 칸은 그 규칙이 LLM 입력으로 승인한 칸만 (notes 제외). 보관·반려된 재료는 _company_case 가 이미 막는다.
+
+        인터뷰 사례에 ⑧ 보강 질문의 답이 있으면 재료 블록의 reinforcement 칸으로 함께 보낸다 (#308 검사 5). 빠진 정보(gaps)는
+        표시와 같은 가명화 검사를 거쳐 돌려준다 — 인터뷰 사례면 생성 마무리가 보강 질문으로 쓴다."""
         if not inp.prompts.has_current(MATERIAL_TASK):
-            return [], []
+            return _MaterialCheck([], [], [])
         try:
             block = material_block(coding, shared=shared)
+            if inp.reinforce and not shared:
+                block["reinforcement"] = reinforce_lines(inp.reinforce)
             tokens: frozenset[str] = frozenset()
             if shared:
                 # 등록 때와 같은 규칙·탐지기 — 탐지기가 블로킹이라 스레드에서 (_approval_check 와 같이)
@@ -1392,13 +1413,17 @@ class InterviewService:
                 self.pseudo.derived(f, inp.mapping, tokens)
                 for f in analysis_flags(analysis, inp.template, coding.feature)
             ]
+            gaps = [self.pseudo.derived(gap, inp.mapping, tokens) for gap in analysis.gaps]
         except (*_LLM_ERRORS, InterviewError) as exc:
             logger.warning("interview_material_check_failed type=%s", type(exc).__name__)
-            return [MATERIAL_FAILED], []
+            return _MaterialCheck([MATERIAL_FAILED], [], [])
         logger.info(
-            "interview_material_check reproducible=%s flags=%d", analysis.reproducible, len(flags)
+            "interview_material_check reproducible=%s flags=%d gaps=%d",
+            analysis.reproducible,
+            len(flags),
+            len(gaps),
         )
-        return flags, [provenance]
+        return _MaterialCheck(flags, [provenance], gaps)
 
     async def _run_step(
         self, interview_id: str, step: GenerateStep, inp: _GenerationInputs, g: InterviewGeneration
@@ -1406,10 +1431,10 @@ class InterviewService:
         """seed·feature·request·slots 하나 — 잠금 없이 (LLM 몇 분). 저장할 산출물 칸을 돌려준다."""
         if step == "seed":
             if inp.interview:
-                text = self.pseudo.stored(
-                    "\n".join([incident_block(inp.incident), known_cases_block(inp.incident)]),
-                    inp.mapping,
-                )
+                parts = [incident_block(inp.incident), known_cases_block(inp.incident)]
+                if inp.reinforce:  # ⑧ 보강 질문의 답 (#308) — 재료를 정리할 때 함께 본다
+                    parts.append(reinforce_block(inp.reinforce))
+                text = self.pseudo.stored("\n".join(parts), inp.mapping)
                 coding, seed_provenance = await self._llm(
                     prepare_coding_incident(
                         inp.incident,
@@ -1421,11 +1446,12 @@ class InterviewService:
                     )
                 )
                 self._registrable(coding)
-                seed_flags, checked = await self._material_check(coding, inp)
+                checked = await self._material_check(coding, inp)
                 return {
                     "coding_incident": coding,
-                    "seed_provenance": [*seed_provenance, *checked],
-                    "seed_flags": seed_flags,
+                    "seed_provenance": [*seed_provenance, *checked.provenance],
+                    "seed_flags": checked.flags,
+                    "seed_gaps": checked.gaps,
                 }
             coding = ready_coding_incident(inp.incident, inp.template)
             if not is_company_incident(coding.incident_id):
@@ -1433,8 +1459,12 @@ class InterviewService:
                 return {"coding_incident": coding, "seed_provenance": [], "seed_flags": []}
             # 회사 사례도 재료 입구 분석 — 재료는 고치지 않고 표시만 (물을 담당자가 없다). 2026-11-25 #308 4차: 이 분기는 분석을
             # 부르지 않아 #311 전에 등록한 회사 재료를 다시 쓰면 재현 의문이 보이지 않았다. 재현 여부는 템플릿 판에 따라 달라 쓸 때마다 본다
-            seed_flags, checked = await self._material_check(coding, inp, shared=True)
-            return {"coding_incident": coding, "seed_provenance": checked, "seed_flags": seed_flags}
+            checked = await self._material_check(coding, inp, shared=True)
+            return {
+                "coding_incident": coding,
+                "seed_provenance": checked.provenance,
+                "seed_flags": checked.flags,  # 물을 담당자가 없어 빠진 정보는 표시로만 (보강 질문 없음)
+            }
         req = TaskRequest(
             profile=inp.chosen,
             matches=inp.matches,
@@ -1505,6 +1535,11 @@ class InterviewService:
                 )
                 if n := used.get(coding_incident.incident_id, 0):
                     reuse.append(FLAG_COMPANY_REUSED.format(id=coding_incident.incident_id, n=n))
+            # 보강 질문 (#308 검사 5) — 인터뷰 사례에 빠진 정보가 있으면 ⑧ 에서 한 번 묻는다. 답한 적이 있으면 다시 묻지 않고
+            # 답을 넣어 만들었다는 표시만 (빠진 정보는 분석 표시로 그대로 보인다)
+            asked = list(state.reinforce_answers) if inp.interview else []
+            questions = reinforce_questions(g.seed_gaps) if inp.interview and not asked else []
+            seed_flags = [*g.seed_flags, *([reinforced_flag(asked)] if asked else [])]
             provenance = [*g.seed_provenance, *made.provenance]
             saved = await inp.common_store.save_draft(
                 CommonKey(
@@ -1540,8 +1575,9 @@ class InterviewService:
                 evaluation_criteria=evaluation_criteria(task),
                 generation_provenance=provenance,
                 review_flags=with_content_flags(
-                    [*made.flags, *task.review_flags, *reuse, *g.seed_flags], task, coding_incident
+                    [*made.flags, *task.review_flags, *reuse, *seed_flags], task, coding_incident
                 ),
+                reinforce_questions=questions,
             )
             state.stage = "task_review"
             state.review_note = None
@@ -1569,6 +1605,42 @@ class InterviewService:
             state = row.state.model_copy(deep=True)
             state.generation = g.model_copy(update={"reason": _generation_reason(exc)})
             await self._save(row, row.revision, state, None, keep_generation=True)
+
+    async def reinforce(
+        self, interview_id: str, *, revision: int, answers: dict[str, str | None]
+    ) -> dict[str, Any]:
+        """⑧ 보강 질문에 답한다 (#308 검사 5) — 답을 가명화해 저장하고, 과제를 버리고 ⑦ 로 (revise common 과 같은 길).
+        다음 과제 만들기가 문답을 기능형 재료·재료 분석 입력에 넣는다. 모든 질문에 답이나 '모름'(None·빈 글)을 보낸다.
+        답하지 않고 승인해도 된다 — 막지 않는다."""
+        async with self._lock(interview_id):
+            row = await self._load(interview_id)
+            self._expect_revision(row, revision)
+            state = row.state.model_copy(deep=True)
+            self._require(state, "task_review")
+            spec = state.spec
+            if spec is None or not spec.reinforce_questions:
+                raise InterviewInvalid("답할 보강 질문이 없습니다")
+            if set(answers) != {q.question_id for q in spec.reinforce_questions}:
+                raise InterviewInvalid("모든 보강 질문에 답하거나 '모름'으로 보내 주세요")
+            mapping = self._mapping(interview_id)
+            done: list[ReinforceAnswer] = []
+            for q in spec.reinforce_questions:
+                raw = (answers[q.question_id] or "").strip()
+                text = await self._pseudonymize(raw, mapping) if raw else None
+                if text is not None and len(text) > ANSWER_MAX:
+                    raise InterviewInvalid(f"답은 {ANSWER_MAX}자 이내로 적어 주세요")
+                done.append(
+                    ReinforceAnswer(question_id=q.question_id, question=q.question, answer=text)
+                )
+            state.reinforce_answers = done
+            state.spec = None
+            state.stage = "competencies"
+            logger.info(
+                "interview_reinforced answered=%d unknown=%d",
+                sum(1 for a in done if a.answer),
+                sum(1 for a in done if a.answer is None),
+            )
+            return await self._save(row, revision, state, mapping, steps=(STEP_TASK,))
 
     async def set_answers(
         self, interview_id: str, *, revision: int, answers: dict[str, str]

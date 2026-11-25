@@ -831,3 +831,105 @@ def test_lookup_keys_repeat_across_groups_too() -> None:
         "orderNo 는 values 에서 뺀다",
     ), got
     assert len(got) == 2 and not _has(got, "모든 범위의 values 에 orderNo"), got
+
+
+def test_rule_text_that_contradicts_code_filled_values_is_dropped() -> None:
+    """코드가 채우는 칸의 형식을 실제와 다르게 말하는 시드 규칙 글은 코드가 빼고 기록한다 — 재요청하지 않는다 (계약 프롬프트가 '정하지 않는
+    필드의 형식은 rules 에'라고 쓰게 해 다시 물어도 또 쓴다). 실제 형식·범위에 적은 값을 말하거나 형식을 말하지 않는 문장은 둔다."""
+    java = load_template(JAVA).manifest
+    c = _contract()
+    c["entities"][0]["fields"] += [
+        {"name": "title", "type": "string", "refs": ["r1"]},
+        {"name": "orderNo", "type": "integer", "refs": ["r1"]},
+    ]
+    seed = _seed(
+        200, (1, 5, {"status": "READY", "title": "special"}), (6, 200, {"status": "READY"})
+    )
+    seed["rules"] = [
+        "title 은 item-{id} 형식",  # 실제는 title-<id> → 뺌
+        "orderNo 는 1000부터 1씩 증가",  # 실제는 그 행의 id → 뺌
+        "title 은 1~5행이 'special'",  # 범위에 적은 값을 말함 → 둠
+        "orderNo 는 id 와 같다",  # 실제 형식 → 둠
+        "title 로 검색한다",  # 형식을 말하지 않음 → 둠
+    ]
+    c["seed"] = [seed]
+    plan = _cases(("hc1", [_rows(2, status="READY")]))
+    fitted, _, notes = fit_seed(TaskContract.model_validate(c), plan, java)
+    assert fitted.seed[0].rules == [
+        "title 은 1~5행이 'special'",
+        "orderNo 는 id 와 같다",
+        "title 로 검색한다",
+    ]
+    assert _has(notes, "시드 규칙 글을 뺌: 'title 은 item-{id} 형식'", "'title-<id>'")
+    assert _has(notes, "'orderNo 는 1000부터 1씩 증가'", "그 행의 id")
+
+
+def test_a_login_rule_text_naming_another_username_format_is_dropped_and_the_real_one_shown() -> (
+    None
+):
+    """2026-11-25 prod-b4 (운영): 계약 규칙 글 'username은 user1~user20 형식' ↔ 실제 'username-<id>'. 시드 줄은 로그인 행에만 username 이
+    있어 다른 행의 username 을 말하지 않았고, 시작 코드 생성기가 규칙 글을 믿어 findByUsername("user1") 테스트를 써 두 회차 모두 실패했다.
+    틀린 글은 빼고, 시드 줄은 범위에 적지 않은 행의 실제 값까지 적는다 (지원자 README 도 같은 줄)."""
+    java = load_template(JAVA).manifest
+    raw = _raw_login_contract(username="user1", password="user1").model_dump()
+    member = next(s for s in raw["seed"] if s["entity_id"] == "m3")
+    member["rules"] = ["username은 user1~user20 형식", "username 은 username-<id>"]
+    plan = _cases(("hc1", [_rows(2, status="READY")]))
+    out, notes = fit_output(
+        PlanContractOutput(contract=TaskContract.model_validate(raw), hidden_plan=plan),
+        java,
+        _spec(),
+    )
+    seed = next(s for s in out.contract.seed if s.entity_id == "m3")
+    assert seed.rules == ["username 은 username-<id>"]
+    assert _has([str(n) for n in notes], "username은 user1~user20 형식", "'username-<id>'")
+    entity = next(m for m in out.contract.entities if m.entity_id == "m3")
+    line = seed_markdown(seed, entity.name, entity)
+    assert "user1~user20" not in line
+    assert "위 범위에 적지 않은 행은: " in line and "`username`='username-<id>'" in line
+
+
+def test_starter_tests_that_look_up_a_value_missing_from_the_seed_are_reasked() -> None:
+    """prod-b4: 시작 코드의 기존 기능 테스트가 findByUsername("user1") 을 썼지만 시드의 username 은 'username-<id>' 였다 — 다시 만들어도
+    같은 테스트를 써 재생성 예산을 다 썼다. 저장소 조회에 넘긴 글자 값이 렌더된 시드에 없으면 실제 값 예를 붙여 처음부터 정확히 묻는다."""
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import Overlay, _starter_seed_literals
+
+    java = load_template(JAVA).manifest
+    raw = _raw_login_contract(username="user1", password="user1")
+    plan = _cases(("hc1", [_rows(2, status="READY")]))
+    contract = fit_output(PlanContractOutput(contract=raw, hidden_plan=plan), java, _spec())[
+        0
+    ].contract
+
+    def probs(
+        code: str, path: str = "src/test/java/com/example/service/SeedRepositoryTest.java"
+    ) -> list[str]:
+        o = Overlay(kind="starter", files=(GeneratedFile(path=path, content=code),))
+        return [p.message for p in _starter_seed_literals(o, contract)]
+
+    got = probs('Optional<Member> user = memberRepository.findByUsername("user1");')
+    assert (
+        len(got) == 1
+        and 'findByUsername("user1")' in got[0]
+        and "username 가 'user1' 인 행이 없다" in got[0]
+    )
+    assert "실제 값 예: 'username-1', 'username-2', 'username-3'" in got[0]
+    assert not probs('memberRepository.findByUsername("username-3")')
+    assert not probs('memberRepository.findByUsernameIgnoreCase("USERNAME-3")')
+    assert not probs('memberRepository.findAllByPassword("user1")')  # 범위에 적은 값
+    assert not probs(
+        'memberRepository.findByUsername("user1")', path="src/main/java/X.java"
+    )  # 테스트가 아님
+
+
+def test_public_row_constants_name_secret_values_with_the_field() -> None:
+    """prod-b4: 행 키(username)를 뺀 {password: user1} 그룹이 PUBLIC_USER_USER1 이 되어 username 이 user1 인 행처럼 읽혔다 —
+    비밀 칸 값은 칸 이름을 붙인다. 다른 칸은 예전 이름 그대로."""
+    from task_spec.starter.hidden_helpers import public_const
+
+    assert public_const("User", {"password": "user1"}) == "PUBLIC_USER_PASSWORD_USER1"
+    assert public_const("Order", {"status": "READY"}) == "PUBLIC_ORDER_READY"
+    assert (
+        public_const("Member", {"nickname": "Kim", "pin": "1234"}) == "PUBLIC_MEMBER_KIM_PIN_1234"
+    )
