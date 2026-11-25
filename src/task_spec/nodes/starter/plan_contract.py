@@ -34,7 +34,7 @@ from task_spec.schemas import (
 )
 from task_spec.schemas.domain import HiddenAcceptance
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.auth_rule import fit_auth
+from task_spec.starter.auth_rule import fit_auth, fit_issued_store
 from task_spec.starter.contract import (
     EVIDENCE_FRAGMENT,
     NO_EVIDENCE,
@@ -524,6 +524,9 @@ def fit_output(
     known 은 좁히기 전 템플릿의 조절값 이름 (없으면 manifest 것). interface 는 재료가 정한 명령·입출력 파일·엔티티 (#256) — 맨 먼저
     계약에 채운다 (뒤 단계 맞춤이 그 위에서 돈다)."""
     out, notes = fit_interface(out, interface, spec.req_ids, spec.public_ac_ids)
+    stored, stored_plan, store_notes = fit_issued_store(out.contract, out.hidden_plan)
+    out = out.model_copy(update={"contract": stored, "hidden_plan": stored_plan})
+    notes += store_notes
     timed, timed_plan, unit_notes = fit_setting_units(
         out.contract, out.hidden_plan
     )  # 분·시간 단위 설정은 초로 — 뒤 맞춤이 바뀐 키를 보게 먼저

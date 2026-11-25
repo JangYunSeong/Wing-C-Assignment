@@ -362,3 +362,97 @@ def test_starter_generator_is_told_which_existing_apis_are_locked() -> None:
     # 로그인이 기존 API 면 시작 코드도 로그인할 수 있다 — 표시하지 않는다
     c["endpoints"][2]["existing"] = True
     assert not any("부르지 않는다" in x for x in existing_apis(_task(), _fit(c)))
+
+
+def _with_store(returns: str | None = None) -> tuple[TaskContract, HiddenPlan]:
+    """운영 b6 모양 (가상) — 세션(m4, 로그인이 발급하는 sessionId 를 담음)이 시드 10행의 기존 테이블이고, 공개 몫·숨은 버스트가 그 행을 쓴다."""
+    from tests.starter.test_seed_rows import _cases, _rows
+
+    c = _session()
+    c["entities"].append(
+        {
+            "entity_id": "m4",
+            "name": "Session",
+            "existing": True,
+            "fields": [
+                _f("id", "integer"),
+                _f("sessionId"),
+                _f("memberId", "integer"),
+                _f("expiresAt"),
+            ],
+            "foreign_keys": ["memberId → Member"],
+        }
+    )
+    c["seed"].append(
+        {
+            "entity_id": "m4",
+            "rows": 10,
+            "groups": [{"first": 1, "last": 10, "values": {"memberId": 1}}],
+        }
+    )
+    c["public_tests"][0]["rows"] = [{"entity_id": "m4", "values": {"memberId": 1}}]
+    c["covers"] = {k: [*v, "m4"] for k, v in c.get("covers", {}).items()}
+    if returns is not None:
+        c["endpoints"].append(
+            {
+                "endpoint_id": "e4",
+                "method": "GET",
+                "path": "/api/sessions",
+                "summary": "내 세션 목록",
+                "responses": [{"status": 200, "description": "세션 목록", "returns": returns}],
+                "refs": ["r1"],
+            }
+        )
+    # nickname 은 회원에도 있는 이름 — 저장소 칸 값은 이름이 같아도 옮기지 않는다 (운영 b6: 세션 userId ↔ 회원 기본 키 userId)
+    plan = _cases(("hc1", [_rows(30, burst=True, entity="m4", memberId=1, nickname="x")]))
+    return TaskContract.model_validate(c), plan
+
+
+def test_the_issued_value_store_is_left_to_the_candidate() -> None:
+    """운영 b6 (2026-11-25): 계약이 세션을 시드 323행의 기존 테이블로 만들어, 규칙 글('id 6~10 은 만료')을 믿은 시작 코드 테스트와
+    세션 행 공개 몫으로 로그인한 공개 테스트가 떨어졌다. 발급 값의 저장소는 지원자 설계 몫 — 공개 계약에서 빼고, 숨은 케이스가
+    쓰던 행은 로그인 엔티티 행으로 옮긴다 (버스트는 그대로 — 요청마다 다른 회원으로 로그인)."""
+    from task_spec.starter.auth_rule import fit_issued_store, issued_stores
+
+    contract, plan = _with_store()
+    assert issued_stores(contract) == ["m4"]
+    fitted, fplan, notes = fit_issued_store(contract, plan)
+    assert [m.entity_id for m in fitted.entities] == ["m1", "m2", "m3"]
+    assert all(s.entity_id != "m4" for s in fitted.seed)
+    assert all(u.entity_id != "m4" for t in fitted.public_tests for u in t.rows)
+    assert all("m4" not in v for v in fitted.covers.values())
+    data = fplan.cases[0].data[0]
+    assert (data.entity_id, data.rows, data.burst, dict(data.initial)) == ("m3", 30, True, {})
+    assert "Session 엔티티를 공개 계약에서 뺌" in notes[0] and "sessionId" in notes[0]
+    assert "숨은 케이스 hc1 의 그 행을 로그인 엔티티 Member 행으로" in notes[0]
+
+
+def test_an_entity_the_api_returns_is_not_an_issued_store() -> None:
+    """API 가 그 엔티티를 돌려주면(내 세션 목록 등) 공개 동작이라 저장소가 아니다 — 그대로 둔다. 발급 규칙이 없는 계약도 그대로."""
+    from task_spec.starter.auth_rule import fit_issued_store, issued_stores
+
+    contract, plan = _with_store(returns="m4[]")
+    assert issued_stores(contract) == []
+    assert fit_issued_store(contract, plan) == (contract, plan, [])
+    plain = TaskContract.model_validate(_contract())
+    assert issued_stores(plain) == []
+
+
+def test_issued_store_contract_passes_the_contract_stage() -> None:
+    """계약 단계 전체(fit_output → check_contract)를 거쳐도 세션은 다시 생기지 않고, 옮긴 버스트 행으로 회원 시드가 늘며 문제가 없다."""
+    from task_spec.nodes.starter.plan_contract import fit_output
+    from task_spec.schemas import PlanContractOutput
+    from task_spec.starter.contract import check_contract
+    from task_spec.starter.templates import load_template
+    from tests.starter.test_seed_rows import _spec
+    from tests.starter.test_templates import JAVA
+
+    java = load_template(JAVA).manifest
+    contract, plan = _with_store()
+    out, notes = fit_output(PlanContractOutput(contract=contract, hidden_plan=plan), java, _spec())
+    assert all(m.name != "Session" for m in out.contract.entities)
+    member = next(s for s in out.contract.seed if s.entity_id == "m3")
+    assert member.rows >= 30
+    assert any("Session 엔티티를 공개 계약에서 뺌" in n for n in notes)
+    problems = check_contract(out.contract, out.hidden_plan, _spec(), java).problems
+    assert not [p for p in problems if "m4" in p or "Session" in p]
