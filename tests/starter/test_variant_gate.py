@@ -658,7 +658,7 @@ def test_all_fail_repair_note_carries_the_failed_line() -> None:
         _run("naive-all", "ref_naive", bad),
         _run("d1", "ref_accepted", bad),
     ]
-    actions, _ = _public_refs(runs, {})
+    actions, _, _ = _public_refs(runs, {})
     note = next(a.note for a in actions if a.generator == "gen_public")
     assert "실패한 줄: Pt3Test.java:27 `assertThat(foundIncluded).isTrue();`" in note
     assert "실제 데이터에서 성립" in note

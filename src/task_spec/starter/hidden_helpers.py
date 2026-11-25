@@ -899,6 +899,10 @@ def render_persistence_check(
     JPA 메타모델에서 계약 엔티티 이름으로 클래스를 찾아(클래스 이름을 미리 몰라도 됨) 필수 필드를 채워 저장해 본다.
     대상: 새로 만드는 엔티티(existing 아님) 중 처음 0행 — 옛 계약은 existing 이 모두 기본값 false 라 처음 0행 전부 (#184: 따로 두던
     옛 계약 갈래는 같은 결과라 지웠다).
+
+    외래 키는 시작 코드의 설계라 이 확인의 대상이 아니다 — 저장해 보는 동안만 H2(템플릿의 실행 DB)의 참조 검사를 끄고, 저장한 줄은
+    id 를 읽은 뒤 되돌린다. 2026-11-25 재시도 중복 알파: 채운 임시 값('x')이 시작 코드의 FK(충전 기록 → 회원)를 어겨 이 확인이
+    시작 코드를 탓했고, 다시 만든 시작 코드가 FK 를 지웠다. 예전에는 임시 줄을 커밋해 다른 테스트에도 남았다.
     """
     rule = manifest.public_helper
     if rule is None or not is_java(manifest):  # JPA 메타모델로 저장해 보는 Java 전용 확인
@@ -921,10 +925,13 @@ import jakarta.persistence.metamodel.EntityType;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -941,6 +948,9 @@ class PersistenceCheckTest extends {rule.class_name} {{
     @Autowired
     PlatformTransactionManager tx;
 
+    @Autowired
+    DataSource dataSource;
+
     @Test
     void 새로_만드는_엔티티를_저장하면_id_가_생긴다() throws Exception {{
         for (String name : new String[] {{{names}}}) {{
@@ -949,10 +959,30 @@ class PersistenceCheckTest extends {rule.class_name} {{
                     .findFirst()
                     .orElse(null);
             assertThat(type).as("계약 엔티티 %s 의 JPA 엔티티 클래스 (클래스 이름은 계약 엔티티 이름)", name).isNotNull();
-            Object row = newRow(type.getJavaType());
-            new TransactionTemplate(tx).executeWithoutResult(status -> em.persist(row));
-            Object id = em.getEntityManagerFactory().getPersistenceUnitUtil().getIdentifier(row);
+            Object id = persistAndRollBack(newRow(type.getJavaType()));
             assertThat(id).as("%s 를 저장하면 id 가 생긴다 — 앱이 행을 만드는 엔티티라 id 생성 전략이 필요", name).isNotNull();
+        }}
+    }}
+
+    /** 외래 키는 시작 코드의 설계라 이 확인의 대상이 아니다 — 저장해 보는 동안만 참조 검사를 끄고, 저장한 줄은 id 를 읽은 뒤 되돌린다. */
+    private Object persistAndRollBack(Object row) throws Exception {{
+        sql("SET REFERENTIAL_INTEGRITY FALSE");  // H2 — 트랜잭션 밖에서 (열린 트랜잭션을 커밋하는 명령)
+        try {{
+            return new TransactionTemplate(tx).execute(status -> {{
+                em.persist(row);
+                em.flush();
+                Object id = em.getEntityManagerFactory().getPersistenceUnitUtil().getIdentifier(row);
+                status.setRollbackOnly();
+                return id;
+            }});
+        }} finally {{
+            sql("SET REFERENTIAL_INTEGRITY TRUE");
+        }}
+    }}
+
+    private void sql(String statement) throws Exception {{
+        try (Connection c = dataSource.getConnection(); Statement s = c.createStatement()) {{
+            s.execute(statement);
         }}
     }}
 

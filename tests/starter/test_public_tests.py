@@ -63,6 +63,13 @@ def test_persistence_check_targets_new_empty_entities() -> None:
     assert f is not None and f.path == f"{PUB}/PersistenceCheckTest.java"
     assert 'new String[] {"OrderHistory"}' in f.content and "extends PublicCase" in f.content
     assert "getPersistenceUnitUtil().getIdentifier(row)" in f.content
+    # 외래 키는 이 확인의 대상이 아니다 — 저장해 보는 동안만 참조 검사를 끄고(finally 에서 켬), 저장한 줄은 되돌린다
+    # (2026-11-25 재시도 중복 알파: 임시 값이 시작 코드 FK 를 어겨 시작 코드를 다시 만들었고, 다시 만든 시작 코드가 FK 를 지웠다)
+    body = f.content
+    off = body.index("SET REFERENTIAL_INTEGRITY FALSE")
+    on = body.index("SET REFERENTIAL_INTEGRITY TRUE")
+    assert off < body.index("em.persist(row)") < body.index("finally") < on
+    assert "status.setRollbackOnly()" in body and "executeWithoutResult" not in body
     # 처음 0행인 엔티티가 없으면 만들지 않는다
     seeded = b.contract.model_copy(
         update={
