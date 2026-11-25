@@ -131,6 +131,11 @@ class FailureReason(Schema):
     # 이 사유가 그 조절값으로 실제로 일어나는 조건 — 성립하지 않으면 계약 단계에서 숫자를 붙여 재요청한다.
     # 2026-11-10 변별 실패 분석: N+1 계획 23개 중 5개가 200행 × 20ms = 4초 < 요청 한도 30~65초라 흔한 구현이 떨어질 수 없었다.
     feasible: list[Feasibility] = Field(default_factory=list)
+    # 이 사유를 재현하려고 빌드가 실험으로 맞출 수 있는 숨긴 조절값 (#301) — 수치는 LLM 이 아니라 실험이 정한다 [확정: 2026-11-25 사용자].
+    # 계약 LLM 이 넣으면 코드가 뺀다 (plan_contract.fit_tuned_params). 이름은 harness_params 의 숨긴 int 조절값만 (TemplateManifest.tune_problems).
+    # 2026-11-24 세션 유지 알파(#301): 흔한 구현이 Hikari 기본 대기 30초에서 숨은 케이스를 통과했는데, 같은 코드가 대기 한도·지연만 바꾸자
+    # pool_acquire_timeout 으로 떨어졌다 — 재생성으로는 풀 수 없는 조절값 문제였다.
+    tunes: list[str] = Field(default_factory=list)
 
     @field_validator("log_patterns", "requires", "assert_on", "assert_not_on")
     @classmethod
@@ -529,7 +534,34 @@ class TemplateManifest(Schema):
             param = self.param(name)
             if param is None or param.kind != "int":
                 raise ValueError(f"burst_rows 의 {name} 이 int 조절값이 아님")
+        if bad := self.tune_problems():
+            raise ValueError("; ".join(bad))
         return self
+
+    def tune_problems(self) -> list[str]:
+        """사유의 tunes 가 이 매니페스트의 숨긴 int 조절값인지 — 비면 맞다. 매니페스트 검증과 재료 안내 검사
+        (material_guide.guide_problems — 합친 사유는 model_copy 라 검증을 다시 거치지 않는다)가 같이 쓴다.
+        보이는 값은 지원자가 자료에서 보는 운영 조건이라 빌드가 바꾸면 명세와 채점이 어긋난다."""
+        out: list[str] = []
+        for r in self.failure_reasons:
+            if len(set(r.tunes)) != len(r.tunes):
+                out.append(f"사유 {r.code} 의 tunes 이름이 겹침")
+            for name in r.tunes:
+                param = self.param(name)
+                if param is None:
+                    out.append(f"사유 {r.code} 의 tunes {name} 이 harness_params 에 없음")
+                elif param.visible:
+                    out.append(
+                        f"사유 {r.code} 의 tunes {name} 이 보이는 조절값 — 보이는 값은 보정하지 않는다"
+                    )
+                elif param.kind != "int":
+                    out.append(f"사유 {r.code} 의 tunes {name} 이 int 조절값이 아님")
+                elif param.required:
+                    # 계약이 반드시 내야 하는 값인데 계약 단계가 빼면(plan_contract.fit_tuned_params) 계약 검사와 어긋난다
+                    out.append(
+                        f"사유 {r.code} 의 tunes {name} 이 필수 조절값 — 계약이 내는 값은 보정하지 않는다"
+                    )
+        return out
 
     @property
     def ref(self) -> str:

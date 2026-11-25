@@ -1,0 +1,213 @@
+"""빌드가 실험으로 맞출 숨긴 조절값 (#301) — Java 템플릿 v4 의 tunes·대기 한도·지연 기본값, 계약 단계에서 tunes 값 빼기,
+재료 안내의 tunes. 가상 데이터만 — 네트워크·빌드 없음 (v4 하네스 자체 점검은 Gradle 로 따로 돌린다, templates/README.md).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+from pydantic import ValidationError
+
+from task_spec.nodes.starter.plan_contract import fit_tuned_params, for_material
+from task_spec.schemas import FailureReason, MaterialGuide
+from task_spec.schemas.build import HiddenPlan
+from task_spec.schemas.incident import PublicIncident
+from task_spec.schemas.template import TemplateManifest
+from task_spec.starter.feasibility import harness_env
+from task_spec.starter.material_guide import guide_problems, with_guide
+from task_spec.starter.templates import TEMPLATES_ROOT, check_template, load_template
+
+JAVA = "backend/java-spring-boot3-jpa"
+V4 = load_template(JAVA, 4)
+INCIDENTS = Path(__file__).parents[2] / "incidents/public_v1"
+POOL_TUNES = ["connection_timeout_ms", "query_delay_ms"]
+
+
+def _incident(name: str) -> PublicIncident:
+    return PublicIncident.model_validate(json.loads((INCIDENTS / name).read_text("utf-8")))
+
+
+def _raw_v4() -> dict[str, Any]:
+    return yaml.safe_load((TEMPLATES_ROOT / JAVA / "v4" / "manifest.yaml").read_text("utf-8"))
+
+
+def _plan(harness: dict[str, object], evidence: dict[str, str] | None = None) -> HiddenPlan:
+    return HiddenPlan.model_validate(
+        {
+            "harness": harness,
+            "evidence": evidence or {},
+            "cases": [
+                {
+                    "case_id": "hc1",
+                    "ac_id": "h1",
+                    "trap_id": "t1",
+                    "scenario": "가상 피크 시간 동시 조회",
+                    "expect": "모든 요청이 한도 안에 200",
+                    "intended_reason": "pool_acquire_timeout",
+                    "data": [{"entity_id": "m1", "rows": 300, "burst": True}],
+                }
+            ],
+        }
+    )
+
+
+def _pool_reason(**update: Any) -> FailureReason:
+    """재료 안내가 다시 쓴 풀 사유 — 하네스 표기(log_patterns)는 템플릿과 같다."""
+    base = next(r for r in V4.manifest.failure_reasons if r.code == "pool_acquire_timeout")
+    return base.model_copy(update={"tunes": [], "how": "가상 재료의 피크 재현법", **update})
+
+
+# ── 템플릿 v4 ─────────────────────────────────────────────────────────
+
+
+def test_java_v4_hides_the_measurement_knobs_and_names_what_the_build_may_tune() -> None:
+    """대기 한도는 숨김·최소 250(Hikari 하한 — 1~249 는 기동 실패)·기본값 없음, 지연 기본값 20, 사유 tunes. 매니페스트만 바뀐 판."""
+    m = V4.manifest
+    assert m.ref == f"{JAVA}@v4" and check_template(V4) == [] and m.tune_problems() == []
+    timeout = m.param("connection_timeout_ms")
+    assert timeout is not None and not timeout.visible and timeout.minimum == 250
+    assert timeout.default is None and timeout.default_expr is None
+    # 재료가 나열하면 보이는 값이 된다 (for_material) — 명세 근거 대조·운영 값 검사는 그대로 쓴다
+    assert timeout.spec_patterns and timeout.config_keys
+    delay = m.param("query_delay_ms")
+    assert delay is not None and not delay.visible
+    assert delay.default == 20 and delay.default_expr is None
+    assert {r.code: r.tunes for r in m.failure_reasons if r.tunes} == {
+        "pool_acquire_timeout": POOL_TUNES,
+        "request_timeout": ["query_delay_ms", "request_timeout_s"],
+    }
+    v3 = load_template(JAVA, 3)
+    for sub in ("project", "hidden"):
+        assert V4.files(sub) == v3.files(sub)
+        for rel in V4.files(sub):
+            assert (V4.root / sub / rel).read_bytes() == (v3.root / sub / rel).read_bytes(), rel
+
+
+def test_java_v4_feasibility_defaults_are_what_the_harness_uses() -> None:
+    """성립 검사가 빈 값에 쓰는 값 = 하네스가 실제로 쓰는 값. 2026-11-25 #301 팩트체크: 대기 한도에 default 30000 을 두면
+    성립 검사는 요청 한도를 65초로 계산하는데 하네스는 파일에 값이 없을 때 0 으로 계산해 30초였다."""
+    env = harness_env({"pool_size": 20, "concurrency": 100}, V4.manifest)
+    assert "connection_timeout_ms" not in env
+    assert env["query_delay_ms"] == 20 and env["request_timeout_s"] == 30
+    support = (V4.root / "hidden/harness/GraderSupport.java").read_text("utf-8")
+    assert 'GraderParams.longValue("connection_timeout_ms", 0)' in support
+    doc = (V4.root / "hidden/HARNESS.md").read_text("utf-8")
+    assert 'GraderParams.longValue("query_delay_ms", 20)' in doc
+
+
+@pytest.mark.parametrize(
+    ("tunes", "why"),
+    [
+        (["pool_size"], "보이는 조절값"),
+        (["no_such_param"], "harness_params 에 없음"),
+        (["query_delay_ms", "query_delay_ms"], "겹침"),
+    ],
+)
+def test_tunes_name_only_hidden_params(tunes: list[str], why: str) -> None:
+    raw = _raw_v4()
+    next(r for r in raw["failure_reasons"] if r["code"] == "pool_acquire_timeout")["tunes"] = tunes
+    with pytest.raises(ValidationError, match=why):
+        TemplateManifest.model_validate(raw)
+
+
+def test_tunes_name_only_int_params() -> None:
+    raw = _raw_v4()
+    raw["harness_params"].append(
+        {
+            "name": "inject_ids",
+            "kind": "int_list",
+            "description": "가상 주입 대상",
+            "required": False,
+        }
+    )
+    next(r for r in raw["failure_reasons"] if r["code"] == "request_timeout")["tunes"] = [
+        "inject_ids"
+    ]
+    with pytest.raises(ValidationError, match="int 조절값이 아님"):
+        TemplateManifest.model_validate(raw)
+
+
+def test_tunes_name_only_optional_params() -> None:
+    """필수 조절값은 계약이 내야 하는 값 — 계약 단계가 tunes 값을 빼면(fit_tuned_params) 계약 검사와 어긋난다."""
+    raw = _raw_v4()
+    next(p for p in raw["harness_params"] if p["name"] == "query_delay_ms")["required"] = True
+    with pytest.raises(ValidationError, match="필수 조절값"):
+        TemplateManifest.model_validate(raw)
+
+
+# ── 계약 단계 ─────────────────────────────────────────────────────────
+
+
+def test_contract_drops_tuned_hidden_values_the_llm_wrote() -> None:
+    """계약 LLM 이 숨긴 보정 값을 넣으면 코드가 뺀다 — 수치는 LLM 이 아니라 실험이 정한다 (#301). 보이는 운영 값·숨은 장치(bursts)는 그대로."""
+    plan = _plan(
+        {
+            "pool_size": 20,
+            "concurrency": 100,
+            "bursts": 3,
+            "connection_timeout_ms": 1000,
+            "query_delay_ms": 5,
+            "request_timeout_s": 2,
+        },
+        {"pool_size": "DB 연결 최대값은 20 입니다", "connection_timeout_ms": "없음"},
+    )
+    fixed, notes = fit_tuned_params(plan, V4.manifest)
+    assert fixed.harness == {"pool_size": 20, "concurrency": 100, "bursts": 3}
+    assert fixed.evidence == {"pool_size": "DB 연결 최대값은 20 입니다"}
+    assert fixed.cases == plan.cases
+    assert notes == [
+        "빌드가 실험으로 정할 숨긴 조절값 뺌: connection_timeout_ms=1000, query_delay_ms=5, "
+        "request_timeout_s=2 (사유의 tunes)"
+    ]
+    assert fit_tuned_params(fixed, V4.manifest) == (fixed, [])
+    # tunes 가 없는 판(CURRENT v2)은 예전 그대로
+    assert fit_tuned_params(plan, load_template(JAVA, 2).manifest) == (plan, [])
+
+
+def test_contract_keeps_tuned_values_the_material_lists() -> None:
+    """재료가 나열한 값은 보이는 운영 조건 (for_material) — 명세 근거로 확인한 값이라 빼지 않는다 (목록 조회 재료: 지연·요청 한도)."""
+    seed = _incident("sw.backend.n-plus-one.json").feature
+    m = for_material(V4, seed).manifest
+    assert {p.name for p in m.harness_params if p.visible} >= {
+        "query_delay_ms",
+        "request_timeout_s",
+    }
+    plan = _plan({"query_delay_ms": 11, "request_timeout_s": 1})
+    assert fit_tuned_params(plan, m) == (plan, [])
+
+
+# ── 재료 안내 ─────────────────────────────────────────────────────────
+
+
+def test_guide_redefining_a_reason_keeps_the_template_tunes() -> None:
+    """재료가 같은 code 의 사유를 다시 써도 tunes 를 적지 않았으면 템플릿 것을 잇는다 — 보정할 값은 하네스 것이다."""
+    guide = MaterialGuide(
+        incident_id="pub:sw.backend:pool-hold-and-wait-deadlock", failure_reasons=[_pool_reason()]
+    )
+    pool = next(
+        r
+        for r in with_guide(V4, guide).manifest.failure_reasons
+        if r.code == "pool_acquire_timeout"
+    )
+    assert pool.how == "가상 재료의 피크 재현법" and pool.tunes == POOL_TUNES
+    own = guide.model_copy(update={"failure_reasons": [_pool_reason(tunes=["query_delay_ms"])]})
+    pool = next(
+        r for r in with_guide(V4, own).manifest.failure_reasons if r.code == "pool_acquire_timeout"
+    )
+    assert pool.tunes == ["query_delay_ms"]  # 재료가 적었으면 재료 것
+
+
+def test_guide_problems_flag_tunes_that_are_not_hidden_params() -> None:
+    """합친 사유는 model_copy 라 매니페스트 검증을 다시 거치지 않는다 — 재료 안내 검사가 tunes 를 본다."""
+    incident = _incident("sw.backend.json")
+    bad = MaterialGuide(
+        incident_id=incident.incident_id, failure_reasons=[_pool_reason(tunes=["pool_size"])]
+    )
+    probs = guide_problems(bad, incident, load=lambda ref: V4)
+    assert any("tunes pool_size 이 보이는 조절값" in p for p in probs), probs
+    ok = bad.model_copy(update={"failure_reasons": [_pool_reason()]})
+    assert guide_problems(ok, incident, load=lambda ref: V4) == []
