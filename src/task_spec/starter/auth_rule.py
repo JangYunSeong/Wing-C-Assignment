@@ -161,7 +161,7 @@ def _fit_login_entity(contract: TaskContract, rule: AuthRule, notes: list[str]) 
 @dataclass(frozen=True)
 class Credential:
     """발급 API 요청 칸 하나의 행별 값 — 시드 SQL 과 같은 규칙(seed_sql._value): 그 행의 그룹 값, 없으면 기본값
-    (글자 '<칸>-<행>' 20자까지 · 정수는 행 번호 · enum 첫 값 · boolean false)."""
+    (글자 '<칸>-<행>' 20자 안 — seed_sql.text_default · 정수는 행 번호 · enum 첫 값 · boolean false)."""
 
     name: str
     groups: tuple[tuple[int, int, SeedScalar], ...]

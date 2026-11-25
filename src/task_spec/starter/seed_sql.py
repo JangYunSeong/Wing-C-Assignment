@@ -88,6 +88,18 @@ def time_value(kind: TimeKind, row: int) -> str:
     return (_BASE_TIME + timedelta(minutes=minutes)).isoformat(timespec="seconds")
 
 
+# 글자 기본값 길이 상한 — 도우미(hidden_helpers 의 <칸>Of·loginBody)가 같은 규칙을 쓴다
+TEXT_MAX = 20
+
+
+def text_default(name: str, row: int) -> str:
+    """글자 칸 기본값 `<칸>-<행>` (20자 안). 넘치면 칸 이름 쪽을 잘라 행 번호를 남긴다 — 행마다 다르게.
+    2026-11-25 #308 팩트체크: 끝을 20자로 자르면 이름이 긴 칸은 행 번호가 잘려 겹쳤다 (18자 이름 300행 중 291개, 21자 이름 전부).
+    20자 안의 값은 예전과 같다."""
+    suffix = f"-{row}"
+    return name[: max(0, TEXT_MAX - len(suffix))] + suffix
+
+
 def default_value(f: ContractField, row: int) -> object:
     """그룹 값이 없는 필수 필드의 결정적 기본값 (행 id 로 서로 다르게)."""
     ft = non_null(parse(f.type))
@@ -99,7 +111,7 @@ def default_value(f: ContractField, row: int) -> object:
         return False
     if (kind := time_kind(f)) is not None:
         return time_value(kind, row)
-    return f"{f.name}-{row}"[:20]
+    return text_default(f.name, row)
 
 
 def _insert_fields(m: Entity, s: SeedRule) -> list[ContractField]:

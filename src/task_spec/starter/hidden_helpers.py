@@ -32,8 +32,15 @@ from task_spec.schemas.build import (
 from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.auth_rule import Credential, credentials, issued_rule
 from task_spec.starter.header_values import ISSUED, PER_REQUEST, HeaderValues, header_values
-from task_spec.starter.seed_rows import allocate_rows, matches, public_free
-from task_spec.starter.seed_sql import default_value, time_kind
+from task_spec.starter.seed_rows import (
+    allocate_rows,
+    matches,
+    public_free,
+    row_keys,
+    strip_keys,
+    unique_fields,
+)
+from task_spec.starter.seed_sql import TEXT_MAX, default_value, text_default, time_kind
 from task_spec.starter.state_rule import next_states, sentence
 from task_spec.starter.tables import contract_tables, spring_snake
 from task_spec.starter.templates import is_java, is_python
@@ -110,16 +117,19 @@ def row_use_consts(
         return []
     out: list[str] = []
     seen: set[tuple[tuple[str, str], ...]] = set()
+    keys = row_keys(contract, use.entity_id)
     for s in contract.seed:
         if s.entity_id != use.entity_id:
             continue
         for g in sorted(s.groups, key=lambda x: x.first):
-            key = tuple(sorted((k, str(v)) for k, v in g.values.items()))
+            # 그룹 이름은 행 키를 뺀 처음 값 — public_free 와 같다 (#308)
+            shown = strip_keys(g.values, keys)
+            key = tuple(sorted((k, str(v)) for k, v in shown.items()))
             if key in seen:
                 continue
             seen.add(key)
             if matches(g.values, use.values):
-                out.append(public_const(names[use.entity_id], g.values))
+                out.append(public_const(names[use.entity_id], shown))
     if plan is not None:  # 공개 몫 id 가 비면 도우미에 상수가 없다 (public_rows 와 같은 이름만)
         have = set(public_rows(contract, plan))
         out = [n for n in out if n in have]
@@ -193,27 +203,30 @@ _PATH_PARAM = re.compile(r"\{(\w+)\}")
 
 
 def key_fields(contract: TaskContract) -> list[tuple[str, str, bool]]:
-    """경로로 한 행을 가리키는데 시드가 값을 정하지 않아 코드 기본값(행 번호에서)이 들어가는 필드 — (필드, 앞붙이, 숫자인가).
-    숫자면 그 행 번호, 글자면 `필드이름-행번호`(20자까지) — seed_sql.default_value 와 같다.
+    """경로로 한 행을 가리키거나 고유 칸인데 시드가 값을 정하지 않아 코드 기본값(행 번호에서)이 들어가는 필드 — (필드, 칸 이름, 숫자인가).
+    숫자면 그 행 번호, 글자면 `필드이름-행번호`(20자 안 — seed_sql.text_default 와 같다).
 
     2026-11-09 v16-be2: 시드는 memberId='memberId-191' 인데 숨은·공개 테스트가 "member-" + HC2_FIRST 로 짐작해 모두 대상 없음.
-    테스트는 행 번호만 받았다 — 키 값을 만드는 함수를 도우미가 준다 (헤더 상수와 같은 방식)."""
+    테스트는 행 번호만 받았다 — 키 값을 만드는 함수를 도우미가 준다 (헤더 상수와 같은 방식). 2026-11-25 #308: 고유 칸은 코드가
+    고정하지 않으므로(seed_rows.fit_seed) 그 값도 행 번호로 받게 고유 칸까지 넓혔다."""
     params = {p for e in contract.endpoints for p in _PATH_PARAM.findall(e.path)} - {"id"}
     seeded = {s.entity_id: s for s in contract.seed if s.rows > 0}
-    out: list[tuple[str, str, bool]] = []
+    # 이름마다 하나 — 도우미 함수 이름이 <칸>Of 라 두 엔티티의 같은 이름 칸이 겹치면 컴파일 오류
+    out: dict[str, tuple[str, str, bool]] = {}
     for m in contract.entities:
         s = seeded.get(m.entity_id)
         if s is None:
             continue
+        wanted = params | unique_fields(contract, m.entity_id)
         for f in m.fields:
-            if f.name not in params or any(f.name in g.values for g in s.groups):
+            if f.name not in wanted or any(f.name in g.values for g in s.groups):
                 continue
             a, b = default_value(f, 7), default_value(f, 8)
             if isinstance(a, int) and not isinstance(a, bool) and (a, b) == (7, 8):
-                out.append((f.name, "", True))
-            elif a == f"{f.name}-7"[:20] and b == f"{f.name}-8"[:20]:
-                out.append((f.name, f"{f.name}-", False))
-    return list(dict.fromkeys(out))
+                out.setdefault(f.name, (f.name, "", True))
+            elif a == text_default(f.name, 7) and b == text_default(f.name, 8):
+                out.setdefault(f.name, (f.name, f.name, False))
+    return list(out.values())
 
 
 def time_values(contract: TaskContract, plan: HiddenPlan) -> dict[str, dict[int, str]]:
@@ -271,19 +284,26 @@ def _key_lines(contract: TaskContract) -> list[str]:
         return []
     lines = [
         "",
-        "    // ── 경로 키 값: 시드 행 번호(HC…_FIRST·PUBLIC_…) → 그 행의 경로 값. 키 값을 직접 만들지 않는다 ──",
+        "    // ── 경로 키·고유 칸 값: 시드 행 번호(HC…_FIRST·PUBLIC_…) → 그 행의 값. 값을 직접 만들지 않는다 ──",
     ]
-    for name, prefix, numeric in keys:
+    for name, base, numeric in keys:
         if numeric:
             lines.append(f"    protected static long {name}Of(long row) {{ return row; }}")
         else:
             lines += [
                 f"    protected static String {name}Of(long row) {{",
-                f'        String v = "{prefix}" + row;',
-                "        return v.length() > 20 ? v.substring(0, 20) : v;",
+                f"        {_text_default_java(base)}",
                 "    }",
             ]
     return lines
+
+
+def _text_default_java(name: str) -> str:
+    """글자 기본값 `<칸>-<행>` 을 Java 로 — seed_sql.text_default 와 같은 규칙 (20자 안, 넘치면 칸 이름 쪽을 자른다)."""
+    return (
+        f'String s = "-" + row, n = {json.dumps(name)}; '
+        f"return n.substring(0, Math.min(n.length(), Math.max(0, {TEXT_MAX} - s.length()))) + s;"
+    )
 
 
 def _header_lines(contract: TaskContract) -> list[str]:
@@ -386,7 +406,7 @@ def _credential_lines(c: Credential) -> list[str]:
     elif c.default == "fixed":
         fallback = f"return {_java_scalar(c.fixed if c.fixed is not None else '')};"
     else:
-        fallback = f'String v = "{c.name}-" + row; return v.length() > 20 ? v.substring(0, 20) : v;'
+        fallback = _text_default_java(c.name)
     return [
         "",
         f"    private static Object {_credential_fn(c)}(long row) {{",

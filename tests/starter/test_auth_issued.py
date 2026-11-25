@@ -203,12 +203,15 @@ def test_helper_logs_in_with_the_login_row_for_a_session() -> None:
     assert helper is not None
     body = helper.content
     assert "protected static final long SESSION_USER_ID = 6L;" in body
-    # 자격 증명은 행의 함수 — 시드 SQL 과 같은 규칙 (그 행의 그룹 값, 없으면 '<칸>-<행>' 20자까지)
+    # 자격 증명은 행의 함수 — 시드 SQL 과 같은 규칙 (그 행의 그룹 값, 없으면 '<칸>-<행>' 20자 안)
     assert "protected static String loginBody(long row) {" in body
     assert "protected static String loginBody(long row, String field, Object value) {" in body
     assert 'body.put("username", credentialUsername(row));' in body
     assert 'if (row >= 6 && row <= 6) return "username-6";' in body
-    assert 'String v = "password-" + row; return v.length() > 20 ? v.substring(0, 20) : v;' in body
+    assert (
+        'String s = "-" + row, n = "password"; '
+        "return n.substring(0, Math.min(n.length(), Math.max(0, 20 - s.length()))) + s;"
+    ) in body  # seed_sql.text_default — 넘치면 칸 이름 쪽을 잘라 행 번호를 지킨다
     assert "HttpResponse<String> r = postApiAuthLogin(Map.of(), loginBody(row));" in body
     assert "protected String newSession(long row) {" in body
     assert "return newSession(SESSION_USER_ID);" in body
