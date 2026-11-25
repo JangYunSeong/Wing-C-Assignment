@@ -9,7 +9,7 @@ import pytest
 
 from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
 from task_spec.starter.render import RenderError, contract_markdown, render_params, render_readme
-from task_spec.starter.templates import TEMPLATES_ROOT, load_template
+from task_spec.starter.templates import TEMPLATES_ROOT, current_version, load_template
 from tests.starter.test_contract import _contract, _plan
 from tests.starter.test_plan_contract import _task
 
@@ -91,7 +91,7 @@ def test_public_tests_listed_only_when_given() -> None:
 def test_template_with_unknown_slot_or_empty_value_is_an_error(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    tpl = root / JAVA / "v2" / "README.tpl.md"  # CURRENT
+    tpl = root / JAVA / f"v{current_version(JAVA)}" / "README.tpl.md"  # CURRENT
     tpl.write_text(tpl.read_text("utf-8") + "\n{{hidden_requirement}}\n", "utf-8")
     with pytest.raises(RenderError, match="hidden_requirement"):
         render_readme(_approved(), _contract_with_list(), load_template(JAVA, root=root))
@@ -181,7 +181,7 @@ def test_thin_contract_keeps_shapes_and_hides_values_and_rules() -> None:
 def test_thin_readme_needs_both_template_sections(tmp_path: Path) -> None:
     root = tmp_path / "templates"
     shutil.copytree(TEMPLATES_ROOT / JAVA, root / JAVA)
-    tpl = root / JAVA / "v2" / "README.tpl.md"
+    tpl = root / JAVA / f"v{current_version(JAVA)}" / "README.tpl.md"
     tpl.write_text(tpl.read_text("utf-8").replace("## 공개 수용 기준", "## 수용 기준"), "utf-8")
     with pytest.raises(RenderError, match="공개 수용 기준"):
         render_readme(_analysis(), _contract_with_list(), load_template(JAVA, root=root))
