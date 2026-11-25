@@ -2,7 +2,7 @@
 
 > 상태: **[제안] 초안** (2026-11-25, #308 순서 4 → #318). 결정 넷 중 D1·D3·D4 는 [확정: 2026-11-25 사용자] (§10). B 기본 여부(D2)는 v5 승격 판단(운영 서버) 결과를 보고 정한다.
 > 구현: 1단계 뼈대 (#318, 브랜치 `feat/trap-frame`) — 틀 스키마(`schemas/trap_frame.py`)·프롬프트 `trap_frame` v1(`eval: pending`, CURRENT 없음 → 틀 단계를 건너뛰어 지금 동작 그대로)·틀 적용 재료(`interview/trap_frame.apply_frame`)·생성 흐름·공통 과제 행 저장(`common_task.framed`)·빌드 계약 단계·검사 4.
-> 2단계 (같은 브랜치): 프롬프트 `trap_frame` v1→v3 평가(qwen, `eval/interview/run_trap_frame.py`) — v1 은 평범한 재료의 숨은 요구를 다시 쓰며 조건을 빼거나 설계를 좁혔고 업무 엔티티를 금지했다. design 틀의 숨은 요구는 재료 것을 글자 그대로 담아야 쓴다(`keeps_hidden`, 아니면 재료 것). 금지 엔티티 이름은 영문 PascalCase. `draft_feature_task` v13 이 틀의 공개 쪽을 받는다(`frame_public_text`, CURRENT 는 평가 뒤).
+> 2단계 (같은 브랜치): 프롬프트 `trap_frame` v1→v3 평가(qwen, `eval/interview/run_trap_frame.py`) → **CURRENT = v3** (2026-11-26 사용자, `prompts/trap_frame/PROMOTIONS.md`). v1 은 평범한 재료의 숨은 요구를 다시 쓰며 조건을 빼거나 설계를 좁혔고 업무 엔티티를 금지했다. design 틀의 숨은 요구는 재료 것을 글자 그대로 담아야 쓴다(`keeps_hidden`, 아니면 재료 것). 금지 엔티티 이름은 영문 PascalCase. `draft_feature_task` v13 이 틀의 공개 쪽을 받는다(`frame_public_text`, CURRENT 는 평가 뒤).
 > 근거: #308 본문, 팩트체크 1~4차 댓글, 정리 댓글(남은 일·순서), 운영 분석(r3 빼먹기, 2026-11-25), 5차 팩트체크(이 초안의 코드 대조 — 틀이 계약 단계에 닿는 길, 재료 칸을 그대로 쓰는 코드).
 
 명세를 쓰기 **전에** 함정의 모양을 정한다. 무엇을 숨기고 무엇을 공개하며, 공개 쪽에 무엇을 쓰면 안 되는지, 허용 설계가 공개 요구를 지킬 수 있는지를 먼저 정한다. 그다음 명세·계약 생성과 검사가 그 틀을 따른다.
