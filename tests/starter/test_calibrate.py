@@ -18,6 +18,7 @@ import pytest
 from task_spec.nodes.starter import build as build_mod
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.schemas import VerifyReport
+from task_spec.schemas.domain import Artifact, TaskItem
 from task_spec.schemas.verify_report import TargetRun
 from task_spec.starter.calibrate import (
     FLAG,
@@ -28,11 +29,13 @@ from task_spec.starter.calibrate import (
     knobs,
     pick,
     search,
+    spec_note,
+    spec_values,
 )
 from task_spec.starter.repair import MATERIAL_VERDICT, RepairPlan, assign
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template, load_template
-from tests.starter.test_generate import D1, _files, _inputs
+from tests.starter.test_generate import D1, _files, _inputs, _task
 from tests.starter.test_repair import MISSED, OVERLAYS, PLAN2, PROMPTS, _llm, _report, _run, _t
 from tests.starter.test_static_check import CASES, HC1, PLAN
 from tests.starter.test_static_check import JAVA as JAVA_V1
@@ -329,11 +332,14 @@ HIDDEN_DELAY = _files(
 )
 
 
-async def _loop(verifier: QueueVerifier, max_rounds: int = 3) -> tuple[Any, Any]:
+async def _loop(
+    verifier: QueueVerifier, max_rounds: int = 3, task: TaskItem | None = None
+) -> tuple[Any, Any]:
     llm, backend = _llm(gen_hidden=[HIDDEN_DELAY])
     hidden_plan = PLAN.model_copy(update={"harness": {"pool_size": 8, "concurrency": 32}})
+    over: dict[str, Any] = {"task": task} if task is not None else {}
     out = await build_and_repair(
-        _inputs(template=_tuned(), plan=hidden_plan),
+        _inputs(template=_tuned(), plan=hidden_plan, **over),
         (D1,),
         llm=llm,
         prompts=PROMPTS,
@@ -437,3 +443,37 @@ async def test_replay_reads_a_saved_alpha_and_runs_the_same_calibration(tmp_path
     ]
     assert rows[0]["window"] == [250, 500] and len(rows[0]["trials"]) == 8
     assert verifier.trials[0] == ["cal1-d1", "cal1-naive-all"]  # 폴더 이름순 — 라벨이 대상
+
+
+# ── 보정 값 ↔ 명세 수치 (#308) ────────────────────────────────────────
+
+
+HIKARI_LOG = "WARN HikariPool-1 - Connection is not available, request timed out after 3000ms."
+
+
+def test_spec_values_read_settings_and_the_hikari_log() -> None:
+    """표기 패턴은 설정 꼴만 읽어 2단계 로그의 Hikari 문구를 못 읽었다 — 대기 한도는 로그 문구(SPEC_LOGS)도 본다."""
+    m = V4
+    texts = [HIKARI_LOG, "spring.datasource.hikari.connection-timeout: 5000"]
+    assert spec_values(texts, "connection_timeout_ms", m) == [3000, 5000]
+    assert spec_values(["가상 장애 보고 — 수치 없음"], "connection_timeout_ms", m) == []
+    assert spec_note("connection_timeout_ms", 350, [3000]) == (
+        " · 명세 자료의 connection_timeout_ms 값(3000)과 다름 — 채점은 보정 값 350 사용"
+    )
+    assert spec_note("connection_timeout_ms", 3000, [3000]) == ""
+    assert spec_note("connection_timeout_ms", 350, []) == ""
+
+
+@pytest.mark.usefixtures("no_variant_gates")
+async def test_calibration_tells_the_approver_when_the_spec_says_another_value() -> None:
+    """#308 운영 알파 2·3: 보정이 고른 대기 한도 350ms 가 명세 2단계 로그의 'timed out after 3000ms' 와 달랐다 — 3000 은 창 밖이라
+    맞출 수 없어 승인 화면 보정 표시에 함께 남긴다 (채점은 보정 값)."""
+    task = _task()
+    log = Artifact(artifact_id="a9", title="가상 운영 로그", content=HIKARI_LOG, role="support")
+    task = task.model_copy(update={"artifacts": [*task.artifacts, log]})
+    out, _ = await _loop(QueueVerifier(), task=task)
+    assert out.status == "review"
+    [flag] = [f for f in out.review_flags if f.startswith(FLAG)]
+    assert flag.endswith(
+        " · 명세 자료의 connection_timeout_ms 값(3000)과 다름 — 채점은 보정 값 350 사용"
+    )

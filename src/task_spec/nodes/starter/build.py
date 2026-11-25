@@ -1518,7 +1518,13 @@ def _apply_calibration(out: BuildOutcome, b: BuildInputs, cal: calib.Calibration
     nb = replace(b, plan=b.plan.model_copy(update={"harness": harness}))
     out.hidden_plan = (out.hidden_plan or b.plan).model_copy(update={"harness": harness})
     out.overlays[HIDDEN] = calib.with_params(out.overlays[HIDDEN], nb.plan, nb.template.manifest)
-    if (flag := cal.flag()) not in out.review_flags:
+    # 명세 글이 같은 조절값을 다른 수치로 적었으면 함께 알린다 (2026-11-25 #308: 보정 350ms ↔ 2단계 로그 3000ms)
+    texts = calib.spec_texts(b.task)
+    said = "".join(
+        calib.spec_note(name, v, calib.spec_values(texts, name, nb.template.manifest))
+        for name, v in cal.values.items()
+    )
+    if (flag := cal.flag() + said) not in out.review_flags:
         out.review_flags.append(flag)
     return nb
 

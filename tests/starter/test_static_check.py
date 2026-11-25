@@ -938,6 +938,33 @@ def test_tuned_load_must_be_applied_by_the_case() -> None:
     assert not any("읽지 않음" in p for p in problems(v2, head + peak))
 
 
+def test_peak_guidance_follows_the_reason() -> None:
+    """#308 팩트체크 3차: 버스트 행 없는 케이스의 peak 안내가 사유를 보지 않고 Burst.fire(1, …) 를 권해, 동시 요청으로만 재현되는
+    pool_acquire_timeout 에도 요청 한 건을 권했다. 피크 사유면 계약 문제(버스트 행 없음)로 알리고, 요청 한도 사유는 예전 안내 그대로."""
+    from task_spec.starter.static_check import _reason_rules
+
+    m = JAVA.manifest
+    path = "src/test/java/com/example/service/grading/cases/Hc1Test.java"
+    peak = '@DisplayName("hc1 피크") class Hc1Test { void t() { var o = peak(i -> 200, i -> getOrders().statusCode()); } }'
+    rules = (
+        re.compile(m.hidden_rules.case_id_pattern),
+        [re.compile(p) for p in m.hidden_rules.reason_patterns],
+    )
+
+    def problems(reason: str) -> list[str]:
+        one = {"entity_id": "m1", "rows": 1, "initial": {}, "burst": False}
+        case = {**_plan()["cases"][0], "case_id": "hc1", "intended_reason": reason, "data": [one]}
+        plan = HiddenPlan.model_validate(_plan() | {"cases": [case]})
+        return _reason_rules([GeneratedFile(path=path, content=peak)], m, plan, *rules)
+
+    pool = problems("pool_acquire_timeout")
+    assert any("계약 문제" in p and "버스트 행이 없어" in p for p in pool)
+    assert not any("Burst.fire(1, …) 로 한 번 보내" in p for p in pool)
+    timeout = problems("request_timeout")
+    assert any("Burst.fire(1, …) 로 한 번 보내" in p for p in timeout)
+    assert not any("계약 문제" in p for p in timeout)
+
+
 def test_path_problem_names_the_allowed_slots_and_test_data_alternative() -> None:
     # 2026-11-10 retrydupx #030: 갈 곳을 알려 주지 않아 시작 코드가 같은 테스트 리소스 경로에 두 번 써 생성 실패
     from task_spec.starter.static_check import _paths
