@@ -887,3 +887,49 @@ def test_a_login_rule_text_naming_another_username_format_is_dropped_and_the_rea
     line = seed_markdown(seed, entity.name, entity)
     assert "user1~user20" not in line
     assert "위 범위에 적지 않은 행은: " in line and "`username`='username-<id>'" in line
+
+
+def test_starter_tests_that_look_up_a_value_missing_from_the_seed_are_reasked() -> None:
+    """prod-b4: 시작 코드의 기존 기능 테스트가 findByUsername("user1") 을 썼지만 시드의 username 은 'username-<id>' 였다 — 다시 만들어도
+    같은 테스트를 써 재생성 예산을 다 썼다. 저장소 조회에 넘긴 글자 값이 렌더된 시드에 없으면 실제 값 예를 붙여 처음부터 정확히 묻는다."""
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import Overlay, _starter_seed_literals
+
+    java = load_template(JAVA).manifest
+    raw = _raw_login_contract(username="user1", password="user1")
+    plan = _cases(("hc1", [_rows(2, status="READY")]))
+    contract = fit_output(PlanContractOutput(contract=raw, hidden_plan=plan), java, _spec())[
+        0
+    ].contract
+
+    def probs(
+        code: str, path: str = "src/test/java/com/example/service/SeedRepositoryTest.java"
+    ) -> list[str]:
+        o = Overlay(kind="starter", files=(GeneratedFile(path=path, content=code),))
+        return [p.message for p in _starter_seed_literals(o, contract)]
+
+    got = probs('Optional<Member> user = memberRepository.findByUsername("user1");')
+    assert (
+        len(got) == 1
+        and 'findByUsername("user1")' in got[0]
+        and "username 가 'user1' 인 행이 없다" in got[0]
+    )
+    assert "실제 값 예: 'username-1', 'username-2', 'username-3'" in got[0]
+    assert not probs('memberRepository.findByUsername("username-3")')
+    assert not probs('memberRepository.findByUsernameIgnoreCase("USERNAME-3")')
+    assert not probs('memberRepository.findAllByPassword("user1")')  # 범위에 적은 값
+    assert not probs(
+        'memberRepository.findByUsername("user1")', path="src/main/java/X.java"
+    )  # 테스트가 아님
+
+
+def test_public_row_constants_name_secret_values_with_the_field() -> None:
+    """prod-b4: 행 키(username)를 뺀 {password: user1} 그룹이 PUBLIC_USER_USER1 이 되어 username 이 user1 인 행처럼 읽혔다 —
+    비밀 칸 값은 칸 이름을 붙인다. 다른 칸은 예전 이름 그대로."""
+    from task_spec.starter.hidden_helpers import public_const
+
+    assert public_const("User", {"password": "user1"}) == "PUBLIC_USER_PASSWORD_USER1"
+    assert public_const("Order", {"status": "READY"}) == "PUBLIC_ORDER_READY"
+    assert (
+        public_const("Member", {"nickname": "Kim", "pin": "1234"}) == "PUBLIC_MEMBER_KIM_PIN_1234"
+    )

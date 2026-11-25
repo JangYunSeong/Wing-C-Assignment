@@ -35,6 +35,7 @@ from task_spec.starter.auth_rule import Credential, credentials, issued_rule
 from task_spec.starter.header_values import ISSUED, PER_REQUEST, HeaderValues, header_values
 from task_spec.starter.seed_rows import (
     allocate_rows,
+    is_secret,
     matches,
     public_free,
     row_keys,
@@ -101,10 +102,14 @@ def public_rows(contract: TaskContract, plan: HiddenPlan) -> dict[str, list[int]
 
 
 def public_const(entity_name: str, values: Mapping[str, SeedScalar]) -> str:
-    """공개 몫 상수 이름 — PUBLIC_<엔티티>_<처음 값…> (처음 값은 그룹에 적힌 칸 순서대로)."""
-    vals = "_".join(
-        re.sub(r"[^A-Za-z0-9]+", "_", str(v)).strip("_").upper() for v in values.values()
-    )
+    """공개 몫 상수 이름 — PUBLIC_<엔티티>_<처음 값…> (처음 값은 그룹에 적힌 칸 순서대로). 비밀 칸(password 등)의 값은 칸 이름을
+    앞에 붙인다 — 2026-11-25 prod-b4: 행 키를 뺀 {password: user1} 그룹이 PUBLIC_USER_USER1 이 되어 username 이 user1 인 행처럼 읽혔다."""
+
+    def part(key: str, value: SeedScalar) -> str:
+        shown = re.sub(r"[^A-Za-z0-9]+", "_", str(value)).strip("_").upper()
+        return f"{_const(key)}_{shown}" if is_secret(key) else shown
+
+    vals = "_".join(part(k, v) for k, v in values.items())
     return f"PUBLIC_{_const(entity_name)}" + (f"_{vals}" if vals else "")
 
 

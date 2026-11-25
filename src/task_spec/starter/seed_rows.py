@@ -37,6 +37,11 @@ _UNIQUE = re.compile(
 _SECRET = re.compile(r"pass|pwd|secret|pin\b|비밀", re.IGNORECASE)
 
 
+def is_secret(field_name: str) -> bool:
+    """비밀 칸(비밀번호 등) — 여러 행이 같아도 되고(고유 칸 아님), 이름·상수에 그 값만 드러내면 다른 칸처럼 읽힌다."""
+    return bool(_SECRET.search(field_name))
+
+
 def unique_fields(contract: TaskContract, entity_id: str) -> frozenset[str]:
     """같은 값을 두 행에 둘 수 없는 칸 — 제약 글이 고유를 말하는 칸과, 발급(로그인) 엔티티의 식별 칸(자격 증명 중 비밀 칸이 아닌 것).
     로그인 칸은 고유라고 적지 않아도 같은 값의 행이 둘이면 'username 으로 찾기' 구현이 깨진다."""

@@ -260,6 +260,29 @@ def render_seed_sql(
     return GeneratedFile(path=rule.path, content="\n".join(out) + "\n")
 
 
+def seed_column_values(contract: TaskContract) -> dict[str, set[str]]:
+    """시드 SQL 이 칸마다 넣는 값 (칸 이름 → 글자로 쓴 값들) — render_seed_sql 과 같은 규칙 (그룹 값, 외래 키 순환, 기본값).
+    엔티티를 가리지 않고 같은 이름 칸의 값을 합친다 — 정적 검사가 테스트의 글자 값이 시드에 있는지 볼 때 쓴다 (너그러운 쪽)."""
+    rows_of = {s.entity_id: s.rows for s in contract.seed}
+    by_name = {m.name: m.entity_id for m in contract.entities}
+    seeds = {s.entity_id: s for s in contract.seed}
+    out: dict[str, set[str]] = {}
+    for m in contract.entities:
+        s = seeds.get(m.entity_id)
+        if s is None or s.rows <= 0:
+            continue
+        fields = _insert_fields(m, s)
+        fk_rows = {fk: rows_of.get(by_name.get(target, ""), 0) for fk, target in m.fk_pairs()}
+        groups = sorted(s.groups, key=lambda g: g.first)
+        for row in range(1, s.rows + 1):
+            g = next((x.values for x in groups if x.first <= row <= x.last), {})
+            for f in fields:
+                v = _value(f, row, dict(g), fk_rows)
+                if v is not None:
+                    out.setdefault(f.name, set()).add(str(v))
+    return out
+
+
 def schema_problems(
     schema_sql: str | None, contract: TaskContract, manifest: TemplateManifest
 ) -> list[str]:
