@@ -27,7 +27,7 @@ from task_spec.starter.templates import Template
 TASK = "analyze_material"
 FLAG = "재료 재현 분석: "  # 과제 검토 표시 머리 (막지 않음)
 FAILED = FLAG + "자동 분석 실패 — 빌드에서 재현 여부 확인"
-_VERDICT = {"no": "빌드 하네스로 재현되지 않을 수 있음", "unsure": "재현 여부 판단 불가"}
+_VERDICT = {"no": "빌드 하네스로 재현 불가 가능성 있음", "unsure": "재현 여부 판단 불가"}
 
 
 def material_block(incident: PublicIncident) -> dict[str, Any]:

@@ -108,8 +108,8 @@ class Calibration:
             {t.values[self.knobs.threshold] for t in self.trials if t.caught}, reverse=True
         )
         return (
-            f"{self.knobs.reason} 가 조절값으로 재현되지 않음 — {names} 를 바꿔도 허용 구현이 모두 통과하면서 흔한 구현이 떨어지는 "
-            f"{MIN_RATIO:g}배 창이 없음 (시험 {len(self.trials)}회, 흔한 구현이 떨어진 {self.knobs.threshold}: "
+            f"{self.knobs.reason} 를 조절값으로 재현 불가 — {names} 를 변경해도 허용 구현 모두 통과·흔한 구현 실패인 "
+            f"{MIN_RATIO:g}배 창 없음 (시험 {len(self.trials)}회, 흔한 구현이 실패한 {self.knobs.threshold}: "
             f"{', '.join(map(str, hit))}). 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
         )
 

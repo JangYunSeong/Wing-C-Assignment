@@ -169,6 +169,97 @@ def samples(root: Path) -> list[Sample]:
     ]
 
 
+def heldout_samples(root: Path) -> list[Sample]:
+    """프롬프트를 고칠 때 보지 않은 가상 재료 (2026-11-25 v2 승격 뒤 재확인) — 포화형·교착형·재현 불가형 하나씩.
+    재현 불가형은 사유를 묻지 않는다 (빈 기대 = 아무 사유)."""
+    base = incident_by_id(load_incidents(root), DEADLOCK)
+    assert base is not None
+    order = _virtual(
+        base,
+        "co:sw.backend:heldout-order-detail",
+        symptom="점심 피크에 주문 상세 조회가 느려지고 일부 요청이 DB 연결 획득 시간 초과로 실패",
+        root_cause="주문 상세를 만들 때 요청마다 재고·가격·쿠폰·배송 테이블을 차례로 조회해 요청 하나가 DB 문장 5개를 실행한다 — 연결을 쥔 채 다른 연결을 기다리지는 않지만 쥐는 시간이 길어 대기가 쌓인다",
+        naive_fix="커넥션 풀 크기를 늘린다",
+        why_naive_fails="피크 규모가 바뀌면 다시 대기가 쌓인다 — 요청당 DB 일을 줄이지 않았다",
+        notes="풀 크기·피크 동시 요청 수는 확인되지 않음",
+        naive_impl="주문 상세 API 가 요청마다 재고·가격·쿠폰·배송 정보를 각각 조회해 합친다",
+        trigger="피크 시간 동시 요청 수가 커넥션 풀 크기보다 크다",
+        why_naive_breaks="요청 하나가 DB 문장 5개를 실행해 연결을 오래 쥐고, 동시 요청이 풀보다 많으면 뒤 요청의 연결 대기가 대기 한도를 넘는다",
+        hidden_requirement="피크 시간에도 주문 상세 조회가 DB 연결 대기로 실패하지 않는다",
+        accepted_designs=[
+            "[설계] 한 번의 조인 조회로 필요한 값을 함께 읽음 — 조건: 조인 결과 크기가 응답 한도 안",
+            "[설계] 자주 바뀌지 않는 가격·쿠폰 정보를 메모리 캐시에서 읽음 — 조건: 캐시 만료가 가격 변경 반영 한도보다 짧음",
+        ],
+        reasons=["pool_acquire_timeout"],
+        harness=["pool_size", "concurrency"],
+    )
+    notify = _virtual(
+        base,
+        "co:sw.backend:heldout-notify-record",
+        symptom="알림 발송 요청이 몰리면 요청 전체가 멈췄다가 연결 획득 시간 초과로 실패",
+        root_cause="발송 상태를 바꾸는 트랜잭션 안에서 발송 기록을 별도 트랜잭션으로 써, 요청 하나가 첫 연결을 쥔 채 두 번째 연결을 기다린다",
+        naive_fix="연결 대기 한도를 늘린다",
+        why_naive_fails="기다리는 시간만 길어지고 서로를 기다리는 상태는 그대로다",
+        notes="풀 크기·동시 발송 수는 확인되지 않음",
+        naive_impl="발송 상태 변경 트랜잭션 안에서 발송 기록 저장을 별도 트랜잭션으로 부른다",
+        trigger="동시 발송 요청 수가 커넥션 풀 크기 이상이다",
+        why_naive_breaks="요청마다 첫 연결을 쥔 채 두 번째 연결을 기다려, 동시 요청 수가 풀 크기 이상이면 모두가 서로를 기다린다",
+        hidden_requirement="요청 하나가 같은 풀에서 연결을 둘 이상 동시에 쥐지 않는다",
+        accepted_designs=[
+            "[설계] 발송 기록을 같은 트랜잭션에서 씀 — 조건: 상태 변경이 롤백되면 기록도 함께 롤백돼도 됨",
+            "[설계] 발송 기록을 트랜잭션이 끝난 뒤 씀 — 조건: 기록 누락을 다시 쓸 수 있음",
+        ],
+        reasons=["pool_acquire_timeout"],
+        harness=["pool_size", "concurrency"],
+    )
+    payment = _virtual(
+        base,
+        "co:sw.backend:heldout-payment-gateway",
+        symptom="외부 결제 승인 API 가 가끔 응답 없이 연결을 끊어 주문이 결제 대기 상태로 남는다",
+        root_cause="결제 승인 응답을 받지 못하면 주문 상태를 바꾸지 않고 끝내, 실제로 승인된 결제가 주문에 반영되지 않는다",
+        naive_fix="결제 승인 요청을 바로 다시 보낸다",
+        why_naive_fails="이미 승인된 결제를 한 번 더 승인할 수 있다",
+        notes="외부 API 의 끊김 빈도는 확인되지 않음",
+        naive_impl="결제 승인 API 를 부르고 응답이 오면 주문 상태를 바꾼다",
+        trigger="외부 결제 API 가 응답 없이 연결을 끊는다",
+        why_naive_breaks="응답이 없으면 승인 여부를 모른 채 주문을 결제 대기로 둔다",
+        hidden_requirement="응답이 끊겨도 결제 승인 여부를 확인해 주문 상태를 맞춘다",
+        accepted_designs=[
+            "[설계] 승인 요청에 멱등 키를 붙이고 끊기면 같은 키로 승인 여부를 조회 — 조건: 결제사가 키 조회를 지원",
+            "[설계] 결제 대기 주문을 주기적으로 결제사와 대조 — 조건: 대조 주기가 고객 문의 한도보다 짧음",
+        ],
+        reasons=["server_error"],
+        harness=[],
+    )
+    return [
+        Sample(
+            "heldout-order-saturation",
+            order,
+            ("pool_acquire_timeout",),
+            frozenset({"connection_timeout_ms", "query_delay_ms"}),
+            ("yes",),
+        ),
+        Sample(
+            "heldout-notify-hold-and-wait",
+            notify,
+            ("pool_acquire_timeout",),
+            frozenset({"pool_size", "concurrency"}),
+            ("yes",),
+        ),
+        Sample(
+            "heldout-payment-gateway",
+            payment,
+            (),
+            frozenset(),
+            ("no", "unsure"),
+            flagged=True,
+        ),
+    ]
+
+
+SETS = {"dev": samples, "heldout": heldout_samples}
+
+
 def _pseudonymized(value: Any, pseudo: InterviewPseudonymizer, mapping: RunMapping) -> Any:
     """재료 블록의 글 칸을 가명화한다 — 운영의 인터뷰 재료는 저장 전에 가명화돼 있다 (공개 재료 notes 의 링크 같은 것이 토큰으로)."""
     if isinstance(value, str):
@@ -206,7 +297,9 @@ class Row:
     cost_usd: float = 0.0
 
 
-async def evaluate(version: int, runs: int, template_version: int) -> list[Row]:
+async def evaluate(
+    version: int, runs: int, template_version: int, sample_set: str = "dev"
+) -> list[Row]:
     settings = Settings()  # type: ignore[call-arg]
     llm = build_llm_client(settings)
     template = load_template(JAVA, template_version)
@@ -217,7 +310,7 @@ async def evaluate(version: int, runs: int, template_version: int) -> list[Row]:
             Detectors(load_dictionaries(), use_kiwi=False), Path(tmp) / "mappings"
         )
         for run in range(runs):
-            for s in samples(settings.incidents_dir):
+            for s in SETS[sample_set](settings.incidents_dir):
                 mapping = pseudo.new_mapping(f"int-{uuid.uuid4().hex}", "가상회사")
                 a, prov = await analyze_material(
                     pseudo.stored_json(
@@ -237,7 +330,7 @@ async def evaluate(version: int, runs: int, template_version: int) -> list[Row]:
                         split_params=list(a.split_params),
                         reproducible=a.reproducible,
                         flags=flags,
-                        reason_ok=a.reason in s.reasons,
+                        reason_ok=not s.reasons or a.reason in s.reasons,
                         params_ok=s.params <= set(a.split_params),
                         repro_ok=a.reproducible in s.reproducible,
                         flag_ok=bool(flags) == s.flagged,
@@ -272,13 +365,19 @@ def main() -> None:
     ap.add_argument("--version", type=int, default=1, help="평가할 analyze_material 판")
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument(
+        "--set",
+        choices=sorted(SETS),
+        default="dev",
+        help="표본 묶음 — dev: 프롬프트를 고칠 때 본 것, heldout: 보지 않은 가상 재료",
+    )
+    ap.add_argument(
         "--template-version", type=int, default=4, help="보정 칸을 읽을 Java 템플릿 판 (기본 4)"
     )
     ap.add_argument(
         "--out", type=Path, help="결과 폴더 (git 밖, 예: data/eval/interview/material_analysis)"
     )
     a = ap.parse_args()
-    rows = asyncio.run(evaluate(a.version, a.runs, a.template_version))
+    rows = asyncio.run(evaluate(a.version, a.runs, a.template_version, a.set))
     s = summary(rows)
     print(json.dumps(s, ensure_ascii=False))
     if a.out is not None:
@@ -287,7 +386,8 @@ def main() -> None:
             # 결과에는 LLM 이 쓴 기전 문장이 들어간다 — 나중에 표본에 회사 재료가 들어와도 git 에 남지 않게 (불변식 1)
             raise SystemExit(f"결과 폴더는 git 밖(레포의 data/ 아래)이어야 합니다: {a.out}")
         a.out.mkdir(parents=True, exist_ok=True)
-        path = a.out / f"{date.today().isoformat()}_v{a.version}_t{a.template_version}.json"
+        suffix = "" if a.set == "dev" else f"_{a.set}"
+        path = a.out / f"{date.today().isoformat()}_v{a.version}_t{a.template_version}{suffix}.json"
         path.write_text(
             json.dumps(
                 {"summary": s, "rows": [r.__dict__ for r in rows]}, ensure_ascii=False, indent=1
