@@ -167,10 +167,13 @@ class RepairPlan:
     # 채점에서 뺄 숨은 케이스 — 다시 만든 뒤에도 흔한 구현이 통과하고 같은 숨은 요구를 다른 케이스가 의도한 사유로 잡는 것
     # (변별하지 못함) [확정: 2026-11-11 사용자 — 사람 확인 표시만 하던 것을 코드가 뺀다]
     weak: list[str] = field(default_factory=list)
+    # 다시 만들기 전에 조절값부터 맞춰 볼 (흔한 구현 라벨, 숨은 케이스) — 흔한 구현이 허용 설계 장치 없이 통과했고 그 사유에 보정할
+    # 숨긴 조절값이 있다 (#301 PR 2, starter/calibrate.py). 빌드가 보정을 돌리고, 못 맞추면 이 칸 없이 다시 배정한다
+    calibrate: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
-        return not self.actions and not self.unresolved
+        return not self.actions and not self.unresolved and not self.calibrate
 
 
 def _short(text: str) -> str:
@@ -1060,8 +1063,12 @@ def _gate3(
     terms: RepairTerms | None = None,
     hits: Sequence[str] = (),
     family: Collection[str] = (),
-) -> tuple[list[RepairAction], list[str], list[str]]:
-    """흔한 구현의 숨은 케이스 결과로 숨은 테스트·흔한 구현을 고친다.
+    calibrate: Collection[str] = (),
+) -> tuple[list[RepairAction], list[str], list[str], list[str]]:
+    """흔한 구현의 숨은 케이스 결과로 숨은 테스트·흔한 구현을 고친다. 넷째 값은 조절값부터 맞춰 볼 케이스 (#301 PR 2).
+    calibrate: 보정할 수 있는 케이스 (빌드가 아직 보정하지 않았고 그 사유에 숨긴 조절값이 있음 — starter/calibrate.knobs).
+    흔한 구현이 허용 설계 장치 없이 그 케이스를 통과하면 다시 만들기 전에 보정을 요청한다 — 흔한 구현은 맞는데 조절값 때문에
+    안 떨어질 수 있다 (2026-11-24 세션 유지 알파: 흔한 구현 2회·숨은 테스트 1회 재생성 뒤 실패, 대기 한도·지연만 바꾸자 떨어짐).
     family: 재료가 정한 이 숨은 요구의 사유들(FeatureSeed.reasons) — 흔한 구현이 의도한 사유 대신 같은 묶음의 다른 사유로 떨어져도
     함정을 잡은 것으로 본다. 2026-11-11 재측정 오프라인: 첫 재연결 500 에서 흔한 구현은 메모를 겹치지 않고 잃었다(lost) — hc2(duplicated)를
     세 번 다시 만들게 할 일이 아니다. 대신 의도한 사유가 어느 케이스에서도 안 보이면 승인자 표시로 남긴다.
@@ -1117,6 +1124,7 @@ def _gate3(
                 ],
                 [],
                 [],
+                [],
             )
         return (
             [],
@@ -1125,7 +1133,12 @@ def _gate3(
                 "AI 흔한 구현이 기본으로 정답을 사용하므로 이 함정은 AI 첫 답을 구별하지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
             ],
             [],
+            [],
         )
+    # 허용 설계 장치 없이 통과 — 다시 만들기 전에 그 사유의 숨긴 조절값부터 실험으로 맞춘다 (#301 PR 2, 빌드가 한 번만)
+    tune = [c.case_id for c in unshown if c.case_id in calibrate]
+    if tune:
+        return [], [], [], tune
     if unshown and not exhausted(regen_counts, "gen_naive", run.target, NAIVE_FIRST):
         # 흔한 구현이 숨은 케이스를 통과 — 테스트가 약한지보다 흔한 구현이 설명을 안 따랐는지를 먼저 본다.
         # 2026-11-07 배송 감사 재실행: 흔한 구현이 REQUIRES_NEW 를 상태 변경 트랜잭션이 끝난 뒤 불러 커넥션을 하나씩만 썼다.
@@ -1146,6 +1159,7 @@ def _gate3(
                     pool=NAIVE_FIRST,
                 )
             ],
+            [],
             [],
             [],
         )
@@ -1229,7 +1243,7 @@ def _gate3(
                 f"숨은 케이스 {cid} 는 흔한 구현({run.target})을 {want} 대신 {got} 로 검출함 — 같은 숨은 요구의 사유라 변별로 인정함. "
                 f"{want} 를 확인하는 케이스는 없다 (사람 확인)"
             )
-    return out, flags, weak
+    return out, flags, weak, []
 
 
 def _gate4(
@@ -1445,9 +1459,11 @@ def assign(
     regen_log: Mapping[str, RegenNote] | None = None,
     passed_before: Mapping[str, Collection[str]] | None = None,
     new_tests: Collection[str] = (),
+    calibrate: Collection[str] = (),
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
     new_tests: 새 API(계약 existing 아님)에만 걸린 공개 테스트 id (pt#) — 시작 코드로 통과하면 새 기능이 들어 있다 (②').
+    calibrate: 보정할 수 있는 숨은 케이스 (#301 PR 2) — 흔한 구현이 허용 설계 장치 없이 통과하면 다시 만들기 대신 RepairPlan.calibrate.
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
     shared_paths: 템플릿·시작 코드에 이미 있는 파일 — 모든 구현이 같은 오류를 낼 때, 모두 다시 쓴 파일을 원인 후보로 싣는다."""
     counts = regen_counts or {}
@@ -1535,7 +1551,7 @@ def assign(
     for run in judged:
         if run.kind == "ref_naive":
             hits = marker_hits(overlays.get(run.target), fix_markers)
-            acts, flags, weak = _gate3(
+            acts, flags, weak, tune = _gate3(
                 run,
                 plan,
                 missed_traps.get(run.target, set()),
@@ -1543,8 +1559,10 @@ def assign(
                 terms,
                 hits,
                 feature_reasons,
+                calibrate,
             )
             actions += acts
+            res.calibrate += [(run.target, c) for c in tune]
             res.unresolved += [f for f in flags if f.startswith(MATERIAL_VERDICT)]
             res.flags += [f for f in flags if not f.startswith(MATERIAL_VERDICT)]
             res.weak += [w for w in weak if w not in res.weak]

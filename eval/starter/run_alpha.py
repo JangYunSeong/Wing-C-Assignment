@@ -302,7 +302,7 @@ async def main() -> None:
     spent += built_out.cost_usd
     if (
         built_out.hidden_plan is not None
-    ):  # 채점에서 뺀 케이스 — 이미지·저장이 읽는 계획도 같게 (원래 계획은 contract.orig.json)
+    ):  # 채점에서 뺀 케이스·보정한 조절값 — 이미지·저장이 읽는 계획도 같게 (원래 계획은 contract.orig.json)
         (out / "contract.json").rename(out / "contract.orig.json")
         (out / "contract.json").write_text(
             json.dumps(
@@ -362,6 +362,11 @@ async def main() -> None:
         "hand_verify": [
             [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.hand_reports
         ],
+        # 조절값 보정 (#301 PR 2) — 결과·고른 값·창·조합마다 결과, 조합마다 실행 결과
+        "calibration": built_out.calibration.row() if built_out.calibration is not None else None,
+        "calibration_verify": [
+            [r.model_dump(mode="json") for r in rep.runs] for rep in built_out.calibration_reports
+        ],
     }
     report["cost_usd"] = round(spent, 4)
     report["candidate_files"] = tree(out / "candidate") if starter is not None else []
@@ -376,6 +381,8 @@ async def main() -> None:
     print(f"③ 빌드 {built_out.status} · 회차 {built_out.rounds} · 누적 ${spent:.4f} · {out}")
     for line in built_out.hand:
         print(f"  손 구현: {line}")
+    if (cal := built_out.calibration) is not None:
+        print(f"  조절값 보정: {cal.status} {dict(cal.values) or ''} (시험 {len(cal.trials)}회)")
     for f in built_out.review_flags:
         print(f"  검토: {f}")
     for f in built_out.adjustments:

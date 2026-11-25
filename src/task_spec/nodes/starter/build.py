@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import PurePosixPath
 from typing import Literal, Protocol
 
@@ -41,6 +42,7 @@ from task_spec.schemas import (
     VerifyReport,
 )
 from task_spec.schemas.build import HiddenPlan, RepairRecord, TaskContract
+from task_spec.starter import calibrate as calib
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
 from task_spec.starter.hand_refs import GATE as HAND_GATE
@@ -56,6 +58,7 @@ from task_spec.starter.hidden_helpers import code_written_paths
 from task_spec.starter.material_guide import public_rules as guide_public_rules
 from task_spec.starter.repair import (
     COMPILE_RETRIES,
+    MATERIAL_VERDICT,
     STARTER,
     WEAK_FLAG,
     ContractSignal,
@@ -451,6 +454,9 @@ class BuildOutcome:
     hand_reports: list[VerifyReport] = field(default_factory=list)
     # 실패한 빌드의 계약 탓 꼴에 붙인 손 허용 구현 실행 (#256 4단계) — 손 관문 보고서와 따로
     blame_reports: list[VerifyReport] = field(default_factory=list)
+    # 조절값 보정 (#301 PR 2) — 빌드마다 한 번 (결과가 있으면 다시 하지 않는다)·조합마다 실행 보고서
+    calibration: calib.Calibration | None = None
+    calibration_reports: list[VerifyReport] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
@@ -1308,7 +1314,8 @@ async def _build_and_repair(
             shared = set(b.template.files("project")) | {
                 f.path for f in out.overlays[STARTER].files
             }  # 이미 있는 파일 — 모든 구현이 다시 쓰면 원인 후보
-            plan = assign(
+            assign_now = partial(
+                assign,
                 report,
                 b.plan,
                 out.overlays,
@@ -1322,6 +1329,18 @@ async def _build_and_repair(
                 passed_before=out.passed_before,
                 new_tests=new_api_tests(b.contract),
             )
+            # 조절값 보정 (#301 PR 2) — 다시 검증할 회차가 남아 있을 때만 (보정한 값은 다음 회차의 전체 검증이 판정한다, ③)
+            tunable = _calibratable(out, b, verifier, report) if round_no < max_rounds else ()
+            plan = assign_now(calibrate=tunable)
+            if plan.calibrate:
+                cal = out.calibration = await _calibrate(out, b, verifier, plan.calibrate)
+                if cal.status == "calibrated":
+                    b = _apply_calibration(out, b, cal)
+                    continue
+                # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음은 재료 판정으로 멈춤)
+                plan = assign_now()
+                if cal.status == "no_window":
+                    plan.unresolved.append(MATERIAL_VERDICT + cal.verdict())
             for (
                 flag
             ) in plan.flags:  # 막지 않는 표시 (예: 다시 만든 시작 코드가 또 숨은 케이스 통과)
@@ -1426,6 +1445,82 @@ async def _build_and_repair(
                 )
             return out
     return out
+
+
+def _calibratable(
+    out: BuildOutcome, b: BuildInputs, verifier: Verifier, report: VerifyReport
+) -> tuple[str, ...]:
+    """조절값을 보정해 볼 수 있는 숨은 케이스 (#301 PR 2) — 빌드마다 한 번, 검증기가 변형 실행(verify_variants)을 지원하고 공개
+    테스트가 있고, 허용 구현이 지금 모두 통과할 때만 (허용 구현이 이미 떨어지면 창을 잴 수 없다). 그 사유에 보정할 숨긴 조절값이
+    있는 케이스 (calibrate.knobs — 재료가 나열한 값은 빼고)."""
+    if (
+        out.calibration is not None
+        or getattr(verifier, "verify_variants", None) is None
+        or PUBLIC not in out.overlays
+        or not calib.accepted_clean(report)
+    ):
+        return ()
+    listed = (b.seed.harness or ()) if b.seed is not None else ()
+    m = b.template.manifest
+    return tuple(
+        c.case_id
+        for c in b.plan.cases
+        if calib.knobs(c.intended_reason, m, b.plan, listed) is not None
+    )
+
+
+async def _calibrate(
+    out: BuildOutcome, b: BuildInputs, verifier: Verifier, request: Sequence[tuple[str, str]]
+) -> calib.Calibration:
+    """조절값 보정 (#301 PR 2) — 요청한 케이스의 사유 조절값만 바꿔 흔한 구현·허용 구현을 시작 코드·공개·숨은 테스트와 다시 돌린다
+    (verify_variants — 시작 코드 단독 실행 없이, 조합마다 숨은 오버레이의 조절값 파일만 바꿈). 한 번에 한 사유 (조절값이 사유마다 다르다)."""
+    run = getattr(verifier, "verify_variants", None)
+    starter, hidden, public = (out.overlays.get(k) for k in (STARTER, HIDDEN, PUBLIC))
+    intended = {c.case_id: c.intended_reason for c in b.plan.cases}
+    if run is None or starter is None or hidden is None or public is None or not request:
+        return calib.Calibration(
+            "skipped", why="검증기 변형 실행·시작 코드·숨은·공개 테스트 중 없는 것이 있음"
+        )
+    reason = intended.get(request[0][1], "")
+    request = [(t, c) for t, c in request if intended.get(c) == reason]
+    listed = (b.seed.harness or ()) if b.seed is not None else ()
+    k = calib.knobs(reason, b.template.manifest, b.plan, listed)
+    if k is None:
+        return calib.Calibration("skipped", why=f"{reason} 에 보정할 조절값이 없음")
+    cal = await calib.calibrate_refs(
+        run,
+        starter,
+        [o for key, o in out.overlays.items() if key not in (STARTER, HIDDEN, PUBLIC)],
+        public,
+        hidden,
+        b.plan,
+        b.template.manifest,
+        k,
+        request,
+        b.seed.reasons if b.seed is not None else (),
+        out.calibration_reports,
+    )
+    logger.info(
+        "build calibrate reason=%s status=%s trials=%d values=%s",
+        reason,
+        cal.status,
+        len(cal.trials),
+        dict(cal.values),
+    )
+    return cal
+
+
+def _apply_calibration(out: BuildOutcome, b: BuildInputs, cal: calib.Calibration) -> BuildInputs:
+    """보정한 값을 빌드의 숨은 계획에 넣은 BuildInputs — b.plan 을 바꿔야 뒤의 숨은 테스트 재생성(generate 의 조절값 파일)·정적 검사
+    (조절값 파일 대조)·케이스 빼기(_drop_cases)가 같은 값을 본다. 저장·이미지는 out.hidden_plan 을 쓰므로(steps: out.hidden_plan or
+    계약 계획) 함께 바꾸고, 숨은 오버레이의 조절값 파일도 다시 쓴다. 승인 화면에 보정한 값을 남긴다."""
+    harness = {**b.plan.harness, **cal.values}
+    nb = replace(b, plan=b.plan.model_copy(update={"harness": harness}))
+    out.hidden_plan = (out.hidden_plan or b.plan).model_copy(update={"harness": harness})
+    out.overlays[HIDDEN] = calib.with_params(out.overlays[HIDDEN], nb.plan, nb.template.manifest)
+    if (flag := cal.flag()) not in out.review_flags:
+        out.review_flags.append(flag)
+    return nb
 
 
 def _drop_cases(out: BuildOutcome, b: BuildInputs, ids: Sequence[str]) -> None:
