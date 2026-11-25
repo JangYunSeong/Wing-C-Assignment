@@ -709,6 +709,9 @@ def fit_seed(
     if manifest.public_helper is not None:
         contract = _fit_row_uses(contract, seeds, names, reserved, notes)
         contract = _fit_public(contract, plan, seeds, names, reserved, notes)
+    contract = _fit_rule_text(
+        contract, names, notes
+    )  # 그룹이 다 정해진 뒤 — 덧붙인 그룹의 값까지 보고
     if notes:  # 고친 결과도 스키마(행 상한 등)를 지키는지
         contract = TaskContract.model_validate(contract.model_dump())
         plan = HiddenPlan.model_validate(plan.model_dump())
@@ -718,6 +721,81 @@ def fit_seed(
 def matches(values: Mapping[str, SeedScalar], want: Mapping[str, SeedScalar]) -> bool:
     """처음 값 values 가 want 를 모두 담는가 (칸 순서·값 형식 무관 — 시드 값은 글자로 비교)."""
     return all(k in values and str(values[k]) == str(v) for k, v in want.items())
+
+
+# 규칙 글이 값의 형식을 말하는가 — 형식 낱말·범위·자리표시·예시 값 (user1~user20, item-{id}, 'TRK-0001')
+_FORMAT_CLAIM = re.compile(
+    r"형식|모양|패턴|양식|[{}~]|부터|까지|'[^']+'|\"[^\"]+\"|(?<![A-Za-z0-9])[A-Za-z]+[-_]?\d+(?![0-9])"
+)
+
+
+def rule_text_mismatches(s: SeedRule, m: Entity) -> list[tuple[str, str, str]]:
+    """시드 규칙 글(rules) 중 코드가 채우는 칸의 값 형식을 실제와 다르게 말하는 문장 — (문장, 칸, 실제 형식).
+
+    코드가 채우는 칸 = 어느 범위에서든 values 에 없는 글자·정수 칸 (seed_sql.default_value — 글자 '<칸>-<id>', 정수는 그 행의 id).
+    그 칸 이름이 나오고 형식을 말하는데(_FORMAT_CLAIM) 실제 형식('<칸>-', 'id')도 범위에 적은 값도 담지 않으면 어긋난 문장이다.
+    값 목록·참거짓·날짜·시각 칸은 보지 않는다. 형식을 말하지 않는 문장('username 으로 로그인한다')은 그대로 둔다.
+
+    2026-11-25 prod-b4 (운영): 계약이 시드 규칙 글에 'username은 user1~user20 형식'이라 썼지만 실제 값은 'username-<id>' 였다.
+    시작 코드 생성기가 이 글을 믿고 기존 기능 테스트에 findByUsername("user1") 을 써 두 회차 모두 실패했다 (같은 글이 지원자 README
+    에도 나간다). 계약 프롬프트가 '정하지 않는 필드의 형식은 rules 에 (설명용 — 값은 기본값)'이라 쓰게 해 이런 글이 자주 생긴다."""
+    if s.rows <= 0:
+        return []
+    fields = {f.name: f for f in m.fields}
+    filled = [n for n in fields if any(n not in g.values for g in s.groups)]
+    out: list[tuple[str, str, str]] = []
+    for rule in s.rules:
+        if not _FORMAT_CLAIM.search(rule):
+            continue
+        for name in filled:
+            if not re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", rule):
+                continue
+            f = fields[name]
+            v = default_value(f, 1)
+            if isinstance(v, bool) or time_kind(f) is not None:
+                continue
+            if isinstance(v, str):
+                if v != text_default(name, 1):
+                    continue  # 값 목록 칸 (기본값은 첫 값)
+                if f"{name}-" in rule or f"{v[:-2]}-" in rule:
+                    continue
+                actual = f"'{name}-<id>' (예: id 1 → '{v}')"
+            elif isinstance(v, int):
+                if re.search(r"(?<![A-Za-z])id(?![A-Za-z])", rule, re.IGNORECASE):
+                    continue
+                actual = "그 행의 id"
+            else:
+                continue
+            if any(str(g.values[name]) in rule for g in s.groups if name in g.values):
+                continue  # 범위에 적은 값을 말한다 (그 범위의 형식)
+            out.append((rule, name, actual))
+            break  # 문장 하나에 하나만
+    return out
+
+
+def _fit_rule_text(
+    contract: TaskContract, names: Mapping[str, str], notes: list[str]
+) -> TaskContract:
+    """코드가 채우는 칸의 형식을 실제와 다르게 말하는 시드 규칙 글은 뺀다 (rule_text_mismatches) — 그 칸의 값은 코드가 정하고, 실제 형식은
+    시드 줄이 이미 적는다 (_default_note). 재요청하지 않는다: 계약 프롬프트가 그런 글을 쓰게 해 다시 물어도 또 쓴다."""
+    entities = {m.entity_id: m for m in contract.entities}
+    seeds: list[SeedRule] = []
+    changed = False
+    for s in contract.seed:
+        m = entities.get(s.entity_id)
+        bad = rule_text_mismatches(s, m) if m is not None else []
+        if not bad:
+            seeds.append(s)
+            continue
+        changed = True
+        gone = {rule for rule, _, _ in bad}
+        seeds.append(s.model_copy(update={"rules": [r for r in s.rules if r not in gone]}))
+        for rule, field_name, actual in bad:
+            notes.append(
+                f"{names.get(s.entity_id, s.entity_id)} 시드 규칙 글을 뺌: '{rule}' — {field_name} 는 코드가 {actual} 로 "
+                "채운다 (README·생성기 입력의 시드 줄이 실제 값과 엇갈리지 않게)"
+            )
+    return contract.model_copy(update={"seed": seeds}) if changed else contract
 
 
 def _strip_row_uses(
@@ -891,32 +969,43 @@ def case_rows_problems(
     return out + allocate_rows(contract, plan).problems
 
 
+def _default_text(f: ContractField) -> str:
+    """코드가 채우는 칸의 실제 값 설명 (seed_sql.default_value)."""
+    v = default_value(f, 1)
+    if time_kind(f) is not None:  # 행마다 다른 날짜·시각, id 순서와 무관 (seed_sql.time_value)
+        return f"`{f.name}`=행마다 다른 값, id 순서와 무관 (예: id 1 → '{v}')"
+    if (
+        isinstance(v, bool)
+        or not isinstance(v, (int, str))
+        or (isinstance(v, str) and v != text_default(f.name, 1))
+    ):
+        return f"`{f.name}`={v}"  # 행마다 같은 값 (enum 첫 값·false·고정 시각)
+    if isinstance(v, int):
+        return f"`{f.name}`=그 행의 id"
+    return f"`{f.name}`='{f.name}-<id>' (예: id 1 → '{v}')"
+
+
 def _default_note(s: SeedRule, entity: Entity | None) -> str:
     """그룹이 정하지 않은 필드의 실제 값 — 코드(seed_sql.default_value)가 행마다 채운다.
     2026-11-10 gen-item: 시드 줄에 없던 playerId(실제 'playerId-1')를 시작 코드 테스트가 'player-1' 로 짐작해 기존 테스트 5개가 실패,
-    재생성 예산을 다 썼다."""
+    재생성 예산을 다 썼다.
+
+    어느 범위에만 값이 있는 칸도 값이 없는 범위의 실제 값을 따로 적는다 ('위 범위에 적지 않은 행은'). 2026-11-25 prod-b4: 로그인 행에만
+    username 이 적힌 엔티티에서 다른 행의 username('username-<id>')을 시드 줄이 말하지 않았고, 생성기는 계약의 틀린 규칙 글
+    ('username은 user1~user20 형식')을 믿어 findByUsername("user1") 을 썼다."""
     if entity is None or s.rows == 0:
         return ""
-    grouped = {k for g in s.groups for k in g.values}
-    shown: list[str] = []
+    never: list[str] = []
+    partly: list[str] = []
     for f in _insert_fields(entity, s):
-        if f.name in grouped:
-            continue
-        v = default_value(f, 1)
-        if time_kind(f) is not None:  # 행마다 다른 날짜·시각, id 순서와 무관 (seed_sql.time_value)
-            shown.append(f"`{f.name}`=행마다 다른 값, id 순서와 무관 (예: id 1 → '{v}')")
-            continue
-        if (
-            isinstance(v, bool)
-            or not isinstance(v, (int, str))
-            or (isinstance(v, str) and v != text_default(f.name, 1))
-        ):
-            shown.append(f"`{f.name}`={v}")  # 행마다 같은 값 (enum 첫 값·false·고정 시각)
-        elif isinstance(v, int):
-            shown.append(f"`{f.name}`=그 행의 id")
-        else:
-            shown.append(f"`{f.name}`='{f.name}-<id>' (예: id 1 → '{v}')")
-    return " — 그 밖의 필드는 행마다: " + ", ".join(shown) if shown else ""
+        fixed = sum(1 for g in s.groups if f.name in g.values)
+        if s.groups and fixed == len(s.groups):
+            continue  # 모든 범위가 정했다 — 범위 값이 그대로 보인다
+        (partly if fixed else never).append(_default_text(f))
+    out = " — 그 밖의 필드는 행마다: " + ", ".join(never) if never else ""
+    if partly:
+        out += " — 위 범위에 적지 않은 행은: " + ", ".join(partly)
+    return out
 
 
 def seed_markdown(s: SeedRule, name: str, entity: Entity | None = None) -> str:
