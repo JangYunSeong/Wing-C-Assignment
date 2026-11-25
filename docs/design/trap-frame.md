@@ -2,7 +2,7 @@
 
 > 상태: **[제안] 초안** (2026-11-25, #308 순서 4 → #318). 결정 넷 중 D1·D3·D4 는 [확정: 2026-11-25 사용자] (§10). B 기본 여부(D2)는 v5 승격 판단(운영 서버) 결과를 보고 정한다.
 > 구현: 1단계 뼈대 (#318, 브랜치 `feat/trap-frame`) — 틀 스키마(`schemas/trap_frame.py`)·프롬프트 `trap_frame` v1(`eval: pending`, CURRENT 없음 → 틀 단계를 건너뛰어 지금 동작 그대로)·틀 적용 재료(`interview/trap_frame.apply_frame`)·생성 흐름·공통 과제 행 저장(`common_task.framed`)·빌드 계약 단계·검사 4.
-> 2단계 (같은 브랜치): 프롬프트 `trap_frame` v1→v3 평가(qwen, `eval/interview/run_trap_frame.py`) → **CURRENT = v3** (2026-11-26 사용자, `prompts/trap_frame/PROMOTIONS.md`). v1 은 평범한 재료의 숨은 요구를 다시 쓰며 조건을 빼거나 설계를 좁혔고 업무 엔티티를 금지했다. design 틀의 숨은 요구는 재료 것을 글자 그대로 담아야 쓴다(`keeps_hidden`, 아니면 재료 것). 금지 엔티티 이름은 영문 PascalCase. `draft_feature_task` v13 이 틀의 공개 쪽을 받는다(`frame_public_text`, CURRENT 는 평가 뒤).
+> 2단계 (같은 브랜치): 프롬프트 `trap_frame` v1→v3 평가(qwen, `eval/interview/run_trap_frame.py`) → **CURRENT = v3** (2026-11-26 사용자, `prompts/trap_frame/PROMOTIONS.md`). v1 은 평범한 재료의 숨은 요구를 다시 쓰며 조건을 빼거나 설계를 좁혔고 업무 엔티티를 금지했다. design 틀의 숨은 요구는 재료 것을 글자 그대로 담아야 쓴다(`keeps_hidden`, 아니면 재료 것). 금지 엔티티 이름은 영문 PascalCase. `draft_feature_task` v13 (틀의 공개 쪽 입력 `frame_public_text`)은 평가했으나 올리지 않았다 — 이득이 보이지 않았고 규칙이 2단계 자료까지 덮는다 (2026-11-26 사용자, `prompts/draft_feature_task/PROMOTIONS.md`). 연결 코드는 남긴다.
 > 근거: #308 본문, 팩트체크 1~4차 댓글, 정리 댓글(남은 일·순서), 운영 분석(r3 빼먹기, 2026-11-25), 5차 팩트체크(이 초안의 코드 대조 — 틀이 계약 단계에 닿는 길, 재료 칸을 그대로 쓰는 코드).
 
 명세를 쓰기 **전에** 함정의 모양을 정한다. 무엇을 숨기고 무엇을 공개하며, 공개 쪽에 무엇을 쓰면 안 되는지, 허용 설계가 공개 요구를 지킬 수 있는지를 먼저 정한다. 그다음 명세·계약 생성과 검사가 그 틀을 따른다.
@@ -114,7 +114,7 @@ provenance 는 다른 LLM 산출물과 같다 (`prompt_id@version+hash`, 모델�
   - 출력: 틀 (B 면 바뀐 운영 조건·깨지는 이유 포함). 틀 적용 재료는 코드가 만든다 (§3.2).
   - 명세 생성 쪽 프롬프트라 평가를 통과한 뒤에 CURRENT 로 올린다 (생성기 예외가 아님).
 - **평가셋 (qwen)**: 이번 세션 유지형(재현 불가 + 설계 강요), 재현 불가형, 정상형 몇 개. dev/test 를 나눈다 (eval-harness).
-- **`draft_feature_task` 새 vN** (지금 v12): 틀의 공개 쪽(`public_rules`·`public_forbidden`)을 입력으로 받는다. 숨은 요구·허용 설계는 지금처럼 코드가 재료에서 채우므로 틀 적용 재료를 넘기면 된다. `design_matrix` 로 설계를 빼는 일은 프롬프트에 맡기지 않는다. 평가 뒤 CURRENT.
+- **`draft_feature_task` 새 vN** (지금 v12, v13 은 평가만 — 2026-11-26): 틀의 공개 쪽(`public_rules`·`public_forbidden`)을 입력으로 받는다. 금지 엔티티 규칙은 1단계(보이는 곳·1단계 자료·추가 요구 답)로만 — 2단계 자료는 흔한 구현의 증상을 보여야 한다. 숨은 요구·허용 설계는 지금처럼 코드가 재료에서 채우므로 틀 적용 재료를 넘기면 된다. `design_matrix` 로 설계를 빼는 일은 프롬프트에 맡기지 않는다. 평가 뒤 CURRENT.
 - **`plan_contract` 새 vN 은 필요할 때만.** 계약 입력의 `needs_text`·`forbidden_text`(공개 계약에 쓰지 않는 말)는 코드가 재료에서 만들어 `seed_rules` 칸에 붙인다 (v32 가 렌더). 틀 적용 재료를 넘기면 둘 다 바뀐다. `forbidden_text` 도 2026-11-10(5cfadc3)에 판을 올리지 않고 생겼다. '금지된 저장 방식은 엔티티로 두지 않는다' 같은 지시문이 따로 필요하면 새 vN 을 만든다. 생성기 예외라 같은 변경에서 CURRENT 를 올리고 PROMOTIONS 에 적는다.
 
 ## 8. 다른 관문과의 관계
