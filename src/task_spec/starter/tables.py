@@ -122,6 +122,35 @@ def declared_tables(files: Iterable[GeneratedFile], patterns: Sequence[str]) -> 
     return found
 
 
+_SQL_TABLE = re.compile(
+    r"\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?[`\"]?(\w+)[`\"]?\s*\((.*?)\)\s*;", re.I | re.S
+)
+_JPA_TABLE = re.compile(r'@Table\s*\([^)]*\bname\s*=\s*"(\w+)"')
+
+
+def tables_with_fields(files: Iterable[GeneratedFile], fields: Iterable[str]) -> set[str]:
+    """그 필드(카멜·스네이크 둘 다)를 열로 가진 테이블 — schema.sql 의 CREATE TABLE 몸통, JPA 엔티티(@Table 이름 + 그 필드 선언)에서."""
+    wanted = {w.lower() for f in fields for w in (f, re.sub(r"(?<!^)(?=[A-Z])", "_", f))}
+    if not wanted:
+        return set()
+    word = re.compile(r"\b(" + "|".join(map(re.escape, sorted(wanted))) + r")\b", re.I)
+    out: set[str] = set()
+    for f in files:
+        if f.path.endswith(".sql"):
+            for m in _SQL_TABLE.finditer(f.content):
+                if word.search(m.group(2)):
+                    out.add(m.group(1))
+        elif f.path.endswith(".java"):
+            table = _JPA_TABLE.search(f.content)
+            if table is not None and re.search(
+                r"\b[\w<>]+\s+(" + "|".join(map(re.escape, sorted(wanted))) + r")\s*[;=]",
+                f.content,
+                re.I,
+            ):
+                out.add(table.group(1))
+    return out
+
+
 def referenced_tables(content: str, patterns: Sequence[str], literal: str) -> list[str]:
     """숨은 테스트 파일의 문자열 상수 중 SQL 을 가리키는 것에서 뽑은 테이블 이름."""
     found: list[str] = []
