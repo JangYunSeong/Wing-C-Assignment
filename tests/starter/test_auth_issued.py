@@ -456,3 +456,48 @@ def test_issued_store_contract_passes_the_contract_stage() -> None:
     assert any("Session 엔티티를 공개 계약에서 뺌" in n for n in notes)
     problems = check_contract(out.contract, out.hidden_plan, _spec(), java).problems
     assert not [p for p in problems if "m4" in p or "Session" in p]
+
+
+def test_the_starter_may_keep_its_own_issued_value_table() -> None:
+    """#322 알파 (2026-11-25): 계약에서 세션을 빼자 시작 코드가 기존 API 의 세션 확인에 쓸 session·user_session 테이블을 만들었고, 시작 코드
+    테이블 검사('계약 테이블 밖')에 두 번 막혀 생성 실패. 그 검사의 목적은 '숨은 테스트가 그 이름으로 오류를 주입한다'인데 발급 값의 저장소는
+    계약 밖이고 테스트는 HTTP 로만 판정한다 — 발급 값 칸을 가진 테이블은 검사에서 뺀다. 다른 계약 밖 테이블은 그대로 막는다."""
+    from task_spec.starter.static_check import _starter_tables
+    from task_spec.starter.tables import tables_with_fields
+    from task_spec.starter.templates import load_template
+    from tests.starter.test_templates import JAVA
+
+    t = load_template(JAVA)
+    store = "CREATE TABLE user_session (\n  id BIGINT PRIMARY KEY,\n  session_id VARCHAR(64) NOT NULL,\n  member_id BIGINT\n);"
+    audit = "CREATE TABLE audit_log (\n  id BIGINT PRIMARY KEY,\n  memo VARCHAR(64)\n);"
+    entity = (
+        '@Entity\n@Table(name = "login_session")\npublic class LoginSession {\n'
+        "    @Id private Long id;\n    private String sessionId;\n}\n"
+    )
+
+    def files(*sql: str) -> tuple[GeneratedFile, ...]:
+        return (
+            GeneratedFile(path="src/main/resources/schema.sql", content="\n".join(sql)),
+            GeneratedFile(
+                path="src/main/java/com/example/service/domain/LoginSession.java", content=entity
+            ),
+        )
+
+    assert tables_with_fields(files(store, audit), ["sessionId"]) == {
+        "user_session",
+        "login_session",
+    }
+    issued = _fit(_session())
+
+    def problems(contract: TaskContract, *sql: str) -> list[str]:
+        return [
+            p.message
+            for p in _starter_tables(Overlay(kind="starter", files=files(*sql)), t, contract)
+        ]
+
+    assert problems(issued, store) == []
+    got = problems(issued, store, audit)
+    assert len(got) == 1 and "audit_log" in got[0] and "user_session" not in got[0]
+    # 발급 규칙이 없는 계약에서는 세션 테이블도 계약 밖이다
+    plain = TaskContract.model_validate(_contract())
+    assert "user_session" in problems(plain, store)[0]

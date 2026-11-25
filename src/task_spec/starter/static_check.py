@@ -76,6 +76,7 @@ from task_spec.starter.tables import (
     referenced_tables,
     same_table,
     spring_snake,
+    tables_with_fields,
 )
 from task_spec.starter.templates import (
     Template,
@@ -1121,10 +1122,20 @@ def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> l
     if not expected:
         return []
     names = {m.entity_id: m.name for m in contract.entities}
+    # 발급 값(로그인이 주는 sessionId 등)을 담는 테이블은 계약 밖이 맞다 — 저장소는 지원자 설계 몫이라 계약에서 뺐고
+    # (auth_rule.fit_issued_store), 테스트는 HTTP 로만 판정해 이 이름으로 오류를 주입하지 않는다 (이 검사의 목적 밖). 시작 코드(기존 시스템)도
+    # 자기 저장소를 둘 수 있다. 2026-11-25 #322 알파: 시작 코드가 기존 API 의 세션 확인에 쓸 session 테이블을 만들어 두 번 막혀 생성 실패.
+    issued = {
+        e.auth.issued_field
+        for e in contract.endpoints
+        if e.auth is not None and e.auth.kind == "issued" and e.auth.issued_field
+    }
+    stores = tables_with_fields(o.files, issued)
     stray = [
         d
         for d in declared_tables(o.files, naming.declare_patterns)
         if not any(same_table(d, e, naming) for e in expected.values())
+        and not any(same_table(d, s, naming) for s in stores)
     ]
     if not stray:
         return []
