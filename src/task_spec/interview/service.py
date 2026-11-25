@@ -99,9 +99,13 @@ from task_spec.interview.task import (
 )
 from task_spec.interview.text import (
     CASE_OPENING,
+    CASE_REOPEN_QUESTION,
     SCOPE_QUESTIONS,
     TRAP_FOLLOW_UP_LEAD,
+    TRAP_RETRY_NOTICE,
+    TRAP_UNKNOWN_FOLLOW_UP_LEAD,
     UNSET,
+    model_conversation,
     numbers,
     parse_project,
     posting_team_context,
@@ -204,6 +208,25 @@ class _GenerationInputs:
     matches: list[CompetencyEvidence]
     template: Template
     reviewer_note: str | None
+
+
+def _with_trap(incident: PublicIncident, trap: TrapAnswers) -> PublicIncident:
+    """④ 답을 사례에 넣는다 — 실제 시도면 흔한 대응·실패 이유를 답 그대로, 모름이면 비고 한 줄.
+
+    초안이 ④ 전에 있었든 ④ 뒤에 만들어졌든 같은 결과. '모름' 비고는 한 번만 두고, 실제 시도로 바꾸면 지운다 (code review W5).
+    """
+    notes = "\n".join(
+        line for line in incident.notes.split("\n") if line != NOTE_TRAP_UNKNOWN
+    ).strip()
+    if trap.unknown:
+        return incident.model_copy(update={"notes": f"{notes}\n{NOTE_TRAP_UNKNOWN}".strip()})
+    return incident.model_copy(
+        update={
+            "naive_fix": trap.attempted_fix,
+            "why_naive_fails": trap.why_failed,
+            "notes": notes,
+        }
+    )
 
 
 def _generation_reason(exc: Exception) -> str:
@@ -620,11 +643,12 @@ class InterviewService:
         mapping: RunMapping,
         *,
         on_delta: TextCallback | None = None,
-        lead: str = "",
+        trap_step: bool = False,
     ) -> None:
         """대화 전체를 모델에 보내 다음 질문 또는 사례 초안을 받는다. 근거 인용이 담당자 말에 없으면 그 칸을 다시 묻는다.
 
-        lead 는 다음 질문 앞에 붙이는 고정 안내 (질문이 없으면 붙이지 않는다).
+        trap_step: ④ 제출에서 부른다 — 다른 칸이 빠져 ③ 으로 돌아가면 질문 앞에 이유를 붙이고, 처음 대응이 여전히
+        빠지면 저장하지 않고 오류 (④ 를 고쳐 다시 내면 된다). ③ 에서 그렇게 되면 ④ 로 돌려보낸다.
         """
         llm, prompts = self._require_ready()
         context: dict[str, Any] = {
@@ -636,7 +660,7 @@ class InterviewService:
         team = state.team_context.model_dump(exclude_none=True)
         if team:
             context["assessment_context"] = team
-        conversation = [{"role": m.role, "text": m.text} for m in state.incident_messages]
+        conversation = model_conversation(state.incident_messages)
         stored_json = self._stored_json(mapping)
         if state.incident_id is None:
             state.incident_id = new_incident_id(state.incident_sub)
@@ -682,6 +706,8 @@ class InterviewService:
                 check=self._check(mapping),
             )
             if draft is not None:
+                if state.trap_answers is not None:
+                    draft = _with_trap(draft, state.trap_answers)
                 draft = attach_interview_cases(draft, state)
         except _LLM_ERRORS as exc:
             logger.warning("interview_incident_rejected type=%s", type(exc).__name__)
@@ -690,12 +716,22 @@ class InterviewService:
             ) from None
         only_trap_missing = set(missing) <= {"naive_fix", "why_naive_fails"}
         needs_trap = state.trap_answers is None and (draft is not None or only_trap_missing)
-        if needs_trap:
-            question = ""
-        elif draft is None and only_trap_missing:
+        # 처음 대응을 받았는데도 그 두 칸만 빠졌다 — ③ 대화로는 채울 수 없다 (프롬프트가 묻지 않는다)
+        retry_trap = state.trap_answers is not None and draft is None and only_trap_missing
+        if retry_trap and trap_step:
             raise InterviewUnavailable(
                 "처음 시도한 대응을 사례에 반영하지 못했습니다. 다시 시도해 주세요"
             )
+        if needs_trap:
+            question = ""
+        elif retry_trap:
+            # ④ 로 — 받은 답(trap_answers)은 남겨 화면이 칸을 채워 보여 줄 수 있다
+            question = TRAP_RETRY_NOTICE
+        elif trap_step and question and state.trap_answers is not None:
+            lead = (
+                TRAP_UNKNOWN_FOLLOW_UP_LEAD if state.trap_answers.unknown else TRAP_FOLLOW_UP_LEAD
+            )
+            question = f"{lead} {question}"
         state.reset_answers()
         state.incident_draft = draft
         state.incident_source = "known_problem"
@@ -703,7 +739,7 @@ class InterviewService:
         state.incident_missing = missing
         state.stage = (
             "trap_interview"
-            if needs_trap
+            if needs_trap or retry_trap
             else "success_interview"
             if draft
             else "incident_interview"
@@ -712,7 +748,7 @@ class InterviewService:
         if question:
             state.incident_messages = [
                 *state.incident_messages,
-                ChatMessage(role="assistant", text=f"{lead} {question}" if lead else question),
+                ChatMessage(role="assistant", text=question),
             ]
 
     async def project(
@@ -771,31 +807,15 @@ class InterviewService:
             answers = {k: await self._pseudonymize(v, mapping) for k, v in raw.items()}
             if not unknown and not all(answers.values()):
                 raise InterviewInvalid("처음 시도한 대응·관찰 결과·실패 이유를 모두 입력해 주세요")
-            state.trap_answers = TrapAnswers(**answers, unknown=unknown)
+            trap = state.trap_answers = TrapAnswers(**answers, unknown=unknown)
             state.reset_answers()
             if state.incident_draft is not None:
-                incident = state.incident_draft
-                # '모름' 비고는 한 번만 두고, 실제 시도로 바꾸면 지운다 (code review W5)
-                notes = "\n".join(
-                    line for line in incident.notes.split("\n") if line != NOTE_TRAP_UNKNOWN
-                ).strip()
-                if unknown:
-                    incident = incident.model_copy(
-                        update={"notes": f"{notes}\n{NOTE_TRAP_UNKNOWN}".strip()}
-                    )
-                else:
-                    incident = incident.model_copy(
-                        update={
-                            "naive_fix": answers["attempted_fix"],
-                            "why_naive_fails": answers["why_failed"],
-                            "notes": notes,
-                        }
-                    )
+                incident = _with_trap(state.incident_draft, trap)
                 state.incident_draft = attach_interview_cases(incident, state)
                 state.stage = "success_interview"
             else:
                 # ③ 이 처음 대응만 빠진 채 끝나 초안이 없다 — 처음 대응을 넣어 다시 정리하고, 다른 칸이 빠지면 ③ 으로 돌아간다
-                await self._incident_turn(state, mapping, lead=TRAP_FOLLOW_UP_LEAD)
+                await self._incident_turn(state, mapping, trap_step=True)
             return await self._save(row, revision, state, mapping, steps=(STEP_TRAP,))
 
     # ================================================================ ⑤ 성공 기준 → 기준 답안 → 검증
@@ -2165,6 +2185,15 @@ class InterviewService:
                 state.stage = "trap_interview"
             else:
                 state.stage = "incident_review" if state.incident_draft else "incident_interview"
+                # 초안 전(④ 에서 돌아옴)에는 ③ 의 마지막 글이 담당자 답이거나 ④ 안내라 답할 질문이 없다
+                last = state.incident_messages[-1] if state.incident_messages else None
+                if state.incident_draft is None and (
+                    last is None or last.role != "assistant" or last.text == TRAP_RETRY_NOTICE
+                ):
+                    state.incident_messages = [
+                        *state.incident_messages,
+                        ChatMessage(role="assistant", text=CASE_REOPEN_QUESTION),
+                    ]
             return await self._save(row, revision, state, mapping)
 
     async def save_drafts(
