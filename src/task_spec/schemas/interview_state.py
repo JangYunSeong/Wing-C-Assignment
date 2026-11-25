@@ -16,10 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.domain import TaskItem
-from task_spec.schemas.incident import PublicIncident
+from task_spec.schemas.incident import FeatureSeed, PublicIncident
 from task_spec.schemas.interview_answer import AnswerValidationRecord, SuccessField
 from task_spec.schemas.interview_incident import IncidentFact
 from task_spec.schemas.provenance import Provenance
+from task_spec.schemas.trap_frame import TrapFrame
 
 Stage = Literal[
     "scope_interview",  # ② 팀 맥락 — 공고에 없는 항목만 고정 질문
@@ -208,6 +209,10 @@ class InterviewGeneration(_State):
     seed_flags: list[str] = Field(default_factory=list)
     # seed: 재료 분석이 짚은 빠진 정보 (가명화 검사를 거친 글) — 인터뷰 사례면 생성을 마칠 때 보강 질문으로 (#308)
     seed_gaps: list[str] = Field(default_factory=list)
+    # seed: 함정 틀과 틀 적용 재료 (#318, 가명화 검사를 거친 글) — feature 단계가 원 재료 대신 틀 적용 재료로 명세 초안을 만들고,
+    # 생성을 마칠 때 공통 과제 저장 행에 함께 둔다 (빌드 계약 단계가 쓴다). 틀 프롬프트 CURRENT 가 없으면 비어 있다
+    trap_frame: TrapFrame | None = None
+    framed_seed: FeatureSeed | None = None
     task: TaskItem | None = None  # feature → request → slots 를 거치며 갱신
     task_provenance: list[Provenance] = Field(default_factory=list)
     task_flags: list[str] = Field(default_factory=list)

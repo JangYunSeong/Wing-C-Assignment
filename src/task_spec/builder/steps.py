@@ -170,6 +170,10 @@ class RealSteps:
         inc = await self.incident_for(task)
         if inc is None or inc.feature is None:
             raise StepFailed(f"contract: 기능형 재료가 없는 직군 ({sub})")
+        framed = job.framed
+        if framed is not None:
+            # 함정 틀 (#318 D1) — 이 공고의 틀 적용 재료로 (숨은 요구·사유·필요 요소·금지 낱말). 공용 재료는 그대로 두었다
+            inc = inc.model_copy(update={"feature": framed.seed})
         interface = self.interfaces.get(inc.incident_id)
         guide = self.guides.get(inc.incident_id)
         if guide is not None and (bad := guide_problems(guide, inc)):
@@ -186,6 +190,7 @@ class RealSteps:
             seed=inc.feature,
             interface=interface,
             guide=guide,
+            forbidden_storage=framed.frame.forbidden_storage if framed is not None else (),
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
             raise StepFailed(

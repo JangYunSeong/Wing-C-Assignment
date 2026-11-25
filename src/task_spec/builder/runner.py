@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from task_spec.schemas import HiddenPlan, TaskContract, TaskItem
+from task_spec.schemas import FramedMaterial, HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
     README_FULL_PATH,
@@ -79,6 +79,8 @@ class Job:
     task: TaskItem  # 승인된 공통 과제 명세 (공고·재료에서 — 지원자 문서 없음)
     label: TaskLabel  # 제목·공고 id·판
     work: Path  # 이 빌드의 작업 폴더 (절대 경로)
+    # 함정 틀 (#318 D1) — 그 공고의 틀 적용 재료와 틀 (common_task.framed). 있으면 계약 단계가 원 재료 대신 쓴다
+    framed: FramedMaterial | None = None
 
 
 @dataclass(frozen=True)
@@ -226,7 +228,13 @@ async def run_job(
         if task is None or label is None:
             raise StepFailed("공통 과제 명세 없음")
         await asyncio.to_thread(_fresh_dir, work)  # 이전 시도의 반쯤 쓴 폴더는 지운다
-        job = Job(build=build, task=task, label=label, work=work)
+        job = Job(
+            build=build,
+            task=task,
+            label=label,
+            work=work,
+            framed=await store.framed(build.common_id),
+        )
 
         await run.enter("contract")
         c = await steps.contract(job)

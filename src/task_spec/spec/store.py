@@ -28,7 +28,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
-from task_spec.schemas import Provenance, TaskItem, TaskKind, TaskSpec
+from task_spec.schemas import FramedMaterial, Provenance, TaskItem, TaskKind, TaskSpec
 
 CommonStatus = Literal["draft", "approved", "superseded"]
 INTERVIEW_REF_PREFIX = "interview:"  # 채용담당자 인터뷰가 만든 공통 과제의 저장 키 머리
@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS public.common_task (
 );
 -- 초기 개발판(2026-11-03)에 있던 지원자 실행 연결 칸 제거 (privacy-auditor W3)
 ALTER TABLE public.common_task DROP COLUMN IF EXISTS created_by_run;
+-- 함정 틀 (#318 D1 [확정: 2026-11-25 사용자]) — 그 공고의 틀 적용 재료와 틀 (FramedMaterial). 빌드 계약 단계가 있으면 원 재료 대신 쓴다.
+-- 공용 회사 사례 재료는 바꾸지 않는다 — 공고마다 자기 틀. 틀 프롬프트가 없거나 실패하면 NULL (원 재료 그대로)
+ALTER TABLE public.common_task ADD COLUMN IF NOT EXISTS framed jsonb;
 -- 공고(같은 온톨로지 판)마다 승인된 인터뷰 과제는 하나 [확정: 2026-11-19 사용자] — 바꾸려면 approve_interview(replaces=…)
 CREATE UNIQUE INDEX IF NOT EXISTS common_task_one_interview ON public.common_task (posting_id, ontology_version)
     WHERE status = 'approved' AND prompt_ref LIKE 'interview:%';
@@ -104,8 +107,16 @@ class CommonTaskRepo(Protocol):
     async def reusable(self, key: CommonKey) -> StoredCommon | None: ...
 
     async def save_draft(
-        self, key: CommonKey, task: TaskItem, provenance: list[Provenance]
+        self,
+        key: CommonKey,
+        task: TaskItem,
+        provenance: list[Provenance],
+        framed: FramedMaterial | None = None,
     ) -> StoredCommon: ...
+
+    async def framed(self, common_id: str) -> FramedMaterial | None:
+        """그 공통 과제의 틀 적용 재료와 틀 (#318) — 없으면 None."""
+        ...
 
     async def approve(self, common_id: str, reviewer: str, at: datetime) -> None: ...
 
@@ -200,7 +211,11 @@ class InMemoryCommonStore:
         return _stored(rows[0]) if rows else None
 
     async def save_draft(
-        self, key: CommonKey, task: TaskItem, provenance: list[Provenance]
+        self,
+        key: CommonKey,
+        task: TaskItem,
+        provenance: list[Provenance],
+        framed: FramedMaterial | None = None,
     ) -> StoredCommon:
         rev = 1 + max((r["revision"] for r in self.rows if r["key"] == key), default=0)
         cid = _new_id()
@@ -213,9 +228,14 @@ class InMemoryCommonStore:
             "provenance": list(provenance),
             "approved_by": None,
             "approved_at": None,
+            "framed": framed,
         }
         self.rows.append(row)
         return _stored(row)
+
+    async def framed(self, common_id: str) -> FramedMaterial | None:
+        row = next((r for r in self.rows if r["id"] == common_id), None)
+        return None if row is None else row.get("framed")
 
     async def approve(self, common_id: str, reviewer: str, at: datetime) -> None:
         row = next((r for r in self.rows if r["id"] == common_id), None)
@@ -375,6 +395,14 @@ class CommonTaskStore:
             approved_at=r.get("approved_at"),
         )
 
+    async def framed(self, common_id: str) -> FramedMaterial | None:
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT framed FROM public.common_task WHERE id = %s", (common_id,))
+            r = await cur.fetchone()
+        return (
+            None if r is None or r["framed"] is None else FramedMaterial.model_validate(r["framed"])
+        )
+
     async def reusable(self, key: CommonKey) -> StoredCommon | None:
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -387,7 +415,11 @@ class CommonTaskStore:
         return self._row(r) if r else None
 
     async def save_draft(
-        self, key: CommonKey, task: TaskItem, provenance: list[Provenance]
+        self,
+        key: CommonKey,
+        task: TaskItem,
+        provenance: list[Provenance],
+        framed: FramedMaterial | None = None,
     ) -> StoredCommon:
         cid = _new_id()
         task = _with_id(task, cid)
@@ -397,8 +429,8 @@ class CommonTaskStore:
                 try:
                     await cur.execute(
                         "INSERT INTO public.common_task (id, posting_id, ontology_version, prompt_ref, revision, "
-                        "task, provenance) "
-                        "SELECT %s, %s, %s, %s, COALESCE(MAX(revision), 0) + 1, %s, %s "
+                        "task, provenance, framed) "
+                        "SELECT %s, %s, %s, %s, COALESCE(MAX(revision), 0) + 1, %s, %s, %s "
                         "FROM public.common_task WHERE posting_id = %s AND ontology_version = %s AND prompt_ref = %s "
                         "RETURNING *",
                         (
@@ -408,6 +440,7 @@ class CommonTaskStore:
                             key.prompt_ref,
                             Jsonb(task.model_dump(mode="json")),
                             Jsonb([p.model_dump(mode="json", by_alias=True) for p in provenance]),
+                            Jsonb(framed.model_dump(mode="json")) if framed is not None else None,
                             key.posting_id,
                             key.ontology_version,
                             key.prompt_ref,

@@ -257,6 +257,13 @@ from task_spec.schemas.template import (
     NamingRules,
     TemplateManifest,
 )
+from task_spec.schemas.trap_frame import (
+    DesignCheck,
+    ForbiddenStorage,
+    FramedMaterial,
+    TrapFrame,
+    TrapFrameInput,
+)
 from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
 from task_spec.schemas.verify_overlap import (
     OverlapCheck,
@@ -431,6 +438,11 @@ __all__ = [
     "MaterialInterface",
     "AnalyzeMaterialInput",
     "MaterialAnalysis",
+    "DesignCheck",
+    "FramedMaterial",
+    "ForbiddenStorage",
+    "TrapFrame",
+    "TrapFrameInput",
     "ReferenceManifest",
     "PublicIncident",
     "KnownIncidentCase",
