@@ -8,9 +8,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from task_spec.schemas import HiddenPlan, TaskContract
+from task_spec.nodes.starter.plan_contract import fit_output
+from task_spec.schemas import HiddenPlan, PlanContractOutput, TaskContract
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.auth_rule import fit_auth
+from task_spec.starter.auth_rule import fit_auth, login_fields
 from task_spec.starter.hidden_helpers import row_use_consts
 from task_spec.starter.seed_rows import (
     PUBLIC_PER_GROUP,
@@ -28,7 +29,7 @@ from task_spec.starter.seed_rows import (
 )
 from task_spec.starter.templates import load_template
 from tests.starter.test_auth_issued import _session
-from tests.starter.test_contract import _check, _contract, _manifest, _plan
+from tests.starter.test_contract import _check, _contract, _manifest, _plan, _spec
 from tests.starter.test_templates import JAVA
 
 
@@ -671,3 +672,46 @@ def test_peak_reasons_need_burst_rows() -> None:
     burst = plan("pool_acquire_timeout", _rows(96, burst=True, status="READY"))
     assert not case_rows_problems(contract, burst, java)
     assert not case_rows_problems(contract, plan("request_timeout", _rows(2, status="READY")), java)
+
+
+def _raw_login_contract(**login_row: Any) -> TaskContract:
+    """_login_contract 와 같은 계약을 fit_auth 전 상태로 — 계약 단계는 fit_seed 를 fit_auth 보다 먼저 부른다."""
+    c = _session()
+    c["public_tests"][0]["rows"] = [{"entity_id": "m3", "values": login_row}]
+    return TaskContract.model_validate(c)
+
+
+def test_login_fields_are_found_before_fit_auth() -> None:
+    """#308 4차: unique_fields 가 rows 를 요구하는 issued_rule 로 로그인 엔티티를 찾아, fit_auth 전(계약 단계의 실제 순서)에는 로그인
+    칸을 고유 칸으로 알아보지 못했다. 로그인 엔티티는 fit_auth 와 같은 규칙으로 rows 없이 정한다."""
+    raw = _raw_login_contract(username="user-1", password="pass-1")
+    assert login_fields(raw) == {"m3": ["username", "password"]}
+    assert unique_fields(raw, "m3") == {"username"}
+
+
+def test_the_real_contract_order_adds_one_login_row() -> None:
+    """실제 계약 단계(fit_output — fit_seed 다음 fit_auth)로 돌린다. 예전에는 username 에 '고유'가 없으면 공개 테스트의 로그인 행
+    user-1 이 8행 덧붙고, 뒤의 seed_problems 가 코드가 만든 중복으로 LLM 에 재요청했다 (LLM 이 고칠 수 없다)."""
+    java = load_template(JAVA).manifest
+    raw = _raw_login_contract(username="user-1", password="pass-1")
+    plan = _cases(("hc1", [_rows(2, status="READY")]))
+    out, _ = fit_output(PlanContractOutput(contract=raw, hidden_plan=plan), java, _spec())
+    member = next(s for s in out.contract.seed if s.entity_id == "m3")
+    rows = sum(g.last - g.first + 1 for g in member.groups if g.values.get("username") == "user-1")
+    assert rows == 1
+    assert not [p for p in seed_problems(out.contract) if "고유 칸" in p]
+
+
+def test_a_unique_value_split_across_groups_is_flagged() -> None:
+    """#308 4차: 범위 안의 여러 행만 보던 검사가 한 행 범위 둘(1~1·2~2)에 같은 username 을 두는 중복을 놓쳤다 — 값마다 행을 합친다."""
+    d = _login_contract(username="user-1", password="pass-1").model_dump()
+    member = next(s for s in d["seed"] if s["entity_id"] == "m3")
+    rest = [g for g in member["groups"] if g["first"] > 2]
+    member["groups"] = [
+        {"first": 1, "last": 1, "values": {"username": "dup"}},
+        {"first": 2, "last": 2, "values": {"username": "dup"}},
+        {"first": 3, "last": 5, "values": {"nickname": "가상회원"}},
+        *[g for g in rest if g["first"] > 5],
+    ]
+    problems = seed_problems(TaskContract.model_validate(d))
+    assert _has(problems, "시드 m3 범위 1~1·2~2", "고유 칸 username", "같은 값(dup)", "2행")

@@ -19,7 +19,7 @@ from typing import Literal
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import Endpoint, Entity
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.auth_rule import credentials, issued_rule, requester_rows
+from task_spec.starter.auth_rule import login_fields, requester_rows
 from task_spec.starter.field_types import enum_values
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.seed_sql import _insert_fields, default_value, time_kind
@@ -44,9 +44,8 @@ def unique_fields(contract: TaskContract, entity_id: str) -> frozenset[str]:
     if m is None:
         return frozenset()
     out = {f.name for f in m.fields if f.constraints and _UNIQUE.search(f.constraints)}
-    rule = issued_rule(contract)
-    if rule is not None and rule.entity == entity_id:
-        out |= {c.name for c in credentials(contract, rule) or () if not _SECRET.search(c.name)}
+    # 로그인 칸은 로그인 행이 정해지기 전(fit_auth 앞, 계약 단계의 실제 순서)에도 찾는다 — auth_rule.login_fields
+    out |= {n for n in login_fields(contract).get(entity_id, []) if not _SECRET.search(n)}
     return frozenset(out)
 
 
@@ -132,6 +131,25 @@ def _value_problems(
     return out
 
 
+def _unique_value_problems(label: str, s: SeedRule, unique: frozenset[str]) -> list[str]:
+    """고유 칸의 한 값이 몇 행에 들어가는지 범위를 넘어 합친다 — 범위 하나 안의 여러 행뿐 아니라 한 행 범위 둘(1~1·2~2)에 같은 값도
+    중복이다 (2026-11-25 #308 4차: 범위 안만 보던 검사가 범위를 넘는 중복을 놓쳤다)."""
+    groups: dict[tuple[str, str], list[SeedGroup]] = {}
+    for g in s.groups:
+        for name in sorted(set(g.values) & unique):
+            groups.setdefault((name, str(g.values[name])), []).append(g)
+    out: list[str] = []
+    for (name, value), gs in sorted(groups.items()):
+        rows = sum(g.last - g.first + 1 for g in gs)
+        if rows > 1:
+            spans = "·".join(f"{g.first}~{g.last}" for g in sorted(gs, key=lambda g: g.first))
+            out.append(
+                f"{label} 범위 {spans}: 고유 칸 {name} 을 같은 값({value})으로 {rows}행에 둠 — "
+                "고유 칸은 values 에서 빼거나(행마다 다른 기본값) 값마다 한 행으로 둔다"
+            )
+    return out
+
+
 def seed_problems(contract: TaskContract) -> list[str]:
     """시드 규칙 — 엔티티·중복·id 범위(1~rows 를 빈틈·겹침 없이)·처음 값 필드."""
     entity_ids = {m.entity_id for m in contract.entities}
@@ -164,12 +182,7 @@ def seed_problems(contract: TaskContract) -> list[str]:
             out += _value_problems(
                 f"{label} 범위 {g.first}~{g.last}", g.values, contract, s.entity_id
             )
-            fixed = sorted(set(g.values) & unique_fields(contract, s.entity_id))
-            if fixed and g.last > g.first:
-                out.append(
-                    f"{label} 범위 {g.first}~{g.last}: 고유 칸 {', '.join(fixed)} 을 같은 값으로 {g.last - g.first + 1}행에 둠 — "
-                    "고유 칸은 values 에서 빼거나(행마다 다른 기본값) 한 행 범위로 나눈다"
-                )
+        out += _unique_value_problems(label, s, unique_fields(contract, s.entity_id))
         if expected - 1 > s.rows:
             out.append(f"{label}: 범위가 rows={s.rows} 를 넘음 (id {expected - 1} 까지)")
         elif expected - 1 < s.rows:

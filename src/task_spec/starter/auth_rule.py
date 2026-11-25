@@ -118,6 +118,26 @@ def login_candidates(contract: TaskContract, rule: AuthRule) -> list[Entity]:
     return [m for m in contract.entities if names <= {f.name for f in m.fields}]
 
 
+def login_fields(contract: TaskContract) -> dict[str, list[str]]:
+    """로그인(issued) 엔티티 id → 발급 API 요청 칸(자격 증명) 이름. 로그인 행(rows)이 정해지기 전에도 찾는다 — 엔티티는 fit_auth
+    (_fit_login_entity)와 같이 정한다: 적힌 entity 가 후보면 그것, 아니면 후보가 하나일 때 그것.
+    2026-11-25 #308 4차: 계약 단계는 fit_seed 를 fit_auth 보다 먼저 불러, rows 를 요구하는 issued_rule 로는 시드 맞춤 때 로그인
+    칸을 고유 칸으로 알아보지 못했다 — 공개 테스트의 로그인 행이 같은 username 으로 여러 행 덧붙었다."""
+    out: dict[str, list[str]] = {}
+    for e in contract.endpoints:
+        rule = e.auth
+        if rule is None or rule.kind != "issued":
+            continue
+        src = _endpoint(contract, rule.issued_by)
+        found = [m.entity_id for m in login_candidates(contract, rule)]
+        entity = rule.entity if rule.entity in found else (found[0] if len(found) == 1 else None)
+        if src is None or entity is None:
+            continue
+        names = out.setdefault(entity, [])
+        names += [f.name for f in src.request if f.name not in names]
+    return out
+
+
 def _fit_login_entity(contract: TaskContract, rule: AuthRule, notes: list[str]) -> AuthRule:
     """entity 는 계약에서 도출한다 — 발급 API 요청 칸을 모두 가진 엔티티가 하나면 그것. 적힌 entity 가 후보면 그대로, 후보가 없거나
     여럿인데 적힌 것이 후보가 아니면 그대로 두고 auth_problems 가 말한다.
