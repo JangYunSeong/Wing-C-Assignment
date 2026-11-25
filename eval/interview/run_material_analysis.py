@@ -5,7 +5,8 @@
 - 가상 재료 2: 세션 유지 포화형(요청마다 세션 테이블 조회·갱신 — #301 의 발견 사례를 일반화) · 재현 불가형(로그 디스크가 가득 참 —
   하네스가 디스크 상태를 바꿀 수 없다)
 기대(실행 전 고정): 사유는 기대 목록 안, 갈림 조절값은 기대 집합을 모두 포함, 재현 가능 여부는 기대 목록 안. 재현 불가형은 표시가 나와야 하고
-나머지는 표시가 없어야 한다 (interview/material_analysis.analysis_flags).
+나머지는 표시가 없어야 한다 (interview/material_analysis.analysis_flags). 표시 기준은 판정 표시만 센다 — 재현 가능 판정에 붙는 빠진 정보
+표시(GAPS, 2026-11-25 #308 뒤 추가)는 세지 않아 그 전 기록과 같은 뜻으로 비교한다.
 
 평가할 판을 CURRENT 로 둔 임시 프롬프트 폴더를 쓴다 (레포의 CURRENT 는 건드리지 않는다). 보정 칸(tunes)은 --template-version 판에서
 (기본 4). 재료 블록은 운영과 같은 저장본 검사(stored_json)를 거친다. 결과는 git 밖에 쓴다.
@@ -29,6 +30,7 @@ from typing import Any
 
 from task_spec.config import Settings
 from task_spec.interview.material_analysis import (
+    GAPS,
     TASK,
     analysis_flags,
     analyze_material,
@@ -322,6 +324,8 @@ async def evaluate(
                     ontology_version="onto-eval",
                 )
                 flags = analysis_flags(a, template, s.incident.feature)
+                # 기준은 판정 표시만 — 재현 가능 판정에 붙는 빠진 정보 표시(GAPS)는 세지 않는다 (2026-11-25 #308 뒤 추가된 표시)
+                judged = [f for f in flags if not f.startswith(GAPS)]
                 rows.append(
                     Row(
                         sample=s.name,
@@ -333,7 +337,7 @@ async def evaluate(
                         reason_ok=not s.reasons or a.reason in s.reasons,
                         params_ok=s.params <= set(a.split_params),
                         repro_ok=a.reproducible in s.reproducible,
-                        flag_ok=bool(flags) == s.flagged,
+                        flag_ok=bool(judged) == s.flagged,
                         mechanism=a.mechanism,
                         gaps=list(a.gaps),
                         cost_usd=float(prov.cost_usd or 0.0),

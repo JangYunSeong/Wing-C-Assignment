@@ -15,7 +15,14 @@ import httpx
 import pytest
 
 from task_spec.api.app import create_app
-from task_spec.interview.material_analysis import FAILED, FLAG, TASK, analysis_flags, material_block
+from task_spec.interview.material_analysis import (
+    FAILED,
+    FLAG,
+    GAPS,
+    TASK,
+    analysis_flags,
+    material_block,
+)
 from task_spec.llm.backend import Completion
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import FeatureSeed, MaterialAnalysis
@@ -67,6 +74,23 @@ def test_a_material_that_may_not_reproduce_is_flagged_with_what_is_missing() -> 
     ]
     unsure = analysis_flags(_analysis(reproducible="unsure"), JAVA, SEED)
     assert len(unsure) == 1 and "재현 여부 판단 불가" in unsure[0]
+
+
+def test_gaps_show_even_when_the_material_is_judged_reproducible() -> None:
+    """#308 팩트체크: 세션 유지 재료 분석이 gaps 에 'SELECT·UPDATE 가 커넥션 하나를 쥐는가'를 냈는데 판정이 yes 라 숨었다 — 떼어 둔
+    결제 대행 표본도 같다. yes 여도 빠진 정보가 있으면 기전과 함께 표시한다 (판정 표시와 머리 GAPS 로 갈라 센다)."""
+    gaps = ["SELECT·UPDATE 가 커넥션 하나를 쥐는가", "주입 지연이 지배적인가"]
+    flags = analysis_flags(_analysis(gaps=gaps), JAVA, SEED)
+    assert flags == [
+        f"{GAPS} — 요청마다 연결을 쥔 채 두 번째 연결을 기다려 동시 요청이 풀보다 많으면 모두 멈춤 "
+        "(사유 pool_acquire_timeout, 갈림 조절값 pool_size, concurrency) · 빠진 정보: "
+        "SELECT·UPDATE 가 커넥션 하나를 쥐는가; 주입 지연이 지배적인가"
+    ]
+    assert GAPS.startswith(FLAG)
+    # 사유 불일치 표시와 함께 나온다 — 둘 다 보인다
+    own = SEED.model_copy(update={"reasons": ["lost_update"]})
+    both = analysis_flags(_analysis(gaps=gaps), JAVA, own)
+    assert len(both) == 2 and both[0].startswith(GAPS) and "불일치" in both[1]
 
 
 def test_names_are_checked_against_the_template_and_the_material_reasons() -> None:
