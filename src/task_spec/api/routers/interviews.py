@@ -117,6 +117,15 @@ class AnswersRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+class ReinforceRequest(BaseModel):
+    # 보강 질문 id → 답 (원문 — 서비스가 가명화한 뒤 다시 길이를 본다). null·빈 글은 '모름'
+    answers: dict[
+        Annotated[str, Field(pattern=r"^r\d$")],
+        Annotated[str, Field(max_length=ANSWER_MAX)] | None,
+    ] = Field(min_length=1, max_length=2)
+    revision: int = Field(ge=1)
+
+
 class TargetedAnswerDraftRequest(BaseModel):
     revision: int = Field(ge=1)
     question: str = Field(
@@ -424,6 +433,15 @@ async def resume_generation(
 ) -> dict[str, Any]:
     """실패·중단(재시작·배포)한 과제 만들기를 그 단계부터 — 같은 thread, 끝난 단계는 다시 하지 않는다."""
     return await interviews.resume_generation(interview_id, revision=body.revision)
+
+
+@router.post("/{interview_id}/reinforce")
+async def reinforce(
+    interview_id: str, body: ReinforceRequest, interviews: InterviewsDep
+) -> dict[str, Any]:
+    """⑧ 보강 질문에 답한다 (#308 검사 5) — 답을 가명화해 저장하고 과제를 버린 뒤 ⑦ 로. 다음 과제 만들기가 문답을 재료에 넣는다.
+    답하지 않고 승인해도 된다."""
+    return await interviews.reinforce(interview_id, revision=body.revision, answers=body.answers)
 
 
 @router.post("/{interview_id}/answers")
