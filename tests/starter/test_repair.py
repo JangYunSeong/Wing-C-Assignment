@@ -154,6 +154,62 @@ def test_starter_problems_come_first() -> None:
     assert "OrderControllerTest: Status expected:<400> but was:<200>" in plan.actions[0].note
 
 
+def test_failing_starter_test_gets_the_real_seed_values() -> None:
+    """prod-b4: 시작 코드의 기존 기능 테스트가 findByUsername("user1") 로 떨어졌는데(시드의 username 은 'username-<id>') 수리 요청에
+    실제 값이 없어 다시 만들어도 같은 테스트를 썼다 — 실제로 떨어진 테스트 파일의 조회 값만 실제 값 예와 함께 붙인다.
+    통과한 '없음 확인' 테스트(운영 b5 의 findBySessionId("nonexistent-…") 꼴)는 짚지 않는다."""
+    from tests.starter.test_seed_rows import _b4_contract
+
+    base = "src/test/java/com/example/service/"
+    starter = Overlay(
+        kind="starter",
+        files=(
+            GeneratedFile(
+                path=base + "SeedRepositoryTest.java",
+                content='Optional<Member> m = memberRepository.findByUsername("user1");',
+            ),
+            GeneratedFile(
+                path=base + "ExistingApiTest.java",
+                content='assertThat(memberRepository.findByUsername("nonexistent-user")).isEmpty();',
+            ),
+        ),
+    )
+    report = VerifyReport(
+        runs=[
+            TargetRun.model_validate(
+                {
+                    "target": "starter",
+                    "kind": "starter",
+                    "tests": [
+                        _t(
+                            "existing",
+                            "SeedRepositoryTest",
+                            "ASSERT",
+                            msg="Expecting Optional to contain a value",
+                        ),
+                        _t("existing", "ExistingApiTest", "PASS"),
+                    ],
+                }
+            ),
+            _run("d1", "ref_accepted", *GOOD_ACC),
+        ]
+    )
+    overlays = {**OVERLAYS, "starter": starter}
+    plan = assign(report, PLAN2, overlays, MISSED, {}, contract=_b4_contract())
+    assert _keys(plan) == ["gen_starter"] and plan.actions[0].gate == "②"
+    note = plan.actions[0].note
+    assert (
+        "SeedRepositoryTest.java: findByUsername(\"user1\") — 시드의 username 실제 값 예: 'username-1'"
+        in note
+    )
+    assert "nonexistent-user" not in note
+    # 계약이 없으면(예전 호출) 안내 없이 그대로
+    assert (
+        "시드에 없는 값으로 조회한 곳"
+        not in assign(report, PLAN2, overlays, MISSED, {}).actions[0].note
+    )
+
+
 def test_compile_errors_go_to_the_file_owner() -> None:
     def err(path: str) -> dict[str, Any]:
         return {"path": path, "line": 48, "message": "actual has private access in Outcome"}

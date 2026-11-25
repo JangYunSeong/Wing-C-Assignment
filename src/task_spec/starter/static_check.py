@@ -949,20 +949,32 @@ def _natural(value: str) -> list[object]:
     return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", value)]
 
 
-def _starter_seed_literals(o: Overlay, contract: TaskContract | None) -> list[StaticProblem]:
-    """시작 코드의 기존 기능 테스트가 저장소 조회에 시드에 없는 글자 값을 넘김 — 그 값의 행이 없어 시작 코드에서 떨어진다.
-    시드 값은 코드가 렌더한다 (seed_sql.seed_column_values — render_seed_sql 과 같은 규칙).
-    2026-11-25 prod-b4 (운영): findByUsername("user1") — 시드의 username 은 'username-<id>' 였다 (계약 규칙 글이 'user1~user20 형식'이라
-    잘못 말함). 같은 입력으로 다시 만들어도 같은 테스트를 써 재생성 예산을 다 썼다 — 실제 값 예를 붙여 처음부터 정확한 이유를 준다."""
+@dataclass(frozen=True)
+class SeedLiteralMiss:
+    """저장소 조회에 넘긴 글자 값이 렌더된 시드에 없음 — path 의 call 이 field 를 literal 로 찾는다 (sample = 실제 값 예)."""
+
+    path: str
+    call: str
+    field: str
+    literal: str
+    sample: str
+
+
+def seed_literal_misses(
+    files: Iterable[GeneratedFile], contract: TaskContract | None
+) -> list[SeedLiteralMiss]:
+    """테스트 파일이 저장소 조회에 넘긴 글자 값 중 렌더된 시드에 없는 것 (seed_sql.seed_column_values — render_seed_sql 과 같은 규칙).
+    정적 검사로 막지 않는다 — '없는 값을 찾으면 비어 있다' 는 정상 테스트도 같은 꼴이라 의도를 알 수 없다 (2026-11-25 운영 b5:
+    findBySessionId("nonexistent-session-xyz") 를 막아 시작 코드 생성이 실패). 기존 테스트가 실제로 떨어졌을 때 ② 수리 안내에만 쓴다.
+    2026-11-25 prod-b4: findByUsername("user1") — 시드의 username 은 'username-<id>' 였는데 다시 만들어도 같은 테스트를 써 예산을 다 썼다."""
     if contract is None or not contract.seed:
         return []
     fields = {f.name.lower(): f.name for m in contract.entities for f in m.fields}
     values: dict[str, set[str]] | None = None
-    out: list[StaticProblem] = []
-    for f in o.files:
+    out: list[SeedLiteralMiss] = []
+    for f in files:
         if "/test/" not in f"/{f.path}" or not f.path.endswith(".java"):
             continue
-        misses: list[tuple[str, str, str]] = []
         for m in _FINDER_LITERAL.finditer(f.content):
             name = fields.get(m.group(1).lower())
             if name is None:
@@ -977,17 +989,10 @@ def _starter_seed_literals(o: Overlay, contract: TaskContract | None) -> list[St
             else:
                 found = literal in values[name]
             if not found:
-                misses.append((m.group(0).lstrip("."), name, literal))
-        for call, name, literal in list(dict.fromkeys(misses))[:3]:
-            assert values is not None
-            sample = ", ".join(f"'{v}'" for v in sorted(values[name], key=_natural)[:3])
-            out.append(
-                StaticProblem(
-                    "gen_starter",
-                    f"시작 코드의 기존 기능 테스트 {f.path} 가 {call} — 시드에 {name} 가 '{literal}' 인 행이 없다 "
-                    f"(실제 값 예: {sample}). 시드 값은 README 시드 줄을 따른다 — 규칙 글·이름으로 값을 짐작하지 않는다",
-                )
-            )
+                sample = ", ".join(f"'{v}'" for v in sorted(values[name], key=_natural)[:3])
+                miss = SeedLiteralMiss(f.path, m.group(0).lstrip("."), name, literal, sample)
+                if miss not in out:
+                    out.append(miss)
     return out
 
 
@@ -2828,7 +2833,6 @@ def static_check(
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
             res.problems += _starter_issued_calls(o, contract, spec)
-            res.problems += _starter_seed_literals(o, contract)
             res.problems += _starter_stub_tests(o, template, contract, spec)
             res.problems += _starter_schema(o, template, contract)
             if not is_java(template.manifest):

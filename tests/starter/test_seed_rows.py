@@ -889,38 +889,60 @@ def test_a_login_rule_text_naming_another_username_format_is_dropped_and_the_rea
     assert "위 범위에 적지 않은 행은: " in line and "`username`='username-<id>'" in line
 
 
-def test_starter_tests_that_look_up_a_value_missing_from_the_seed_are_reasked() -> None:
-    """prod-b4: 시작 코드의 기존 기능 테스트가 findByUsername("user1") 을 썼지만 시드의 username 은 'username-<id>' 였다 — 다시 만들어도
-    같은 테스트를 써 재생성 예산을 다 썼다. 저장소 조회에 넘긴 글자 값이 렌더된 시드에 없으면 실제 값 예를 붙여 처음부터 정확히 묻는다."""
-    from task_spec.schemas import GeneratedFile
-    from task_spec.starter.static_check import Overlay, _starter_seed_literals
-
+def _b4_contract() -> TaskContract:
+    """prod-b4 모양 — 공개 테스트 pt1 이 user1/user1 로그인 행을 쓰는 계약을 코드 단계까지 (username 은 행마다 'username-<id>')."""
     java = load_template(JAVA).manifest
     raw = _raw_login_contract(username="user1", password="user1")
     plan = _cases(("hc1", [_rows(2, status="READY")]))
-    contract = fit_output(PlanContractOutput(contract=raw, hidden_plan=plan), java, _spec())[
-        0
-    ].contract
+    return fit_output(PlanContractOutput(contract=raw, hidden_plan=plan), java, _spec())[0].contract
 
-    def probs(
-        code: str, path: str = "src/test/java/com/example/service/SeedRepositoryTest.java"
-    ) -> list[str]:
-        o = Overlay(kind="starter", files=(GeneratedFile(path=path, content=code),))
-        return [p.message for p in _starter_seed_literals(o, contract)]
 
-    got = probs('Optional<Member> user = memberRepository.findByUsername("user1");')
-    assert (
-        len(got) == 1
-        and 'findByUsername("user1")' in got[0]
-        and "username 가 'user1' 인 행이 없다" in got[0]
+def test_seed_literal_misses_name_lookups_missing_from_the_seed() -> None:
+    """prod-b4: 시작 코드의 기존 기능 테스트가 findByUsername("user1") 을 썼지만 시드의 username 은 'username-<id>' 였다 — 다시 만들어도
+    같은 테스트를 써 재생성 예산을 다 썼다. 저장소 조회에 넘긴 글자 값이 렌더된 시드에 없으면 실제 값 예와 함께 짚는다 (② 수리 안내용)."""
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import seed_literal_misses
+
+    contract = _b4_contract()
+
+    def misses(code: str, path: str = "src/test/java/com/example/service/SeedRepositoryTest.java"):  # type: ignore[no-untyped-def]
+        return seed_literal_misses([GeneratedFile(path=path, content=code)], contract)
+
+    got = misses('Optional<Member> user = memberRepository.findByUsername("user1");')
+    assert [(m.call, m.field, m.literal) for m in got] == [
+        ('findByUsername("user1")', "username", "user1")
+    ]
+    assert got[0].sample == "'username-1', 'username-2', 'username-3'"
+    assert not misses('memberRepository.findByUsername("username-3")')
+    assert not misses('memberRepository.findByUsernameIgnoreCase("USERNAME-3")')
+    assert not misses('memberRepository.findAllByPassword("user1")')  # 범위에 적은 값
+    assert not misses('memberRepository.findByUsername("user1")', path="src/main/java/X.java")
+
+
+def test_a_starter_test_looking_up_a_missing_value_is_not_a_static_problem() -> None:
+    """운영 b5 (2026-11-25): 시작 코드의 기존 기능 테스트 findBySessionId("nonexistent-session-xyz") — 없는 값을 찾으면 비어 있다는
+    정상 테스트를 정적 검사가 '시드에 없는 값'으로 막아 시작 코드 생성이 실패했다 (회차 0, 수리 기록 없음). 의도를 알 수 없으니
+    정적 검사로 막지 않고, 실제로 떨어졌을 때만 ② 수리 안내에 실제 값을 붙인다 (repair._seed_hint)."""
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import Overlay, static_check
+
+    code = 'assertThat(memberRepository.findByUsername("nonexistent-user")).isEmpty();'
+    starter = Overlay(
+        kind="starter",
+        files=(
+            GeneratedFile(
+                path="src/test/java/com/example/service/ExistingApiTest.java", content=code
+            ),
+        ),
     )
-    assert "실제 값 예: 'username-1', 'username-2', 'username-3'" in got[0]
-    assert not probs('memberRepository.findByUsername("username-3")')
-    assert not probs('memberRepository.findByUsernameIgnoreCase("USERNAME-3")')
-    assert not probs('memberRepository.findAllByPassword("user1")')  # 범위에 적은 값
-    assert not probs(
-        'memberRepository.findByUsername("user1")', path="src/main/java/X.java"
-    )  # 테스트가 아님
+    res = static_check(
+        [starter],
+        template=load_template(JAVA),
+        plan=_cases(("hc1", [_rows(2, status="READY")])),
+        spec=_spec(),
+        contract=_b4_contract(),
+    )
+    assert not [p.message for p in res.problems if "인 행이 없다" in p.message]
 
 
 def test_public_row_constants_name_secret_values_with_the_field() -> None:

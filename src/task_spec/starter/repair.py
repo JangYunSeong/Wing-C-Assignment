@@ -35,10 +35,17 @@ from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Literal
 
-from task_spec.schemas import HiddenCase, HiddenPlan, TargetRun, TestResult, VerifyReport
+from task_spec.schemas import (
+    HiddenCase,
+    HiddenPlan,
+    TargetRun,
+    TaskContract,
+    TestResult,
+    VerifyReport,
+)
 from task_spec.schemas.build import GeneratorName
 from task_spec.schemas.template import RepairTerms
-from task_spec.starter.static_check import Overlay
+from task_spec.starter.static_check import Overlay, seed_literal_misses
 
 MAX_MESSAGE = 220
 STARTER = "starter"
@@ -310,6 +317,7 @@ def _starter(
     run: TargetRun,
     overlays: Mapping[str, Overlay] | None = None,
     terms: RepairTerms | None = None,
+    contract: TaskContract | None = None,
 ) -> list[RepairAction]:
     # 컴파일 오류가 모두 공개·숨은 테스트 파일 안이면 시작 코드 탓이 아니다 — 그 파일을 쓴 생성기로 (참조 구현과 같은 규칙).
     # 2026-11-10 프론트 알파 fe-v3-opt: 다시 만든 공개 테스트의 TS2554 를 '시작 코드 빌드 실패'로 짚어 시작 코드만 다시 만들었다.
@@ -346,9 +354,36 @@ def _starter(
             "시작 코드의 기존 테스트 실패: " + ", ".join(t.name for t in bad),
             "시작 코드에서 기존 기능 테스트가 통과해야 한다. 테스트와 구현이 서로 맞게 고친다 — 테스트들은 같은 DB 를 쓰고 "
             "실행 순서가 정해지지 않으므로 테스트 메서드마다 서로 다른 시드 행을 쓰는지도 본다:\n"
-            + lines,
+            + lines
+            + _seed_hint(bad, overlays, contract),
         )
     ]
+
+
+def _seed_hint(
+    bad: Sequence[TestResult],
+    overlays: Mapping[str, Overlay] | None,
+    contract: TaskContract | None,
+) -> str:
+    """실제로 떨어진 기존 테스트 파일이 저장소 조회에 넘긴 글자 값 중 시드에 없는 것 — 실제 값 예를 붙인다.
+    2026-11-25 prod-b4: findByUsername("user1") 이 시드(username-<id>)에 없어 떨어졌는데, 수리 요청에 실제 값이 없어 다시 만들어도
+    같은 테스트를 썼다. 정적 검사로 미리 막지 않는다 — 없는 값을 찾는 정상 테스트도 같은 꼴이다 (운영 b5, static_check.seed_literal_misses)."""
+    starter = (overlays or {}).get(STARTER)
+    if starter is None or contract is None:
+        return ""
+    failed = {t.name for t in bad}
+    files = [f for f in starter.files if PurePosixPath(f.path).stem in failed]
+    misses = seed_literal_misses(files, contract)
+    if not misses:
+        return ""
+    return (
+        "\n시드에 없는 값으로 조회한 곳 — 행이 있기를 기대하는 테스트라면 시드 값을 쓰고(README 시드 줄), 없음을 확인하는 테스트라면 "
+        "그대로 둔다:\n"
+        + "\n".join(
+            f"- {PurePosixPath(m.path).name}: {m.call} — 시드의 {m.field} 실제 값 예: {m.sample}"
+            for m in misses[:5]
+        )
+    )
 
 
 PERSISTENCE = (
@@ -1460,9 +1495,11 @@ def assign(
     passed_before: Mapping[str, Collection[str]] | None = None,
     new_tests: Collection[str] = (),
     calibrate: Collection[str] = (),
+    contract: TaskContract | None = None,
 ) -> RepairPlan:
     """검증 결과 → 다시 만들 생성기 목록. overlays 키는 "starter"·"hidden"·참조 구현 라벨.
     new_tests: 새 API(계약 existing 아님)에만 걸린 공개 테스트 id (pt#) — 시작 코드로 통과하면 새 기능이 들어 있다 (②').
+    contract: 시작 코드 기존 테스트가 떨어지면 시드에 없는 조회 값에 실제 값 예를 붙인다 (_seed_hint).
     calibrate: 보정할 수 있는 숨은 케이스 (#301 PR 2) — 흔한 구현이 허용 설계 장치 없이 통과하면 다시 만들기 대신 RepairPlan.calibrate.
     missed_traps: 흔한 구현 라벨 → 그 구현이 놓친 숨은 요구 id (naive-all 은 전부).
     shared_paths: 템플릿·시작 코드에 이미 있는 파일 — 모든 구현이 같은 오류를 낼 때, 모두 다시 쓴 파일을 원인 후보로 싣는다."""
@@ -1478,7 +1515,7 @@ def assign(
     ):
         res.unresolved += env  # 다시 만들 것이 없다 — 승인자에게 (review_flags)
         return res
-    if acts := _starter(starter, overlays, terms):
+    if acts := _starter(starter, overlays, terms, contract):
         res.actions = acts
         return res
     if acts := _conform(report.runs):
