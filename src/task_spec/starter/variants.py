@@ -371,10 +371,15 @@ def repair_note(
     results: Sequence[VariantResult],
     test_ids: Mapping[str, Sequence[str]],
     rule_acs: Mapping[str, Sequence[str]] | None = None,
+    *,
+    timed: bool = False,
 ) -> str:
     """살아남은 변형 → 공개 테스트 수리 요청. 변형의 코드는 주지 않는다 — 그 구현 하나를 겨냥하는 테스트가 아니라
     그 기준을 어긴 구현 일반이 떨어지는 데이터·단언을 쓰게 (경계 값과 바로 바깥 값, 정렬 키가 다른 3건 이상, 정확한 개수·값,
-    걸러질 행이 결과에 나올 수 있는 조회)."""
+    걸러질 행이 결과에 나올 수 있는 조회).
+
+    timed: 도우미에 시간 규칙 함수가 있다 (Java + 계약에 초 단위 설정, hidden_helpers._time_rule_lines). 2026-11-25 #308 r3: 연장을
+    빼먹은 변형이 살아남자 재생성이 다시 0.1초 여유로 단언하는 테스트를 더했다 — 시간 규칙은 그 함수로 재라고 가리킨다."""
 
     def where(rule: str) -> str:
         acs = list((rule_acs or {}).get(rule, ()))
@@ -391,7 +396,14 @@ def repair_note(
         "그 구현 하나만 겨냥하지 말고, 규칙을 지킨 구현과 어긴 구현이 다른 결과를 내는 데이터와 단언으로 "
         "(경계는 경계 값과 바로 바깥 값 쌍, 정렬은 정렬 키가 다른 3건 이상의 순서, 건수·계산 값은 정확히, "
         "거르기는 걸러질 행이 결과에 나올 수 있는 조회에서 그 행이 없음). 데이터는 도우미 상수의 행이나 요청으로 만든다. "
-        "기존 테스트는 고치지 않는다:\n" + "\n".join(lines)
+        "기존 테스트는 고치지 않는다:\n"
+        + "\n".join(lines)
+        + (
+            "\n시간이 지나야 드러나는 규칙(연장·만료)은 도우미의 assertRenewedWhileUsed·beforeExpiry·afterExpiry 로 잰다 — "
+            "만료를 정수 초로 다루는 구현은 최대 1초 늦게 만료하므로 시간 값 ±1초 안에서 Thread.sleep 으로 재지 않는다"
+            if timed
+            else ""
+        )
     )
 
 

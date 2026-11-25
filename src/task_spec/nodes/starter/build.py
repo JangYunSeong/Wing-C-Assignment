@@ -54,7 +54,7 @@ from task_spec.starter.hand_refs import (
     judge_hands,
     public_note,
 )
-from task_spec.starter.hidden_helpers import code_written_paths
+from task_spec.starter.hidden_helpers import code_written_paths, time_settings
 from task_spec.starter.material_guide import public_rules as guide_public_rules
 from task_spec.starter.repair import (
     COMPILE_RETRIES,
@@ -73,6 +73,7 @@ from task_spec.starter.repair import HAND as HAND_POOL
 from task_spec.starter.repair import TRAP_GATE as TRAP_POOL
 from task_spec.starter.repair import VARIANT as VARIANT_POOL
 from task_spec.starter.static_check import HARNESS_OVERRIDE, Overlay, static_check
+from task_spec.starter.templates import is_java
 from task_spec.starter.traps import (
     GATE as TRAP_GATE,
 )
@@ -581,7 +582,12 @@ async def _variant_gate(
                 gate=VARIANT_GATE,
                 reason="규칙을 위반한 변형이 공개 테스트 통과: "
                 + ", ".join(f"{r.rule_id} {OP_NAME[r.op]}" for r in alive),
-                note=repair_note(alive, test_ids, rule_acs),
+                note=repair_note(
+                    alive,
+                    test_ids,
+                    rule_acs,
+                    timed=is_java(b.template.manifest) and bool(time_settings(b.contract)),
+                ),
                 pool=VARIANT_POOL,
             )
         )
@@ -916,7 +922,8 @@ def _settle_weak(out: BuildOutcome, b: BuildInputs, weak: Sequence[str], gate: H
 def _survivor_flags(alive: Sequence[VariantResult], why: str) -> list[str]:
     return [
         f"공개 테스트가 규칙을 위반한 구현을 구별하지 못함 ({why}) — {r.line()} — 그 기준은 공개 테스트로 측정하지 못함. "
-        "변형이 규칙을 실제로 위반하지 않았을(동치) 수도 있고, 시드에 구별할 행이 없으면 계약 rows 부터 — 사람 확인"
+        "변형이 규칙을 실제로 위반하지 않았을(동치) 수도 있고, 시드에 구별할 행이 없으면 계약 rows 부터, "
+        "시간 규칙이면 경계 ±1초 안에서 재지 않았는지(정수 초 구현은 최대 1초 늦게 만료) — 사람 확인"
         for r in alive
     ]
 

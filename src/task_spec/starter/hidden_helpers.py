@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from typing import Literal
 
 from task_spec.schemas.build import (
+    AppSetting,
     AuthRule,
     Endpoint,
     GeneratedFile,
@@ -176,6 +177,49 @@ def setting_probe(default: int) -> int:
     """테스트가 설정을 덮을 값 — 기본값과 다르고 작은 값 (시드에 그 조건의 행이 이보다 많으면 '정확히 이만큼'을 가른다, #161).
     값을 코드에 박은 구현·제한이 없는 구현이 둘 다 다른 개수를 돌려준다."""
     return SETTING_PROBE if default != SETTING_PROBE else SETTING_PROBE_ALT
+
+
+def time_settings(contract: TaskContract) -> list[AppSetting]:
+    """초 단위 시간 설정 — 분·시간은 계약 단계에서 초로 바꿨다 (contract.fit_setting_units). 밀리초는 정수 초 문제가 없다."""
+    return [st for st in contract.settings if st.unit == "seconds"]
+
+
+def _time_rule_lines(contract: TaskContract) -> list[str]:
+    """시간 규칙(연장·만료) 확인 함수 — 계약에 초 단위 설정이 있을 때만, 숨은·공개 도우미 모두 (#308 r3 빼먹기).
+
+    2026-11-25 알파 v4-2 (운영 분석): 허용 구현(d1)이 만료를 정수 초로 다뤄 실제 유효 시간이 TTL~TTL+1초였다 (로그인 시각
+    소수부만큼 길다). 공개 테스트는 덮은 TTL(3초)+0.1~0.5초에 '연장되면 200'을 단언해, 연장을 빼먹은 변형이 한 번에 약 40~45%
+    확률로 통과했고 재생성 뒤에도 살아남았다. 거꾸로 'TTL 이 지나면 401'을 TTL+0.x초에 재면 정수 초로 만든 정직한 구현(JWT exp 도
+    초 단위)이 떨어진다 — 변별과 공정성이 같은 뿌리다. 경계 ±1초 밖에서만 재는 함수를 도우미가 준다 (프롬프트 판은 그대로)."""
+    if not time_settings(contract):
+        return []
+    call = "java.util.concurrent.Callable<HttpResponse<String>> access"
+    return [
+        "",
+        "    // ── 시간 규칙 (계약 settings 의 초 단위 값): 만료를 정수 초로 다루는 구현도 정상이다 — 실제 유효 시간이 최대 1초 길다.",
+        "    //    시간 값 ±1초 안에서 단언하지 않는다 (Thread.sleep 으로 경계 근처를 직접 재지 않는다). 연장·유효·만료는 아래 함수로,",
+        "    //    seconds 에는 테스트가 덮은 값(SETTING_…_PROBE)을 넘긴다 ──",
+        "    /** 연장 확인 — seconds 의 두 배 동안 1초마다 access 를 부르고 모두 expectedStatus 인지 본다. 접근할 때 연장하지 않는 구현은 늦어도 seconds+1초 안에 다른 상태가 된다 */",
+        f"    protected static void assertRenewedWhileUsed(long seconds, int expectedStatus, {call}) throws Exception {{",
+        "        for (long elapsed = 1; elapsed <= 2 * seconds; elapsed++) {",
+        "            Thread.sleep(1000);",
+        "            int status = access.call().statusCode();",
+        "            if (status != expectedStatus) {",
+        '                throw new AssertionError("접근할 때마다 연장되면 " + elapsed + "초째에도 " + expectedStatus + " 이어야 한다 — 실제 " + status);',
+        "            }",
+        "        }",
+        "    }",
+        "    /** 유효 확인 — 마지막 접근 뒤 seconds-1초 기다린 다음 access 의 응답 (만료 전 — 정수 초 구현도 아직 유효). 상태 단언은 테스트가 */",
+        f"    protected static HttpResponse<String> beforeExpiry(long seconds, {call}) throws Exception {{",
+        "        Thread.sleep(Math.max(0, seconds - 1) * 1000);",
+        "        return access.call();",
+        "    }",
+        "    /** 만료 확인 — 마지막 접근 뒤 seconds+2초 기다린 다음 access 의 응답 (정수 초 구현도 이때는 만료). 상태 단언은 테스트가 계약 코드로 */",
+        f"    protected static HttpResponse<String> afterExpiry(long seconds, {call}) throws Exception {{",
+        "        Thread.sleep((seconds + 2) * 1000);",
+        "        return access.call();",
+        "    }",
+    ]
 
 
 def _setting_lines(contract: TaskContract) -> list[str]:
@@ -753,6 +797,7 @@ def render_contract_case(
             ]
     lines += _state_lines(contract)
     lines += _setting_lines(contract)
+    lines += _time_rule_lines(contract)
     lines += _header_lines(contract)
     lines += _key_lines(contract)
     if audience == "public":
