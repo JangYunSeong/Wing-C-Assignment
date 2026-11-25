@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from task_spec.schemas.build import HiddenPlan
+from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.schemas.verify_report import VerifyReport
 from task_spec.starter.render import render_params
@@ -36,6 +37,11 @@ MAX_TRIALS = 8
 STEP = 10  # 고른 한도의 단위
 LABEL = "cal"  # 보정 실행 대상 라벨 cal<n>-<라벨> — 검증기 작업 폴더(r<회차>-<라벨>)가 실제 검증·다른 조합과 겹치지 않게
 FLAG = "조절값 보정: "  # 승인 화면 표시 머리 (막지 않음 — 승인자가 확인)
+# 명세 글이 조절값을 적는 로그 문구 — 표기 패턴(spec_patterns)은 설정 꼴만 읽어, 2단계 로그의 Hikari 문구
+# 'Connection is not available, request timed out after 3000ms' 를 못 읽었다 (2026-11-25 #308: 보정 350ms ↔ 공개 로그 3000ms)
+SPEC_LOGS: dict[str, tuple[str, ...]] = {
+    "connection_timeout_ms": (r"timed\s+out\s+after\s+(\d+)\s*ms",)
+}
 
 Status = Literal["calibrated", "naive_untouched", "no_window", "skipped"]
 
@@ -112,6 +118,37 @@ class Calibration:
             f"{MIN_RATIO:g}배 창 없음 (시험 {len(self.trials)}회, 흔한 구현이 실패한 {self.knobs.threshold}: "
             f"{', '.join(map(str, hit))}). 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
         )
+
+
+def spec_texts(task: TaskItem) -> list[str]:
+    """명세에서 지원자가 보는 글 — 상황, 1단계 자료, 2단계(배포 뒤 증상) 상황·자료. 보정 값과 대조할 수치를 찾는 곳."""
+    out = [task.scenario or "", *(a.content for a in task.artifacts)]
+    if task.debug_stage is not None:
+        out += [task.debug_stage.scenario, *(a.content for a in task.debug_stage.artifacts)]
+    return [t for t in out if t]
+
+
+def spec_values(texts: Sequence[str], name: str, m: TemplateManifest) -> list[int]:
+    """명세 글이 그 조절값으로 적은 수치 — 조절값 표기 패턴(그룹 1 = 값) + 로그 문구(SPEC_LOGS)."""
+    p = m.param(name)
+    patterns = [*(p.spec_patterns if p is not None else []), *SPEC_LOGS.get(name, ())]
+    return sorted(
+        {
+            int(found.group(1))
+            for text in texts
+            for pattern in patterns
+            for found in re.finditer(pattern, text, re.IGNORECASE)
+            if found.group(1).isdigit()
+        }
+    )
+
+
+def spec_note(name: str, chosen: int, said: Sequence[int]) -> str:
+    """보정 값이 명세 글의 수치와 다를 때 승인 화면 표시에 덧붙일 말 — 같거나 명세에 수치가 없으면 빈 글.
+    보정 창 밖의 공개 수치에는 값을 맞출 수 없어(예: 창 [250, 500] ↔ 로그 3000ms) 승인자에게 알린다."""
+    if not said or chosen in said:
+        return ""
+    return f" · 명세 자료의 {name} 값({', '.join(map(str, said))})과 다름 — 채점은 보정 값 {chosen} 사용"
 
 
 def _in_range(value: int, p: HarnessParam | None) -> bool:

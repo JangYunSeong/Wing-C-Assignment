@@ -19,7 +19,7 @@ from typing import Literal
 from task_spec.schemas import CaseRows, HiddenPlan, SeedGroup, SeedRule, SeedScalar, TaskContract
 from task_spec.schemas.build import Endpoint, Entity
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.auth_rule import requester_rows
+from task_spec.starter.auth_rule import credentials, issued_rule, requester_rows
 from task_spec.starter.field_types import enum_values
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.seed_sql import _insert_fields, default_value, time_kind
@@ -28,6 +28,50 @@ PUBLIC_PER_GROUP = 3  # 공개 테스트가 시드 그룹(처음 값)마다 쓸 
 RESERVED_ROWS = 10  # 작은 id 쪽 — 숨은 케이스에 나눠 주지 않는다 (지원자 테스트·공개 테스트·시작 코드 테스트 몫)
 _ID_FIELDS = {"id"}
 _QUOTED = re.compile(r"""["'`]([^"'`]+)["'`]""")
+# 고유 칸 — 계약 필드에 고유 표시 칸이 없어 제약 글로 본다 (예: '고유·중복 불가', '회원 고유 식별자 (UUID)')
+_UNIQUE = re.compile(
+    r"고유|유일|중복\s*(?:불가|금지|없|안\s*됨|될\s*수\s*없|허용\s*(?:안|않))|\bunique\b",
+    re.IGNORECASE,
+)
+# 로그인 자격 증명 중 비밀 칸 — 여러 행이 같은 값이어도 된다 (로그인 칸은 식별 칸만 고유로 본다)
+_SECRET = re.compile(r"pass|pwd|secret|pin\b|비밀", re.IGNORECASE)
+
+
+def unique_fields(contract: TaskContract, entity_id: str) -> frozenset[str]:
+    """같은 값을 두 행에 둘 수 없는 칸 — 제약 글이 고유를 말하는 칸과, 발급(로그인) 엔티티의 식별 칸(자격 증명 중 비밀 칸이 아닌 것).
+    로그인 칸은 고유라고 적지 않아도 같은 값의 행이 둘이면 'username 으로 찾기' 구현이 깨진다."""
+    m = next((e for e in contract.entities if e.entity_id == entity_id), None)
+    if m is None:
+        return frozenset()
+    out = {f.name for f in m.fields if f.constraints and _UNIQUE.search(f.constraints)}
+    rule = issued_rule(contract)
+    if rule is not None and rule.entity == entity_id:
+        out |= {c.name for c in credentials(contract, rule) or () if not _SECRET.search(c.name)}
+    return frozenset(out)
+
+
+def public_per_group(
+    contract: TaskContract, entity_id: str, values: Mapping[str, SeedScalar]
+) -> int:
+    """처음 값 그룹마다 공개 테스트 몫 행 수 — 고유 칸을 처음 값으로 정한 그룹은 1행 (같은 값의 행을 여럿 둘 수 없다).
+    2026-11-25 #308 알파 1·3: 공개 테스트가 쓰는 로그인 행(username·password 같은 값)을 3행으로 덧붙여, 'username 으로 찾기'
+    구현이 500 으로 떨어지고(알파 1) USERS(USERNAME) 고유 인덱스 위반으로 시작 코드가 기동하지 못했다(알파 3)."""
+    return 1 if set(values) & unique_fields(contract, entity_id) else PUBLIC_PER_GROUP
+
+
+def peak_reasons(manifest: TemplateManifest) -> dict[str, list[str]]:
+    """동시 요청(운영 피크)으로만 재현되는 사유 → 그 성립 조건이 쓰는 버스트 조절값(burst_rows). 성립 조건이 동시 요청 수를 쓰면
+    요청 하나로는 조건이 서지 않는다. 2026-11-25 #308 알파 1: pool_acquire_timeout 케이스 data 가 모두 burst=false 라 정적 검사가
+    peak 를 막아 hc1 이 Burst.fire(1, …) 한 건이 됐고, 풀이 고갈될 수 없으니 흔한 구현이 매 회차 통과했다."""
+    names = set(manifest.burst_rows)
+    out: dict[str, list[str]] = {}
+    for r in manifest.failure_reasons:
+        used = sorted(
+            {n for f in r.feasible for n in names if re.search(rf"\b{re.escape(n)}\b", f.when)}
+        )
+        if used:
+            out[r.code] = used
+    return out
 
 
 @dataclass(frozen=True)
@@ -120,6 +164,12 @@ def seed_problems(contract: TaskContract) -> list[str]:
             out += _value_problems(
                 f"{label} 범위 {g.first}~{g.last}", g.values, contract, s.entity_id
             )
+            fixed = sorted(set(g.values) & unique_fields(contract, s.entity_id))
+            if fixed and g.last > g.first:
+                out.append(
+                    f"{label} 범위 {g.first}~{g.last}: 고유 칸 {', '.join(fixed)} 을 같은 값으로 {g.last - g.first + 1}행에 둠 — "
+                    "고유 칸은 values 에서 빼거나(행마다 다른 기본값) 한 행 범위로 나눈다"
+                )
         if expected - 1 > s.rows:
             out.append(f"{label}: 범위가 rows={s.rows} 를 넘음 (id {expected - 1} 까지)")
         elif expected - 1 < s.rows:
@@ -440,11 +490,19 @@ def public_free(
                 continue  # 요청자 행만 있는 그룹
             key = (s.entity_id, tuple(sorted((k, str(v)) for k, v in g.values.items())))
             _, ids = out.setdefault(key, (dict(g.values), []))
+            target = public_per_group(contract, s.entity_id, g.values)
             for i in range(max(g.first, reserved + 1), g.last + 1):
-                if len(ids) >= PUBLIC_PER_GROUP:
+                if len(ids) >= target:
                     break
                 if i not in used and i not in asked.get(s.entity_id, set()):
                     ids.append(i)
+            if target < PUBLIC_PER_GROUP and not ids:
+                # 고유 칸을 정한 그룹은 같은 값의 행을 덧붙일 수 없다 (_fit_public) — 작은 id 쪽의 그 행이라도 공개 몫으로
+                ids += [
+                    i
+                    for i in range(g.first, min(g.last, reserved) + 1)
+                    if i not in used and i not in asked.get(s.entity_id, set())
+                ][:1]
     return [(eid, vals, ids) for (eid, _), (vals, ids) in out.items()]
 
 
@@ -558,6 +616,15 @@ def matches(values: Mapping[str, SeedScalar], want: Mapping[str, SeedScalar]) ->
     return all(k in values and str(values[k]) == str(v) for k, v in want.items())
 
 
+def _append_unique(seed: SeedRule, values: dict[str, SeedScalar]) -> tuple[SeedRule, int]:
+    """고유 칸을 정한 처음 값의 행을 시드 끝에 하나만 덧붙인다 — (새 시드, 그 행 id). 작은 id 쪽이어도 둔다: 작은 id 는 공개 테스트
+    몫이기도 하고(RESERVED_ROWS), public_free 가 그 행을 공개 몫으로 대신한다. 작은 id 밖으로 밀려고 사이 행을 채우면 그 채움 범위에
+    다시 공개 몫 행이 붙는다."""
+    row = seed.rows + 1
+    group = SeedGroup(first=row, last=row, values=dict(values))
+    return seed.model_copy(update={"rows": row, "groups": [*seed.groups, group]}), row
+
+
 def _fit_row_uses(
     contract: TaskContract,
     seeds: dict[str, SeedRule],
@@ -576,17 +643,25 @@ def _fit_row_uses(
             if any(matches(g.values, use.values) for g in seed.groups):
                 continue
             values = {**common_values(seed), **use.values}
-            first = seed.rows + 1
-            last = max(seed.rows, reserved) + PUBLIC_PER_GROUP
-            seeds[use.entity_id] = seed.model_copy(
-                update={
-                    "rows": last,
-                    "groups": [*seed.groups, SeedGroup(first=first, last=last, values=values)],
-                }
-            )
+            unique = unique_fields(contract, use.entity_id)
+            why = f"공개 테스트 {t.test_id} 가 쓰는 행"
+            if set(values) & unique:
+                grown, first = _append_unique(seed, values)
+                last = first
+                why += f" — 고유 칸({', '.join(sorted(set(values) & unique))})이라 1행"
+            else:
+                first = seed.rows + 1
+                last = max(seed.rows, reserved) + PUBLIC_PER_GROUP
+                grown = seed.model_copy(
+                    update={
+                        "rows": last,
+                        "groups": [*seed.groups, SeedGroup(first=first, last=last, values=values)],
+                    }
+                )
+            seeds[use.entity_id] = grown
             notes.append(
-                f"{names.get(use.entity_id, use.entity_id)} 시드 {seed.rows} → {last}행: id {first}~{last} ({_cond(values)}) 덧붙임 "
-                f"— 공개 테스트 {t.test_id} 가 쓰는 행"
+                f"{names.get(use.entity_id, use.entity_id)} 시드 {seed.rows} → {grown.rows}행: id {first}~{last} ({_cond(values)}) 덧붙임 "
+                f"— {why}"
             )
             contract = contract.model_copy(
                 update={"seed": [seeds[x.entity_id] for x in contract.seed]}
@@ -634,9 +709,11 @@ def _fit_public(
     2026-11-08 상류 평가: 시드 172행을 숨은 케이스가 11~172 전부 가져가 공개 몫 상수가 하나도 없었고, 공개 테스트가 없는 이름
     (PUBLIC_ORDER_READY)을 짐작해 재요청으로도 못 고쳤다 (2/2). 행 수는 LLM 이 아니라 코드가 맞춘다."""
     for _ in range(sum(len(s.groups) for s in contract.seed) + 1):
+        # 고유 칸을 정한 그룹은 덧붙이지 않는다 — 이미 시드에 있는 그룹이라 같은 값의 행이 둘이 된다 (public_free 가 작은 id 의 행으로 대신)
         short = [
             (e, v, PUBLIC_PER_GROUP - len(ids))
             for e, v, ids in public_free(contract, plan, reserved)
+            if public_per_group(contract, e, v) == PUBLIC_PER_GROUP
         ]
         short = [x for x in short if x[2] > 0]
         if not short:
@@ -665,14 +742,27 @@ def _fit_public(
 def case_rows_problems(
     contract: TaskContract, plan: HiddenPlan, manifest: TemplateManifest
 ) -> list[str]:
-    """숨은 케이스의 data — 처음 값 필드, 버스트 행 수, 배정 가능 여부."""
+    """숨은 케이스의 data — 처음 값 필드, 고유 칸, 동시 요청 사유의 버스트 행, 버스트 행 수, 배정 가능 여부."""
     out: list[str] = []
     need, missing = burst_rows_needed(plan, manifest)
+    peak = peak_reasons(manifest)
     for c in plan.cases:
+        if c.intended_reason in peak and not any(d.burst for d in c.data):
+            out.append(
+                f"숨은 케이스 {c.case_id}: 의도한 사유 {c.intended_reason} 는 동시 요청으로만 재현되는데 data 에 버스트 행이 없음 "
+                f"(성립 조건이 {', '.join(peak[c.intended_reason])} 를 씀) — 버스트 행(burst: true, "
+                f"{' × '.join(manifest.burst_rows)} 행 이상)을 둔다"
+            )
         for d in c.data:
             out += _value_problems(
                 f"숨은 케이스 {c.case_id} data", d.initial, contract, d.entity_id
             )
+            fixed = sorted(set(d.initial) & unique_fields(contract, d.entity_id))
+            if fixed and d.rows > 1:
+                out.append(
+                    f"숨은 케이스 {c.case_id} data: 고유 칸 {', '.join(fixed)} 을 같은 처음 값으로 {d.rows}행에 둠 — "
+                    "고유 칸은 처음 값에서 뺀다 (행마다 다른 기본값)"
+                )
             if not d.burst:
                 continue
             if missing:

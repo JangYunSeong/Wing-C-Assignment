@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
+
 from task_spec.llm import FakeBackend
 from task_spec.nodes.starter.generate import gen_hidden, hidden_input
 from task_spec.starter.contract import SpecView
-from task_spec.starter.hidden_helpers import method_name, render_contract_case
+from task_spec.starter.hidden_helpers import _inject_lines, method_name, render_contract_case
 from task_spec.starter.seed_rows import allocate_rows
 from task_spec.starter.static_check import Overlay, static_check
 from tests.starter.test_contract import BACKEND_SEED
@@ -82,3 +84,34 @@ def test_cases_must_extend_the_helper_not_grader_support() -> None:
         "계약 도우미" in m for m in msgs(HC1, [_f(HELPER, "abstract class ContractCase {}")])
     )
     assert Overlay  # 형식 확인용 import 사용
+
+
+def _select_rx(table: str) -> re.Pattern[str]:
+    """도우미가 쓰는 select 주입 정규식(Java 원문) — 문자열 이음을 풀어 같은 뜻의 파이썬 정규식으로 (\\s·\\b·.*? 는 두 언어가 같다)."""
+    src = "\n".join(_inject_lines())
+    found = re.search(
+        r'Pattern\.compile\("(\^[^"]*select[^"]*)" \+ Pattern\.quote\(table\) \+ "([^"]*)"', src
+    )
+    assert found is not None
+    head, tail = (g.replace("\\\\", "\\") for g in found.groups())
+    return re.compile(head + re.escape(table) + tail, re.IGNORECASE | re.DOTALL)
+
+
+def test_select_statement_failure_reaches_the_table_after_the_column_list() -> None:
+    """#308 팩트체크 1·2차: sqlOn 이 select 뒤 열 목록을 건너뛰지 못해 injectStatementFailure("select", TABLE_…) 가 조용히 아무것도
+    주입하지 못했다 — Hibernate 는 select 와 from 사이에 열 목록을 둔다. from·join 에 그 테이블이 오는 읽기만 실패시킨다."""
+    rx = _select_rx("session")
+    hit = [
+        "select s1_0.id,s1_0.expires_at,s1_0.user_id from session s1_0 where s1_0.id=?",
+        "SELECT S1_0.ID FROM SESSION S1_0",
+        "select u1_0.id from users u1_0 join session s1_0 on s1_0.user_id=u1_0.id",
+        "select s1_0.id\nfrom session s1_0",
+    ]
+    miss = [
+        "select s1_0.id from session_log s1_0",
+        "select s1_0.id from sessions s1_0",
+        "update session set expires_at=? where id=?",
+        "insert into session (id) values (?)",
+    ]
+    assert all(rx.search(sql) for sql in hit), [s for s in hit if not rx.search(s)]
+    assert not any(rx.search(sql) for sql in miss), [s for s in miss if rx.search(s)]

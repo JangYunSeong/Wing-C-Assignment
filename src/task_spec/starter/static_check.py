@@ -55,6 +55,7 @@ from task_spec.starter.hidden_helpers import (
 )
 from task_spec.starter.py_helpers import command_name, py_ident
 from task_spec.starter.render import README, render_params
+from task_spec.starter.seed_rows import peak_reasons
 from task_spec.starter.seed_sql import schema_problems, time_kind
 from task_spec.starter.skeleton import (
     APP,
@@ -1233,6 +1234,23 @@ def _broad_injections(
 _PEAK_CALL = re.compile(r"(?<![\w.])peak\s*\(")
 
 
+def case_applied_tunes(m: TemplateManifest) -> dict[str, list[str]]:
+    """사유 → 숨은 케이스가 직접 읽어 켜야 하는 보정 값 (#301·#308). 사유 tunes 중 운영 설정으로 자동으로 들어가는 값(config_keys)과
+    채점이 밖에서 재는 시간 한도(hidden_rules.observable_params)는 하네스가 넣는다. 그 밖의 값(예: SQL 지연 query_delay_ms)은 케이스가
+    읽어 적용해야 빌드 보정이 바꾼 값이 실제 부하가 된다 — 읽지 않으면 보정이 창을 못 찾고 엉뚱하게 흔한 구현을 다시 만든다."""
+    observable = set(m.hidden_rules.observable_params)
+    out: dict[str, list[str]] = {}
+    for r in m.failure_reasons:
+        names = [
+            n
+            for n in r.tunes
+            if (p := m.param(n)) is not None and not p.config_keys and n not in observable
+        ]
+        if names:
+            out[r.code] = names
+    return out
+
+
 def _reason_rules(
     cases: Iterable[GeneratedFile],
     m: TemplateManifest,
@@ -1245,6 +1263,8 @@ def _reason_rules(
     intended = {c.case_id: c.intended_reason for c in plan.cases}
     requires = {r.code: r.requires for r in m.failure_reasons if r.requires}
     reasons = {r.code: r for r in m.failure_reasons}
+    applied = case_applied_tunes(m)
+    peak = peak_reasons(m)  # 동시 요청으로만 재현되는 사유 — 버스트 없는 케이스 안내를 사유별로
     # 버스트 행이 없는 케이스 — 운영 피크(peak)를 쓰면 요청 하나의 조건이 아니라 동시 부하를 잰다
     single = {c.case_id for c in plan.cases if not any(d.burst for d in c.data)}
     # 사유를 붙여도 되는 단언 — 사유마다 선언(assert_on·assert_not_on) + 모든 사유 공통(hidden_rules.reason_not_on). 한 검사로 (#176 B)
@@ -1282,7 +1302,23 @@ def _reason_rules(
                     f"숨은 케이스 {cid} (의도한 사유 {code}) 가 그 사유를 일으키는 것을 쓰지 않음 — 필요한 것: {' 또는 '.join(need)}"
                     + (f". {how}" if how else "")
                 )
-            if cid in single and _PEAK_CALL.search(f.content):
+            for name in applied.get(code or "", []):
+                if f'"{name}"' not in f.content:
+                    # 2026-11-25 #308 팩트체크: 케이스가 지연을 켜지 않으면 보정이 지연을 바꿔도 부하가 그대로라 '보정 불가 → 흔한 구현 재생성'
+                    out.append(
+                        f"숨은 케이스 {cid} (의도한 사유 {code}) 가 조절값 {name} 을 읽지 않음 — 빌드가 이 값을 바꿔 흔한 구현과 "
+                        f'허용 구현을 가르므로, 하네스 문서대로 "{name}" 를 읽어 적용하는 줄을 이 케이스에 둔다'
+                    )
+            if cid in single and _PEAK_CALL.search(f.content) and code in peak:
+                # 2026-11-25 #308 팩트체크 3차: 아래 안내(Burst.fire(1, …))가 사유를 보지 않아, 동시 요청으로만 재현되는 사유에도 요청 한 건을
+                # 권했다 — 그 사유의 how('peak(…) 로 재현')와 정반대. 계획에 버스트 행이 없는 것이 원인이라 숨은 테스트로는 고칠 수 없다
+                # (계약 단계 seed_rows.case_rows_problems 가 거르므로 보통 여기까지 오지 않는다)
+                out.append(
+                    f"숨은 케이스 {cid} (의도한 사유 {code}) 는 동시 요청으로만 재현되는데 계약 케이스 data 에 버스트 행이 없어 peak(...) 를 "
+                    "쓸 수 없음 — 숨은 테스트로 고칠 수 없는 계약 문제다 (케이스 data 에 버스트 행 필요). Burst.fire(1, …) 로 바꾸지 않는다 — "
+                    "요청 한 건으로는 이 사유가 나오지 않는다"
+                )
+            elif cid in single and _PEAK_CALL.search(f.content):
                 # 2026-11-10 nplus1-g: '목록 한 번 조회가 운영 지연에서 1초 안' 케이스를 peak(…) 로 동시 버스트해,
                 # 조인 조회 허용 구현까지 연결·스레드 대기로 시간 초과 — 흔한 구현과 가르지 못했다
                 out.append(

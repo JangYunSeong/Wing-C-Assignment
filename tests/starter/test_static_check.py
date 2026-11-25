@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from task_spec.schemas import GeneratedFile, HiddenPlan
+from task_spec.schemas.template import TemplateManifest
 from task_spec.starter.contract import SpecView
 from task_spec.starter.render import render_params, render_readme
 from task_spec.starter.static_check import Overlay, identifier_words, static_check
@@ -902,6 +903,66 @@ def test_peak_on_a_case_without_burst_rows_is_rejected() -> None:
     assert any("버스트 행이 없는 케이스인데 peak" in p for p in bad)
     good = _reason_rules([GeneratedFile(path=path, content=once)], *args)
     assert not any("버스트 행이 없는" in p for p in good)
+
+
+def test_tuned_load_must_be_applied_by_the_case() -> None:
+    """#308 팩트체크: 사유 tunes 의 부하 값(query_delay_ms)은 숨은 케이스가 읽어 켜야 빌드 보정이 바꾼 값이 실제 부하가 된다 — 읽지
+    않으면 보정이 창을 못 찾고 흔한 구현을 다시 만든다. 대기 한도(운영 설정으로 자동)·요청 한도(채점이 재는 시간 한도)는 케이스가
+    읽지 않아도 된다. 보정 칸이 없는 판(CURRENT v2)은 예전 그대로."""
+    from task_spec.starter.static_check import _reason_rules, case_applied_tunes
+
+    v2 = load_template("backend/java-spring-boot3-jpa", 2).manifest
+    v5 = load_template("backend/java-spring-boot3-jpa", 5).manifest
+    assert case_applied_tunes(v5) == {"pool_acquire_timeout": ["query_delay_ms"]}
+    assert case_applied_tunes(v2) == {}
+    burst = {"entity_id": "m1", "rows": 96, "initial": {}, "burst": True}
+    case = {
+        **_plan()["cases"][0],
+        "case_id": "hc1",
+        "intended_reason": "pool_acquire_timeout",
+        "data": [burst],
+    }
+    plan = HiddenPlan.model_validate(_plan() | {"cases": [case]})
+    head = '@DisplayName("hc1 피크") class Hc1Test { void t() { '
+    peak = "var o = peak(i -> 200, i -> getOrders().statusCode()); } }"
+    delay = 'GraderJdbcHarness.queryDelayMs = GraderParams.longValue("query_delay_ms", 20); '
+    path = f"{CASES}/Hc1Test.java"
+
+    def problems(m: TemplateManifest, content: str) -> list[str]:
+        rx = [re.compile(p) for p in m.hidden_rules.reason_patterns]
+        files = [GeneratedFile(path=path, content=content)]
+        return _reason_rules(files, m, plan, re.compile(m.hidden_rules.case_id_pattern), rx)
+
+    assert any("조절값 query_delay_ms 을 읽지 않음" in p for p in problems(v5, head + peak))
+    assert not any("읽지 않음" in p for p in problems(v5, head + delay + peak))
+    assert not any("읽지 않음" in p for p in problems(v2, head + peak))
+
+
+def test_peak_guidance_follows_the_reason() -> None:
+    """#308 팩트체크 3차: 버스트 행 없는 케이스의 peak 안내가 사유를 보지 않고 Burst.fire(1, …) 를 권해, 동시 요청으로만 재현되는
+    pool_acquire_timeout 에도 요청 한 건을 권했다. 피크 사유면 계약 문제(버스트 행 없음)로 알리고, 요청 한도 사유는 예전 안내 그대로."""
+    from task_spec.starter.static_check import _reason_rules
+
+    m = JAVA.manifest
+    path = "src/test/java/com/example/service/grading/cases/Hc1Test.java"
+    peak = '@DisplayName("hc1 피크") class Hc1Test { void t() { var o = peak(i -> 200, i -> getOrders().statusCode()); } }'
+    rules = (
+        re.compile(m.hidden_rules.case_id_pattern),
+        [re.compile(p) for p in m.hidden_rules.reason_patterns],
+    )
+
+    def problems(reason: str) -> list[str]:
+        one = {"entity_id": "m1", "rows": 1, "initial": {}, "burst": False}
+        case = {**_plan()["cases"][0], "case_id": "hc1", "intended_reason": reason, "data": [one]}
+        plan = HiddenPlan.model_validate(_plan() | {"cases": [case]})
+        return _reason_rules([GeneratedFile(path=path, content=peak)], m, plan, *rules)
+
+    pool = problems("pool_acquire_timeout")
+    assert any("계약 문제" in p and "버스트 행이 없어" in p for p in pool)
+    assert not any("Burst.fire(1, …) 로 한 번 보내" in p for p in pool)
+    timeout = problems("request_timeout")
+    assert any("Burst.fire(1, …) 로 한 번 보내" in p for p in timeout)
+    assert not any("계약 문제" in p for p in timeout)
 
 
 def test_path_problem_names_the_allowed_slots_and_test_data_alternative() -> None:
