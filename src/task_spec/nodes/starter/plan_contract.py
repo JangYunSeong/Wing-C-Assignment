@@ -54,11 +54,12 @@ from task_spec.starter.contract import (
     timed_hints,
     unevidenced,
 )
+from task_spec.starter.feasibility import fit_feasible_rows
 from task_spec.starter.header_values import fit_per_request
 from task_spec.starter.hidden_helpers import SETTING_MIN_ROWS, SETTING_PROBE, SETTING_PROBE_ALT
 from task_spec.starter.interface import fit_interface, interface_text, stale_name_problems
 from task_spec.starter.material_guide import contract_rules_text, with_guide
-from task_spec.starter.seed_rows import RESERVED_ROWS, fit_row_targets, fit_seed
+from task_spec.starter.seed_rows import RESERVED_ROWS, fit_row_targets, fit_seed, peak_reasons
 from task_spec.starter.state_rule import fit_state
 from task_spec.starter.templates import Template, restrict_reasons, supports_settings
 
@@ -320,7 +321,7 @@ def fit_unevidenced(
     """근거를 '없음'으로 쓴 선택 조절값(보이는 값, 필수 아님)이 자료 어디에도 없으면 뺀다 — 검사는 '빼라'고 다시 묻지만
     LLM 이 끝까지 못 뺐다 [확정: 2026-11-11 사용자]. 2026-11-11 백엔드 중복 처리 알파: 재료가 조절값을 나열하지 않아(harness: [])
     템플릿 조절값이 다 보였고, concurrency 를 '자료에 없음'으로 적고도 넣어 계약이 세 번 다 막혔다.
-    필수 조절값은 빼지 않는다 (명세 수정 필요로 남는다). 동시 요청 조절값이 빠지면 버스트 표시도 끈다."""
+    필수 조절값은 빼지 않는다 (명세 수정 필요로 남는다). 버스트 표시는 조절값을 다 맞춘 뒤 fit_burst_marks 가 본다."""
     drop = sorted(
         p.name
         for p in m.harness_params
@@ -335,19 +336,39 @@ def fit_unevidenced(
     harness = {k: v for k, v in plan.harness.items() if k not in drop}
     evidence = {k: v for k, v in plan.evidence.items() if k not in drop}
     values = {k: v for k, v in plan.evidence_value.items() if k not in drop}
-    no_burst = any(n in drop for n in m.burst_rows)
+    fixed = plan.model_copy(
+        update={"harness": harness, "evidence": evidence, "evidence_value": values}
+    )
+    return fixed, [f"근거가 '없음'인 선택 조절값 뺌: {', '.join(drop)} (자료에 그 값이 없음)"]
+
+
+def fit_burst_marks(plan: HiddenPlan, m: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
+    """조절값을 다 맞춘 뒤 한 번 — 버스트 행 수를 잴 조절값(burst_rows)이 최종 조절값에 없는데 버스트 표시가 붙은 케이스는, 의도한 사유가
+    동시 요청(운영 피크)으로만 재현되는 사유가 아니면 표시를 끈다 (같은 행에 같은 요청을 동시에 — Burst.fire, 요청마다 다른 행이 필요 없다).
+    피크 사유는 끄지 않는다 — 동시 요청 수가 있어야 하니 검사가 다시 묻는다 (seed_rows.case_rows_problems).
+    2026-11-25 재시도 중복 알파 2회: hc2(같은 X-Request-Id 를 동시에)에 burst 를 붙였는데 concurrency 가 처음부터 없어, '버스트 행 수를
+    잴 조절값 없음'과 'concurrency 는 자료에 없으니 뺀다'가 서로 막아 계약이 실패했다. 예전에는 코드가 조절값을 뺄 때만(재료 나열·근거 없음,
+    2026-11-11) 표시를 꺼서, LLM 이 처음부터 안 쓴 경로가 남았다 — 경로가 아니라 최종 상태를 본다."""
+    missing = [n for n in m.burst_rows if n not in plan.harness]
+    if not missing:
+        return plan, []
+    peak = peak_reasons(m)
+    off = [
+        c.case_id
+        for c in plan.cases
+        if c.intended_reason not in peak and any(d.burst for d in c.data)
+    ]
+    if not off:
+        return plan, []
     cases = [
         c.model_copy(update={"data": [d.model_copy(update={"burst": False}) for d in c.data]})
-        if no_burst and any(d.burst for d in c.data)
+        if c.case_id in off
         else c
         for c in plan.cases
     ]
-    fixed = plan.model_copy(
-        update={"harness": harness, "evidence": evidence, "evidence_value": values, "cases": cases}
-    )
-    return fixed, [
-        f"근거가 '없음'인 선택 조절값 뺌: {', '.join(drop)} (자료에 그 값이 없음)"
-        + (" — 버스트 표시도 끔" if no_burst and cases != list(plan.cases) else "")
+    return plan.model_copy(update={"cases": cases}), [
+        f"숨은 케이스 {', '.join(off)} 의 버스트 표시를 끔 — 버스트 행 수를 잴 조절값({', '.join(missing)})이 없고 의도한 사유가 운영 "
+        "피크가 아니다 (같은 요청을 같은 행에 동시에 보낸다)"
     ]
 
 
@@ -357,7 +378,7 @@ def fit_material_params(
     """재료가 고르지 않은 템플릿 조절값을 LLM 이 넣으면 뺀다 (입력에 보이지 않는 값 — 안전망). m 은 재료로 좁힌 매니페스트
     (for_material), known 은 좁히기 전 템플릿의 조절값 이름. 템플릿에 없는 키는 지우지 않는다 — 계약 검사가 '템플릿에 없는 조절값'으로
     다시 묻는다 (#179: 예전에는 그것까지 조용히 지워 그 검사가 운영에서 한 번도 걸리지 않았다).
-    동시 요청 조절값(burst_rows)이 빠지면 숨은 케이스 데이터의 버스트 표시도 끈다 (버스트 행 수를 잴 조절값이 없다)."""
+    버스트 표시는 조절값을 다 맞춘 뒤 fit_burst_marks 가 본다."""
     keep = {p.name for p in m.harness_params}
     template = set(known) if known is not None else keep
     extra = sorted(k for k in plan.harness if k not in keep and k in template)
@@ -366,20 +387,10 @@ def fit_material_params(
     harness = {k: v for k, v in plan.harness.items() if k not in extra}
     evidence = {k: v for k, v in plan.evidence.items() if k not in extra}
     values = {k: v for k, v in plan.evidence_value.items() if k not in extra}
-    no_burst = any(n not in keep for n in m.burst_rows)
-    cases = [
-        c.model_copy(update={"data": [d.model_copy(update={"burst": False}) for d in c.data]})
-        if no_burst and any(d.burst for d in c.data)
-        else c
-        for c in plan.cases
-    ]
     fixed = plan.model_copy(
-        update={"harness": harness, "evidence": evidence, "evidence_value": values, "cases": cases}
+        update={"harness": harness, "evidence": evidence, "evidence_value": values}
     )
-    return fixed, [
-        f"재료가 쓰지 않는 조절값 뺌: {', '.join(extra)} (FeatureSeed.harness 에 없음)"
-        + (" — 버스트 표시도 끔" if no_burst and cases != list(plan.cases) else "")
-    ]
+    return fixed, [f"재료가 쓰지 않는 조절값 뺌: {', '.join(extra)} (FeatureSeed.harness 에 없음)"]
 
 
 def fit_tuned_params(plan: HiddenPlan, m: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
@@ -539,6 +550,10 @@ def fit_output(
     notes += frag_notes
     filled, fill_notes = fill_hidden_defaults(trimmed, manifest)
     notes += fill_notes
+    filled, burst_notes = fit_burst_marks(filled, manifest)
+    notes += burst_notes
+    filled, row_notes = fit_feasible_rows(filled, manifest)
+    notes += row_notes
     named, fk_notes = fit_fk_targets(out.contract)
     out = out.model_copy(update={"hidden_plan": filled, "contract": named})
     notes += fk_notes

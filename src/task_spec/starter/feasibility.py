@@ -93,6 +93,57 @@ def _fmt(v: float) -> str:
     return f"{v:g}"
 
 
+MAX_CASE_ROWS = 2000  # 숨은 케이스 data 한 줄의 행 수 상한 (schemas.build HiddenCaseData.rows)
+
+
+def fit_feasible_rows(plan: HiddenPlan, manifest: TemplateManifest) -> tuple[HiddenPlan, list[str]]:
+    """성립 조건이 행 수(rows)를 쓰는데 성립하지 않으면, 같은 식을 계산해 성립하는 가장 작은 행 수로 그 케이스의 가장 큰 data 줄을 늘린다.
+    행 수는 운영 값이 아니라 케이스 안에서 정하는 값이라 코드가 계산한다 — 산수를 LLM 에 다시 묻지 않는다. 상한(MAX_CASE_ROWS) 안에서 못
+    맞추면 그대로 둔다 (feasibility_problems 가 다시 묻는다). 2026-11-25 목록 조회 알파: 행 50 × 지연 12ms < 요청 한도 2초를 계약 재요청
+    3회 안에 못 맞춰 실패."""
+    reasons = {r.code: r for r in manifest.failure_reasons}
+    base = harness_env(plan.harness, manifest)
+    cases = []
+    notes: list[str] = []
+    for c in plan.cases:
+        reason = reasons.get(c.intended_reason)
+        conds = [
+            f.when
+            for f in (reason.feasible if reason is not None else [])
+            if "rows" in names(f.when) and names(f.when) - {"rows"} <= base.keys()
+        ]
+        rows = sum(d.rows for d in c.data)
+        if not conds or not rows:
+            cases.append(c)
+            continue
+
+        def holds(r: int, conds: list[str] = conds) -> bool:
+            env = base | {"rows": float(r)}
+            return all(bool(evaluate(w, env)) for w in conds)
+
+        if holds(rows):
+            cases.append(c)
+            continue
+        i = max(range(len(c.data)), key=lambda k: c.data[k].rows)
+        room = MAX_CASE_ROWS - c.data[i].rows
+        need = next((r for r in range(rows + 1, rows + room + 1) if holds(r)), None)
+        if need is None:
+            cases.append(c)
+            continue
+        data = [
+            d.model_copy(update={"rows": d.rows + need - rows}) if k == i else d
+            for k, d in enumerate(c.data)
+        ]
+        cases.append(c.model_copy(update={"data": data}))
+        notes.append(
+            f"숨은 케이스 {c.case_id}({c.intended_reason}) 행 {rows} → {need} — 성립 조건 {', '.join(conds)} "
+            "(행 수는 케이스 안에서 정하는 값이라 코드가 맞춤)"
+        )
+    if not notes:
+        return plan, []
+    return plan.model_copy(update={"cases": cases}), notes
+
+
 def feasibility_problems(plan: HiddenPlan, manifest: TemplateManifest) -> list[str]:
     """케이스마다 의도한 사유의 성립 조건을 계산 — 성립하지 않으면 숫자를 붙인 재요청 사유."""
     reasons = {r.code: r for r in manifest.failure_reasons}

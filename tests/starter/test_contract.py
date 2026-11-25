@@ -1209,6 +1209,22 @@ def test_value_check_bare_number_takes_header_unit() -> None:
     )  # 단위 없음 → 조절값 단위, 승인자 확인
 
 
+def test_value_check_bare_number_may_be_read_in_the_other_time_unit() -> None:
+    """2026-11-25 목록 조회 알파: 'db_query_roundtrip_latency_seconds … p50=0.038' — 단위가 메트릭 이름에만 있어 ms 로만 읽고 0 을
+    강요해 38 을 거절, 계약 실패. 근거 값에 단위가 없으면 어느 쪽인지 정할 수 없다 — 초↔밀리초로 바꿔 읽은 값도 받고 승인자 표시.
+    표기 패턴(메트릭 이름의 _seconds)을 더하지 않는다."""
+    q = "metric: db_query_roundtrip_latency_seconds environment=production, p50=0.038, p95=0.072"
+    got = value_check(38, q, "0.038", [q], "ms", _P50)
+    assert got.verdict == "ok" and "초로 읽은 값" in got.notes[-1]
+    assert not any("조절값 단위" in n for n in got.notes)
+    assert value_check(0, q, "0.038", [q], "ms", _P50).verdict == "ok"  # 밀리초로 읽은 값도 그대로
+    assert value_check(5, q, "0.038", [q], "ms", _P50).verdict == "mismatch"
+    assert value_check(38, q, "0.038", [q], "ms").verdict == "ok"  # 재료 규칙 없는 조절값도
+    # 단위가 붙어 있으면 바꿔 읽지 않는다
+    q2 = "p50: 0.038ms"
+    assert value_check(38, q2, "0.038ms", [q2], "ms", _P50).verdict == "mismatch"
+
+
 def test_value_check_quote_and_value_text_must_be_in_material() -> None:
     texts = ["p50: 19.8\np95: 28.4"]
     assert (
