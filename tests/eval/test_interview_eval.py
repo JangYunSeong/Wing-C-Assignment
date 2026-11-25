@@ -109,3 +109,32 @@ async def test_retries_and_failures_are_counted(tmp_path, detectors: Detectors) 
     summary = summarize([result, Result(id="x", tags=[], completed=True, llm_steps=1)])
     assert summary["completion"] == 0.5 and not summary["passed"]
     assert summary["criteria"]["unavailable_ratio"]["pass"] is False
+
+
+async def test_a_return_from_trap_to_incident_is_not_a_failure(
+    tmp_path, detectors: Detectors
+) -> None:
+    """#308 할 일 (#300·#307): ④ 처음 대응을 낸 뒤 다른 칸이 빠졌으면 서비스가 ③ 으로 돌려보낸다. 평가 실행기는 ⑤ 만 기다려
+    '끝 단계 incident_interview' 실패로 셌다 — 빠진 칸에 다시 답하고 이어 가며 복귀 횟수를 남긴다."""
+    backend = CapturingBackend()
+    ask = IncidentInterviewOutput(
+        missing_fields=["root_cause"], question="원인은 어떻게 확인했나요?"
+    )
+    # 질문 → 초안(다시 물음) → 초안(처음 대응만 빠짐 → ④) → ④ 뒤 다시 질문(→ ③) → 초안 → 기준 답안 → 검증
+    outputs = (
+        ask,
+        complete_output(),
+        complete_output(),
+        ask,
+        complete_output(),
+        answer_output(),
+        check_output(),
+    )
+    for output in outputs:
+        backend.push(Completion(output.model_dump_json()))
+    result = await run_dialogue(
+        SELF, llm=LLMClient({"opencode": backend}), detectors=detectors, versions=DEFAULT_VERSIONS
+    )
+    assert result.failure == "" and result.completed and result.end_stage == "competencies"
+    assert result.trap_returns == 1
+    assert summarize([result])["trap_returns"] == 1

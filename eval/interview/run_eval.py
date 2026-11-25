@@ -61,6 +61,9 @@ CRITERIA: dict[str, tuple[str, float]] = {
 }
 MAX_INCIDENT_TURNS = 8
 MAX_CLARIFY_ROUNDS = 2
+MAX_TRAP_RETURNS = (
+    2  # ④ 처음 대응 뒤 ③ 으로 돌아가 다시 답하는 횟수 상한 (#300·#307 — 복귀는 실패가 아니다)
+)
 MAX_RETRIES = 2
 CORE: tuple[IncidentFact, ...] = ("symptom", "root_cause", "accepted_fixes", "conditions")
 FIELD_HINTS: dict[IncidentFact, tuple[str, ...]] = {
@@ -85,6 +88,7 @@ class Result:
     llm_steps: int = 0
     unavailable: int = 0
     clarify_rounds: int = 0
+    trap_returns: int = 0  # ④ 를 낸 뒤 ③ 으로 돌아간 횟수 — 실패로 세지 않는다
     validation_passed: bool | None = None
     issues: list[str] = field(default_factory=list)
     failure: str = ""
@@ -187,32 +191,39 @@ async def run_dialogue(
             view = await step(
                 lambda v=view: service.message(iid, text=d.opening, revision=v["revision"])
             )
-            while view["stage"] == "incident_interview" and r.incident_turns < MAX_INCIDENT_TURNS:
-                missing = list(view["incident_missing"])
-                r.reasks += [
-                    {"turn": r.incident_turns, "field": f} for f in missing if f in answered
-                ]
-                question = view["incident_messages"][-1]["text"]
-                target, hit = infer_field(question, missing)
-                r.targeted.append(hit)
-                if target == d.unknown_first and not said_unknown:
-                    reply, said_unknown = d.unknown_reply, True
-                else:
-                    reply = d.facts[target]
-                    answered.add(target)
-                told += " " + reply
-                r.incident_turns += 1
-                view = await step(
-                    lambda t=reply, v=view: service.message(iid, text=t, revision=v["revision"])
-                )
-            if view["stage"] == "incident_interview":
-                r.reasks += [
-                    {"turn": r.incident_turns, "field": f}
-                    for f in view["incident_missing"]
-                    if f in answered
-                ]
-                raise RuntimeError(f"사례 대화가 {MAX_INCIDENT_TURNS}턴 안에 끝나지 않음")
-            if view["stage"] == "trap_interview":
+            # ③ 사례 대화 → ④ 처음 대응. ④ 를 낸 뒤 다른 칸이 빠졌으면 서비스가 ③ 으로 돌려보낸다 (#300·#307) — 실패가 아니라
+            # 빠진 칸에 다시 답하고 ④ 를 다시 낸다 (복귀는 MAX_TRAP_RETURNS 번까지, #308 할 일)
+            while True:
+                while (
+                    view["stage"] == "incident_interview" and r.incident_turns < MAX_INCIDENT_TURNS
+                ):
+                    missing = list(view["incident_missing"])
+                    r.reasks += [
+                        {"turn": r.incident_turns, "field": f} for f in missing if f in answered
+                    ]
+                    question = view["incident_messages"][-1]["text"]
+                    target, hit = infer_field(question, missing)
+                    r.targeted.append(hit)
+                    if target == d.unknown_first and not said_unknown:
+                        reply, said_unknown = d.unknown_reply, True
+                    else:
+                        reply = d.facts[target]
+                        answered.add(target)
+                    told += " " + reply
+                    r.incident_turns += 1
+                    view = await step(
+                        lambda t=reply, v=view: service.message(iid, text=t, revision=v["revision"])
+                    )
+                if view["stage"] == "incident_interview":
+                    r.reasks += [
+                        {"turn": r.incident_turns, "field": f}
+                        for f in view["incident_missing"]
+                        if f in answered
+                    ]
+                    raise RuntimeError(f"사례 대화가 {MAX_INCIDENT_TURNS}턴 안에 끝나지 않음")
+                if view["stage"] != "trap_interview":
+                    break
+                # ④ 처음 대응
                 if d.trap is None:
                     view = await step(
                         lambda v=view: service.trap(
@@ -225,17 +236,20 @@ async def run_dialogue(
                         )
                     )
                 else:
-                    t = d.trap
+                    trap = d.trap
                     view = await step(
-                        lambda v=view: service.trap(
+                        lambda v=view, tr=trap: service.trap(
                             iid,
                             revision=v["revision"],
-                            attempted_fix=t.attempted_fix,
-                            observed_result=t.observed_result,
-                            why_failed=t.why_failed,
+                            attempted_fix=tr.attempted_fix,
+                            observed_result=tr.observed_result,
+                            why_failed=tr.why_failed,
                             unknown=False,
                         )
                     )
+                if view["stage"] != "incident_interview" or r.trap_returns >= MAX_TRAP_RETURNS:
+                    break
+                r.trap_returns += 1
             while view["stage"] == "success_interview" and r.clarify_rounds <= MAX_CLARIFY_ROUNDS:
                 replies = {q["question_id"]: d.clarify for q in view["answer_questions"]}
                 r.clarify_rounds += 1 if replies else 0
@@ -330,6 +344,7 @@ def summarize(results: list[Result]) -> dict[str, Any]:
         if n
         else 0,
         "clarify_rounds": sum(r.clarify_rounds for r in results),
+        "trap_returns": sum(r.trap_returns for r in results),
         "step_seconds_mean": round(statistics.mean(seconds), 1) if seconds else None,
         "step_seconds_p90": round(sorted(seconds)[int(0.9 * (len(seconds) - 1))], 1)
         if seconds
@@ -373,7 +388,7 @@ def render(
         )
     lines += [
         "",
-        f"참고: targeted {summary['targeted']} · 사례 대화 평균 {summary['incident_turns_mean']}턴 · 보충 질문 {summary['clarify_rounds']}번 · "
+        f"참고: targeted {summary['targeted']} · 사례 대화 평균 {summary['incident_turns_mean']}턴 · 보충 질문 {summary['clarify_rounds']}번 · ④→③ 복귀 {summary['trap_returns']}번 · "
         f"LLM 단계 평균 {summary['step_seconds_mean']}초 (p90 {summary['step_seconds_p90']}초) · 토큰 {summary['tokens']} · 비용 ${summary['cost_usd']}",
         "",
         "| 표본 | 완성 | 끝 단계 | 대화 턴 | 재질문 | 유도 | 503 | 보충 질문 | 검증 |",

@@ -27,6 +27,8 @@ from task_spec.starter.templates import Template
 TASK = "analyze_material"
 FLAG = "재료 재현 분석: "  # 과제 검토 표시 머리 (막지 않음)
 FAILED = FLAG + "자동 분석 실패 — 빌드에서 재현 여부 확인"
+# 재현 가능 판정이어도 빠진 정보가 있으면 내는 표시 머리 — 판정 표시와 갈라 센다 (평가 eval/interview/run_material_analysis.py)
+GAPS = FLAG + "재현 가능 판정 · 빠진 정보 확인 필요"
 _VERDICT = {"no": "빌드 하네스로 재현 불가 가능성 있음", "unsure": "재현 여부 판단 불가"}
 
 
@@ -75,15 +77,21 @@ async def analyze_material(
 
 
 def analysis_flags(a: MaterialAnalysis, template: Template, seed: FeatureSeed | None) -> list[str]:
-    """과제 검토 표시 — 재현 가능이 아님 · 템플릿에 없는 이름 · 재료가 고른 사유와 다름. 이름 대조는 코드가 한다."""
+    """과제 검토 표시 — 재현 가능이 아님 · 재현 가능이어도 빠진 정보 · 템플릿에 없는 이름 · 재료가 고른 사유와 다름. 이름 대조는 코드가 한다.
+
+    빠진 정보는 판정과 함께 보인다 (2026-11-25 #308 팩트체크): 세션 유지 재료 분석이 gaps 에 'SELECT·UPDATE 가 커넥션 하나를 쥐는가'를
+    냈고, 떼어 둔 결제 대행 표본도 gaps 에 '외부 결제 API 를 하네스가 어떻게 흉내 내는가'를 냈는데 판정이 yes 라 둘 다 숨었다.
+    yes 오판은 재료의 사고 대신 처방의 부작용으로 함정이 바뀌어도 빌드가 통과할 수 있어, 승인자가 기전과 빠진 정보를 함께 본다."""
     m = template.manifest
     out: list[str] = []
+    params = ", ".join(a.split_params) or "없음"
+    gaps = f" · 빠진 정보: {'; '.join(a.gaps)}" if a.gaps else ""
     if a.reproducible != "yes":
-        params = ", ".join(a.split_params) or "없음"
-        gaps = f" · 빠진 정보: {'; '.join(a.gaps)}" if a.gaps else ""
         out.append(
             f"{FLAG}{_VERDICT[a.reproducible]} — {a.mechanism} (사유 {a.reason}, 갈림 조절값 {params}){gaps}"
         )
+    elif a.gaps:
+        out.append(f"{GAPS} — {a.mechanism} (사유 {a.reason}, 갈림 조절값 {params}){gaps}")
     unknown = sorted(
         {
             *([a.reason] if a.reason not in m.reason_codes else []),
