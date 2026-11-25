@@ -94,6 +94,17 @@ def test_type_defaults() -> None:
     assert default_value(f("time"), 1) == "04:07:00" and default_value(f("string"), 7) == "x-7"
 
 
+def test_text_default_keeps_the_row_for_long_names() -> None:
+    """#308: 예전 기본값 '<칸>-<행>'[:20] 은 18자 칸 이름이면 300행 중 291행이 겹치고 21자면 모든 행이 같았다 (고유 칸이면 기동 실패)
+    — 넘치면 칸 이름 쪽을 잘라 행 번호를 지킨다. 도우미(hidden_helpers 의 <칸>Of·loginBody)의 Java 도 같은 규칙."""
+    from task_spec.starter.seed_sql import TEXT_MAX, text_default
+
+    assert text_default("x", 7) == "x-7" and text_default("a" * 40, 123) == "a" * 16 + "-123"
+    for name in ("a" * 18, "a" * 21, "a" * 40):
+        values = [text_default(name, r) for r in range(1, 301)]
+        assert len(set(values)) == 300 and all(len(v) <= TEXT_MAX for v in values)
+
+
 def test_time_defaults_differ_per_row_and_do_not_follow_id_order() -> None:
     """2026-11-13: 날짜·시각 기본값이 모든 행에 같은 고정 시각이라 '최신순'이 뜻을 잃었다. id 순서대로 늘리면 id 로만 정렬한 구현이
     '최신순'을 통과하므로 어긋나게 (리뷰). 같은 시각이 필요한 과제는 groups 가 적는다."""

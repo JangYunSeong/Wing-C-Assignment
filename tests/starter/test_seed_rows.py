@@ -8,9 +8,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from task_spec.schemas import HiddenPlan, TaskContract
+from task_spec.nodes.starter.plan_contract import fit_output
+from task_spec.schemas import HiddenPlan, PlanContractOutput, TaskContract
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.auth_rule import fit_auth
+from task_spec.starter.auth_rule import fit_auth, login_fields
 from task_spec.starter.hidden_helpers import row_use_consts
 from task_spec.starter.seed_rows import (
     PUBLIC_PER_GROUP,
@@ -20,15 +21,16 @@ from task_spec.starter.seed_rows import (
     fit_seed,
     peak_reasons,
     public_free,
-    public_per_group,
+    row_keys,
     row_use_problems,
     seed_markdown,
     seed_problems,
+    strip_keys,
     unique_fields,
 )
 from task_spec.starter.templates import load_template
 from tests.starter.test_auth_issued import _session
-from tests.starter.test_contract import _check, _contract, _manifest, _plan
+from tests.starter.test_contract import _check, _contract, _manifest, _plan, _spec
 from tests.starter.test_templates import JAVA
 
 
@@ -472,10 +474,10 @@ def test_helpers_give_path_key_values_and_hand_built_keys_are_flagged() -> None:
     java = load_template(JAVA).manifest
     contract = _scoped([(1, 200, {"shopId": 7, "status": "READY"})], 200)
     plan = _cases(("hc1", [_rows(20, status="READY")]))
-    assert key_fields(contract) == [("orderNo", "orderNo-", False)]
+    assert key_fields(contract) == [("orderNo", "orderNo", False)]
     helper = render_contract_case(contract, plan, java)
     assert helper is not None and "protected static String orderNoOf(long row)" in helper.content
-    assert '"orderNo-" + row' in helper.content  # seed_sql.default_value 와 같은 형식
+    assert 'n = "orderNo"' in helper.content  # seed_sql.text_default 와 같은 규칙
     from task_spec.starter.hidden_helpers import api_functions
 
     fn = api_functions(contract)[0][1]
@@ -496,6 +498,24 @@ def test_helpers_give_path_key_values_and_hand_built_keys_are_flagged() -> None:
     # 숫자 경로 변수(shopId) 자리의 글자는 키 값 짐작이 아니다 · 호출에 넘기지 않은 글자는 보지 않는다
     assert not flagged(f'{fn}("7", orderNoOf(HC1_FIRST));')
     assert not flagged('String label = "order-" + HC1_FIRST;')
+
+
+def test_helpers_give_unique_field_values_per_row() -> None:
+    """#308: 코드가 고유 칸을 고정하지 않으므로(fit_seed) 테스트는 그 행의 값을 도우미로 받는다 — 경로 변수가 아니어도.
+    LLM 이 어느 범위에 값을 정했으면 도우미를 내지 않는다 (그 값은 계약에 있고, 기본값 규칙과 다르다)."""
+    from task_spec.starter.hidden_helpers import key_fields, render_contract_case
+
+    java = load_template(JAVA).manifest
+    c = _contract()
+    c["entities"][0]["fields"].append(
+        {"name": "orderCode", "type": "string", "constraints": "주문 코드 — 고유", "refs": ["r1"]}
+    )
+    contract = TaskContract.model_validate(c)
+    assert ("orderCode", "orderCode", False) in key_fields(contract)
+    helper = render_contract_case(contract, _cases(("hc1", [_rows(2, status="READY")])), java)
+    assert helper is not None and "protected static String orderCodeOf(long row)" in helper.content
+    c["seed"][0]["groups"][0]["values"]["orderCode"] = "A-1"
+    assert ("orderCode", "orderCode", False) not in key_fields(TaskContract.model_validate(c))
 
 
 def test_list_endpoint_with_a_shared_path_key_is_fine() -> None:
@@ -593,8 +613,6 @@ def test_unique_fields_are_marked_ones_and_login_identifiers() -> None:
     c = _login_contract(username="user-1", password="pass-1")
     assert unique_fields(c, "m3") == {"username"}
     assert unique_fields(c, "m1") == frozenset()
-    assert public_per_group(c, "m3", {"username": "user-1", "password": "pass-1"}) == 1
-    assert public_per_group(c, "m3", {"password": "pass-1"}) == PUBLIC_PER_GROUP
     d = c.model_dump()
     fields = d["entities"][0]["fields"]
     fields.append(
@@ -605,40 +623,69 @@ def test_unique_fields_are_marked_ones_and_login_identifiers() -> None:
     assert unique_fields(TaskContract.model_validate(d), "m1") == {"orderNo", "code"}
 
 
-def test_public_rows_for_a_login_are_one_row() -> None:
-    """#308 알파 1·3: 공개 테스트 pt1 이 로그인할 행(username user-1·password pass-1)을 3행 덧붙여, 'username 으로 찾기' 구현이 500 으로
-    떨어지고(알파 1) USERS(USERNAME) 고유 인덱스 위반으로 시작 코드가 기동하지 못했다(알파 3). 고유 칸이 든 처음 값은 1행만 — 작은 id
-    쪽이면 그 행이 공개 몫이다."""
+def test_row_keys_are_unique_fields_and_lookup_paths() -> None:
+    """행 키 = 고유 칸 하나 + 경로 변수로 한 행을 가리키는 API 의 변수 묶음. 처음 값에서는 키의 칸을 모두 정했을 때 마지막 칸을 뺀다."""
+    c = _contract()
+    c["entities"][0]["fields"] += [
+        {"name": "shopId", "type": "integer", "refs": ["r1"]},
+        {"name": "orderNo", "type": "integer", "refs": ["r1"]},
+    ]
+    c["endpoints"][0]["path"] = "/shops/{shopId}/orders/{orderNo}/status"
+    keys = row_keys(TaskContract.model_validate(c), "m1")
+    assert [k.fields for k in keys] == [("shopId", "orderNo")]
+    full = {"status": "READY", "shopId": 7, "orderNo": 1}
+    assert strip_keys(full, keys) == {"status": "READY", "shopId": 7}
+    assert strip_keys({"status": "READY", "shopId": 7}, keys) == {"status": "READY", "shopId": 7}
+    login = _login_contract(username="user-1", password="pass-1")
+    assert strip_keys({"username": "u", "password": "p"}, row_keys(login, "m3")) == {
+        "password": "p"
+    }
+
+
+def test_public_rows_never_fix_a_login() -> None:
+    """#308 알파 1·3: 공개 테스트 pt1 이 로그인할 행(username user-1·password pass-1)을 코드가 공개 몫 3행으로 늘려 username 이
+    겹쳤다 ('username 으로 찾기' 구현 500, USERS(USERNAME) 고유 인덱스 위반으로 기동 실패). 코드는 행 키를 고정하지 않는다 — 공개
+    테스트 rows 에서 username 을 빼고(행마다 다른 기본값, 로그인은 loginBody(row)), 덧붙인 행도 username 을 정하지 않는다."""
     java = load_template(JAVA).manifest
     contract = _login_contract(username="user-1", password="pass-1")
     fitted, fplan, notes = fit_seed(contract, _cases(("hc1", [_rows(2, status="READY")])), java)
+    assert fitted.public_tests[0].rows[0].values == {"password": "pass-1"}
+    assert _has(notes, "공개 테스트 pt1 rows", "행 키 username 를 뺌")
     member = next(s for s in fitted.seed if s.entity_id == "m3")
-    login = [g for g in member.groups if g.values.get("username") == "user-1"]
-    assert [(g.first, g.last) for g in login] == [(7, 7)]  # fit_auth 의 로그인 행 6 다음 한 행
+    assert not any(
+        "username" in g.values and g.values["username"] == "user-1" for g in member.groups
+    )
     assert not seed_problems(fitted)
-    assert _has(notes, "공개 테스트 pt1", "고유 칸(username)이라 1행")
-    free = {(e, v.get("username")): ids for e, v, ids in public_free(fitted, fplan)}
-    assert free[("m3", "user-1")] == [7]  # 작은 id(10행) 안이어도 그 행이 공개 몫
-    # 공개 몫을 채우는 단계(_fit_public)도 고유 칸 그룹은 덧붙이지 않는다 — 같은 username 의 행이 둘이 되지 않는다
-    names = [
-        g.values["username"]
-        for g in member.groups
-        if "username" in g.values
-        for _ in range(g.first, g.last + 1)
+    free = [
+        ids for e, v, ids in public_free(fitted, fplan) if e == "m3" and v == {"password": "pass-1"}
     ]
-    assert len(names) == len(set(names))
+    assert free and len(free[0]) == PUBLIC_PER_GROUP  # 1행 예외 없이 보통 몫
+    # 행 키만 정한 항목은 지운다 — 아무 행이나 쓰고 값은 도우미로 받는다
+    only, _, said = fit_seed(
+        _login_contract(username="user-1"), _cases(("hc1", [_rows(2, status="READY")])), java
+    )
+    assert only.public_tests[0].rows == [] and _has(
+        said, "공개 테스트 pt1 rows", "항목은 행 키 username 만 정해 지움"
+    )
 
 
-def test_llm_groups_and_hidden_data_must_not_repeat_a_unique_value() -> None:
-    """LLM 이 시드 범위나 숨은 케이스 처음 값에 고유 칸을 같은 값으로 여러 행 두어도 같은 실패가 난다 — 계약 단계에서 재요청."""
+def test_llm_groups_repeating_a_unique_value_are_reasked_and_hidden_data_is_freed() -> None:
+    """LLM 이 시드 범위에 고유 칸을 같은 값으로 여러 행 두면 계약 단계에서 재요청한다 (LLM 이 정한 값). 숨은 케이스 처음 값의 고유 칸은
+    코드가 뺀다 — #308 팩트체크: 시드에 없는 username 'kim' 을 숨은 케이스가 1행만 써도, 작은 id 위로 미는 사이 행까지 복사돼 6행이 됐다."""
     d = _login_contract(username="user-1", password="pass-1").model_dump()
     member = next(s for s in d["seed"] if s["entity_id"] == "m3")
     member["groups"][0]["values"]["username"] = "same"  # m3 범위 1~5 가 모두 username=same
-    contract = TaskContract.model_validate(d)
-    assert _has(seed_problems(contract), "시드 m3 범위 1~5", "고유 칸 username", "5행")
-    plan = _cases(("hc1", [_rows(3, entity="m3", username="x")]))
-    problems = case_rows_problems(contract, plan, load_template(JAVA).manifest)
-    assert _has(problems, "숨은 케이스 hc1 data", "고유 칸 username", "3행")
+    assert _has(
+        seed_problems(TaskContract.model_validate(d)), "시드 m3 범위 1~5", "고유 칸 username", "5행"
+    )
+    java = load_template(JAVA).manifest
+    plan = _cases(("hc1", [_rows(1, entity="m3", username="kim")]))
+    fitted, fplan, notes = fit_seed(_login_contract(password="pass-1"), plan, java)
+    assert fplan.cases[0].data[0].initial == {}
+    assert _has(notes, "숨은 케이스 hc1", "행 키 username 를 뺌")
+    member_after = next(s for s in fitted.seed if s.entity_id == "m3")
+    assert not any(g.values.get("username") == "kim" for g in member_after.groups)
+    assert not [p for p in seed_problems(fitted) if "고유 칸" in p]
 
 
 def test_peak_reasons_need_burst_rows() -> None:
@@ -671,3 +718,116 @@ def test_peak_reasons_need_burst_rows() -> None:
     burst = plan("pool_acquire_timeout", _rows(96, burst=True, status="READY"))
     assert not case_rows_problems(contract, burst, java)
     assert not case_rows_problems(contract, plan("request_timeout", _rows(2, status="READY")), java)
+
+
+def _raw_login_contract(**login_row: Any) -> TaskContract:
+    """_login_contract 와 같은 계약을 fit_auth 전 상태로 — 계약 단계는 fit_seed 를 fit_auth 보다 먼저 부른다."""
+    c = _session()
+    c["public_tests"][0]["rows"] = [{"entity_id": "m3", "values": login_row}]
+    return TaskContract.model_validate(c)
+
+
+def test_login_fields_are_found_before_fit_auth() -> None:
+    """#308 4차: unique_fields 가 rows 를 요구하는 issued_rule 로 로그인 엔티티를 찾아, fit_auth 전(계약 단계의 실제 순서)에는 로그인
+    칸을 고유 칸으로 알아보지 못했다. 로그인 엔티티는 fit_auth 와 같은 규칙으로 rows 없이 정한다."""
+    raw = _raw_login_contract(username="user-1", password="pass-1")
+    assert login_fields(raw) == {"m3": ["username", "password"]}
+    assert unique_fields(raw, "m3") == {"username"}
+
+
+def test_the_real_contract_order_never_repeats_a_login() -> None:
+    """실제 계약 단계(fit_output — fit_seed 다음 fit_auth)로 돌린다. 예전에는 username 에 '고유'가 없으면 공개 테스트의 로그인 행
+    user-1 이 8행 덧붙고, 뒤의 seed_problems 가 코드가 만든 중복으로 LLM 에 재요청했다 (LLM 이 고칠 수 없다)."""
+    java = load_template(JAVA).manifest
+    raw = _raw_login_contract(username="user-1", password="pass-1")
+    plan = _cases(("hc1", [_rows(2, status="READY")]))
+    out, _ = fit_output(PlanContractOutput(contract=raw, hidden_plan=plan), java, _spec())
+    member = next(s for s in out.contract.seed if s.entity_id == "m3")
+    assert not any(g.values.get("username") == "user-1" for g in member.groups)
+    assert not [p for p in seed_problems(out.contract) if "고유 칸" in p]
+
+
+def test_a_unique_value_split_across_groups_is_flagged() -> None:
+    """#308 4차: 범위 안의 여러 행만 보던 검사가 한 행 범위 둘(1~1·3~3)에 같은 username 을 두는 중복을 놓쳤다 — 행 단위로 펼쳐 본다."""
+    d = _login_contract(username="user-1", password="pass-1").model_dump()
+    member = next(s for s in d["seed"] if s["entity_id"] == "m3")
+    rest = [g for g in member["groups"] if g["first"] > 5]
+    member["groups"] = [
+        {"first": 1, "last": 1, "values": {"username": "dup"}},
+        {"first": 2, "last": 2, "values": {"nickname": "가상회원"}},
+        {"first": 3, "last": 3, "values": {"username": "dup"}},
+        {"first": 4, "last": 5, "values": {"nickname": "가상회원"}},
+        *rest,
+    ]
+    problems = seed_problems(TaskContract.model_validate(d))
+    assert _has(problems, "시드 m3 범위 1~1·3~3", "고유 칸 username", "같은 값(dup)", "2행")
+
+
+def test_a_fixed_value_equal_to_another_rows_default_is_a_repeat() -> None:
+    """최종 시드를 행 단위로 펼쳐 본다 — LLM 이 1행에 정한 'username-3' 은 3행의 기본값과 같다 (범위만 세면 놓친다)."""
+    d = _login_contract(password="pass-1").model_dump()
+    member = next(s for s in d["seed"] if s["entity_id"] == "m3")
+    member["groups"] = [
+        {"first": 1, "last": 1, "values": {"username": "username-3"}},
+        {"first": 2, "last": 5, "values": {"nickname": "가상회원"}},
+        *[g for g in member["groups"] if g["first"] > 5],
+    ]
+    problems = seed_problems(TaskContract.model_validate(d))
+    assert _has(problems, "시드 m3 범위 1~1·3~3", "고유 칸 username", "같은 값(username-3)", "2행")
+
+
+def test_a_one_row_llm_group_with_a_unique_value_gets_public_rows_without_it() -> None:
+    """LLM 이 한 행 그룹에 고유 값을 정한 경우(관리자 한 명 등) — 그 그룹의 공개 몫은 행 키를 뺀 처음 값으로 덧붙인다. 같은 username 을
+    복사하지 않고(#313 은 1행 예외로 막았다), 공개 몫 상수도 행 키를 뺀 이름이다."""
+    java = load_template(JAVA).manifest
+    d = _login_contract(password="pass-1").model_dump()
+    member = next(s for s in d["seed"] if s["entity_id"] == "m3")
+    member["groups"] = [
+        {"first": 1, "last": 1, "values": {"username": "boss", "nickname": "BOSS"}},
+        {"first": 2, "last": 5, "values": {"nickname": "가상회원"}},
+        *[g for g in member["groups"] if g["first"] > 5],
+    ]
+    fitted, fplan, _ = fit_seed(
+        TaskContract.model_validate(d), _cases(("hc1", [_rows(2, status="READY")])), java
+    )
+    boss = [
+        ids for e, v, ids in public_free(fitted, fplan) if e == "m3" and v == {"nickname": "BOSS"}
+    ]
+    assert boss and len(boss[0]) == PUBLIC_PER_GROUP
+    member_after = next(s for s in fitted.seed if s.entity_id == "m3")
+    assert (
+        sum(g.last - g.first + 1 for g in member_after.groups if g.values.get("username") == "boss")
+        == 1
+    )
+    assert not seed_problems(fitted)
+
+
+def test_lookup_keys_repeat_across_groups_too() -> None:
+    """경로 키 검사도 행 단위 검사로 합쳤다 — 한 행 범위 둘에 같은 shopId·orderNo 를 두면 여러 건 조회다 (범위 안만 보던 예전 검사는 놓쳤다)."""
+    c = _contract()
+    c["entities"][0]["fields"] += [
+        {"name": "shopId", "type": "integer", "refs": ["r1"]},
+        {"name": "orderNo", "type": "integer", "refs": ["r1"]},
+    ]
+    c["endpoints"][0]["path"] = "/shops/{shopId}/orders/{orderNo}/status"
+    c["seed"] = [
+        _seed(
+            200,
+            (1, 1, {"status": "READY", "shopId": 7, "orderNo": 1}),
+            (2, 99, {"status": "READY", "shopId": 7}),
+            (100, 100, {"status": "READY", "shopId": 7, "orderNo": 1}),
+            (101, 200, {"status": "READY", "shopId": 7}),
+        )
+    ]
+    got = seed_problems(TaskContract.model_validate(c))
+    assert _has(
+        got, "범위 1~1·100~100", "shopId, orderNo", "2행에서 같음", "orderNo 는 values 에서 뺀다"
+    ), got
+    # 일부 범위에만 정한 행 키 — 범위 검사도 '모두 적어라'가 아니라 '빼라' (두 안내가 엇갈리면 LLM 이 오간다)
+    assert _has(
+        got,
+        "orderNo 는 한 행을 찾는 경로 키",
+        "2~99, 101~200 는 비움",
+        "orderNo 는 values 에서 뺀다",
+    ), got
+    assert len(got) == 2 and not _has(got, "모든 범위의 values 에 orderNo"), got
