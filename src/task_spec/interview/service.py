@@ -74,6 +74,13 @@ from task_spec.interview.incident import (
     prepare_incident,
     validate_incident,
 )
+from task_spec.interview.material_analysis import FAILED as MATERIAL_FAILED
+from task_spec.interview.material_analysis import TASK as MATERIAL_TASK
+from task_spec.interview.material_analysis import (
+    analysis_flags,
+    analyze_material,
+    material_block,
+)
 from task_spec.interview.store import CLOSED_STAGES, InterviewRepo, InterviewRow, InterviewSummary
 from task_spec.interview.stream import QuestionStream
 from task_spec.interview.task import (
@@ -126,6 +133,7 @@ from task_spec.schemas import (
     CompetencyEvidence,
     GenerateStep,
     PostingProfile,
+    Provenance,
     PublicIncident,
     TaskItem,
 )
@@ -1346,6 +1354,36 @@ class InterviewService:
             )
         return MadeTask(task=g.task, provenance=list(g.task_provenance), flags=list(g.task_flags))
 
+    async def _material_check(
+        self, coding: PublicIncident, inp: _GenerationInputs
+    ) -> tuple[list[str], list[Provenance]]:
+        """재료 입구 분석 (#301 PR 3) — 회사 재료가 빌드 하네스에서 재현되는지 짚어 과제 검토 표시로 (승인을 막지 않음).
+        프롬프트 CURRENT 가 없으면(평가 전) 건너뛴다. 분석이 실패해도 과제 만들기는 이어 간다 — 실패도 표시로 남긴다.
+        입력은 저장본 검사(stored_json)를 거친 가명화 글, 표시는 LLM 이 쓴 글이라 저장 전에 다시 검사한다 (derived)."""
+        if not inp.prompts.has_current(MATERIAL_TASK):
+            return [], []
+        try:
+            analysis, provenance = await self._llm(
+                analyze_material(
+                    self.pseudo.stored_json(material_block(coding), inp.mapping),
+                    inp.template,
+                    llm=inp.llm,
+                    prompts=inp.prompts,
+                    ontology_version=inp.profile.ontology_version,
+                )
+            )
+            flags = [
+                self.pseudo.derived(f, inp.mapping)
+                for f in analysis_flags(analysis, inp.template, coding.feature)
+            ]
+        except (*_LLM_ERRORS, InterviewError) as exc:
+            logger.warning("interview_material_check_failed type=%s", type(exc).__name__)
+            return [MATERIAL_FAILED], []
+        logger.info(
+            "interview_material_check reproducible=%s flags=%d", analysis.reproducible, len(flags)
+        )
+        return flags, [provenance]
+
     async def _run_step(
         self, interview_id: str, step: GenerateStep, inp: _GenerationInputs, g: InterviewGeneration
     ) -> dict[str, Any]:
@@ -1367,9 +1405,14 @@ class InterviewService:
                     )
                 )
                 self._registrable(coding)
-            else:
-                coding, seed_provenance = ready_coding_incident(inp.incident, inp.template), []
-            return {"coding_incident": coding, "seed_provenance": seed_provenance}
+                seed_flags, checked = await self._material_check(coding, inp)
+                return {
+                    "coding_incident": coding,
+                    "seed_provenance": [*seed_provenance, *checked],
+                    "seed_flags": seed_flags,
+                }
+            coding = ready_coding_incident(inp.incident, inp.template)
+            return {"coding_incident": coding, "seed_provenance": [], "seed_flags": []}
         req = TaskRequest(
             profile=inp.chosen,
             matches=inp.matches,
@@ -1475,7 +1518,7 @@ class InterviewService:
                 evaluation_criteria=evaluation_criteria(task),
                 generation_provenance=provenance,
                 review_flags=with_content_flags(
-                    [*made.flags, *task.review_flags, *reuse], task, coding_incident
+                    [*made.flags, *task.review_flags, *reuse, *g.seed_flags], task, coding_incident
                 ),
             )
             state.stage = "task_review"

@@ -1,4 +1,9 @@
 {
+ "analyze_material": {
+  "output_schema": "MaterialAnalysis",
+  "schema_style": "json",
+  "sha256": "cdb5cafe128a6ef294335755bdc5ee27b4296af954817ad3bc7f412b342c8da0"
+ },
  "draft_analysis_request": {
   "output_schema": "DraftAnalysisOutputV2",
   "schema_style": "compact",

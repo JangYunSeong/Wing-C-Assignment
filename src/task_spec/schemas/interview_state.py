@@ -186,6 +186,8 @@ class InterviewGeneration(_State):
     reason: str | None = None  # 실패 사유 (고정 문구) — 있으면 실패, 이어서 하면 지운다
     coding_incident: PublicIncident | None = None  # seed: 기능형 재료를 붙인 사례
     seed_provenance: list[Provenance] = Field(default_factory=list)
+    # seed: 재료 입구 분석 표시 (#301 PR 3, interview/material_analysis) — 생성을 마칠 때 과제 검토 표시에 합친다 (막지 않음)
+    seed_flags: list[str] = Field(default_factory=list)
     task: TaskItem | None = None  # feature → request → slots 를 거치며 갱신
     task_provenance: list[Provenance] = Field(default_factory=list)
     task_flags: list[str] = Field(default_factory=list)

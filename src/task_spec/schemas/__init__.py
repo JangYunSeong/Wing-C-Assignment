@@ -204,6 +204,7 @@ from task_spec.schemas.interview_incident import (
     InterviewFeatureSeedInput,
 )
 from task_spec.schemas.judge_overlap import JudgeOverlapInput, JudgeOverlapOutput, OverlapVerdict
+from task_spec.schemas.material_analysis import AnalyzeMaterialInput, MaterialAnalysis
 from task_spec.schemas.package import ReviewDecision
 from task_spec.schemas.pilot import (
     AskedItem,
@@ -428,6 +429,8 @@ __all__ = [
     "DraftTaskInputV2",
     "MaterialGuide",
     "MaterialInterface",
+    "AnalyzeMaterialInput",
+    "MaterialAnalysis",
     "ReferenceManifest",
     "PublicIncident",
     "KnownIncidentCase",
