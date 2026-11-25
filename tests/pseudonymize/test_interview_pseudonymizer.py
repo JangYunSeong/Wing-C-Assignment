@@ -100,6 +100,30 @@ def test_model_text_checks_contacts_and_forged_tokens(pseudo: InterviewPseudonym
         pseudo.stored_json(["010-1234-5678"], mapping)
 
 
+def test_shared_material_tokens_pass_only_for_that_material(
+    pseudo: InterviewPseudonymizer,
+) -> None:
+    """#308: 공유 회사 사례 재료에는 등록한 인터뷰의 토큰이 남는다 — 그 재료에 실제로 있는 토큰만 더 허용한다 (토큰 모양 전부가
+    아님). 그 입력으로 LLM 이 쓴 글도 같은 집합으로 본다. 패턴 검사는 그대로."""
+    mapping = pseudo.new_mapping(IID, "가상테크")
+    material = {
+        "symptom": "[PRODUCT_3] 주문 API 가 멈춤",
+        "feature": {"naive_impl": "[COURSE_2] 방식"},
+    }
+    with pytest.raises(InterviewTextRejected):
+        pseudo.stored_json(material, mapping)  # 이 인터뷰 대응표만 보면 위조 토큰
+    text, shared = pseudo.shared_json(material, mapping)
+    assert isinstance(text, PseudonymizedText) and json.loads(text) == material
+    assert shared == {"[PRODUCT_3]", "[COURSE_2]"}
+    assert pseudo.derived("[PRODUCT_3] 가 연결을 쥔다", mapping, shared)  # 재료의 토큰을 옮겨 씀
+    with pytest.raises(InterviewTextRejected):
+        pseudo.derived("[PERSON_9] 가 연결을 쥔다", mapping, shared)  # 지어낸 토큰
+    with pytest.raises(InterviewTextRejected):
+        pseudo.derived("[PRODUCT_3] 가 연결을 쥔다", mapping)  # 공유 재료 입력이 아니면 그대로 거절
+    with pytest.raises(InterviewTextRejected):
+        pseudo.shared_json({"symptom": "[PRODUCT_3] 장애는 ops@example.com 으로"}, mapping)
+
+
 def test_mapping_file_is_private_and_deletable(
     pseudo: InterviewPseudonymizer, tmp_path: Path
 ) -> None:
