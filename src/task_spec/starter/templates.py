@@ -22,6 +22,7 @@ from typing import Literal
 
 import yaml
 
+from task_spec.schemas.incident import MaterialGuide
 from task_spec.schemas.template import SlotKind, TemplateManifest
 
 # 레포의 templates/ — 패키지로 설치한 이미지(builder #129)에서는 TEMPLATES_DIR 로 준다
@@ -69,6 +70,12 @@ def glob_match(path: str, patterns: list[str]) -> bool:
 class Template:
     root: Path  # templates/<직군>/<스택>/vN
     manifest: TemplateManifest
+    # 빌드 재료의 숨은 안내 (#256 재료 옮기기) — starter/material_guide.with_guide 만 붙인다 (manifest 의 사유·허용 구현 조건도
+    # 그때 함께 합친다). 생성기 입력이 템플릿 문서 뒤에 재료 안내를 붙인다. 템플릿만 읽은 것은 None
+    guide: MaterialGuide | None = None
+    # 재료 사유로 좁힌 코드 (restrict_reasons) — 그 뒤에 재료 안내를 합쳐도 이 밖의 사유는 들어오지 않는다 (합치기·좁히기 순서와
+    # 상관없이 같은 목록). 좁힌 적 없으면 None
+    narrowed: frozenset[str] | None = None
 
     @property
     def project(self) -> Path:
@@ -93,20 +100,27 @@ class Template:
 
 
 def restrict_reasons(template: Template, codes: Collection[str]) -> Template:
-    """실패 사유 목록을 codes 로 좁힌 템플릿 (codes 가 비면 그대로). 몇 번 불러도 같다.
+    """실패 사유 목록을 codes 로 좁힌 템플릿 (codes 가 비면 그대로). 몇 번 불러도 같다. 좁힌 코드는 템플릿에 남긴다(narrowed) —
+    뒤에 재료 안내를 합쳐도(material_guide.with_guide) 그 밖의 사유가 되살아나지 않게.
 
     재료가 숨은 요구의 사유(FeatureSeed.reasons)를 적으면 계약 입력·검사만 그 목록을 보고, 숨은 테스트 생성기 입력과 정적 검사는
     템플릿 목록 전체를 봤다 — 2026-11-13 갱신 손실 알파(kakaobank_2026#003): 숨은 테스트가 '시간 초과·5xx 수' 확인에 재료에 없는
     pool_acquire_timeout 을 붙여, 충돌을 500 으로 돌려준 구현이 '풀 대기 초과'로 채점됐다 (재시도 중복 알파도 같은 표시)."""
     if not codes:
         return template
-    allowed = set(codes)
+    allowed = frozenset(codes)
+    if template.narrowed is not None:
+        allowed &= template.narrowed
     kept = [r for r in template.manifest.failure_reasons if r.code in allowed]
-    if len(kept) == len(template.manifest.failure_reasons):
+    unchanged = len(kept) == len(template.manifest.failure_reasons)
+    if unchanged and template.narrowed == allowed:
         return template
-    return replace(
-        template, manifest=template.manifest.model_copy(update={"failure_reasons": kept})
+    manifest = (
+        template.manifest
+        if unchanged
+        else template.manifest.model_copy(update={"failure_reasons": kept})
     )
+    return replace(template, manifest=manifest, narrowed=allowed)
 
 
 def current_version(template_id: str, root: Path = TEMPLATES_ROOT) -> int:

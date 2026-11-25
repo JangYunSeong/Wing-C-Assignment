@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from task_spec.llm import Completion, LLMClient
 from task_spec.nodes.starter import build as build_mod
 from task_spec.nodes.starter.build import BuildOutcome, build_and_repair
-from task_spec.schemas import GeneratedFile, ReferenceManifest, VerifyReport
+from task_spec.schemas import GeneratedFile, MaterialGuide, ReferenceManifest, VerifyReport
 from task_spec.schemas.build import HiddenPlan
 from task_spec.spec.feature import find_terms
 from task_spec.spec.incidents import feature_ref, incident_by_id, load_incidents, load_interfaces
@@ -30,6 +30,7 @@ from task_spec.starter.hand_refs import (
     public_note,
 )
 from task_spec.starter.interface import interface_ref, interface_text
+from task_spec.starter.material_guide import load_guides
 from task_spec.starter.repair import WEAK_FLAG, RepairPlan
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.variants import VariantGate
@@ -54,7 +55,7 @@ REASONS = ["late_data_missed", "duplicate_counted", "partial_output_visible"]
 RULE = "공개 테스트 입력에는 같은 번호를 두 번 넣지 않는다"
 
 
-def _refs(*specs: tuple[str, str, list[str]], rules: tuple[str, ...] = (RULE,)) -> HandReferences:
+def _refs(*specs: tuple[str, str, list[str]]) -> HandReferences:
     refs: list[dict[str, Any]] = []
     design = 0
     for name, kind, misses in specs:
@@ -74,7 +75,7 @@ def _refs(*specs: tuple[str, str, list[str]], rules: tuple[str, ...] = (RULE,)) 
     files = {
         r.name: (GeneratedFile(path="pipeline/run.py", content=f"# {r.name}\n"),) for r in m.refs
     }
-    return HandReferences(m, files, "test", public_rules=rules)
+    return HandReferences(m, files, "test")
 
 
 SET = _refs(
@@ -184,7 +185,7 @@ def test_a_public_test_a_naive_shape_fails_is_a_leak_and_the_note_hides_the_shap
     assert [(f.rule, f.generator, f.test, f.refs) for f in j.findings] == [
         ("H5", "gen_public", "pt2", ("naive", "no-restate"))
     ]
-    note = public_note(j.findings, SET.public_rules)
+    note = public_note(j.findings, (RULE,))  # 재료 안내의 공개 테스트 입력 규칙 (build._hand_gate)
     assert "공개 테스트 pt2" in note and "pt2 메시지" in note and RULE in note
     assert "다른 공개 테스트 파일은 그대로" in note  # 변별 관문이 더한 클래스를 지우지 않게
     assert (
@@ -324,7 +325,7 @@ def test_committed_references_match_the_material_and_the_interface() -> None:
     iface = load_interfaces(INCIDENTS)[BATCH]
     assert r.manifest.interface_sha256 == interface_ref(iface)
     checked = r.checked_against(iface)
-    assert checked.stale == "" and checked.public_rules == tuple(iface.public_rules)
+    assert checked.stale == ""
     inc = incident_by_id(load_incidents(INCIDENTS), BATCH)
     assert inc is not None and inc.feature is not None
     reasons = set(inc.feature.reasons)
@@ -366,32 +367,33 @@ def test_reference_notes_and_public_rules_never_name_the_hidden_requirement() ->
         *inc.avoid_terms,
     ]
     notes = [x.note for x in load_references(INCIDENTS)[BATCH].refs]
-    rules = load_interfaces(INCIDENTS)[BATCH].public_rules
+    rules = load_guides(INCIDENTS)[
+        BATCH
+    ].public_rules  # 재료 숨은 안내 — 공개 쪽으로 나가는 칸 (#256 재료 옮기기)
+    assert rules
     assert find_terms(terms, json.dumps([*notes, *rules], ensure_ascii=False)) == []
 
 
 def test_a_changed_interface_turns_the_gate_off() -> None:
     r = load_references(INCIDENTS)[BATCH]
     iface = load_interfaces(INCIDENTS)[BATCH]
+    c = iface.commands[0]
     moved = iface.model_copy(
-        update={"public_rules": [*iface.public_rules, "공개 테스트 규칙 하나를 더 둔다"]}
+        update={"commands": [c.model_copy(update={"summary": c.summary + " (고침)"})]}
     )
     assert "references.yaml" in r.checked_against(moved).stale
     assert r.checked_against(None).stale
 
 
-def test_public_rules_go_to_the_contract_input_only() -> None:
+def test_public_rules_stay_out_of_the_spec_input_and_key() -> None:
+    """공개 테스트 입력 범위는 재료 숨은 안내에 있다 — 명세 입력(interface_brief)·인터페이스 블록에는 없고, 명세 저장 키는 인터페이스만 본다."""
     iface = load_interfaces(INCIDENTS)[BATCH]
-    assert iface.public_rules
-    text = interface_text(iface)
-    assert all(rule in text for rule in iface.public_rules)
-    assert iface.public_rules[0] not in "\n".join(interface_brief(iface))  # 명세 입력에는 없다
+    rules = load_guides(INCIDENTS)[BATCH].public_rules
+    assert rules[0] not in "\n".join(interface_brief(iface))  # 명세 입력에는 없다
+    # 계약 입력에는 인터페이스 블록 뒤에 재료 안내 쪽에서 붙는다 (test_material_guide)
+    assert rules[0] not in interface_text(iface)
     inc = incident_by_id(load_incidents(INCIDENTS), BATCH)
     assert inc is not None
-    # 명세 저장 키는 명세가 보는 칸만 — 공개 테스트 규칙이 바뀌어도 승인된 명세를 그대로 쓴다
-    assert feature_ref(inc, iface) == feature_ref(
-        inc, iface.model_copy(update={"public_rules": []})
-    )
     assert feature_ref(inc, iface) != feature_ref(
         inc,
         iface.model_copy(update={"incident_id": iface.incident_id, "files": iface.files[:1] * 2}),
@@ -469,7 +471,11 @@ class HandVerifier:
 
 
 def _hand_build_inputs(refs: HandReferences | None) -> Any:
-    return _inputs(task=_task().model_copy(update={"accepted_designs": [D1]}), references=refs)
+    # 공개 테스트 수리 요청의 입력 규칙은 재료 숨은 안내에서 (#256 재료 옮기기)
+    guide = MaterialGuide(incident_id=BATCH, public_rules=[RULE])
+    return _inputs(
+        task=_task().model_copy(update={"accepted_designs": [D1]}), references=refs, guide=guide
+    )
 
 
 def _hand_report(naive_public: str) -> VerifyReport:

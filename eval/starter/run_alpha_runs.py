@@ -33,6 +33,7 @@ from task_spec.nodes.starter.plan_contract import plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
 from task_spec.spec.incidents import incident_by_id, load_incidents, load_interfaces
+from task_spec.starter.material_guide import load_guides
 from task_spec.starter.verify import verifier_for
 from task_spec.starter.verify.workspace import write_overlay as _write
 
@@ -79,6 +80,9 @@ async def main() -> None:
     interface = load_interfaces(ROOT / "incidents" / "public_v1").get(
         inc.incident_id
     )  # #256 재료 인터페이스
+    guide = load_guides(ROOT / "incidents" / "public_v1").get(
+        inc.incident_id
+    )  # #256 재료 숨은 안내
     assert seed is not None, f"{sub} 에 기능형 재료가 없음"
     template = template_for(sub)
     out = OUT / f"{date.today()}-alpha{('-' + a.tag) if a.tag else ''}" / src["run_id"][:8]
@@ -111,7 +115,7 @@ async def main() -> None:
     chosen = None
     for n in range(1, a.contracts + 1):
         t0 = time.monotonic()
-        res = await plan_contract(task, template, seed=seed, interface=interface, **kw)  # type: ignore[arg-type]
+        res = await plan_contract(task, template, seed=seed, interface=interface, guide=guide, **kw)  # type: ignore[arg-type]
         cost = _cost(res.provenance)
         spent += cost
         summary["contracts"].append(
@@ -172,6 +176,7 @@ async def main() -> None:
             template=template,
             seed=seed,
             avoid_terms=tuple(inc.avoid_terms),
+            guide=guide,
         )
         designs = task.accepted_designs[: a.designs]
         worst = 0.0

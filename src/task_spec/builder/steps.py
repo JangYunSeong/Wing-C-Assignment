@@ -48,6 +48,7 @@ from task_spec.starter.images import (
 )
 from task_spec.starter.layers import Podman
 from task_spec.starter.loader import ImageRef, PackageInputs, register_packages
+from task_spec.starter.material_guide import guide_problems, load_guides
 from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.repair import STARTER
 from task_spec.starter.static_check import Overlay, readme_flags
@@ -131,6 +132,8 @@ class RealSteps:
         self.interfaces = load_interfaces(incidents_dir)
         # 재료 손 구현 묶음 (#256 3단계) — 손 구현 관문(⑫). 인터페이스가 있는 재료만 (손 구현은 인터페이스대로 실행된다)
         self.references = load_references(incidents_dir)
+        # 재료 숨은 안내 (#256 재료 옮기기) — 재료의 사유 정의·숨은 테스트 규칙·공개 테스트 입력 범위. 공개 사례 파일만
+        self.guides = load_guides(incidents_dir)
         self.images_root = images_root
         self.designs = designs
         self.company_incidents = company_incidents
@@ -168,6 +171,12 @@ class RealSteps:
         if inc is None or inc.feature is None:
             raise StepFailed(f"contract: 기능형 재료가 없는 직군 ({sub})")
         interface = self.interfaces.get(inc.incident_id)
+        guide = self.guides.get(inc.incident_id)
+        if guide is not None and (bad := guide_problems(guide, inc)):
+            # 재료 데이터 결함 — 다른 재료의 빌드는 그대로 돈다. 안내 없이 만들면 틀린 안내로 조용히 빌드된다
+            raise StepFailed(
+                f"contract: 재료 숨은 안내가 템플릿과 맞지 않음 — {'; '.join(bad)}"[:280]
+            )
         res = await plan_contract(
             task,
             template,
@@ -176,6 +185,7 @@ class RealSteps:
             ontology_version=job.build.ontology_version,
             seed=inc.feature,
             interface=interface,
+            guide=guide,
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
             raise StepFailed(
@@ -190,6 +200,7 @@ class RealSteps:
             cost_usd=_cost(list(res.provenance)),
             seed=inc.feature,
             interface=interface,
+            guide=guide,
             avoid_terms=tuple(inc.avoid_terms),
             review_flags=tuple(res.flags),
             provenance=tuple(res.provenance),
@@ -206,6 +217,7 @@ class RealSteps:
             seed=c.seed,
             avoid_terms=c.avoid_terms,
             references=refs.checked_against(c.interface) if refs is not None else None,
+            guide=c.guide,
         )
         g = verifier_for(c.template, job.work / "verify")
         out = await build_and_repair(

@@ -246,3 +246,20 @@ async def test_draft_feature_task_flags_a_scenario_that_names_another_format() -
     assert not any(
         f.startswith(FLAG_SPEC_INTERFACE) for f in plain.flags
     )  # 인터페이스 없으면 표시 없음
+
+
+def test_command_script_names_are_interface_names() -> None:
+    """#256 5단계 두 번째 재료 알파: 명령 `pipeline/build_manifest.py` 를 부른 공개 요구가 '없는 칸 이름'으로 되돌아갔다 (4회 중 3회).
+    batch-rerun 의 `pipeline/run.py` 는 snake_case 가 아니라 드러나지 않았다."""
+    iface = _iface()
+    renamed = iface.model_copy(
+        update={
+            "commands": [iface.commands[0].model_copy(update={"path": "pipeline/build_summary.py"})]
+        }
+    )
+    reqs = [("r1", "build_summary 명령이 실행 날짜의 요약을 daily_sales 아래에 둔다")]
+    assert spec_interface_problems(reqs, [], renamed) == []
+    (problem,) = spec_interface_problems(
+        [("r2", "build_summary 가 merchant_category 칸을 더한다")], [], renamed
+    )
+    assert "merchant_category" in problem and "build_summary" not in problem.split("—")[0]

@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
-import yaml
 from psycopg.rows import dict_row
 
 from eval.starter.register_mock_common import dsn
 from task_spec.config import Settings
+from task_spec.starter.material_guide import load_guides, reason_descriptions
 from task_spec.starter.store import PgBuildStore
+from task_spec.starter.templates import load_template
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,14 +64,15 @@ def image_config(image: str) -> dict[str, Any] | None:
     return _CONFIG_CACHE[key]
 
 
-def reasons_of(template_ref: str) -> dict[str, str]:
-    m = ROOT / "templates" / template_ref.replace("@", "/") / "manifest.yaml"
-    if not m.is_file():
+def reasons_of(template_ref: str, incident_id: str | None = None) -> dict[str, str]:
+    """사유 코드 → 설명 — 템플릿 사유 위에 재료 숨은 안내의 사유 (#256 — 빌드·finalize 와 같은 설명). 템플릿이 없으면 빈 dict."""
+    tid, _, ver = template_ref.rpartition("@v")
+    try:
+        template = load_template(tid, int(ver), ROOT / "templates")
+    except (OSError, ValueError):
         return {}
-    return {
-        r["code"]: r["description"]
-        for r in yaml.safe_load(m.read_text("utf-8")).get("failure_reasons", [])
-    }
+    guide = load_guides(ROOT / "incidents" / "public_v1").get(incident_id or "")
+    return reason_descriptions(template, guide)
 
 
 def case_rows(cfg: dict[str, Any] | None, plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -137,7 +139,7 @@ async def collect(conninfo: str, only: list[str]) -> list[dict[str, Any]]:
             cfg = image_config(image)
             plan = o.hidden_plan.model_dump(mode="json")
             task = tasks.get(b.common_id, {})
-            reasons = reasons_of(o.template_ref)
+            reasons = reasons_of(o.template_ref, task.get("source_incident"))
             files = [
                 {"kind": f.kind, "path": f.path, "content": f.content}
                 for f in await store.files(bid, ["hidden", "public_test"])

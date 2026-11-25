@@ -6,7 +6,7 @@
 # - note 는 숨은 테스트 수리 요청·승인 화면에 나간다. 재료의 trigger_terms·leak_terms·stage2_cause_terms·hidden_terms 를 쓰지 않는다.
 # - design 은 재료 feature.accepted_designs 순서 (1부터). 손 예시 REPORT 의 '허용 설계 N' 번호와 다르다 — 내용으로 맞췄다.
 incident_id: pub:data.eng:batch-rerun-late-partial
-interface_sha256: e3705c3adb9a03ec44345a55d2e59b017e2c8be91cf98e293a28a61974c940ae
+interface_sha256: 93d2c88992e2311f8e665c1db5b1d4a89f5407bb7921627693e810e6d365c858
 shared: _shared
 refs:
   - name: accepted-swap

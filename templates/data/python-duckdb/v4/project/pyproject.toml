@@ -1,0 +1,29 @@
+# 템플릿 data/python-duckdb v1 — 잠긴 파일 (과제가 바꾸지 않는다). 의존성은 이것만 쓴다.
+[project]
+name = "batch-job"
+version = "0.1.0"
+description = "배치 데이터 작업"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "duckdb==1.5.6",  # 2.0(2026-10)은 API 가 바뀌어(.arrow() 제거·미완 결과 엄격) 생성기·지원자가 아는 1.x 마지막 줄로
+    "pyarrow==26.0.1",
+    # pandas 3.0(2026-02)은 Copy-on-Write·문자열 기본 형식이 바뀌어 흔히 쓰는 코드가 말없이 다르게 동작할 수 있어 2.x 마지막 줄로.
+    # numpy 2.5 부터는 Python 3.12 이상 — 3.11 에서 쓸 수 있는 마지막 줄
+    "pandas==2.3.3",
+    "numpy==2.4.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+]
+
+[tool.uv]
+package = false
+# pandas 2.3 이 오래 써 온 줄로 — python-dateutil 4.0(2026-11-01)은 새 메이저라 고르지 않는다
+constraint-dependencies = ["python-dateutil<3"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+# 채점 테스트(grading/·public_tests/)는 채점 설정(grading/pytest.ini)으로만 돈다
+testpaths = ["tests"]

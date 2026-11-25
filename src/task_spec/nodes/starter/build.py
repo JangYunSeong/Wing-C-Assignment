@@ -53,6 +53,7 @@ from task_spec.starter.hand_refs import (
     public_note,
 )
 from task_spec.starter.hidden_helpers import code_written_paths
+from task_spec.starter.material_guide import public_rules as guide_public_rules
 from task_spec.starter.repair import (
     COMPILE_RETRIES,
     STARTER,
@@ -836,7 +837,9 @@ async def _hand_gate(
                 "",
                 HAND_GATE,
                 "재료 손 구현이 짚은 공개 테스트: " + ", ".join(dict.fromkeys(f.test for f in pub)),
-                public_note(pub, refs.public_rules),
+                public_note(
+                    pub, guide_public_rules(b.template)
+                ),  # 재료 안내의 공개 테스트 입력 규칙
                 pool=HAND_POOL,
             )
         )

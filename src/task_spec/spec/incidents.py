@@ -33,7 +33,8 @@ class IncidentCatalog(dict[str, PublicIncident]):
 
 
 def load_incidents(root: Path) -> IncidentCatalog:
-    """직군 → 기본 사례(`<직군>.json`). 그 밖의 파일은 기능형 과제용 추가 사례 — `templates` 가 비면 거부.
+    """직군 → 기본 사례(`<직군>.json`). 그 밖의 파일은 기능형 과제용 추가 사례. 추가 사례의 `templates` 가 비면 공고 배정 후보가
+    아니다 — 재료를 고정한 평가(`pin_feature_incident`)에만 쓰인다 (#256 5단계: 새 재료를 공고 배정과 떼어 평가한다 — 배정은 운영 결정).
     폴더가 없으면 빈 카탈로그 (사례 없이 v1 처럼 생성)."""
     out = IncidentCatalog()
     if not root.is_dir():
@@ -41,9 +42,9 @@ def load_incidents(root: Path) -> IncidentCatalog:
     for f in sorted(root.glob("*.json")):
         inc = PublicIncident.model_validate_json(f.read_text("utf-8"))
         if f.stem != inc.sub:
-            if not inc.templates:
+            if inc.feature is None:
                 raise ValueError(
-                    f"직군 {inc.sub} 의 추가 사례 {f.name} 에 templates 가 없습니다 — 기본 사례는 {inc.sub}.json"
+                    f"직군 {inc.sub} 의 추가 사례 {f.name} 에 기능형 재료(feature)가 없습니다 — 기본 사례는 {inc.sub}.json"
                 )
             out.alternates.setdefault(inc.sub, []).append(inc)
             continue
@@ -205,18 +206,15 @@ def incident_ref(inc: PublicIncident) -> str:
     return f"{inc.incident_id}#{digest}"
 
 
-# 재료 인터페이스에서 명세 입력(interface_brief)이 보지 않는 칸 — 명세 저장 키에서 뺀다
-SPEC_UNSEEN = frozenset({"public_rules"})
-
-
 def feature_ref(inc: PublicIncident, interface: MaterialInterface | None = None) -> str:
     """기능형 공통 과제 저장 키의 재료 지문 — 사례 원리 + 기능형 재료가 바뀌면 새 판. 재료 인터페이스(#256)가 있으면 그 지문도 —
     인터페이스는 사례 파일 밖(interfaces/*.yaml)이라, 넣지 않으면 인터페이스 전에 만든 명세를 그대로 다시 쓴다. 지문은 모델 JSON 이라
     MaterialInterface 에 칸이 더해져도 바뀐다 — 그때 데이터 재료 명세가 새 판이 되는 것은 의도다 (인터페이스 정의가 바뀐 것).
-    명세가 보지 않는 칸은 뺀다 — `public_rules`(계약 입력에만, #256 3단계)가 바뀌어도 승인된 명세는 그대로 쓴다."""
+    명세가 보지 않는 재료 숨은 안내(incidents/public_v1/hidden/ — 공개 테스트 입력 범위 포함, #256)는 넣지 않는다 — 그것이 바뀌어도
+    승인된 명세는 그대로 쓴다. #256 3단계에 인터페이스에 있던 public_rules 를 빼고 계산하던 것과 같은 지문이다."""
     digest = hashlib.sha256(inc.model_dump_json().encode("utf-8")).hexdigest()[:8]
     ref = f"{inc.incident_id}+feature#{digest}"
     if interface is not None:
-        seen = interface.model_dump_json(exclude=SPEC_UNSEEN)
+        seen = interface.model_dump_json()
         ref += "+iface#" + hashlib.sha256(seen.encode("utf-8")).hexdigest()[:8]
     return ref

@@ -542,9 +542,5 @@ def interface_text(interface: MaterialInterface | None) -> str:
         lines.append(
             f"  - 엔티티 {m.entity_id} {m.name} — " + " · ".join(_field_line(x) for x in m.fields)
         )
-    if interface.public_rules:  # 공개 테스트 입력 범위 (#256 3단계) — 계약에 채우지 않고 입력에만
-        lines.append(
-            "- 재료가 정한 공개 테스트 입력 범위 — 공개 테스트 checks 는 아래를 지킨다 (숨은 케이스는 해당 없음)."
-        )
-        lines += [f"  - {r}" for r in interface.public_rules]
+    # 공개 테스트 입력 범위는 재료 안내에서 이 뒤에 붙는다 (material_guide.contract_rules_text)
     return "\n".join(lines)

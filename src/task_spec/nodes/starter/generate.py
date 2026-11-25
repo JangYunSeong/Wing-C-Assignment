@@ -46,6 +46,7 @@ from task_spec.schemas import (
     GenVariantInput,
     GenVariantOutput,
     HiddenPlan,
+    MaterialGuide,
     NodeError,
     Provenance,
     TaskContract,
@@ -64,6 +65,9 @@ from task_spec.starter.hidden_helpers import (
 )
 from task_spec.starter.init_scripts import ensure_statements
 from task_spec.starter.java_imports import ensure_java_imports
+from task_spec.starter.material_guide import hidden_text as guide_hidden_text
+from task_spec.starter.material_guide import public_text as guide_public_text
+from task_spec.starter.material_guide import with_guide
 from task_spec.starter.render import (
     candidate_contract,
     contract_markdown,
@@ -346,6 +350,9 @@ def public_input(
     m = template.manifest
     doc = template.hidden / "PUBLIC.md"
     api = doc.read_text("utf-8") if doc.is_file() else NONE
+    api = _with_guide_text(
+        api, guide_public_text(template)
+    )  # 재료가 정한 공개 테스트 입력 규칙 (#256)
     helper = render_contract_case(contract, plan, m, audience="public")
     if helper is not None:
         api += helper_block(m, helper, m.public_helper, "공개 테스트 도우미")
@@ -359,6 +366,13 @@ def public_input(
         acceptance_public=_lines([f"{a.ac_id} {a.text}" for a in task.acceptance_public]),
         revision_note=note or NONE,
     )
+
+
+def _with_guide_text(doc: str, extra: str) -> str:
+    """템플릿 문서 뒤에 재료 안내 글 — 안내가 없으면 문서 그대로(입력이 예전과 같다), 문서가 없으면 안내만."""
+    if not extra:
+        return doc
+    return extra.lstrip() if doc == NONE else doc.rstrip("\n") + extra
 
 
 def public_test_line(contract: TaskContract, t: PublicTest, plan: HiddenPlan | None = None) -> str:
@@ -384,6 +398,9 @@ def hidden_input(
     m = template.manifest
     harness = template.hidden / "HARNESS.md"
     api = harness.read_text("utf-8") if harness.is_file() else NONE
+    api = _with_guide_text(
+        api, guide_hidden_text(template)
+    )  # 재료 안내 — 이 재료의 숨은 테스트 규칙·예시 (#256)
     helper = render_contract_case(contract, plan, m)
     if (
         helper is not None
@@ -647,11 +664,16 @@ class BuildInputs:
     avoid_terms: tuple[str, ...] = ()
     # 재료 손 구현 묶음 (#256 3단계, 손 구현 관문 ⑫) — 없으면 관문을 돌지 않는다. 생성기 입력에는 쓰지 않는다
     references: HandReferences | None = None
+    # 재료 숨은 안내 (#256 재료 옮기기) — 템플릿에 합쳐 붙인다 (사유·허용 구현 조건·생성기 입력의 재료 안내). 없으면 템플릿 그대로
+    guide: MaterialGuide | None = None
 
     def __post_init__(self) -> None:
-        # 재료가 사유를 적었으면 빌드의 모든 생성기 입력·정적 검사가 그 사유 목록만 본다 (계약 단계 plan_contract.for_material 과 같은 목록)
+        # 재료 안내를 합친 뒤, 재료가 사유를 적었으면 빌드의 모든 생성기 입력·정적 검사가 그 사유 목록만 본다
+        # (계약 단계 plan_contract.for_material 과 같은 순서·목록)
+        template = with_guide(self.template, self.guide)
         if self.seed is not None:
-            object.__setattr__(self, "template", restrict_reasons(self.template, self.seed.reasons))
+            template = restrict_reasons(template, self.seed.reasons)
+        object.__setattr__(self, "template", template)
 
     def check(
         self,

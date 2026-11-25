@@ -21,11 +21,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from task_spec.schemas import TaskItem
+from task_spec.schemas import MaterialGuide, TaskItem
 from task_spec.schemas.build_record import README_FULL_PATH, BuildArtifact, BuildRecord
 from task_spec.schemas.package import ArtifactFile, CandidateDescriptor, GraderDescriptor
 from task_spec.starter.artifacts import write_role
 from task_spec.starter.kit import build_kit
+from task_spec.starter.material_guide import load_guides, reason_descriptions
 from task_spec.starter.store import BuildRepo, role_dir
 from task_spec.starter.templates import load_template
 
@@ -38,11 +39,11 @@ class FinalizeError(Exception):
     """확정할 수 없음 — 메시지는 저장소 사유로 (짧게, 원문 없이)."""
 
 
-def _template_reasons(template_ref: str) -> dict[str, str]:
-    """템플릿 실패 사유 코드 → 설명 (평가 키트의 사유 설명)."""
+def _template_reasons(template_ref: str, guide: MaterialGuide | None = None) -> dict[str, str]:
+    """실패 사유 코드 → 설명 (평가 키트의 사유 설명) — 템플릿 사유 위에 재료 안내의 사유 (#256 재료 옮기기 — 빌드가 본 정의와 같게).
+    재료 안내는 판 번호가 없다 — 빌드가 쓴 안내의 지문은 빌드 결과(guide_sha256)에 남는다. 빌드 뒤 고쳤으면 고친 설명이 나간다."""
     tid, _, ver = template_ref.rpartition("@v")
-    t = load_template(tid, int(ver))
-    return {r.code: r.description for r in t.manifest.failure_reasons}
+    return reason_descriptions(load_template(tid, int(ver)), guide)
 
 
 def _approved(model: Any, cls: type[Any]) -> Any:
@@ -56,9 +57,14 @@ def _approved(model: Any, cls: type[Any]) -> Any:
 
 
 def write_final_packages(
-    root: Path, build: BuildRecord, task: TaskItem, readme_full: str | None = None
+    root: Path,
+    build: BuildRecord,
+    task: TaskItem,
+    readme_full: str | None = None,
+    guide: MaterialGuide | None = None,
 ) -> tuple[list[ArtifactFile], list[ArtifactFile], list[ArtifactFile]]:
-    """파일 쓰기 (동기 — 스레드에서). (응시용·채점용·평가 키트 파일 목록). readme_full 이 있으면 평가 키트 옆에."""
+    """파일 쓰기 (동기 — 스레드에서). (응시용·채점용·평가 키트 파일 목록). readme_full 이 있으면 평가 키트 옆에.
+    guide: 명세 재료의 숨은 안내 — 평가 키트의 사유 설명에 재료 사유를 더한다."""
     o = build.outcome
     if o is None:
         raise FinalizeError("finalize: 결과(outcome)가 없다")
@@ -95,7 +101,7 @@ def write_final_packages(
             grad2,
             cases,
             o.verification,
-            _template_reasons(o.template_ref),
+            _template_reasons(o.template_ref, guide),
             o.review_flags,
             review_decisions=build.review_decisions,
         )
@@ -111,8 +117,12 @@ def write_final_packages(
 
 
 class PackageFinalizer:
-    def __init__(self, store: BuildRepo, images_root: Path) -> None:
+    def __init__(
+        self, store: BuildRepo, images_root: Path, incidents_dir: Path | None = None
+    ) -> None:
         self.store, self.images_root = store, images_root
+        # 재료 숨은 안내 (#256) — 평가 키트의 사유 설명. 없으면 템플릿 사유 설명만
+        self.guides = load_guides(incidents_dir) if incidents_dir is not None else {}
 
     async def finalize(self, build: BuildRecord) -> BuildRecord:
         """빌드 하나 확정. 실패하면 사유만 남기고 그 빌드를 돌려준다 (상태는 approved 그대로)."""
@@ -127,6 +137,7 @@ class PackageFinalizer:
                 build,
                 task,
                 full.content if full is not None else None,
+                self.guides.get(task.source_incident or ""),
             )
             o = build.outcome
             assert o is not None

@@ -1,0 +1,66 @@
+# 재료 pub:data.eng:rate-gap-orders-dropped 의 공개 인터페이스 (#256 넷째 데이터 재료, 2026-11-24 — 평가 전용, 손 구현 없음).
+# 코드가 계약에 채운다 (starter/interface.fit_interface). 지킬 것 (다른 데이터 재료 인터페이스와 같음):
+# - 설명 글에 재료의 trigger_terms·leak_terms·stage2_cause_terms·hidden_terms·avoid_terms 를 쓰지 않는다 (공개 계약에 그대로 나간다).
+# - 환율의 유효 구간(고시일부터 다음 고시 전까지)과 환율이 없으면 실패한다는 규칙은 공정을 위해 공개한다 — 고시가 없는 날이 있다는 사실은
+#   쓰지 않는다 (자료에서만 보인다). 숨은 테스트가 주문·환율을 모두 직접 쓰므로 정답이 명세가 정한 값에 달리지 않는다.
+incident_id: pub:data.eng:rate-gap-orders-dropped
+commands:
+  - endpoint_id: e1
+    path: pipeline/build_revenue.py
+    summary: 해외 주문을 원화로 바꿔 날짜별 매출 요약을 만드는 배치 — 스케줄러가 매일 실행 날짜로 부른다
+    options:
+      - {name: date, type: date, constraints: "실행 날짜 (YYYY-MM-DD) — 스케줄러가 매일 그날 날짜로 부른다"}
+      - {name: raw, type: string, constraints: "주문 폴더 — 읽기만 한다"}
+      - {name: rates, type: string, constraints: "환율 폴더 — 읽기만 한다"}
+      - {name: out, type: string, constraints: "요약 폴더 — 작업이 쓰는 파일은 모두 이 아래에 둔다"}
+    responses:
+      - {status: 0, description: "성공 — 요약 폴더에 결과를 기록함"}
+      - {status: 1, description: "실패 — 오류 내용을 표준 오류에 출력함"}
+files:
+  - fixture_id: f1
+    role: input
+    path: "{raw}/{date}/*.jsonl"
+    format: jsonl
+    entity: Order
+    summary: 날짜별 해외 주문 — 주문 서버가 그날 받은 jsonl 파일
+    content: >-
+      jsonl, 한 줄에 Order 하나. 날짜 폴더에는 그 날짜에 주문된 건만 있다 (ordered_at 의 날짜 = 폴더 날짜).
+      실행 날짜 D 로 부를 때 D 폴더까지는 있고, D 보다 뒤 날짜 폴더는 아직 없다.
+  - fixture_id: f2
+    role: input
+    path: "{rates}/*.csv"
+    format: csv
+    entity: RateRow
+    summary: 환율 파일 — 환율 제공처가 고시할 때마다 행이 붙는 csv 파일
+    content: >-
+      csv, 머리글 한 줄 뒤 한 행에 RateRow 하나. 실행할 때 그때까지 받은 고시가 모두 들어 있다.
+      한 행의 환율은 그 날짜(rate_date)부터 같은 통화의 다음 행 날짜 전까지 유효하다.
+      주문 날짜에 유효한 환율이 없는 주문이 있으면 그 실행은 실패한다 (종료 코드 1).
+  - fixture_id: f3
+    role: output
+    path: "{out}/daily_revenue/date=YYYY-MM-DD/*.parquet"
+    format: parquet
+    entity: DailyRevenue
+    summary: 날짜별 해외 매출 요약 — 날짜 파티션 폴더(date=YYYY-MM-DD)마다 parquet 파일
+    content: >-
+      parquet, 날짜 파티션마다 DailyRevenue 한 행. 파티션 날짜는 주문 날짜다. 재무팀 도구는 파티션마다 그 안의 parquet 파일을 모두 읽고,
+      이름이 _ 나 . 으로 시작하는 파일·폴더는 읽지 않는다. 파일 이름은 자유다. 주문이 없는 날짜는 파티션을 두지 않는다.
+entities:
+  - entity_id: m1
+    name: Order
+    fields:
+      - {name: order_id, type: string, constraints: "주문 번호 — 주문마다 하나"}
+      - {name: ordered_at, type: datetime, constraints: "주문 시각 (한국 시간, YYYY-MM-DD HH:MM:SS)"}
+      - {name: currency, type: "enum(USD|JPY|EUR)", constraints: "주문 통화"}
+      - {name: amount, type: integer, constraints: "주문 금액 — 그 통화의 표시 단위, 정수"}
+  - entity_id: m2
+    name: RateRow
+    fields:
+      - {name: rate_date, type: date, constraints: "고시 날짜 (YYYY-MM-DD)"}
+      - {name: currency, type: "enum(USD|JPY|EUR)", constraints: "통화"}
+      - {name: krw_per_unit, type: integer, constraints: "그 통화 1 단위의 원화 값 (정수)"}
+  - entity_id: m3
+    name: DailyRevenue
+    fields:
+      - {name: orders, type: integer, constraints: "그 날짜(주문 날짜)의 주문 건수"}
+      - {name: revenue_krw, type: integer, constraints: "그 주문들의 amount × 주문 날짜에 유효한 krw_per_unit 합 (원)"}

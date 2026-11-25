@@ -192,11 +192,33 @@ def test_feature_tasks_pick_the_incident_the_sub_template_can_test(tmp_path: Pat
     assert fe.incident_id in {i.incident_id for i in incs.alternates["sw.frontend"]}
     assert feature_incident(incs, "sw.backend") is incs["sw.backend"]  # 공고 없이 부르면 기본
     assert feature_incident(None, "sw.backend") is None
-    # 추가 사례는 templates 가 있어야 한다 (없으면 어느 과제에서도 쓰이지 않는다)
+    # templates 가 빈 추가 사례는 공고 배정 후보가 아니다 — 재료를 고정한 평가에만 쓴다 (#256 5단계, 배정은 운영 결정)
+    from task_spec.spec.incidents import pin_feature_incident
+
     raw = json.loads((ROOT / "sw.frontend.stale-response.json").read_text("utf-8"))
     raw.pop("templates")
+    raw["incident_id"] = "pub:sw.frontend:eval-only-extra"
     (tmp_path / "sw.frontend.extra.json").write_text(json.dumps(raw, ensure_ascii=False), "utf-8")
-    with pytest.raises(ValueError, match="templates"):
+    base = json.loads((ROOT / "sw.frontend.json").read_text("utf-8"))
+    (tmp_path / "sw.frontend.json").write_text(json.dumps(base, ensure_ascii=False), "utf-8")
+    loaded = load_incidents(tmp_path)
+    assert [i.incident_id for i in loaded.alternates["sw.frontend"]] == [
+        "pub:sw.frontend:eval-only-extra"
+    ]
+    assert all(
+        feature_incident(loaded, "sw.frontend", f"posting#{n}").incident_id  # type: ignore[union-attr]
+        != "pub:sw.frontend:eval-only-extra"
+        for n in range(20)
+    )
+    pinned = pin_feature_incident(loaded, "sw.frontend", "pub:sw.frontend:eval-only-extra")
+    assert (
+        feature_incident(pinned, "sw.frontend", "posting#1").incident_id
+        == "pub:sw.frontend:eval-only-extra"
+    )  # type: ignore[union-attr]
+    # 기능형 재료(feature)가 없는 추가 사례는 거부한다 — 어느 과제에서도 쓰이지 않는다
+    raw.pop("feature")
+    (tmp_path / "sw.frontend.extra.json").write_text(json.dumps(raw, ensure_ascii=False), "utf-8")
+    with pytest.raises(ValueError, match="feature"):
         load_incidents(tmp_path)
 
 
@@ -229,9 +251,12 @@ def test_several_frontend_materials_are_assigned_by_posting_id_hash() -> None:
 
 
 def test_alternate_feature_seeds_are_well_formed() -> None:
-    """추가 사례(기능형)도 기본 사례와 같은 검사 — 허용 설계 2개 이상, 보이는 글에 누설 말 없음, 실패 사유는 템플릿 코드."""
+    """추가 사례(기능형)도 기본 사례와 같은 검사 — 허용 설계 2개 이상, 보이는 글에 누설 말 없음, 실패 사유는 템플릿 코드
+    (재료 숨은 안내가 있으면 그 사유와 합친 목록 — #256 재료 옮기기)."""
+    from task_spec.starter.material_guide import load_guides, with_guide
     from task_spec.starter.templates import load_template
 
+    guides = load_guides(ROOT)
     for alts in load_incidents(ROOT).alternates.values():
         for inc in alts:
             f = inc.feature
@@ -242,8 +267,8 @@ def test_alternate_feature_seeds_are_well_formed() -> None:
             ], inc.incident_id
             assert not set(f.leak_terms) & set(f.trigger_terms), inc.incident_id
             for ref in inc.templates:
-                codes = set(load_template(ref).manifest.reason_codes)
-                assert set(f.reasons) <= codes, (inc.incident_id, f.reasons)
+                t = with_guide(load_template(ref), guides.get(inc.incident_id))
+                assert set(f.reasons) <= t.manifest.reason_codes, (inc.incident_id, f.reasons)
 
 
 def test_backend_base_incident_stays_in_the_hash_pool() -> None:

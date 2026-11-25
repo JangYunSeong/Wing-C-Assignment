@@ -29,6 +29,7 @@ from task_spec.prompting import PromptRegistry
 from task_spec.schemas import TaskItem
 from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.incidents import feature_incident, load_incidents, load_interfaces
+from task_spec.starter.material_guide import load_guides
 from task_spec.starter.seed_rows import allocate_rows, seed_markdown
 from task_spec.starter.tables import contract_tables
 from task_spec.starter.templates import Template, select_template
@@ -208,6 +209,9 @@ async def main() -> None:
             interface=load_interfaces(ROOT / "incidents" / "public_v1").get(inc.incident_id)
             if inc
             else None,  # #256 재료 인터페이스
+            guide=load_guides(ROOT / "incidents" / "public_v1").get(inc.incident_id)
+            if inc
+            else None,  # #256 재료 숨은 안내
         )
         row = summarize(sub, template, task, res)
         rows.append(row)

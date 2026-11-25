@@ -43,9 +43,13 @@ FLAG_MAX_NAMES = 6  # 승인 화면에는 앞의 몇 개만 — LLM 글에서 �
 
 
 def _names(interface: MaterialInterface) -> set[str]:
-    """명세 글에 써도 되는 이름 — 옵션·칸 이름과 위치 패턴의 낱말 (daily_sales 등)."""
+    """명세 글에 써도 되는 이름 — 옵션·칸 이름, 위치 패턴의 낱말 (daily_sales 등), 명령 스크립트 이름 (build_manifest 등).
+    #256 5단계 두 번째 재료 알파: 명령 `pipeline/build_manifest.py` 를 공개 요구가 부르자 '인터페이스에 없는 칸 이름'으로 4회 중
+    3회 명세가 실패했다 — batch-rerun 의 `pipeline/run.py` 는 snake_case 가 아니라 드러나지 않았다."""
     names = {o.name for c in interface.commands for o in c.options}
     names |= {f.name for m in interface.entities for f in m.fields}
+    for c in interface.commands:
+        names |= set(_SNAKE.findall(c.path))
     for f in interface.files:
         names |= set(_SNAKE.findall(f.path))
     return names | _PROCESS_NAMES

@@ -29,13 +29,13 @@ import argparse
 import json
 from pathlib import Path
 
-import yaml
-
 from eval.starter.import_mock_builds import build_flags_of
 from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.package import CandidateDescriptor, GraderDescriptor
 from task_spec.starter.artifacts import copy_role, summaries, write_role
 from task_spec.starter.kit import build_kit
+from task_spec.starter.material_guide import load_guides, reason_descriptions
+from task_spec.starter.templates import load_template
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -91,13 +91,10 @@ def main() -> None:
         (src / "candidate" / "candidate.json").read_text("utf-8")
     )
     grad = GraderDescriptor.model_validate_json((src / "grader" / "grader.json").read_text("utf-8"))
-    template_dir = ROOT / "templates" / t["template_ref"].replace("@", "/")
-    reasons = {
-        r["code"]: r["description"]
-        for r in yaml.safe_load((template_dir / "manifest.yaml").read_text("utf-8"))[
-            "failure_reasons"
-        ]
-    }
+    tid, _, ver = t["template_ref"].rpartition("@v")
+    # 템플릿 사유 위에 재료 숨은 안내의 사유 (#256 — 빌드·finalize 와 같은 설명)
+    guide = load_guides(ROOT / "incidents" / "public_v1").get(task.get("source_incident") or "")
+    reasons = reason_descriptions(load_template(tid, int(ver), ROOT / "templates"), guide)
     # 키트를 먼저 만들어 검증 — 맞지 않으면 아무것도 쓰지 않고 멈춘다 (반쪽 묶음 방지)
     kit = build_kit(
         TaskItem.model_validate(task),

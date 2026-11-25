@@ -51,6 +51,7 @@ from task_spec.spec.incidents import (
 )
 from task_spec.starter.hand_refs import load_references
 from task_spec.starter.interface import interface_ref
+from task_spec.starter.material_guide import guide_ref, load_guides
 from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.templates import load_template, select_template
 from task_spec.starter.verify import verifier_for
@@ -224,6 +225,10 @@ async def main() -> None:
         if interface
         else None
     )
+    guide = load_guides(s.incidents_dir).get(inc.incident_id)  # #256 재료 숨은 안내
+    report["guide"] = (
+        {"incident_id": guide.incident_id, "sha256": guide_ref(guide)} if guide else None
+    )
     res = await plan_contract(
         task,
         template,
@@ -232,6 +237,7 @@ async def main() -> None:
         ontology_version=version,
         seed=inc.feature,
         interface=interface,
+        guide=guide,
     )
     spent += _cost(res.provenance)
     report["contract"] = {
@@ -282,6 +288,7 @@ async def main() -> None:
         seed=inc.feature,
         avoid_terms=tuple(inc.avoid_terms),
         references=hand.checked_against(interface) if hand is not None else None,
+        guide=guide,
     )
     built_out = await build_and_repair(
         b,
