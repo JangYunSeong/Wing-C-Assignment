@@ -44,6 +44,27 @@ def test_java_template_is_registered_and_clean(java) -> None:  # type: ignore[no
     )
 
 
+def test_java_v6_harness_settles_between_cases() -> None:
+    """2026-11-26 교착 재료: 흔한 구현이 hc1 버스트에서 교착한 요청이 서버에 남아 다음 케이스 hc2 가 시간 초과(테스트 예외)였다.
+    v6 하네스는 테스트 메서드가 끝날 때 서버(감싼 DataSource 의 쥐었거나 기다리는 연결)가 빌 때까지 기다리고, 비지 않으면 다음
+    테스트를 새 앱에서 돌린다 — 모든 케이스·공개 테스트의 기반(GraderSupport)에 걸린다."""
+    v6 = load_template(JAVA, 6)
+    assert check_template(v6) == []
+    harness = v6.root / "hidden/harness"
+    support = (harness / "GraderSupport.java").read_text("utf-8")
+    assert (
+        "@TestExecutionListeners(listeners = GraderSettle.class, mergeMode = TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS)"
+        in support
+    )
+    settle = (harness / "GraderSettle.java").read_text("utf-8")
+    assert "GraderJdbcHarness.settled(" in settle and "markApplicationContextDirty" in settle
+    jdbc = (harness / "GraderJdbcHarness.java").read_text("utf-8")
+    assert jdbc.count("inFlight.decrementAndGet()") == 2  # 얻지 못함 · 돌려줌
+    assert "케이스 사이는 하네스가 정리한다" in (v6.root / "hidden/HARNESS.md").read_text("utf-8")
+    # v5 는 그대로 (고정 칸 — hidden/ 은 같은 판에서 고치지 않는다)
+    assert not (load_template(JAVA, 5).root / "hidden/harness/GraderSettle.java").exists()
+
+
 def test_java_template_has_no_task_specific_code(java) -> None:  # type: ignore[no-untyped-def]
     """템플릿은 과제와 무관한 뼈대 — 손 예시(배송 감사)의 도메인 낱말이 남지 않는다."""
     text = "\n".join(
