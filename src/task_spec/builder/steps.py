@@ -123,8 +123,9 @@ def build_trace(
     """빌드 기록 칸 (설계 검사 #332 T-F16) — 알파 보고서에만 있던 코드 맞춤·정적 재생성·보정·관문 결과. 원문 없음 (값·판정 한 줄).
     out 은 build_and_repair 의 결과 — 칸이 없는 대역(테스트)도 받는다."""
     calibration: list[str] = []
-    cal = getattr(out, "calibration", None)
-    if cal is not None:
+    # 창 없음 뒤 숨은 케이스를 다시 만들기 전의 보정(T-F1)도 차례로
+    tries = [*getattr(out, "calibration_tries", []), getattr(out, "calibration", None)]
+    for cal in (c for c in tries if c is not None):
         row = cal.row()
         trials = row["trials"]
         calibration.append(

@@ -86,7 +86,10 @@ VARIANT = Pool("#variant", 1, "gate")  # 공개 테스트 변별 관문 ⑩ (#16
 TRAP_GATE = Pool("#trap-gate", 1, "gate")  # 숨은 테스트 함정 관문 ⑪ (#171) — 숨은 케이스 다시
 # 손 구현 관문 ⑫ (#256 3단계) — 재료 손 구현이 짚은 숨은·공개 테스트를 생성기마다 한 번 다시
 HAND = Pool("#hand", 1, "gate")
-POOLS = (GENERAL, COMPILE, CRASH, REGRESS, DESIGN, NAIVE_FIRST, VARIANT, TRAP_GATE, HAND)
+# 보정 창 없음 뒤 숨은 케이스 한 번 다시 (설계 검사 #332 T-F1) — 창 유무는 재료보다 그 회차의 버스트 대상·명세 수치·생성 코드에 달려
+# 같은 재료가 다른 회차에서는 보정됐다 (알파 r2-1 ↔ r2-2). 한 번 다시 해도 창이 없으면 그때 재료 판정으로 멈춘다
+CALIBRATE = Pool("#calibrate", 1, "gate")
+POOLS = (GENERAL, COMPILE, CRASH, REGRESS, DESIGN, NAIVE_FIRST, VARIANT, TRAP_GATE, HAND, CALIBRATE)
 
 
 @dataclass(frozen=True)

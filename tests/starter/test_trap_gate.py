@@ -6,6 +6,8 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+import pytest
+
 from task_spec.llm import Completion, LLMClient
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.schemas import AcceptedDesign, GeneratedFile, GenTrapOutput, VerifyReport
@@ -381,3 +383,19 @@ def test_builds_make_every_accepted_design_by_default() -> None:
     from task_spec.builder.settings import BuilderSettings
 
     assert BuilderSettings.model_fields["build_designs"].default is None  # 허용 설계 전부 (#171)
+
+
+async def test_a_trap_surviving_a_calibrated_time_limit_is_flagged_not_regenerated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """설계 검사 #332 T-F4 (알파 r2-2): 보정한 시간 한도로 판정하는 케이스에서 함정 변형이 살아남으면 숨은 테스트를 다시 만들지 않는다 —
+    재생성으로는 보정 한도가 바뀌지 않는다. 표시로 남겨 사람이 보정 창·변형을 확인한다."""
+    import task_spec.nodes.starter.build as build_mod
+
+    monkeypatch.setattr(build_mod, "_calibrated_cases", lambda out: {"hc1"})
+    llm, backend = _llm(gen_hidden=[HIDDEN_ANSWER, HIDDEN_ANSWER])
+    out = await _build(TrapVerifier("PASS"), llm)
+    assert out.status == "review"
+    assert backend.calls.count("gen_hidden") == 1  # 첫 생성만 — 함정 관문 재생성 없음
+    assert not [r for r in out.repairs if r.gate == "⑪"]
+    assert any("보정한 시간 한도로 판정하는 케이스" in f for f in out.review_flags)

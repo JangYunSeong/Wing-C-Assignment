@@ -426,14 +426,25 @@ async def test_the_build_calibrates_instead_of_regenerating_and_keeps_the_values
 
 @pytest.mark.usefixtures("no_variant_gates")
 async def test_no_window_stops_the_build_for_a_person() -> None:
-    """흔한 구현이 떨어지는 한도에서 허용 구현도 떨어진다 — 재생성 예산을 쓰지 않고 재료 판정으로 멈춘다."""
+    """흔한 구현이 떨어지는 한도에서 허용 구현도 떨어진다 — 처음에는 시험 격자를 주고 그 숨은 케이스를 한 번 다시 만든 뒤 다시 보정하고
+    (설계 검사 #332 T-F1: 창 유무는 그 회차의 버스트 대상·명세 수치에도 달려 같은 재료가 다른 회차에서는 보정됐다), 그래도 창이 없으면
+    재료 판정으로 멈춘다. 흔한 구현은 다시 만들지 않는다."""
     out, backend = await _loop(QueueVerifier(accepted_statements=3))
     assert out.status == "failed" and out.calibration is not None
     assert out.calibration.status == "no_window" and out.hidden_plan is None
+    assert len(out.calibration_tries) == 1 and out.calibration_tries[0].status == "no_window"
     assert any(
-        f.startswith(MATERIAL_VERDICT) and "조절값으로 재현 불가" in f for f in out.review_flags
+        f.startswith(MATERIAL_VERDICT)
+        and "조절값으로 재현 불가" in f
+        and "한 번 다시 만든 뒤에도" in f
+        and "명세 운영 값" in f
+        for f in out.review_flags
     )
     assert backend.calls.count("gen_naive") == 1  # 다시 만들지 않았다
+    assert backend.calls.count("gen_hidden") == 2  # 처음 + 창 없음 뒤 한 번
+    retry = [u for n, u in backend.users if n == "gen_hidden"][-1]
+    assert "둘을 가를 창이 없었다" in retry and "흔한 구현" in retry
+    assert [(r.gate, r.target) for r in out.repairs][:1] == [("③", "gen_hidden")]
 
 
 @pytest.mark.usefixtures("no_variant_gates")

@@ -57,6 +57,7 @@ from task_spec.starter.hand_refs import (
 from task_spec.starter.hidden_helpers import code_written_paths, time_settings
 from task_spec.starter.material_guide import public_rules as guide_public_rules
 from task_spec.starter.repair import (
+    CALIBRATE,
     COMPILE_RETRIES,
     MATERIAL_VERDICT,
     STARTER,
@@ -457,6 +458,8 @@ class BuildOutcome:
     blame_reports: list[VerifyReport] = field(default_factory=list)
     # 조절값 보정 (#301 PR 2) — 빌드마다 한 번 (결과가 있으면 다시 하지 않는다)·조합마다 실행 보고서
     calibration: calib.Calibration | None = None
+    # 창이 없어 숨은 케이스를 다시 만들기 전의 보정 (설계 검사 #332 T-F1) — 다시 만든 뒤 한 번 더 보정한다. 기록(trace)에 함께 남긴다
+    calibration_tries: list[calib.Calibration] = field(default_factory=list)
     calibration_reports: list[VerifyReport] = field(default_factory=list)
 
     @property
@@ -465,6 +468,9 @@ class BuildOutcome:
 
 
 VARIANT_GATE = "⑩"  # 공개 테스트 변별 (#164)
+_KEPT_PREVIOUS = (
+    "다시 만들지 못해 이전 판을 유지함 —"  # 수리 회차 재생성 실패 (설계 검사 #332 T-F8)
+)
 
 
 def new_api_tests(contract: TaskContract) -> set[str]:
@@ -718,6 +724,17 @@ async def _trap_gate(
     alive_all = trap_survivors(gate.results)
     # 그 숨은 요구의 케이스를 찾지 못한 설계는 고치지 않는다 — 케이스 id 가 없으면 숨은 테스트 전체를 다시 만든다 (리뷰 2026-11-13)
     alive = [r for r in alive_all if specs[r.label].cases]
+    # 보정한 시간 한도로 판정하는 케이스에서 살아남은 변형은 숨은 테스트를 다시 만들어도 바뀌지 않는다 — 살아남는 까닭이 테스트 코드보다
+    # 보정 한도(흔한 구현이 겨우 떨어지는 창)일 가능성이 높다 (설계 검사 #332 T-F4, 알파 r2-2: 350ms 에서 d1·d2 함정 변형 생존).
+    # 재생성하지 않고 표시로 — 사람이 보정 창·변형을 확인한다
+    timed = _calibrated_cases(out)
+    by_limit = [r for r in alive if timed & set(specs[r.label].cases)]
+    if by_limit:
+        plan.flags += _trap_flags(
+            by_limit,
+            "보정한 시간 한도로 판정하는 케이스라 숨은 테스트를 다시 만들어도 바뀌지 않음 — 보정 창·변형 확인",
+        )
+        alive = [r for r in alive if r not in by_limit]
     plan.flags += _trap_flags(
         [r for r in alive_all if not specs[r.label].cases],
         "그 숨은 요구의 케이스를 발견하지 못해 수정하지 않음",
@@ -743,6 +760,41 @@ async def _trap_gate(
             )
         )
     return plan
+
+
+def _no_window_retry(
+    out: BuildOutcome, cal: calib.Calibration, round_no: int, max_rounds: int
+) -> RepairAction | None:
+    """보정 창이 없을 때 숨은 케이스 한 번 다시 (설계 검사 #332 T-F1) — 처음 한 번만, 다시 만든 케이스를 검증하고 다시 보정할 회차가
+    남을 때만. 시험 격자(조합마다 흔한 구현이 떨어졌는지·허용 구현이 모두 통과했는지)를 주어 허용 설계는 견디고 흔한 구현만 떨어지는
+    케이스로 고치게 한다 — 사유·단언하는 결과는 그대로. 알파 r2-1(동시 62/풀 20)은 회차 0 에서 멈췄고 같은 재료 r2-2(44/20)는 보정됐다."""
+    if out.calibration_tries or round_no + 1 >= max_rounds or not cal.cases:
+        return None
+    row = cal.row()
+    grid = "; ".join(
+        f"{t['values']} → 흔한 구현 {'떨어짐' if t['caught'] else '통과'}, 허용 구현 {'모두 통과' if t['clean'] else '일부 떨어짐'}"
+        for t in row["trials"]
+    )
+    return RepairAction(
+        generator="gen_hidden",
+        label="",
+        gate="③",
+        reason=f"보정 창 없음 — 숨은 케이스 {', '.join(cal.cases)} 를 한 번 다시",
+        note=(
+            f"조절값 보정 시험에서 흔한 구현이 떨어지기 시작한 한도에서 허용 구현도 함께 떨어져 둘을 가를 창이 없었다 "
+            f"(숨은 케이스 {', '.join(cal.cases)}, 사유 {row['reason'] or '-'}): {grid}. "
+            "시간을 재는 요청 묶음(버스트)을 업무 조회가 가벼운 경로로 보내거나 묶음 크기를 줄여, 허용 설계는 견디고 흔한 구현만 "
+            "떨어지게 그 케이스만 고친다. 사유와 확인하는 결과는 바꾸지 않는다."
+        ),
+        pool=CALIBRATE,
+        cases=tuple(cal.cases),
+    )
+
+
+def _calibrated_cases(out: BuildOutcome) -> set[str]:
+    """이 빌드에서 조절값을 보정한 숨은 케이스 (보정 성공일 때만) — 함정 관문이 재생성 대신 표시로 남길 케이스 (T-F4)."""
+    cal = out.calibration
+    return set(cal.cases) if cal is not None and cal.status == "calibrated" else set()
 
 
 def _trap_flags(alive: Sequence[TrapResult], why: str) -> list[str]:
@@ -1363,7 +1415,26 @@ async def _build_and_repair(
                 # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음은 재료 판정으로 멈춤)
                 plan = assign_now()
                 if cal.status == "no_window":
-                    plan.unresolved.append(MATERIAL_VERDICT + cal.verdict())
+                    retry = _no_window_retry(out, cal, round_no, max_rounds)
+                    if retry is not None:
+                        # 처음 창 없음 — 시험 격자를 주고 그 숨은 케이스를 한 번 다시 만든 뒤 다시 보정한다 (설계 검사 #332 T-F1).
+                        # 흔한 구현은 다시 만들지 않는다 — 창이 없다는 것은 흔한 구현이 떨어진다는 뜻이다 (예전 재료 판정 때도 건너뛰었다)
+                        plan.actions = [a for a in plan.actions if a.generator != "gen_naive"]
+                        plan.actions.append(retry)
+                        out.calibration_tries.append(cal)
+                        out.calibration = None
+                    else:
+                        again = (
+                            " — 숨은 케이스를 한 번 다시 만든 뒤에도 창 없음"
+                            if out.calibration_tries
+                            else ""
+                        )
+                        plan.unresolved.append(
+                            MATERIAL_VERDICT
+                            + cal.verdict()
+                            + again
+                            + " (재료 또는 이 회차의 명세 운영 값·생성 코드 확인)"
+                        )
             for (
                 flag
             ) in plan.flags:  # 막지 않는 표시 (예: 다시 만든 시작 코드가 또 숨은 케이스 통과)
@@ -1452,7 +1523,18 @@ async def _build_and_repair(
                 )
             out.repairs += [_record(a, "skipped") for a in plan.actions]
             return out
-        if not await _regenerate(plan.actions, out, b, by_id, kw, took, drop, compiler, absorb):
+        if not await _regenerate(
+            plan.actions,
+            out,
+            b,
+            by_id,
+            kw,
+            took,
+            drop,
+            compiler,
+            absorb,
+            keep_previous=passed is None,  # 관문 수리 중이 아니면 이전 판을 두고 다음 회차로 (T-F8)
+        ):
             if passed is not None:
                 return await _finish_restored(
                     out,
@@ -1603,8 +1685,11 @@ async def _regenerate(
     drop,  # type: ignore[no-untyped-def]
     compiler: TestCompiler | None = None,
     absorb: Callable[[ImplFix | CompileFix], None] | None = None,
+    keep_previous: bool = False,
 ) -> bool:
     """배정된 생성기만 다시 — 자기 이전 출력을 주고 고칠 파일만 받는다 (프롬프트가 지원하면, generate._generate).
+    keep_previous: 재생성이 실패하면 쓸 수 있는 이전 판을 두고 다음 회차로 (관문 전 수리 회차 — 설계 검사 #332 T-F8). 관문 수리는 False —
+    실패하면 통과 상태로 되돌리는 기존 규칙(_restore_passed·_finish_restored)을 따른다.
     시작 코드가 바뀌면 참조 구현은 모두 새 시작 코드 위에 처음부터 다시 쓴다."""
     notes = {a.key: f"검증 실패 (게이트 {a.gate}) — {a.note}" for a in actions}
     for a in actions:  # 산출물·풀마다 센다 (RepairAction.budget_key — repair.POOLS)
@@ -1653,12 +1738,18 @@ async def _regenerate(
             for a in actions
             if a.generator == "gen_public"
         ]
+        if new_public is None and not keep_previous:
+            return False
         if new_public is None:
-            return False
-        out.overlays[PUBLIC] = new_public
-        if not await tests_compile():
-            return False
-        public = out.overlays[PUBLIC]
+            # 재생성 실패는 이전 판을 두고 다음 회차로 — 그 산출물 예산만 쓴 것으로 센다 (설계 검사 #332 T-F8, 알파 lig024: 빈 응답 두 번에
+            # 이전 판이 멀쩡한데도 빌드 전체를 끝냈다). 같은 문제가 남으면 다음 검증이 다시 배정하고, 예산이 다하면 멈춘다
+            out.review_flags.append(f"{_KEPT_PREVIOUS} 공개 테스트 (재생성 예산은 씀)")
+        else:
+            out.overlays[PUBLIC] = new_public
+            if not await tests_compile():
+                return False
+            public = out.overlays[PUBLIC]
+    starter_changed = False
     if "gen_starter" in notes:
         new = took(
             await gen_starter(b, note=notes["gen_starter"], previous=starter, public=public, **kw)  # type: ignore[arg-type]
@@ -1669,8 +1760,14 @@ async def _regenerate(
             for a in actions
             if a.generator == "gen_starter"
         ]
-        if new is None:
-            return False
+    else:
+        new = None
+    if "gen_starter" in notes and new is None and not keep_previous:
+        return False
+    if "gen_starter" in notes and new is None:
+        # 이전 시작 코드를 두고 다음 회차로 (T-F8) — 참조 구현도 그 시작 코드 위의 이전 판을 그대로 쓴다
+        out.review_flags.append(f"{_KEPT_PREVIOUS} 시작 코드 (재생성 예산은 씀)")
+    elif new is not None:
         if (
             compiler is not None and absorb is not None
         ):  # 다시 만든 시작 코드도 무거운 검증 전에 컴파일
@@ -1688,6 +1785,7 @@ async def _regenerate(
                 out.overlays[STARTER] = new
                 return False
         out.overlays[STARTER] = starter = new
+        starter_changed = True
     refs = [(k, o) for k, o in out.overlays.items() if k not in (STARTER, HIDDEN, PUBLIC)]
     jobs: list[tuple[str, object]] = []
     if "gen_hidden" in notes:
@@ -1703,9 +1801,9 @@ async def _regenerate(
     for label, o in refs:
         if o.kind == "ref_naive":
             key = f"gen_naive:{label}"
-            if key in notes or "gen_starter" in notes:
+            if key in notes or starter_changed:
                 prev = (
-                    o if "gen_starter" not in notes else None
+                    o if not starter_changed else None
                 )  # 시작 코드가 바뀌면 새 시작 코드 위에 처음부터
                 jobs.append(
                     (
@@ -1717,9 +1815,9 @@ async def _regenerate(
                 )  # type: ignore[arg-type]
         else:
             key = f"gen_accepted:{label}"
-            if key in notes or "gen_starter" in notes:
+            if key in notes or starter_changed:
                 design = by_id[label]
-                prev = o if "gen_starter" not in notes else None
+                prev = o if not starter_changed else None
                 jobs.append(
                     (
                         label,
@@ -1737,14 +1835,29 @@ async def _regenerate(
     results = await asyncio.gather(*(j for _, j in jobs))  # type: ignore[arg-type]
     ok_all = True
     remade: list[str] = []
+    kept_previous: set[str] = set()
     for (label, _), r in zip(jobs, results, strict=True):
         others = sum(1 for k, o in out.overlays.items() if o.kind == "ref_accepted" and k != label)
         if drop(r, others):
             out.overlays.pop(label, None)
             continue
         new = took(r)
-        if new is None:
+        if new is None and not keep_previous:
             ok_all = False
+        elif new is None:
+            current = out.overlays.get(label)
+            if label == HIDDEN or not starter_changed:
+                # 이전 판이 그대로 쓸 수 있다 (숨은 테스트, 또는 시작 코드가 바뀌지 않은 참조 구현) — 두고 다음 회차로 (T-F8)
+                out.review_flags.append(f"{_KEPT_PREVIOUS} {label} (재생성 예산은 씀)")
+                kept_previous.add(label)
+            elif current is not None and current.kind == "ref_accepted" and others > 0:
+                # 새 시작 코드 위 허용 구현을 못 만듦 — 다른 허용 설계가 남으면 그 설계를 뺀다 (첫 생성·drop() 과 같은 규칙)
+                out.overlays.pop(label, None)
+                out.review_flags.append(
+                    f"허용 설계 {label} 제외 — 새 시작 코드 위 구현 생성 실패(재시도 뒤에도), 남은 허용 설계로 검증 (재료의 허용 설계 확인)"
+                )
+            else:
+                ok_all = False
         else:
             out.overlays[label] = new
             if label != HIDDEN:
@@ -1762,6 +1875,8 @@ async def _regenerate(
         label = HIDDEN if a.generator == "gen_hidden" else a.label
         ok = label in dict(jobs) and out.overlays.get(label) is not None
         result = "regenerated" if ok and ok_all else "failed"
+        if label in kept_previous:
+            result = "kept-previous"
         if result == "regenerated" and a.generator == "gen_hidden" and kept:
             result = "kept-previous"
         out.repairs.append(_record(a, result))  # type: ignore[arg-type]

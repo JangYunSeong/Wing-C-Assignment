@@ -1961,3 +1961,31 @@ async def test_the_only_design_failing_still_fails_the_build() -> None:
     verifier = ScriptedVerifier(_one_case(NAIVE_OK, D1_OK))
     out = await _build(verifier, llm, designs=(D1,))
     assert out.status == "failed" and not verifier.seen
+
+
+async def test_a_failed_regeneration_keeps_the_previous_version_and_goes_on() -> None:
+    """설계 검사 #332 T-F8 (알파 lig024): 수리 회차의 재생성이 재시도 뒤에도 실패하면 쓸 수 있는 이전 판을 두고 다음 회차로 — 그 산출물
+    예산만 쓴 것으로 센다. 예전에는 이전 판이 멀쩡하고 회차가 남아도 빌드 전체를 끝냈다. (관문 수리는 통과 상태로 되돌리는 기존 규칙)"""
+    broken = VerifyReport(
+        runs=[
+            TargetRun.model_validate(
+                {
+                    "target": "starter",
+                    "kind": "starter",
+                    "tests": [_t("existing", "OrderControllerTest", "ASSERT", msg="400≠200")],
+                }
+            )
+        ]
+    )
+    locked = _files(
+        ("build.gradle", "plugins {}")
+    )  # 잠긴 파일 — 재요청에도 같은 답이라 재생성 실패
+    llm, backend = _llm(gen_starter=[_files(*STARTER), locked])
+    out = await _build(ScriptedVerifier(broken, _one_case(NAIVE_OK, D1_OK)), llm)
+    assert out.status == "review" and out.rounds == 1, out.review_flags
+    assert out.regen_counts == {"gen_starter": 1}
+    assert [(r.target, r.result) for r in out.repairs] == [("gen_starter", "failed")]
+    assert any("다시 만들지 못해 이전 판을 유지함 — 시작 코드" in f for f in out.review_flags)
+    assert (
+        backend.calls.count("gen_naive") == 1
+    )  # 시작 코드가 그대로라 참조 구현도 다시 만들지 않는다
