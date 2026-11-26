@@ -58,6 +58,7 @@ from task_spec.spec.common import (
 )
 from task_spec.spec.draft import DraftContext, apply, draft_task
 from task_spec.spec.feature import apply_feature, draft_feature_task, without_public
+from task_spec.spec.fix_markers import marker_note, split_markers
 from task_spec.spec.incidents import IncidentCatalog
 from task_spec.spec.slots import build_slots
 from task_spec.starter.templates import TEMPLATE_FOR_SUB, Template, load_template
@@ -247,6 +248,12 @@ def fit_seed_to_template(
             notes.append(
                 f"{FLAG_SEED_FIT}업무 요구에 나온 말을 {name} 에서 뺌 — {', '.join(dropped)}"
             )
+    # 정답 장치 표지는 코드 꼴만 (#337 1절) — v1 은 이 칸을 설명하지 않아 문장을 썼고, 문장은 코드에 걸리지 않아 ③ 의 무력화 판정이
+    # 조용히 꺼졌다. 막지 않는다 (출력 모델 검증으로 막으면 형식 재시도 한 번 뒤 재료 생성 전체가 실패)
+    markers, bad_markers = split_markers(seed.fix_markers)
+    if bad_markers:
+        update["fix_markers"] = markers
+        notes.append(f"{FLAG_SEED_FIT}{marker_note(len(bad_markers), len(markers))}")
     return (seed.model_copy(update=update) if update else seed), notes
 
 

@@ -42,6 +42,7 @@ from task_spec.schemas import (
     VerifyReport,
 )
 from task_spec.schemas.build import HiddenPlan, RepairRecord, TaskContract
+from task_spec.spec.fix_markers import usable_markers
 from task_spec.starter import calibrate as calib
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
@@ -1229,6 +1230,10 @@ async def _build_and_repair(
 ) -> BuildOutcome:
     kw = {"llm": llm, "prompts": prompts, "ontology_version": ontology_version}
     out = BuildOutcome(status="failed")
+    # 정답 장치 표지는 코드 꼴만 ③ 으로 (#337 1절) — 이미 저장된 재료의 문장 표지는 다시 만들지 않으므로 여기서도 거른다
+    markers, marker_flag = usable_markers(b.seed)
+    if marker_flag is not None:
+        out.review_flags.append(marker_flag)
     by_id = {d.design_id: d for d in designs}
     missed = {"naive-all": {t.trap_id for t in b.task.traps}}
     gate = VariantGate()  # 공개 테스트 변별 관문 상태 (#164)
@@ -1397,7 +1402,7 @@ async def _build_and_repair(
                 out.regen_counts,
                 shared,
                 terms=b.template.manifest.repair_terms,
-                fix_markers=b.seed.fix_markers if b.seed is not None else (),
+                fix_markers=markers,
                 feature_reasons=b.seed.reasons if b.seed is not None else (),
                 regen_log=out.regen_log,
                 passed_before=out.passed_before,
