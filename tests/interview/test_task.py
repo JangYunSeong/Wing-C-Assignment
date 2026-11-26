@@ -1122,3 +1122,44 @@ async def test_selecting_a_mix_the_common_task_cannot_hold_is_refused_at_once(
     assert "제외" in refused.text and "가상 검증 설계" in refused.text
     fine = await session.post("competencies", competency_ids=["comp:api", "comp:retry"])
     assert fine.status_code == 200, fine.text
+
+
+async def test_a_feature_seed_the_code_can_fit_goes_on_with_a_flag(task_session) -> None:
+    """설계 검사 #332 S-F2: 템플릿 밖 실패 사유가 섞였어도 맞는 사유가 남으면 그것만, 모르는 조절값 이름은 빼고 계속 — 예전에는
+    단계 실패로 멈추고 '이어서 하기'가 같은 호출을 되풀이했다. 고친 것은 검토 표시로 남긴다."""
+    from task_spec.interview.task import FLAG_SEED_FIT
+
+    session, maker, _ = task_session
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    manifest = coding_template("sw.backend").manifest
+    code = manifest.failure_reasons[0].code
+    param = manifest.harness_params[0].name
+    session.backend.push(
+        Completion(
+            feature_seed_output(reasons=[code, "가상_없는_사유"], harness=[param, "가상_조절값"])
+        )
+    )
+    response = await session.generate(competency_ids=SELECTED)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["stage"] == "task_review", body
+    feature = body["spec"]["coding_incident"]["feature"]
+    assert feature["reasons"] == [code] and feature["harness"] == [param]
+    flags = body["spec"]["review_flags"]
+    assert any(f.startswith(FLAG_SEED_FIT) and "가상_없는_사유" in f for f in flags), flags
+    assert any(f.startswith(FLAG_SEED_FIT) and "가상_조절값" in f for f in flags), flags
+
+
+def test_seed_words_already_in_the_business_need_are_dropped_with_a_flag() -> None:
+    """설계 검사 #332 S-F6: LLM 이 쓴 재료의 금지 낱말이 공개된 업무 요구에 나오면 뺀다 — 막으면 명세 검사가 고칠 수 없는 재요청을 낸다."""
+    from task_spec.interview.task import FLAG_SEED_FIT, fit_seed_to_template
+    from task_spec.schemas import FeatureSeed
+
+    manifest = coding_template("sw.backend").manifest
+    seed = FeatureSeed.model_validate_json(
+        feature_seed_output(leak_terms=["감사 기록", "커넥션 풀"])
+    )
+    fitted, notes = fit_seed_to_template(seed, manifest)
+    assert fitted.leak_terms == ["커넥션 풀"]
+    assert any(n.startswith(FLAG_SEED_FIT) and "감사 기록" in n for n in notes)

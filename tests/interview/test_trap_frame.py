@@ -396,3 +396,11 @@ async def test_check1_and_check3_reach_the_review_flags(frame_env: Any) -> None:
         f.startswith(FLAG_FRAME_LEAK) and "자료 a3(방해)" in f and "가상 메모" in f for f in flags
     )
     assert spec["trap_frame"]["forbidden_terms"] == ["가상 메모"]
+
+
+def test_frame_words_already_public_or_operating_conditions_are_not_added() -> None:
+    """설계 검사 #332 S-F6: 틀 금지 낱말 가운데 공개된 업무 요구(감사 기록)·운영 조건 낱말(동시 요청 — 1단계 자료에 보여야 하는 단서)에
+    걸리는 말은 leak_terms 에 넣지 않는다 — 검사 3 과 같은 예외. 예외 없이 합치면 명세 검사가 고칠 수 없는 재요청을 냈다."""
+    framed, _ = apply_frame(SEED, _frame(forbidden_terms=["감사 기록", "동시 요청", "세션 테이블"]))
+    assert "세션 테이블" in framed.leak_terms
+    assert "감사 기록" not in framed.leak_terms and "동시 요청" not in framed.leak_terms

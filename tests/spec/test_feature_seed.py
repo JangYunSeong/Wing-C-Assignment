@@ -896,3 +896,21 @@ def test_material_english_terms_are_whole_words() -> None:
             if longer and low not in words:
                 stems.append(f"{path.name}: {term}")
     assert stems == [], stems
+
+
+def test_stage1_leak_terms_skip_words_the_business_need_already_shows() -> None:
+    """설계 검사 #332 S-F6: 명세 검사의 1단계 금지 낱말도 공개된 업무 요구에 나온 말은 뺀다 — 계약 검사와 같은 예외."""
+    from task_spec.spec.feature import without_public
+
+    assert without_public(["감사 기록", "커넥션 풀"], "변경 시도마다 감사 기록을 남긴다") == [
+        "커넥션 풀"
+    ]
+    seed = BACKEND.feature
+    assert seed is not None
+    leaky = seed.model_copy(update={"leak_terms": [*seed.leak_terms, "감사 기록"]})
+    d = _v2draft()
+    d["title"] = "가상 주문 상태 변경 감사 기록 기능"
+    out = fill_from_seed(DraftFeatureOutputV2.model_validate(d), leaky)  # type: ignore[arg-type]
+    ctx = _seed_ctx()
+    ctx.incident = ctx.incident.model_copy(update={"feature": leaky})  # type: ignore[union-attr]
+    assert not [p for p in check_feature(out, ctx) if "감사 기록" in p and "1단계 지원자 화면" in p]

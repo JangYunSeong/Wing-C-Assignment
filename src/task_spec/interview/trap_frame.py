@@ -33,6 +33,7 @@ from task_spec.schemas import (
 from task_spec.schemas.interview_state import ReinforceAnswer
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.schemas.trap_frame import TrapKind
+from task_spec.spec.feature import find_terms, without_public
 from task_spec.starter.feasibility import names as condition_names
 from task_spec.starter.templates import Template
 
@@ -302,7 +303,15 @@ def apply_frame(
                 "재료의 상태 대상 요구를 뺌 — 흔한 구현의 저장 방식"
                 + (f" ({frame.stateful_target_why})" if frame.stateful_target_why else "")
             )
-    terms = list(dict.fromkeys([*seed.leak_terms, *(t for t in frame.forbidden_terms if t)]))
+    # 틀 금지 낱말 가운데 공개된 업무 요구·운영 조건 낱말(1단계 자료에 보여야 하는 단서)에 걸리는 말은 넣지 않는다 — 검사 3 과 같은 예외.
+    # 예외는 틀 스키마 설명에만 있어 그대로 합치면 명세 검사가 고칠 수 없는 재요청을 냈다 (설계 검사 #332 S-F6)
+    trigger = " / ".join(seed.trigger_terms)
+    added = [
+        t
+        for t in without_public((t for t in frame.forbidden_terms if t), seed.business_need)
+        if not find_terms([t], trigger)
+    ]
+    terms = list(dict.fromkeys([*seed.leak_terms, *added]))
     if len(terms) > len(seed.leak_terms):
         update["leak_terms"] = terms
     return seed.model_copy(update=update), notes

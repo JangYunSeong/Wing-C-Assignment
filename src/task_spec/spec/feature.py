@@ -496,6 +496,15 @@ def find_terms(terms: Iterable[str], text: str) -> list[str]:
     return [t for t in dict.fromkeys(terms) if len(_norm(t)) >= 2 and _in_text(t, text)]
 
 
+def without_public(terms: Iterable[str], business_need: str) -> list[str]:
+    """공개 쪽 금지 낱말에서 공개된 업무 요구(business_need)에 나온 말을 뺀다 — 지원자에게 이미 보이는 말이라 막으면 고칠 수 없는
+    재요청이 되고, 계약 검사(starter/contract.hidden_terms)는 이미 뺐다. 명세·요청 글·슬롯 검사와 재료 맞춤·틀 적용이 같은 함수를 쓴다
+    (설계 검사 #332 S-F6 — 단계마다 다른 예외로 쟀다)."""
+    terms = list(dict.fromkeys(terms))
+    public = set(find_terms(terms, business_need))
+    return [t for t in terms if t not in public]
+
+
 def title_allowed_text(seed: FeatureSeed) -> str:
     """자료 제목에 써도 되는 운영 조건 낱말(trigger_terms)이 있는 글 — 재료의 업무 요구와 자료 종류 이름(괄호 앞). 그 말은
     자료의 이름이라 괜찮다 (예: DBA "DB 정리 작업 설정"). 괄호 안 설명의 말은 안 된다. 숨은 요구·원인 낱말은 여기 나와도
@@ -889,7 +898,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     if seed is not None:
         # 사람이 적어 둔 새는 말 — 바꿔 쓴 표현까지 잡으려고 재료마다 둔다
         stage1 = "\n".join([base_visible, extra_visible])
-        terms = [*seed.leak_terms, *seed.stage2_cause_terms]
+        terms = without_public([*seed.leak_terms, *seed.stage2_cause_terms], seed.business_need)
         s1 = [t for t in terms if _term_rx(t).search(stage1)]
         if s1:
             problems.append(

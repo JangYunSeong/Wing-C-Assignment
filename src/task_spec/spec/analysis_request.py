@@ -37,7 +37,7 @@ from task_spec.schemas.draft import FactDraft as FactDraftT
 from task_spec.schemas.incident import FeatureSeed
 from task_spec.spec.analysis import check_analysis, link_problems
 from task_spec.spec.draft import DraftContext
-from task_spec.spec.feature import find_terms
+from task_spec.spec.feature import find_terms, without_public
 from task_spec.starter.answer_rule import strip_particle
 
 logger = logging.getLogger(__name__)
@@ -111,9 +111,9 @@ def _hidden_terms(task: TaskItem, ctx: DraftContext) -> list[str]:
     obs = [*task.observables, *(task.debug_stage.observables if task.debug_stage else [])]
     terms = [o.value for o in obs if o.kind == "first_mention_of"]
     if seed is not None:
-        public = seed.business_need
-        terms += [*seed.leak_terms, *seed.stage2_cause_terms]
-        terms += [t for t in seed.trigger_terms if not find_terms([t], public)]
+        terms += without_public(
+            [*seed.leak_terms, *seed.stage2_cause_terms, *seed.trigger_terms], seed.business_need
+        )
     if inc is not None:
         terms += inc.hidden_terms
     return list(dict.fromkeys(terms))

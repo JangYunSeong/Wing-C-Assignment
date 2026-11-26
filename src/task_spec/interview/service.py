@@ -1598,7 +1598,7 @@ class InterviewService:
                 if inp.reinforce:  # ⑧ 보강 질문의 답 (#308) — 재료를 정리할 때 함께 본다
                     parts.append(reinforce_block(inp.reinforce))
                 text = self.pseudo.stored("\n".join(parts), inp.mapping)
-                coding, seed_provenance = await self._llm(
+                coding, seed_provenance, seed_fit = await self._llm(
                     prepare_coding_incident(
                         inp.incident,
                         inp.template,
@@ -1614,7 +1614,7 @@ class InterviewService:
                 return {
                     "coding_incident": coding,
                     "seed_provenance": [*seed_provenance, *checked.provenance, *framed.provenance],
-                    "seed_flags": [*checked.flags, *framed.flags],
+                    "seed_flags": [*seed_fit, *checked.flags, *framed.flags],
                     # 보강 질문 후보 빈칸 — 재현 근거(검사 1) → 틀 → 재료 분석 순 (설계 질문은 마무리 때 틀에서 만든다)
                     "seed_gaps": list(dict.fromkeys([*framed.gaps, *checked.gaps])),
                     "trap_frame": framed.frame,

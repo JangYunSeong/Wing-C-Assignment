@@ -43,6 +43,7 @@ from task_spec.schemas import (
 from task_spec.schemas.interview_incident import InterviewFeatureSeedInput
 from task_spec.schemas.interview_state import ANSWER_MAX, GeneralQuestion, TargetedQuestion
 from task_spec.schemas.pseudo_text import PseudonymizedText
+from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.analysis_request import apply_analysis, draft_analysis_request
 from task_spec.spec.build import build_common
 from task_spec.spec.common import (
@@ -51,7 +52,7 @@ from task_spec.spec.common import (
     plan_common,
 )
 from task_spec.spec.draft import DraftContext
-from task_spec.spec.feature import apply_feature, draft_feature_task
+from task_spec.spec.feature import apply_feature, draft_feature_task, without_public
 from task_spec.spec.incidents import IncidentCatalog
 from task_spec.spec.slots import build_slots
 from task_spec.starter.templates import TEMPLATE_FOR_SUB, Template, load_template
@@ -150,9 +151,12 @@ async def prepare_coding_incident(
     llm: LLMClient,
     prompts: PromptRegistry,
     ontology_version: str,
-) -> tuple[PublicIncident, list[Provenance]]:
-    """확인된 사례·기준 답안 → 템플릿이 시험할 수 있는 기능형 재료. interview 는 가명화 모듈이 만든 사례 블록.
-    재료가 템플릿에 없는 실패 조건·실행 조건을 쓰면 OutputRejected (다시 시도)."""
+) -> tuple[PublicIncident, list[Provenance], list[str]]:
+    """확인된 사례·기준 답안 → 템플릿이 시험할 수 있는 기능형 재료와 코드가 고친 것(검토 표시). interview 는 가명화 모듈이 만든 사례 블록.
+    코드가 풀 수 있는 것은 고친다 (설계 검사 #332 S-F2 — 예전에는 모두 OutputRejected 로 멈추고 '이어서 하기'가 같은 호출을 되풀이):
+    템플릿 밖 실패 사유가 섞였어도 맞는 사유가 남으면 그것만, 모르는 조절값 이름은 뺀다 (템플릿 필수 조절값과 합쳐지므로 필수는 남는다).
+    맞는 사유가 하나도 없거나 조절값 칸을 비워 보내면(None = 템플릿 필수값 — 성능 사례가 아니면 풀 크기 같은 값을 잘못 요구해 계약이
+    막힌다, 2026-11-10) OutputRejected (다시 시도)."""
     if not incident.known_incident_cases or any(
         not case.answer_text.strip() for case in incident.known_incident_cases
     ):
@@ -166,15 +170,48 @@ async def prepare_coding_incident(
         ),
         FeatureSeed,
     )
-    seed = result.parsed
-    if not set(seed.reasons) <= {r.code for r in manifest.failure_reasons}:
-        raise OutputRejected("선택한 코딩 환경에서 검증할 수 없는 실패 조건입니다")
-    if seed.harness is None or not set(seed.harness) <= {p.name for p in manifest.harness_params}:
-        raise OutputRejected("검증에 필요한 실행 조건을 코딩 환경과 맞춰 주세요")
+    seed, notes = fit_seed_to_template(result.parsed, manifest)
     seed = seed.model_copy(update={"reviewed": False, "starter": None, "task_shape": "code"})
-    return incident.model_copy(update={"feature": seed, "templates": [manifest.template_id]}), [
-        result.provenance
-    ]
+    return (
+        incident.model_copy(update={"feature": seed, "templates": [manifest.template_id]}),
+        [result.provenance],
+        notes,
+    )
+
+
+FLAG_SEED_FIT = "기능형 재료 맞춤: "  # 코드가 템플릿에 맞춰 고친 것 (막지 않음)
+
+
+def fit_seed_to_template(
+    seed: FeatureSeed, manifest: TemplateManifest
+) -> tuple[FeatureSeed, list[str]]:
+    """LLM 재료를 템플릿이 시험할 수 있게 — 고칠 수 없으면 OutputRejected. 고친 것은 검토 표시 문장으로 (prepare_coding_incident)."""
+    codes = {r.code for r in manifest.failure_reasons}
+    params = {p.name for p in manifest.harness_params}
+    update: dict[str, Any] = {}
+    notes: list[str] = []
+    if outside := [r for r in seed.reasons if r not in codes]:
+        kept = [r for r in seed.reasons if r in codes]
+        if not kept:  # 비우면 '템플릿 사유 전체'가 되어 뜻이 바뀐다
+            raise OutputRejected("선택한 코딩 환경에서 검증할 수 없는 실패 조건입니다")
+        update["reasons"] = kept
+        notes.append(f"{FLAG_SEED_FIT}템플릿에 없는 실패 사유 {', '.join(outside)} 를 뺌")
+    if seed.harness is None:
+        raise OutputRejected("검증에 필요한 실행 조건을 코딩 환경과 맞춰 주세요")
+    if unknown := [h for h in seed.harness if h not in params]:
+        update["harness"] = [h for h in seed.harness if h in params]
+        notes.append(f"{FLAG_SEED_FIT}템플릿에 없는 조절값 {', '.join(unknown)} 를 뺌")
+    # 공개된 업무 요구에 나온 말은 공개 쪽 금지 낱말이 될 수 없다 — 두면 명세 검사가 고칠 수 없는 재요청을 낸다 (설계 검사 #332 S-F6.
+    # 프롬프트 지시만으로 막고 있었다). 낱말 목록은 이 재료를 쓰는 모든 검사가 그대로 받는다
+    for name in ("leak_terms", "stage2_cause_terms", "trigger_terms"):
+        terms = list(getattr(seed, name))
+        kept_terms = without_public(terms, seed.business_need)
+        if dropped := [t for t in terms if t not in kept_terms]:
+            update[name] = kept_terms
+            notes.append(
+                f"{FLAG_SEED_FIT}업무 요구에 나온 말을 {name} 에서 뺌 — {', '.join(dropped)}"
+            )
+    return (seed.model_copy(update=update) if update else seed), notes
 
 
 def ready_coding_incident(incident: PublicIncident, template: Template) -> PublicIncident:

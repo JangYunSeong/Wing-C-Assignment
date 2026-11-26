@@ -33,6 +33,7 @@ from task_spec.schemas import (
 )
 from task_spec.spec.common import _key
 from task_spec.spec.draft import DraftContext, _norm, _phrase, apply, draft_task
+from task_spec.spec.feature import without_public
 from task_spec.spec.verify import item_difficulty
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,10 @@ def common_secrets(common: TaskItem, ctx: DraftContext) -> list[str]:
     out = [o.value for o in obs if o.kind == "first_mention_of"]  # 기능형은 2단계 원인 개념까지
     if ctx.incident is not None:
         out += ctx.incident.hidden_terms
+        seed = ctx.incident.feature
+        if seed is not None:
+            # 공통 과제 재료의 새는 말(틀 금지 낱말이 합쳐진 leak_terms 포함)도 — 슬롯 글은 아무도 이 목록으로 대조하지 않았다 (설계 검사 #332 S-F6)
+            out += without_public([*seed.leak_terms, *seed.stage2_cause_terms], seed.business_need)
     return [x for x in dict.fromkeys(out) if len(_norm(x)) >= 2]
 
 
