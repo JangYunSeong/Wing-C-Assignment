@@ -416,6 +416,9 @@ class BuildOutcome:
     status: Literal["review", "failed"]
     overlays: dict[str, Overlay] = field(default_factory=dict)  # starter · hidden · 참조 구현 라벨
     reports: list[VerifyReport] = field(default_factory=list)  # 검증 회차마다
+    # 생성·컴파일이 실패한 단계 (생성기 이름·'채점 코드 컴파일'·'시작 코드 컴파일') — 검증 보고서 없이 멈춘 빌드의 사유 머리에 (#337 6절:
+    # 예전에는 '수리 기록 없음'이나 마지막 컴파일 수리가 사유처럼 보였다). 단계 이름만 — 숨은 테스트 문구는 검토 표시에
+    failed_steps: list[str] = field(default_factory=list)
     repairs: list[RepairRecord] = field(default_factory=list)
     review_flags: list[str] = field(default_factory=list)
     # 참조 구현 라벨 → 그 구현의 컴파일 실패 표시 (review_flags 에도 있음) — 뒤 검증에서 기동되면 거둔다 (_withdraw_compile_flags)
@@ -1264,6 +1267,7 @@ async def _build_and_repair(
             out.review_flags.append(
                 f"{r.task} 생성 실패: " + "; ".join([*r.problems, *r.fail_reasons][:3])
             )
+            out.failed_steps.append(r.task)
             return None
         return r.overlay
 
@@ -1321,6 +1325,7 @@ async def _build_and_repair(
                 f"채점 코드 컴파일 실패 (재요청 {len(fix.repairs)}회 뒤, 오류 {len(fix.errors)}건): "
                 f"{e.path}:{e.line} {e.message} {e.detail}".strip()[:300]
             )
+            out.failed_steps.append("채점 코드 컴파일")
             out.overlays = made_tests
             return out
     # ② 구현 코드 — 공개 테스트를 보고 맞춘다 (숨은 테스트는 보지 않음)
@@ -1342,6 +1347,7 @@ async def _build_and_repair(
         starter = sfix.overlay
         if sfix.errors:
             out.review_flags.append(_compile_flag("시작 코드", sfix))
+            out.failed_steps.append("시작 코드 컴파일")
             out.overlays = {STARTER: starter, **made_tests}
             return out
     first = await asyncio.gather(

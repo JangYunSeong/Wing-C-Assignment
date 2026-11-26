@@ -685,6 +685,7 @@ async def test_generation_failure_stops_before_verify() -> None:
     out = await _build(verifier, llm)
     assert out.status == "failed" and not verifier.seen
     assert any("gen_starter 생성 실패" in f for f in out.review_flags)
+    assert out.failed_steps == ["gen_starter"] and not out.reports  # 검증 전 멈춤 사유 (#337 6절)
 
 
 async def test_two_designs_and_static_cross_check() -> None:
