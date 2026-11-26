@@ -54,6 +54,7 @@ from task_spec.starter.hidden_helpers import (
     row_use_consts,
     setting_const,
 )
+from task_spec.starter.hygiene import hygiene_hits
 from task_spec.starter.py_helpers import command_name, py_ident
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_rows import peak_reasons
@@ -110,19 +111,10 @@ KIND_TARGET = {
 }
 
 # 실제 비밀의 정해진 형식 — 걸리면 생성기에 다시 쓰게 한다
-_SECRETS = [
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"\b(?:sk|ghp|gho|xox[abp])[-_][A-Za-z0-9]{20,}"),
-]
 # 이름과 길이만 보는 추정 — 승인자 표시로만. 2026-11-18 ct-10eb910705dd-b1: 계약 fixture 의 시험용 토큰
 # (access_token: 'test-token-001')을 공개 테스트가 그대로 써야 하는데 이 규칙이 막아, 재요청으로 못 고치고 빌드가 실패했다
 _SECRET_HINT = re.compile(
     r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token)\b\s*[:=]\s*['\"]?(?=[^\s'\"]*\d)(?=[^\s'\"]*[A-Za-z])[^\s'\"]{12,}"
-)
-_URL = re.compile(r"https?://([A-Za-z0-9.\-]+)")
-_LOCAL_HOSTS = re.compile(
-    r"^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|(?:[\w-]+\.)*example\.(?:com|org|net)|[\w-]+\.test|[\w-]+\.invalid)$"
 )
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]*")  # 케밥 표기도 한 이름 (#241)
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -295,16 +287,15 @@ def _hygiene(
     out: list[str] = []
     for f in files:
         where = f"{o.name} 파일 {f.path}" if o else f.path
-        if any(rx.search(f.content) for rx in _SECRETS):
+        hits = hygiene_hits(f.content, avoid_terms)
+        if hits.secret:
             out.append(f"{where} 에 비밀 값처럼 보이는 문자열이 있음")
-        hosts = sorted({h for h in _URL.findall(f.content) if not _LOCAL_HOSTS.match(h)})
-        if hosts:
+        if hits.hosts:
             out.append(
-                f"{where} 에 외부 네트워크 주소: {', '.join(hosts)} — 검증·채점은 네트워크 없이 돈다"
+                f"{where} 에 외부 네트워크 주소: {', '.join(hits.hosts)} — 검증·채점은 네트워크 없이 돈다"
             )
-        named = find_terms(avoid_terms, f.content)
-        if named:
-            out.append(f"{where} 에 원 사례의 실존 이름·고유어: {', '.join(named)}")
+        if hits.named:
+            out.append(f"{where} 에 원 사례의 실존 이름·고유어: {', '.join(hits.named)}")
     return out
 
 
@@ -2838,27 +2829,28 @@ def static_check(
     # 코드가 쓴 파일(조절값·계약 도우미)의 이름은 빼고 — 2026-11-09 React 알파: 숨은 도우미 contract.ts 의 이름이 공개 테스트의
     # `import … from './contract'`(공개 도우미)를 누설로 막아 공개 테스트 생성이 재생성 예산을 다 썼다
     m_ = template.manifest
-    written = {m_.hidden_layout.params if m_.hidden_layout else None}
-    written |= {m_.hidden_helper.path if m_.hidden_helper else None}
-    hidden_names = [PurePosixPath(f.path).stem for f in hidden_files if f.path not in written]
+    # 코드가 계약에서 결정적으로 쓰는 파일 — 생성기 몫 검사(고유어·외부 주소·비밀 값, 공개 낱말 대조, 숨은 이름)에서 한 집합으로 뺀다.
+    # 그 글의 출처인 계약은 계약 검사가 같은 규칙으로 본다 (starter/hygiene, contract._contract_hygiene — 설계 검사 #332 T-F6: 집합이 셋이라
+    # 시드 SQL·계약 도우미의 글이 생성기를 탓하는 재생성이 되었다)
+    coded = code_written_paths(m_)
+    hidden_names = [PurePosixPath(f.path).stem for f in hidden_files if f.path not in coded]
     terms = list(
         dict.fromkeys(
             [*hidden_terms(seed, spec, check_terms), *(n for n in hidden_names if len(n) >= 4)]
         )
     )
-    # 코드가 쓰는 공개 도우미(PublicCase 등)는 낱말 대조에서 뺀다 — 고정 주석이 재료 낱말과 겹치면 생성기가 고칠 수 없는 재생성이 된다.
-    # 계약에서 온 글(설정 뜻·시드 값·이름)은 계약 검사(contract._leaks — 같은 hidden_terms)가 이미 본다. 2026-11-26 #318 알파 3회:
-    # 로그인 세션 도우미 주석 '동시 요청(peak) 안에서 부르지 않는다'가 재료 운영 조건 낱말 '동시 요청'에 걸려 gen_public 이 모두 실패
-    public_written = {m_.public_helper.path if m_.public_helper else None}
+    # 2026-11-26 #318 알파 3회: 코드가 쓰는 공개 도우미 주석 '동시 요청(peak) …'이 재료 운영 조건 낱말에 걸려 gen_public 이 모두 실패 —
+    # 고정 주석은 hidden_helpers 에서 운영 조건 낱말 없이 쓰고(설계 검사 #332 B-F11), 계약에서 온 글은 계약 검사가 본다
 
     for o in overlays:
         res.problems += _paths(o, template)
-        res.problems += [StaticProblem(o.target, msg) for msg in _hygiene(o, o.files, avoid_terms)]
+        mine = [f for f in o.files if f.path not in coded]  # 생성기가 쓴 파일만
+        res.problems += [StaticProblem(o.target, msg) for msg in _hygiene(o, mine, avoid_terms)]
         res.review_flags += _secret_hints(o, o.files)
         # 공개 테스트는 지원자에게 주지 않아도 숨은 요구 낱말이 있으면 안 된다 (게이트 ⑤ 누설 사전 확인)
         public = o.kind in ("starter", "public_test")
         if public:
-            for path, shown in _leaks([f for f in o.files if f.path not in public_written], terms):
+            for path, shown in _leaks(mine, terms):
                 res.problems.append(
                     StaticProblem(
                         o.target,

@@ -525,3 +525,19 @@ def test_a_trap_frame_forbidden_store_is_not_excused_by_the_issued_value_excepti
     ] == []  # 금지 테이블은 전용 검사 몫
     got = [p.message for p in _starter_forbidden_storage(starter, [session])]
     assert len(got) == 1 and "user_session" in got[0] and "함정 틀" in got[0]
+
+
+def test_the_public_helper_has_no_operating_condition_hint() -> None:
+    """설계 검사 #332 B-F11: 공개 도우미(공개 테스트 — 지원자에게 줄 수 있음)의 고정 주석에는 운영 조건 낱말·기전('동시 요청(peak)…
+    서버 자원')을 쓰지 않는다. 숨은 도우미는 숨은 케이스를 쓰는 생성기에 필요한 안내를 그대로 둔다."""
+    contract = _fit(_session())
+    plan = HiddenPlan.model_validate(_plan())
+    public = render_contract_case(contract, plan, JAVA.manifest, audience="public")
+    hidden = render_contract_case(contract, plan, JAVA.manifest)
+    assert public is not None and hidden is not None
+    assert (
+        "newSession" in public.content
+        and "동시 요청" not in public.content
+        and "서버 자원" not in public.content
+    )
+    assert "동시 요청(peak)" in hidden.content

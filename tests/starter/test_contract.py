@@ -201,6 +201,7 @@ def _check(contract: dict[str, Any] | None = None, plan: dict[str, Any] | None =
         kw.pop("seed", BACKEND_SEED),
         forbidden_storage=kw.pop("forbidden_storage", ()),
         check_terms=kw.pop("check_terms", ()),
+        avoid_terms=kw.pop("avoid_terms", ()),
     )
 
 
@@ -1414,3 +1415,16 @@ def test_material_cause_terms_are_checked_in_the_public_contract() -> None:
     c["endpoints"][1]["summary"] = "주문별 변경 이력 최신순 — idempotency 키로 중복을 막는다"
     assert not _has(_check(c).problems, "idempotency")
     assert _has(_check(c, check_terms=["idempotency"]).problems, "공개 계약", "idempotency")
+
+
+def test_contract_text_is_checked_for_real_names_and_external_addresses() -> None:
+    """설계 검사 #332 T-F6: 시드 SQL·공개 테스트 도우미처럼 코드가 계약에서 쓰는 파일은 생성기 몫 정적 검사에서 빠진다 — 그 글의 출처인
+    계약을 같은 규칙(원 사례 고유어·외부 주소)으로 보고 계약 재요청으로 고친다."""
+    c = _contract()
+    c["endpoints"][1]["summary"] = (
+        "우아한형제들 주문 이력 — https://api.real-shop.co.kr 에서 가져온 형식"
+    )
+    got = _check(c, avoid_terms=["우아한형제들"]).problems
+    assert _has(got, "원 사례의 실존 이름·고유어", "우아한형제들")
+    assert _has(got, "외부 네트워크 주소", "api.real-shop.co.kr")
+    assert not _has(_check().problems, "외부 네트워크 주소")

@@ -193,6 +193,9 @@ class RealSteps:
             guide=guide,
             forbidden_storage=forbidden,
             check_terms=tuple(inc.hidden_terms),
+            avoid_terms=tuple(
+                inc.avoid_terms
+            ),  # 계약 글(시드·fixture·공개 테스트 값)의 고유어 — 설계 검사 #332 T-F6
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
             raise StepFailed(

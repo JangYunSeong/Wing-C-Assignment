@@ -647,6 +647,7 @@ async def plan_contract(
     guide: MaterialGuide | None = None,
     forbidden_storage: Sequence[ForbiddenStorage] = (),
     check_terms: Sequence[str] = (),
+    avoid_terms: Sequence[str] = (),
 ) -> PlanResult:
     """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획. guide: 재료 숨은 안내 (사유·공개 테스트 입력 범위 — for_material).
     forbidden_storage: 함정 틀이 금지한 저장 방식 (#318 검사 4) — 입력에 미리 알리고, 생성 뒤 검사가 엔티티 단위로 본다.
@@ -707,6 +708,7 @@ async def plan_contract(
             interface=interface,
             forbidden_storage=forbidden_storage,
             check_terms=check_terms,
+            avoid_terms=avoid_terms,
         )
         # 코드가 계약 이름을 재료 것으로 바꿨는데 테스트 글이 LLM 의 옛 이름을 쓰면 재요청 (#256) — 맞추기 전 답(raw)에서 본다
         check.problems.extend(stale_name_problems(raw, interface))

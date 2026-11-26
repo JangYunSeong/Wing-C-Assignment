@@ -1235,3 +1235,34 @@ def test_material_cause_terms_are_checked_in_public_overlays_and_readme() -> Non
 
     assert _has(run(("idempotency",)), "idempotency")
     assert not _has(run(()), "idempotency")
+
+
+def test_code_written_files_are_not_the_generators_fault() -> None:
+    """설계 검사 #332 T-F6: 코드가 계약에서 쓰는 파일(시드 SQL 등)의 고유어·외부 주소는 생성기 탓이 아니다 — 생성기가 다시 써도 코드가 같은
+    파일을 넣는다. 그 글은 계약 검사가 본다. 생성기가 쓴 파일의 같은 글은 그대로 문제다."""
+    seed_sql = JAVA.manifest.seed_sql
+    assert seed_sql is not None
+    rendered = _f(
+        seed_sql.path,
+        "INSERT INTO orders VALUES (1, '우아한형제들 https://api.real-shop.co.kr');\n",
+    )
+    written = _f(
+        f"{PKG}/order/Note.java", "// 우아한형제들 https://api.real-shop.co.kr\nclass Note {}\n"
+    )
+
+    def run(*extra: Any) -> list[str]:
+        starter = [*_overlays()[0].files, *extra]
+        res = static_check(
+            _overlays(starter=starter),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            seed=BACKEND_SEED,
+            avoid_terms=("우아한형제들",),
+        )
+        return res.for_target("gen_starter")
+
+    assert not _has(run(rendered), seed_sql.path)
+    assert _has(run(written), "Note.java", "외부 네트워크 주소") and _has(
+        run(written), "Note.java", "우아한형제들"
+    )

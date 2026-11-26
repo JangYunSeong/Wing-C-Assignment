@@ -355,7 +355,7 @@ def _text_default_java(name: str) -> str:
     )
 
 
-def _header_lines(contract: TaskContract) -> list[str]:
+def _header_lines(contract: TaskContract, audience: str = "hidden") -> list[str]:
     """요청 헤더 값 — 테스트가 요청자 등을 지어내지 않게 (2026-11-08 알파: 지어낸 `grader` 로 모든 요청이 403).
     값을 정할 수 없는 헤더는 상수를 두지 않는다 (지어내지 않는다). 로그인으로 발급받는 헤더(권한 칸 issued)는 도우미가
     로그인해 받는다 — _session_lines."""
@@ -393,7 +393,7 @@ def _header_lines(contract: TaskContract) -> list[str]:
             )
     oks = [h for h in values if h.ok is not None]
     if rule is not None and session is not None:
-        return lines + _session_lines(contract, rule, session.name, keyed, oks)
+        return lines + _session_lines(contract, rule, session.name, keyed, oks, audience)
     if keyed:
         pairs = ", ".join(
             [
@@ -474,6 +474,7 @@ def _session_lines(
     header: str,
     keyed: list[HeaderValues],
     oks: list[HeaderValues],
+    audience: str = "hidden",
 ) -> list[str]:
     """로그인 세션 (권한 칸 issued) — 시드 행의 자격 증명으로 발급 API 를 불러 값을 받는다. 자격 증명은 행의 함수(loginBody(row))로 준다 —
     시드 SQL 과 같은 규칙(auth_rule.credentials). 2026-11-24 세션 알파: 로그인 행 하나의 본문만 줘, 케이스·공개 몫 행마다 로그인하려던
@@ -530,7 +531,11 @@ def _session_lines(
         *(line for c in creds for line in _credential_lines(c)),
         "",
         f"    /** 시드 행 row 의 사용자로 로그인해 새 세션 값을 받는다 ({header} 에 그대로 넣을 값) — 부를 때마다 새로 로그인한다.",
-        "     *  동시 요청(peak) 안에서 부르지 않는다: 로그인도 서버 자원을 써서 재려는 경로가 아닌 곳에서 실패한다 — peak 전에 받아 둔다 */",
+        # 공개 도우미(공개 테스트 — 지원자에게 줄 수 있음)에는 운영 조건 낱말·기전을 쓰지 않는다 (설계 검사 #332 B-F11: '동시 요청(peak)…
+        # 서버 자원' 주석이 공개 쪽 기전 힌트였다). 숨은 도우미에는 숨은 케이스를 쓰는 생성기에 필요한 안내를 그대로 둔다
+        "     *  동시 요청(peak) 안에서 부르지 않는다: 로그인도 서버 자원을 써서 재려는 경로가 아닌 곳에서 실패한다 — peak 전에 받아 둔다 */"
+        if audience == "hidden"
+        else "     *  테스트 준비 단계에서 미리 받아 둔다 */",
         "    protected String newSession(long row) {",
         "        try {",
         f"            HttpResponse<String> r = {fn}(Map.of(), loginBody(row));",
@@ -569,7 +574,9 @@ def _session_lines(
             "        return sessionHeaders(newSession(), key);",
             "    }",
             "",
-            "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청·동시 요청(peak)을 보낼 때. 부를 때마다 새 요청 키 */",
+            "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청·동시 요청(peak)을 보낼 때. 부를 때마다 새 요청 키 */"
+            if audience == "hidden"
+            else "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청을 보낼 때. 부를 때마다 새 요청 키 */",
             "    protected Map<String, String> sessionHeaders(String session) {",
             "        return sessionHeaders(session, newRequestId());",
             "    }",
@@ -587,7 +594,9 @@ def _session_lines(
         "        return sessionHeaders(newSession());",
         "    }",
         "",
-        "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청·동시 요청(peak)을 보낼 때 */",
+        "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청·동시 요청(peak)을 보낼 때 */"
+        if audience == "hidden"
+        else "    /** 미리 받은 세션(newSession())으로 — 같은 세션으로 여러 요청을 보낼 때 */",
         "    protected Map<String, String> sessionHeaders(String session) {",
         f"        return Map.of({pairs});",
         "    }",
@@ -803,7 +812,7 @@ def render_contract_case(
     lines += _state_lines(contract)
     lines += _setting_lines(contract)
     lines += _time_rule_lines(contract)
-    lines += _header_lines(contract)
+    lines += _header_lines(contract, audience)
     lines += _key_lines(contract)
     if audience == "public":
         lines += _time_lines(contract, plan)

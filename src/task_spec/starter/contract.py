@@ -50,6 +50,7 @@ from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.forbidden_storage import forbidden_for
 from task_spec.starter.header_values import header_problems
+from task_spec.starter.hygiene import hygiene_hits
 from task_spec.starter.interface import interface_problems, without_fixed
 from task_spec.starter.seed_rows import (
     case_rows_problems,
@@ -1420,6 +1421,29 @@ def hidden_terms(seed: FeatureSeed | None, spec: SpecView, extra: Sequence[str] 
     return list(dict.fromkeys(terms))
 
 
+def _contract_hygiene(contract: TaskContract, avoid_terms: Sequence[str]) -> list[str]:
+    """계약 글의 비밀 값·외부 주소·원 사례 고유어 (starter/hygiene — 생성기 산출물과 같은 규칙). 시드 SQL·계약 도우미·공개 테스트 값처럼
+    코드가 계약에서 쓰는 파일은 생성기 몫 정적 검사에서 빠지므로, 그 글의 출처인 계약에서 보고 계약 재요청으로 고친다 (설계 검사 #332 T-F6:
+    생성기가 고칠 수 없는 재생성이 되었다)."""
+    out: list[str] = []
+    for where, text in contract_places(contract):
+        hits = hygiene_hits(text, avoid_terms)
+        if hits.secret:
+            out.append(
+                f"공개 계약 {where} 에 비밀 값처럼 보이는 문자열이 있음 — 시험용 값으로 바꾼다"
+            )
+        if hits.hosts:
+            out.append(
+                f"공개 계약 {where} 에 외부 네트워크 주소: {', '.join(hits.hosts)} — 검증·채점은 네트워크 없이 돈다 "
+                "(example.com·localhost 같은 주소로)"
+            )
+        if hits.named:
+            out.append(
+                f"공개 계약 {where} 에 원 사례의 실존 이름·고유어: {', '.join(hits.named)} — 가상 이름으로"
+            )
+    return list(dict.fromkeys(out))
+
+
 def _leaks(
     contract: TaskContract, spec: SpecView, seed: FeatureSeed | None, extra: Sequence[str] = ()
 ) -> list[str]:
@@ -2558,6 +2582,7 @@ def check_contract(
     interface: MaterialInterface | None = None,
     forbidden_storage: Sequence[ForbiddenStorage] = (),
     check_terms: Sequence[str] = (),
+    avoid_terms: Sequence[str] = (),
 ) -> ContractCheck:
     """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유.
     first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다).
@@ -2571,6 +2596,7 @@ def check_contract(
     problems += _added_marked_existing(contract, spec)
     problems += _leaks(without_fixed(contract, interface), spec, seed, check_terms)
     problems += _forbidden_storage(contract, forbidden_storage)
+    problems += _contract_hygiene(contract, avoid_terms)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)
     problems += _ui_load_and_background(contract)

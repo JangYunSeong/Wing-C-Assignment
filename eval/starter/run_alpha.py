@@ -314,6 +314,7 @@ async def main() -> None:
         # 함정 틀 검사 4 (#318) — 금지 저장 엔티티를 계약 입력에 알리고 생성 뒤 대조 (빌더 steps.contract 와 같게)
         forbidden_storage=frame.forbidden_storage if frame is not None else (),
         check_terms=tuple(inc.hidden_terms),  # 운영과 같게 — 재료 원인 용어는 검사에만 (#332 T-F7)
+        avoid_terms=tuple(inc.avoid_terms),  # 운영과 같게 (#332 T-F6)
     )
     spent += _cost(res.provenance)
     report["contract"] = {
