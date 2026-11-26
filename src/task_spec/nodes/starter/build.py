@@ -1293,8 +1293,21 @@ async def _build_and_repair(
     )
     accepted = list(first[1:])
     usable = sum(1 for r in accepted if not _voided(r))
-    kept = [r for r in accepted if not drop(r, usable)]
-    made = [took(r) for r in (first[0], *kept)]
+    kept = [(d, r) for d, r in zip(designs, accepted, strict=True) if not drop(r, usable)]
+    naive = took(first[0])
+    accepted_made = [(d, took(r)) for d, r in kept]
+    built = [o for _, o in accepted_made if o is not None]
+    if built and len(built) < len(accepted_made):
+        # 허용 구현 생성 실패(재시도 뒤에도 형식 오류·정적 문제)도 drop() 과 같은 규칙 — 다른 허용 설계가 남으면 그 설계를 빼고 사람 표시.
+        # 예전에는 회차 0 에서 빌드 전체를 끝냈다 (설계 검사 #332 T-F8, 알파 g185b). 흔한 구현·테스트·시작 코드는 빠지면 판정이 안 돼 그대로 실패
+        for d, o in accepted_made:
+            if o is None:
+                out.review_flags.append(
+                    f"허용 설계 {d.design_id} 제외 — 구현 생성 실패(재시도 뒤에도), 남은 허용 설계로 검증 (재료의 허용 설계 확인)"
+                )
+        made = [naive, *built]
+    else:
+        made = [naive, *(o for _, o in accepted_made)]
     # 하나라도 실패해도 만든 것은 남긴다 — 평가·사람이 볼 수 있게 (2026-11-08: 숨은 테스트 생성 실패로 시작 코드 파일도 안 남음)
     out.overlays = {STARTER: starter, **made_tests, **{o.label: o for o in made if o is not None}}
     if any(o is None for o in made):

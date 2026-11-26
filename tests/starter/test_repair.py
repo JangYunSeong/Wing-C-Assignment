@@ -1940,3 +1940,24 @@ async def test_build_keeps_a_hidden_need_that_none_of_its_own_cases_catches() ->
     assert out.status == "failed" and out.dropped_cases == []  # t2 의 hc3 은 채점에서 빠지지 않는다
     assert any("재생성 예산을 소진함 — gen_hidden" in f and "hc3" in f for f in out.review_flags)
     assert not any("t2 는 hc2" in f for f in out.review_flags)
+
+
+async def test_a_design_whose_implementation_cannot_be_generated_is_dropped() -> None:
+    """설계 검사 #332 T-F8 (알파 g185b): 허용 구현 하나가 재시도 뒤에도 만들어지지 않아도 다른 허용 설계가 남으면 그 설계를 빼고 계속 —
+    예전에는 회차 0 에서 빌드 전체를 끝냈다. drop()(하네스 설정 의존)과 같은 규칙, 사람 확인 표시."""
+    broken = Completion("형식이 맞지 않는 답")
+    llm, _ = _llm(gen_accepted=[SVC, *([broken] * 8)])  # d1 은 코드, d2 는 끝까지 형식 오류
+    verifier = ScriptedVerifier(_one_case(NAIVE_OK, D1_OK))
+    out = await _build(verifier, llm, designs=(D1, D2))
+    assert out.status == "review", out.review_flags
+    assert verifier.seen == [["naive-all", "d1"]]
+    assert any("허용 설계 d2 제외 — 구현 생성 실패" in f for f in out.review_flags)
+
+
+async def test_the_only_design_failing_still_fails_the_build() -> None:
+    """허용 설계가 하나뿐이면 뺄 수 없다 — 지금처럼 실패 (흔한 구현·테스트·시작 코드도 빠지면 판정이 안 된다)."""
+    broken = Completion("형식이 맞지 않는 답")
+    llm, _ = _llm(gen_accepted=[broken] * 8)
+    verifier = ScriptedVerifier(_one_case(NAIVE_OK, D1_OK))
+    out = await _build(verifier, llm, designs=(D1,))
+    assert out.status == "failed" and not verifier.seen

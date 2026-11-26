@@ -48,6 +48,25 @@ _VARIANT = (
 )
 
 
+class BuildTrace(Schema):
+    """빌드가 무엇을 고치고 무엇을 거쳤는지 — 예전에는 알파 보고서(report.json)에만 있어 운영에서 원인을 DB 로 가를 수 없었다
+    (설계 검사 #332 T-F16). 원문 없음: 값·판정·문제 종류 문장만. 숨은 테스트 문구가 올 수 있어 DB 에만 둔다 (BuildFailure 와 같음).
+    칸 하나로 묶었다 — 저장 모델은 모르는 칸을 거부하므로 칸을 여럿 더하면 배포를 되돌릴 때 옛 코드가 새 행을 못 읽는다."""
+
+    # 실패 종류 (설계 검사 #332 B-F1) — material: 재료 판정(보정 창 없음·흔한 구현이 정답 장치를 씀)으로 멈춤, generation: 그 밖의
+    # 생성·수리 실패. 재료 판정도 회차마다 달라질 수 있어(T-F1) 재요청을 막지는 않고 보이기만 한다. 성공 빌드는 None
+    failure_kind: Literal["material", "generation"] | None = None
+    contract_adjustments: list[str] = Field(default_factory=list)  # 계약을 코드가 맞춘 것 (fit_*)
+    build_adjustments: list[str] = Field(default_factory=list)  # 생성기 산출물을 코드가 고친 것
+    static_retries: list[str] = Field(
+        default_factory=list
+    )  # 정적 검사 때문에 다시 만든 첫 답의 문제
+    calibration: list[str] = Field(
+        default_factory=list
+    )  # 조절값 보정 — 상태·고른 값·창·시험 수 한 줄
+    gates: list[str] = Field(default_factory=list)  # 관문(⑩ 변별·⑪ 함정·⑫ 손 구현) 한 줄 결과
+
+
 class BuildOutcome(Schema):
     """생성·검증이 끝난 뒤 빌드에 남기는 것 (본문 없음)."""
 
@@ -64,6 +83,7 @@ class BuildOutcome(Schema):
     verification: dict[str, VerifySummary] = Field(default_factory=dict)
     review_flags: list[str] = Field(default_factory=list)
     repairs: list[RepairRecord] = Field(default_factory=list)
+    trace: BuildTrace | None = None
 
 
 class StageMark(Schema):
@@ -110,6 +130,7 @@ class BuildFailure(Schema):
     hidden_plan: HiddenPlan | None = None
     review_flags: list[str] = Field(default_factory=list)
     repairs: list[RepairRecord] = Field(default_factory=list)
+    trace: BuildTrace | None = None
 
 
 class BuildRecord(Schema):
