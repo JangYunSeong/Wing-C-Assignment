@@ -1206,3 +1206,32 @@ def test_trap_frame_forbidden_storage_in_the_starter_is_a_problem() -> None:
     assert _has(got, "함정 틀이 금지한 저장 방식 Session", "schema.sql", "user_session")
     assert _has(got, "함정 틀이 금지한 저장 방식 Session", "UserSessionRepository")
     assert not _has(run(()), "함정 틀")
+
+
+def test_material_cause_terms_are_checked_in_public_overlays_and_readme() -> None:
+    """설계 검사 #332 T-F7: 재료의 원인 기술 용어(check_terms)도 시작 코드·README 누설 대조에 — 빌드 단계는 seed 낱말 목록만 봤다."""
+    starter = [
+        _f(f"{PKG}/order/Order.java", ORDER),
+        _f(
+            "src/main/resources/schema.sql",
+            "CREATE TABLE orders (id BIGINT PRIMARY KEY, status VARCHAR(20));\n",
+        ),
+        _f(
+            f"{PKG}/order/OrderController.java",
+            "package com.example.service.order;\n// idempotency 키는 아직 없다\nclass OrderController {}\n",
+        ),
+    ]
+
+    def run(terms: tuple[str, ...]) -> list[str]:
+        res = static_check(
+            _overlays(starter=starter),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            seed=BACKEND_SEED,
+            check_terms=terms,
+        )
+        return res.for_target("gen_starter")
+
+    assert _has(run(("idempotency",)), "idempotency")
+    assert not _has(run(()), "idempotency")

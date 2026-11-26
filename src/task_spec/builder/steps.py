@@ -192,6 +192,7 @@ class RealSteps:
             interface=interface,
             guide=guide,
             forbidden_storage=forbidden,
+            check_terms=tuple(inc.hidden_terms),
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
             raise StepFailed(
@@ -209,6 +210,7 @@ class RealSteps:
             guide=guide,
             avoid_terms=tuple(inc.avoid_terms),
             forbidden_storage=forbidden,
+            check_terms=tuple(inc.hidden_terms),
             review_flags=tuple(res.flags),
             provenance=tuple(res.provenance),
         )
@@ -226,6 +228,7 @@ class RealSteps:
             references=refs.checked_against(c.interface) if refs is not None else None,
             guide=c.guide,
             forbidden_storage=c.forbidden_storage,
+            check_terms=c.check_terms,
         )
         g = verifier_for(c.template, job.work / "verify")
         out = await build_and_repair(
@@ -265,6 +268,7 @@ class RealSteps:
             seed=c.seed,
             avoid_terms=c.avoid_terms,
             forbidden_storage=c.forbidden_storage,
+            check_terms=c.check_terms,
         )
         # 문제 분석 판 — 원래 판도 같은 명세에서 (손으로 고치지 않는다, analysis-stage.md §6)
         full = (

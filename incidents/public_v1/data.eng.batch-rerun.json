@@ -79,7 +79,9 @@
     ],
     "leak_terms": [
       "멱등",
-      "idempot",
+      "idempotent",
+      "idempotency",
+      "idempotence",
       "원자적",
       "atomic",
       "UPSERT",

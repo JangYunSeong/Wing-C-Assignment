@@ -1060,6 +1060,7 @@ def _static_actions(overlays: dict[str, Overlay], b: BuildInputs) -> RepairPlan:
         seed=b.seed,
         avoid_terms=b.avoid_terms,
         forbidden_storage=b.forbidden_storage,
+        check_terms=b.check_terms,
     )
     plan = RepairPlan()
     plan.flags = list(res.review_flags)

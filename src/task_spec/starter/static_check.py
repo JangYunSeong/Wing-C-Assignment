@@ -2829,6 +2829,7 @@ def static_check(
     public_tests_visible: bool = False,
     hidden_cases_only: Collection[str] | None = None,
     forbidden_storage: Sequence[ForbiddenStorage] = (),
+    check_terms: Sequence[str] = (),
 ) -> StaticResult:
     """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게.
     forbidden_storage: 이 공고의 함정 틀이 금지한 저장 엔티티 (틀 적용 재료가 있을 때 — 계약 단계와 같은 목록)."""
@@ -2841,7 +2842,9 @@ def static_check(
     written |= {m_.hidden_helper.path if m_.hidden_helper else None}
     hidden_names = [PurePosixPath(f.path).stem for f in hidden_files if f.path not in written]
     terms = list(
-        dict.fromkeys([*hidden_terms(seed, spec), *(n for n in hidden_names if len(n) >= 4)])
+        dict.fromkeys(
+            [*hidden_terms(seed, spec, check_terms), *(n for n in hidden_names if len(n) >= 4)]
+        )
     )
     # 코드가 쓰는 공개 도우미(PublicCase 등)는 낱말 대조에서 뺀다 — 고정 주석이 재료 낱말과 겹치면 생성기가 고칠 수 없는 재생성이 된다.
     # 계약에서 온 글(설정 뜻·시드 값·이름)은 계약 검사(contract._leaks — 같은 hidden_terms)가 이미 본다. 2026-11-26 #318 알파 3회:
@@ -2910,6 +2913,7 @@ def static_check(
             seed=seed,
             avoid_terms=avoid_terms,
             forbidden_storage=forbidden_storage,
+            check_terms=check_terms,
         )
     res.review_flags = list(dict.fromkeys(res.review_flags))
     return res
@@ -2922,6 +2926,7 @@ def readme_flags(
     seed: FeatureSeed | None = None,
     avoid_terms: Sequence[str] = (),
     forbidden_storage: Sequence[ForbiddenStorage] = (),
+    check_terms: Sequence[str] = (),
 ) -> list[str]:
     """지원자 README 검사 — 승인자 표시(review_flags)만. README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제
     (재생성으로 못 고침). 표시는 '{README} …' 로 시작한다 (승인 화면 README 경고 칸이 이 머리로 고른다 — api/routers/builds.py).
@@ -2931,7 +2936,7 @@ def readme_flags(
     — 운영 조건 낱말(trigger_terms)이 재료의 업무 요구·자료 종류 이름에 나왔으면 괜찮다 (spec/feature.title_allowed_text).
     숨은 요구·원인 낱말·먼저 말할 개념은 명세 검사처럼 자료 제목에서도 표시한다. 2026-11-18: 이 허용을 몰라 명세가 통과시킨
     자료 제목을 '명세 수정 필요'로 표시했다 — 알파 README 49개 중 33개, 걸린 44줄이 모두 자료 목록 줄."""
-    terms = hidden_terms(seed, spec)
+    terms = hidden_terms(seed, spec, check_terms)
     titles = set(spec.artifact_titles)
     listed: list[str] = []
     rest: list[str] = []

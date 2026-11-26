@@ -313,6 +313,7 @@ async def main() -> None:
         guide=guide,
         # 함정 틀 검사 4 (#318) — 금지 저장 엔티티를 계약 입력에 알리고 생성 뒤 대조 (빌더 steps.contract 와 같게)
         forbidden_storage=frame.forbidden_storage if frame is not None else (),
+        check_terms=tuple(inc.hidden_terms),  # 운영과 같게 — 재료 원인 용어는 검사에만 (#332 T-F7)
     )
     spent += _cost(res.provenance)
     report["contract"] = {
@@ -369,6 +370,7 @@ async def main() -> None:
         guide=guide,
         # 운영 빌드(builder/steps)와 같게 — 금지 저장 엔티티를 정적 검사에도 (설계 검사 #332 T-F2·T-F9)
         forbidden_storage=tuple(frame.forbidden_storage) if frame is not None else (),
+        check_terms=tuple(inc.hidden_terms),
     )
     built_out = await build_and_repair(
         b,
@@ -413,6 +415,7 @@ async def main() -> None:
             seed=inc.feature,
             avoid_terms=tuple(inc.avoid_terms),
             forbidden_storage=b.forbidden_storage,
+            check_terms=b.check_terms,
         )
         if frame is not None:
             # 함정 틀 지표 — 시작 코드·README 에 남은 금지 저장 (계약 단계 지표만으로는 시작 코드 쪽 재발이 안 보였다, #332 T-F2)

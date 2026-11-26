@@ -97,6 +97,8 @@ class ContractResult:
     avoid_terms: tuple[str, ...] = ()
     # 함정 틀이 금지한 저장 엔티티 (#318 D1) — 계약 단계(입력·검사 4)와 같은 목록을 빌드 입력·정적 검사·README 검사에 (설계 검사 #332 T-F2)
     forbidden_storage: tuple[ForbiddenStorage, ...] = ()
+    # 재료의 원인 기술 용어 (PublicIncident.hidden_terms) — 계약·정적·README 누설 검사에만 (LLM 입력 아님, 설계 검사 #332 T-F7)
+    check_terms: tuple[str, ...] = ()
     # 계약 단계의 승인자 표시 (plan_contract flags — '운영 값 후보가 여럿', 근거 조각 등). 예전에는 운영 경로가 버려 승인 화면에
     # 나오지 않았다 (평가 러너에서만 보였다)
     review_flags: tuple[str, ...] = ()

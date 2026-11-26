@@ -379,7 +379,9 @@ _TIME_WORDS = ("밀리초", "sec", "min", "ms", "분", "초", "s")
 _UNIT_TAIL = "의에도만까부마씩쯤간내후뒤전대째정동짜남여넘이미초밖처뿐조보가인일임입"
 _UNIT_TAIL_OPEN = "를는와로다였며고야나면라"  # 받침 없는 단위 (초·밀리초)
 _UNIT_TAIL_CLOSED = "을은과으"  # 받침 있는 단위 (분)
-_TOK_NUM = r"\d(?:[\d,]*\d)?(?:\.\d+)?"
+# 수 — 쉼표는 세 자리 묶음일 때만 천 단위 구분 (1,200). 그 밖의 쉼표는 나열이라 수를 나눈다 — 예전 꼴(\d[\d,]*\d)은 '85,91,88건'을
+# 한 토큰 859188 로 읽어 '값(8591)과 다름'으로 헛 재요청했다 (설계 검사 #332 T-F5, #318 알파 frame-2·r2-3)
+_TOK_NUM = r"(?:\d{1,3}(?:,\d{3})+(?![\d,]\d)|\d+)(?:\.\d+)?"
 _TOK_WORD = r"[^\s\d.,:;()\[\]{}/|=~～∼<>≤≥·\-–—%]+"
 # 값 토큰 — 수 + 붙은 말, 범위면 '수~수' 째 ('~' 는 띄어 써도, 붙임표는 붙여 쓸 때만 — '3건 - 5건' 은 둘).
 # 앞이 글자·숫자·점·붙임표·빗금이면 수가 아니다 (p50 의 50, EV-2024-011 의 011, 버전 1.2.3 의 뒤쪽, 15/33ms 의 33)
@@ -1405,9 +1407,12 @@ def _naming(
     return problems
 
 
-def hidden_terms(seed: FeatureSeed | None, spec: SpecView) -> list[str]:
-    """계약에 나오면 안 되는 말 — 재료의 숨은 요구·원인·운영 조건 낱말 + 먼저 말할 개념. 공개된 업무 요구에 나온 말은 뺀다."""
-    terms = list(spec.concepts)
+def hidden_terms(seed: FeatureSeed | None, spec: SpecView, extra: Sequence[str] = ()) -> list[str]:
+    """계약에 나오면 안 되는 말 — 재료의 숨은 요구·원인·운영 조건 낱말 + 먼저 말할 개념. 공개된 업무 요구에 나온 말은 뺀다.
+    extra: 검사에만 더하는 말 — 재료의 원인 기술 용어(PublicIncident.hidden_terms). 명세 단계는 보는데 빌드 단계는 안 봐 'idempotency'
+    같은 원인 용어가 계약·시작 코드·README 로 나갈 수 있었다 (설계 검사 #332 T-F7). 회사 사례에서는 LLM 입력에 싣지 않는 칸
+    (company_incidents.OTHER_FIELDS)이라 계약 생성 입력(forbidden_text)에는 넣지 않는다."""
+    terms = [*spec.concepts, *extra]
     if seed is not None:
         terms += [*seed.leak_terms, *seed.stage2_cause_terms, *seed.trigger_terms]
         public = set(find_terms(terms, seed.business_need))
@@ -1415,9 +1420,11 @@ def hidden_terms(seed: FeatureSeed | None, spec: SpecView) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
-def _leaks(contract: TaskContract, spec: SpecView, seed: FeatureSeed | None) -> list[str]:
+def _leaks(
+    contract: TaskContract, spec: SpecView, seed: FeatureSeed | None, extra: Sequence[str] = ()
+) -> list[str]:
     places = contract_places(contract)
-    shown = find_terms(hidden_terms(seed, spec), "\n".join(t for _, t in places))
+    shown = find_terms(hidden_terms(seed, spec, extra), "\n".join(t for _, t in places))
     if not shown:
         return []
     where = []
@@ -2550,6 +2557,7 @@ def check_contract(
     first_answer: bool = True,
     interface: MaterialInterface | None = None,
     forbidden_storage: Sequence[ForbiddenStorage] = (),
+    check_terms: Sequence[str] = (),
 ) -> ContractCheck:
     """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유.
     first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다).
@@ -2561,7 +2569,7 @@ def check_contract(
     problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _added_marked_existing(contract, spec)
-    problems += _leaks(without_fixed(contract, interface), spec, seed)
+    problems += _leaks(without_fixed(contract, interface), spec, seed, check_terms)
     problems += _forbidden_storage(contract, forbidden_storage)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)

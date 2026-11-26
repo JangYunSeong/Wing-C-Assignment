@@ -867,3 +867,32 @@ def test_links_are_only_checked_on_v6_output() -> None:
 
     out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(_v5draft()), BACKEND.feature)  # type: ignore[arg-type]
     assert check_links(out) == []  # 예전 판은 연결을 요청 글 단계가 쓴다
+
+
+def test_material_english_terms_are_whole_words() -> None:
+    """설계 검사 #332 T-F7: 낱말 대조는 영문을 단어 경계로 본다 — 'idempot' 같은 잘린 어간은 'idempotent'·'Idempotency-Key' 에 걸리지
+    않아 목록에 있어도 아무것도 막지 못했다. 재료 글(낱말 목록 밖)에 그 말로 시작하는 더 긴 영문 낱말이 있는데 그 말 자체는 한 번도
+    낱말로 나오지 않으면 잘린 어간으로 본다 — 온전한 낱말(활용형 포함)로 쓴다."""
+    import re
+
+    root = Path(__file__).resolve().parents[2] / "incidents" / "public_v1"
+    lists = ("leak_terms", "stage2_cause_terms", "trigger_terms")
+    stems: list[str] = []
+    for path in sorted(root.glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        feature = data.get("feature") or {}
+        terms = [*data.get("hidden_terms", []), *(t for k in lists for t in feature.get(k, []))]
+        rest = copy.deepcopy(data)
+        rest.pop("hidden_terms", None)
+        for k in lists:
+            (rest.get("feature") or {}).pop(k, None)
+        text = json.dumps(rest, ensure_ascii=False).lower()
+        words = set(re.findall(r"[a-z]+", text))
+        for term in dict.fromkeys(terms):
+            if not re.fullmatch(r"[A-Za-z]+", term):
+                continue
+            low = term.lower()
+            longer = any(w != low and w.startswith(low) for w in words)
+            if longer and low not in words:
+                stems.append(f"{path.name}: {term}")
+    assert stems == [], stems

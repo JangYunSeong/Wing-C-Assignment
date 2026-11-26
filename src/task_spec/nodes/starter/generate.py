@@ -669,6 +669,8 @@ class BuildInputs:
     guide: MaterialGuide | None = None
     # 함정 틀이 금지한 저장 엔티티 (#318) — 정적 검사가 시작 코드에서 막는다 (설계 검사 #332 T-F2). 생성기 입력에는 아직 쓰지 않는다
     forbidden_storage: tuple[ForbiddenStorage, ...] = ()
+    # 재료의 원인 기술 용어 — 정적 검사의 공개 쪽 누설 대조에만 (설계 검사 #332 T-F7). 생성기 입력에는 쓰지 않는다
+    check_terms: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # 재료 안내를 합친 뒤, 재료가 사유를 적었으면 빌드의 모든 생성기 입력·정적 검사가 그 사유 목록만 본다
@@ -696,6 +698,7 @@ class BuildInputs:
             avoid_terms=self.avoid_terms,
             hidden_cases_only=cases,
             forbidden_storage=self.forbidden_storage,
+            check_terms=self.check_terms,
         )
         return res.for_target(KIND_TARGET[overlay.kind])
 

@@ -85,6 +85,9 @@ async def test_the_contract_step_uses_the_framed_material_and_forbidden_storage(
     assert original is not None and seen["seed"] == original.feature
     assert list(seen["forbidden_storage"]) == []
     assert (await steps.contract(plain)).forbidden_storage == ()
+    # 재료의 원인 기술 용어는 누설 검사에만 — 계약 검사(check_terms)와 빌드 입력으로 (설계 검사 #332 T-F7)
+    assert tuple(seen["check_terms"]) == tuple(original.hidden_terms)
+    assert (await steps.contract(plain)).check_terms == tuple(original.hidden_terms)
 
 
 async def test_a_build_reads_the_framed_material_of_its_common_task(tmp_path: Path) -> None:
