@@ -21,6 +21,7 @@ from psycopg_pool import AsyncConnectionPool
 from task_spec.interview.answers import validation_current
 from task_spec.interview.incident import incident_digest
 from task_spec.interview.store import MemoryInterviewStore, save_in
+from task_spec.interview.task import task_kind_for
 from task_spec.nodes.pseudonymize.detectors import detect_patterns
 from task_spec.schemas import PublicIncident
 from task_spec.schemas.interview_state import InterviewState
@@ -72,13 +73,22 @@ def approval_problems(
         return ["과제를 먼저 생성해 주세요"]
     problems: list[str] = []
     task = spec.common_task
-    if (
-        task.task_kind != "feature"
-        or not spec.template_id
-        or spec.coding_incident.feature is None
+    if (state.task_kind or task_kind_for(state.posting_context.sub)) == "feature":
+        if (
+            task.task_kind != "feature"
+            or not spec.template_id
+            or spec.coding_incident.feature is None
+            or task.source_incident != spec.coding_incident.incident_id
+        ):
+            problems.append(
+                "기능형 과제·템플릿·기능형 재료가 맞지 않습니다. 과제를 다시 생성해 주세요"
+            )
+    elif (
+        task.task_kind != "incident"
+        or spec.template_id is not None
         or task.source_incident != spec.coding_incident.incident_id
-    ):
-        problems.append("기능형 과제·템플릿·기능형 재료가 맞지 않습니다. 과제를 다시 생성해 주세요")
+    ):  # 사례형 (명세가 곧 과제) — 템플릿·기능형 재료 없이 확인한 사례 그대로
+        problems.append("사례형 과제·재료가 맞지 않습니다. 과제를 다시 생성해 주세요")
     if stored is None or stored.id != task.task_id or stored.status != "draft":
         problems.append("공통 과제 저장본이 지금 과제와 다릅니다. 과제를 다시 생성해 주세요")
     if framed_missing:

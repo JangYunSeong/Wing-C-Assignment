@@ -7,6 +7,9 @@
   지원자에게 보이는 글(확장 슬롯·짚은 질문의 답 포함)로 새는지 결정적으로 검사한다. 보이는 글에 남은 가명화 토큰도 표시한다.
 - 무거운 생성기(build_common → draft_feature_task → 요청 글 → 슬롯)는 TaskMaker 로 묶어 테스트에서 갈아 끼운다.
   단계(feature·request·slots)로 나눠 두어 끊긴 단계부터 이을 수 있다 (#280).
+- 코딩 템플릿이 없는 직군은 사례형(incident) — 명세가 곧 과제다 (2026-11-26 사용자). 공고 경로(nodes/spec.py)처럼
+  build_common(task_kind="incident") → draft_task, 요청 글(문제 분석 판)은 기능형만이고 슬롯은 같다.
+  코딩 재료·재현 분석·함정 틀·빌드는 없다.
 
 오류 구분: 고른 역량·직군으로는 만들 수 없음 = TaskGenerationFailed (422, 선택을 바꿔야 함),
 모델 출력을 쓰지 못함 = OutputRejected·LLM 오류 (503, 다시 시도). 메시지는 둘 다 이 모듈의 고정 문구다.
@@ -26,6 +29,7 @@ from task_spec.interview.errors import OutputRejected
 from task_spec.interview.frame_leaks import FLAG_FRAME_LEAK, frame_leak_flags
 from task_spec.llm import LLMClient
 from task_spec.nodes.pseudonymize.detectors import TOKEN_RE
+from task_spec.nodes.pseudonymize.interview import has_contact_pattern
 from task_spec.ontology.queries import evidence
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry, assemble
@@ -38,6 +42,7 @@ from task_spec.schemas import (
     Provenance,
     PublicIncident,
     TaskItem,
+    TaskKind,
     TrapFrame,
 )
 from task_spec.schemas.interview_incident import InterviewFeatureSeedInput
@@ -51,7 +56,7 @@ from task_spec.spec.common import (
     FLAG_COMPANY_INCIDENT_LEGACY,
     plan_common,
 )
-from task_spec.spec.draft import DraftContext
+from task_spec.spec.draft import DraftContext, apply, draft_task
 from task_spec.spec.feature import apply_feature, draft_feature_task, without_public
 from task_spec.spec.incidents import IncidentCatalog
 from task_spec.spec.slots import build_slots
@@ -63,9 +68,28 @@ FLAG_ANSWER_LEAK = (
     "지원자에게 표시하는 글이 기준 답안 문장을 포함함 — 채점 근거 누설이 없는지 승인자 확인 필요"
 )
 FLAG_TOKEN_VISIBLE = "지원자에게 표시하는 글에 가명화 토큰([ORG_1] 같은)이 있음 — 지원자에게 그대로 표시하므로 소재를 변경하거나 삭제해 주세요"
+FLAG_CONTACT_PATTERN = (
+    "답할 범위 초안에 쓰는 과제 글에 링크·연락처 형식이 있음 — URL·이메일, 전화번호처럼 보이는 숫자(10자리 타임스탬프 포함)를"
+    " 지우거나 형식이 아닌 값(예: <이미지 주소>)으로 바꿔 주세요"
+)
 FLAG_INTERVIEW_INCIDENT = "채용담당자 인터뷰 사례 기반 — 이 공고 담당자가 확인한 사례(공유 승인 전). 원리만 차용하고 소재는 변경함, 승인자 검토 필요"
 # 글이 바뀔 때마다 다시 계산하는 표시 — 함정 틀 공개 중립성(#318 검사 3)도 과제 글에서 계산한다
-_COMPUTED_FLAGS = (FLAG_ANSWER_LEAK, FLAG_TOKEN_VISIBLE, FLAG_FRAME_LEAK)
+_COMPUTED_FLAGS = (FLAG_ANSWER_LEAK, FLAG_TOKEN_VISIBLE, FLAG_FRAME_LEAK, FLAG_CONTACT_PATTERN)
+# 답할 범위 초안(TARGETED_PROMPT)이 과제에서 LLM 에 다시 보내는 칸 — 초안 입력과 형식 표시가 같은 목록을 쓴다
+TARGETED_TASK_FIELDS: dict[str, Any] = {
+    "scenario": True,
+    "requirements": {"__all__": {"text"}},
+    "facts": {"__all__": {"topic", "ask_when", "answer", "answer_hint"}},
+    "clarifications": {"__all__": {"topic", "ask_when", "match_terms", "answer", "answer_hint"}},
+    "artifacts": {"__all__": {"title", "content"}},
+}
+# 표시에 항목을 적을 때만 더하는 id 칸 — 초안 입력에는 넣지 않는다 (답에 자료 id 를 쓰지 않게, mentions_artifact_id)
+_TARGETED_ITEM_IDS = {
+    "requirements": "req_id",
+    "facts": "fact_id",
+    "clarifications": "clarification_id",
+    "artifacts": "artifact_id",
+}
 # 2026-11-23 문구를 바꾸기 전 글 — 이미 저장된 인터뷰 과제의 옛 표시도 다시 계산할 때 지운다 (새로 붙이지 않는다)
 _COMPUTED_FLAGS_LEGACY = (
     "기준 답안 문장이 지원자에게 보이는 글에 들어감 — 채점 근거가 새지 않았는지 승인자 확인 필요",
@@ -109,8 +133,20 @@ class TaskGenerationFailed(ValueError):
     선택을 바꿔야 한다 (422). 메시지는 고정 문구라 화면에 그대로 보여도 된다."""
 
 
+def task_kind_for(sub: str) -> TaskKind:
+    """인터뷰 과제 종류 — 직군 기본 코딩 템플릿이 있으면 기능형, 없으면 사례형(명세가 곧 과제, 2026-11-26 사용자).
+    인터뷰를 시작할 때 정해 상태에 둔다 — 예전에는 인터뷰를 다 한 뒤 ⑦ 역량 고르기에서야 '템플릿 없음'으로 막혔다."""
+    return "feature" if sub in TEMPLATE_FOR_SUB else "incident"
+
+
+def interview_template(kind: TaskKind, sub: str) -> Template | None:
+    """과제 종류의 템플릿 — 기능형은 직군 기본 코딩 템플릿(읽지 못하면 TaskGenerationFailed), 사례형은 없다."""
+    return coding_template(sub) if kind == "feature" else None
+
+
 def coding_template(sub: str) -> Template:
-    """직군 기본 코딩 템플릿 — 없으면 이 직군은 인터뷰 과제를 만들 수 없다 (포크는 세 템플릿 중 고르게 했다)."""
+    """기능형 과제의 직군 기본 코딩 템플릿 (포크는 세 템플릿 중 고르게 했다). 없는 직군은 task_kind_for 가 사례형으로 정하므로
+    여기까지 오지 않는다 — 오면 기능형으로는 만들 수 없다는 뜻이다."""
     template_id = TEMPLATE_FOR_SUB.get(sub)
     if template_id is None:
         raise TaskGenerationFailed(
@@ -330,6 +366,35 @@ def token_flags(task: TaskItem, targeted: Iterable[TargetedQuestion] = ()) -> li
     return [f"{FLAG_TOKEN_VISIBLE} ({', '.join(found[:5])})"] if found else []
 
 
+def targeted_draft_texts(
+    task: TaskItem, targeted: Iterable[TargetedQuestion]
+) -> list[tuple[str, str]]:
+    """답할 범위 초안이 LLM 에 다시 보내는 글 — (칸 경로, 글). 과제 칸(TARGETED_TASK_FIELDS)과 짚은 질문의 숨은 조건."""
+    include = {
+        key: fields
+        if fields is True
+        else {"__all__": {*fields["__all__"], _TARGETED_ITEM_IDS[key]}}
+        for key, fields in TARGETED_TASK_FIELDS.items()
+    }
+    return [
+        *visible_texts(task.model_dump(mode="json", include=include)),
+        *(
+            (f"targeted_questions[{q.question_id}].hidden_condition", q.hidden_condition)
+            for q in targeted
+        ),
+    ]
+
+
+def contact_pattern_flags(task: TaskItem, targeted: Iterable[TargetedQuestion] = ()) -> list[str]:
+    """답할 범위 초안 입력 중 연락처·링크 형식(가명화 `derived` 와 같은 판정)이 있는 칸. 가명화 입력으로 만든 과제라도 LLM 이
+    예시 값(이미지 URL·이메일·타임스탬프)을 지어 쓴다 — 그대로 두면 초안 입력 검사가 같은 글을 매번 거절한다.
+    다른 보이는 글(확장 슬롯·2단계)의 예시 값은 다시 LLM 에 가지 않고 지어낸 값이라 표시하지 않는다."""
+    found = [
+        path for path, text in targeted_draft_texts(task, targeted) if has_contact_pattern(text)
+    ]
+    return [f"{FLAG_CONTACT_PATTERN} ({', '.join(found[:5])})"] if found else []
+
+
 def with_content_flags(
     flags: Iterable[str],
     task: TaskItem,
@@ -337,7 +402,8 @@ def with_content_flags(
     targeted: Iterable[TargetedQuestion] = (),
     frame: TrapFrame | None = None,
 ) -> list[str]:
-    """글에서 다시 계산하는 표시(기준 답안 누설·토큰·함정 틀 공개 중립성)를 지금 글 기준으로 바꾼다 — 나머지 표시는 그대로.
+    """글에서 다시 계산하는 표시(기준 답안 누설·토큰·함정 틀 공개 중립성·답 초안 입력 형식)를 지금 글 기준으로 바꾼다 —
+    나머지 표시는 그대로.
     frame: 이 공고의 함정 틀 (#318 — 틀이 없거나 예전 과제면 None, 그때는 공개 중립성 표시가 없다)."""
     shown = list(targeted)
     kept = [f for f in flags if not f.startswith((*_COMPUTED_FLAGS, *_COMPUTED_FLAGS_LEGACY))]
@@ -348,6 +414,7 @@ def with_content_flags(
                 *answer_leak_flags(task, incident, shown),
                 *token_flags(task, shown),
                 *frame_leak_flags(task, frame, incident.feature),
+                *contact_pattern_flags(task, shown),
             ]
         )
     )
@@ -437,13 +504,13 @@ class MadeTask:
 
 @dataclass(frozen=True)
 class TaskRequest:
-    """기능형 공통 과제 한 번 만들기의 입력 — 단계마다 같은 값을 넘긴다 (#280: 단계별로 나눠 돌리고 끊긴 단계부터 잇는다).
-    profile·matches 는 선택한 역량만 담는다."""
+    """공통 과제 한 번 만들기의 입력 — 단계마다 같은 값을 넘긴다 (#280: 단계별로 나눠 돌리고 끊긴 단계부터 잇는다).
+    profile·matches 는 선택한 역량만 담는다. 템플릿이 없으면 사례형(명세가 곧 과제)이다."""
 
     profile: PostingProfile
     matches: list[CompetencyEvidence]
-    coding_incident: PublicIncident
-    template: Template
+    coding_incident: PublicIncident  # 과제의 재료 — 사례형이면 기능형 칸 없는 사례 그대로
+    template: Template | None
     task_id: str
     reviewer_note: str | None = None
     # 이 공고의 함정 틀 (#318) — 명세 초안이 공개 쪽을 받는다 (draft_feature_task v13). coding_incident 는 이미 틀 적용 재료다
@@ -453,6 +520,10 @@ class TaskRequest:
     slot_profile: PostingProfile | None = None
     slot_matches: list[CompetencyEvidence] | None = None
 
+    @property
+    def task_kind(self) -> TaskKind:
+        return "feature" if self.template is not None else "incident"
+
 
 class TaskMaker(Protocol):
     """단계: feature → request → slots. 앞 단계의 MadeTask 를 받아 다음 MadeTask 를 돌려준다.
@@ -461,7 +532,7 @@ class TaskMaker(Protocol):
     async def competencies(self, profile: PostingProfile) -> CompetencyChoice: ...
 
     async def feature(self, req: TaskRequest) -> MadeTask:
-        """공통 과제 뼈대(build_common) → 기능형 초안(draft_feature_task)."""
+        """공통 과제 뼈대(build_common) → 초안 (기능형 draft_feature_task · 사례형 draft_task). 단계 이름은 API 그대로."""
         ...
 
     async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
@@ -536,12 +607,12 @@ class OntologyTaskMaker:
             ontology_version=req.profile.ontology_version,
             ontology=self.ontology,
             incidents=catalog,
-            task_kind="feature",
+            task_kind=req.task_kind,
         )
         task, ctx = built.task, built.ctx
         if task is None or ctx is None:
             raise TaskGenerationFailed("선택 역량의 과제 근거가 부족합니다")
-        stack = req.template.manifest.stack
+        stack = req.template.manifest.stack if req.template is not None else None
         if stack is not None:
             env = task.tech_env.model_copy(
                 update={
@@ -562,18 +633,28 @@ class OntologyTaskMaker:
         # 과제 역량은 결정적 뼈대가 정하고 기능형 초안은 바꾸지 않는다 — LLM 전에 본다 (설계 검사 #332 S-F7: 몇 분짜리 초안을 다 돈 뒤에야
         # 거절했고, '이어서 하기'는 같은 선택으로 같은 실패를 되풀이했다)
         _require_all_selected(base, req)
-        result = await draft_feature_task(
-            ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
-        )
+        # 공고 경로(nodes/spec.py)와 같은 갈래 — 사례형은 기준 답안을 넣지 않는 사례 블록(incident_block)으로 만든다
+        if req.task_kind == "feature":
+            result = await draft_feature_task(
+                ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
+            )
+        else:
+            result = await draft_task(
+                ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
+            )
         if result.output is None:
             raise OutputRejected("과제 초안을 만들지 못했습니다")
-        task = apply_feature(base, result)
+        task = (apply_feature if req.task_kind == "feature" else apply)(base, result)
         if task.behavioral_anchors is None:
             raise OutputRejected("평가 행동 기준이 생성되지 않았습니다")
         _require_all_selected(task, req)
         return MadeTask(task=task, provenance=list(result.provenance), flags=list(flags))
 
     async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        if (
+            req.task_kind != "feature"
+        ):  # 요청 글(문제 분석 판)은 기능형 명세 칸 — 공고 경로도 기능형만 (nodes/spec.py)
+            return made
         _, ctx, _ = await self._context(req)
         # 반려 사유·팀 맥락(수정 요청)을 요청 글에도 — 일반 파이프라인처럼 세 생성기 모두에 (설계 검사 #332 S-F17: 기능형 초안에만 넘겨
         # 요청 글·사실 때문에 반려해도 다시 만들기에 반영되지 않았다)

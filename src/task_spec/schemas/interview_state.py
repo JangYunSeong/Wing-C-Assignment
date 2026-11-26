@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from task_spec.schemas.approval import TaskKind
 from task_spec.schemas.base import Schema
 from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.incident import FeatureSeed, PublicIncident
@@ -187,7 +188,7 @@ class InterviewSpec(Schema):
     posting_id: str
     ontology_version: str
     competency_ids: list[str] = Field(min_length=2, max_length=3)
-    template_id: str
+    template_id: str | None  # 사례형(코딩 템플릿 없는 직군 — 명세가 곧 과제)은 없음
     project: ProjectTags
     incident_source: IncidentSource = "known_problem"
     incident: PublicIncident
@@ -244,6 +245,9 @@ class InterviewState(_State):
     posting_id: str
     posting_context: PostingContext
     incident_sub: str
+    # 과제 종류 — 직군 기본 코딩 템플릿이 있으면 기능형, 없으면 사례형(명세가 곧 과제). 시작할 때 정해 화면이 처음부터 알린다.
+    # None 은 이 칸 전에 만든 행 — 직군으로 정한다 (interview/task.task_kind_for)
+    task_kind: TaskKind | None = None
     jd_text: str = ""  # 가명화한 공고 줄 ('[절] 줄')
     team_context: TeamContext = Field(default_factory=TeamContext)
     scope_fields: list[ScopeField] = Field(default_factory=list)
