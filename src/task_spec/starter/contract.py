@@ -1523,24 +1523,42 @@ def mentioned_apis(texts: Iterable[str]) -> list[str]:
 # 새로 만드는 API 라는 말 — 'API 를 추가한다'·'엔드포인트를 구현한다'·'새로'·'신규'
 _ADDS = re.compile(r"추가|새로|신규|구현한다|구현해|구현하고|만든다|만들어")
 _SENT = re.compile(r"[^.。\n]+")
+# 이미 있는 API 라는 말 — _ADDS 의 거울 (#337 팩트체크)
+_EXISTS = re.compile(r"기존|이미 (?:있|제공|운영)|현재 (?:있|제공|운영)")
 
 
 def added_apis(texts: Iterable[str]) -> set[str]:
-    """새로 만든다고 말한 문장에 나온 'METHOD /path' — 그 문장은 그 API 가 이미 있다는 근거가 아니다."""
+    """새로 만든다고 말한 문장에 나온 'METHOD /path' — 그 문장은 그 API 가 이미 있다는 근거가 아니다. '기존·이미 있는' 이라고 밝힌 문장은
+    뺀다 — '기존 GET /robots/status … 에 세션 토큰 검증을 추가한다' 의 '추가' 는 API 가 아니라 그 API 에 더하는 동작이다 (알파
+    frame-r2-2, #337 팩트체크: 계약 단계 검사가 이 문장 때문에 기존 API 를 새 API 로 적게 했다)."""
     return {
         k
         for t in texts
         for sent in _SENT.findall(t)
-        if _ADDS.search(sent)
+        if _ADDS.search(sent) and not _EXISTS.search(sent)
+        for k in mentioned_apis([sent])
+    }
+
+
+def stated_existing_apis(texts: Iterable[str]) -> set[str]:
+    """'기존·이미 있는' 이라고 밝힌 문장에 나온 'METHOD /path' — 명세가 그 API 가 이미 있다고 말한 근거."""
+    return {
+        k
+        for t in texts
+        for sent in _SENT.findall(t)
+        if _EXISTS.search(sent)
         for k in mentioned_apis([sent])
     }
 
 
 def existing_endpoints(contract: TaskContract, spec: SpecView) -> list[Endpoint]:
-    """이미 있는 API (시작 코드가 동작하게 만든다) = 계약이 `existing` 으로 표시한 것 + 명세 공개 글에 `METHOD /path` 로 나온 계약 API.
-    시작 코드 생성 입력(generate.existing_apis)과 시작 코드 정적 검사(static_check._starter_new_api_tests)가 같은 판정을 쓴다.
-    '…엔드포인트를 구현한다'처럼 새로 만든다고 말한 문장의 언급은 빼고 센다 (2026-11-15 손 시범 retry: 'POST /api/v1/charges 엔드포인트를 구현한다')."""
-    named = set(mentioned_apis(spec.public_texts)) - added_apis(spec.public_texts)
+    """이미 있는 API (시작 코드가 동작하게 만든다) = 계약이 `existing` 으로 표시한 것 + 명세가 '기존·이미 있는' 이라고 밝힌 문장에 나온
+    계약 API. 시작 코드 생성 입력(generate.existing_apis)과 시작 코드 정적 검사(static_check._starter_new_api_tests)가 같은 판정을 쓴다.
+    예전에는 명세 공개 글에 경로가 나오기만 하면 기존으로 셌다 (2026-11-07 — 계약 표시를 교차 검사하기 전). 공개 수용 기준·요구는 새 API
+    의 동작도 경로로 말해, 계약이 새 API 로 적은 것을 기존으로 잡았다 — 알파 46회 중 6회, fix337-1 은 시작 코드가 새 API(로그인)와 그
+    기존 테스트를 만들어 빌드가 멈췄다 (#337 팩트체크). 명세가 새로 만든다는 API 를 계약이 기존으로 적는 반대 방향은
+    _added_marked_existing 이 계약 단계에서 막는다."""
+    named = stated_existing_apis(spec.public_texts)
     out: list[Endpoint] = []
     for e in contract.endpoints:
         key = mentioned_apis([f"{e.method} {e.path}"]) if e.method else []

@@ -1361,6 +1361,29 @@ def test_timed_hints_show_the_lines_the_check_accepts() -> None:
     assert len(timed_hints("request_timeout_s", texts)) == 7 <= TIMED_CANDIDATES
 
 
+def test_a_new_api_described_in_the_spec_is_not_counted_as_existing() -> None:
+    """#337 팩트체크 (알파 46회 중 6회, fix337-1 실패): 명세 공개 글에 경로가 나오기만 하면 '이미 있는 API' 로 셌다 — 공개 수용 기준
+    'POST /api/auth/login에 정상 자격 증명을 보내면 … 세션 토큰' 이 새 API 의 동작을 말하는데도 기존으로 잡혀, 시작 코드가 로그인과
+    그 기존 테스트를 만들고 정적 검사도 막지 못했다. 계약이 새 API 로 적었으면 새 API 다 — 명세가 '기존·이미 있는' 이라고 밝힌 언급만
+    기존 근거로 쓴다 (반대 방향 — 명세가 새로 만든다는 API 를 계약이 기존으로 적음 — 은 _added_marked_existing 이 막는다)."""
+    from task_spec.starter.contract import existing_endpoints
+
+    c = TaskContract.model_validate(_contract())
+    e = c.endpoints[0]
+    assert not e.existing
+    api = f"{e.method} {e.path}"
+    described = _spec(public_texts=(f"{api}에 정상 값을 보내면 응답 본문에 결과가 포함된다",))
+    assert e.path not in [x.path for x in existing_endpoints(c, described)]
+    stated = _spec(public_texts=(f"이미 있는 {api} 는 그대로 두고 화면만 바꾼다",))
+    assert e.path in [x.path for x in existing_endpoints(c, stated)]
+    # '기존 … 에 … 을 추가한다' 의 '추가' 는 그 API 에 더하는 동작이다 — 새 API 가 아니다 (알파 frame-r2-2 문장)
+    modified = f"기존 {api} 엔드포인트에 세션 토큰 검증을 추가한다"
+    from task_spec.starter.contract import added_apis
+
+    assert not added_apis([modified])
+    assert e.path in [x.path for x in existing_endpoints(c, _spec(public_texts=(modified,)))]
+
+
 def test_an_api_the_spec_adds_must_not_be_marked_existing() -> None:
     """2026-11-15 손 시범: coupons 는 r1 '…API를 추가한다' 인데 계약이 그 API 를 existing 으로 적어 시작 코드가 차감을 다 구현했고,
     retry 는 r1 'POST /api/v1/charges 엔드포인트를 구현한다' 의 언급 때문에 두 API 가 '이미 있는 API' 로 셈해졌다."""
