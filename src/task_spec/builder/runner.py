@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from task_spec.schemas import FramedMaterial, HiddenPlan, TaskContract, TaskItem
+from task_spec.schemas import ForbiddenStorage, FramedMaterial, HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
     README_FULL_PATH,
@@ -95,6 +95,8 @@ class ContractResult:
     # 재료 숨은 안내 (#256 재료 옮기기) — 계약 단계와 같은 것을 빌드 입력(BuildInputs)에 넘긴다
     guide: MaterialGuide | None = None
     avoid_terms: tuple[str, ...] = ()
+    # 함정 틀이 금지한 저장 엔티티 (#318 D1) — 계약 단계(입력·검사 4)와 같은 목록을 빌드 입력·정적 검사·README 검사에 (설계 검사 #332 T-F2)
+    forbidden_storage: tuple[ForbiddenStorage, ...] = ()
     # 계약 단계의 승인자 표시 (plan_contract flags — '운영 값 후보가 여럿', 근거 조각 등). 예전에는 운영 경로가 버려 승인 화면에
     # 나오지 않았다 (평가 러너에서만 보였다)
     review_flags: tuple[str, ...] = ()

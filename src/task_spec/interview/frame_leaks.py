@@ -20,31 +20,11 @@ from collections.abc import Iterator
 
 from task_spec.schemas import FeatureSeed, TaskItem, TrapFrame
 from task_spec.spec.feature import find_terms
+from task_spec.starter.forbidden_storage import storage_pattern
 
 FLAG_FRAME_LEAK = "함정 틀: 공개 쪽에 틀이 막은 것 — "
 MAX_PLACES = 5  # 표시할 곳 수 (나머지는 '외 N곳')
 _ROLE = {"key": "핵심", "support": "보조", "distractor": "방해"}
-
-
-def storage_pattern(entity: str) -> re.Pattern[str] | None:
-    """금지 엔티티를 저장 대상으로 그린 꼴 — 이름이 영문 식별자(틀 v3 는 PascalCase)일 때만. 단·복수·snake_case 테이블 이름을 같게 본다."""
-    name = re.sub(r"[^0-9A-Za-z]", "", entity)
-    if len(name) < 3:
-        return None
-    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
-    tables = "|".join(sorted({re.escape(name.lower()), re.escape(snake)}, key=len, reverse=True))
-    table = rf"\w*(?:{tables})s?"
-    ident = re.escape(name)
-    return re.compile(
-        rf"create\s+table\s+(?:if\s+not\s+exists\s+)?[`\"']?{table}\b"
-        rf"|\b(?:from|join|update|into)\s+[`\"']?{table}\b"
-        rf"|\b{table}\s*(?:테이블|table\b)"
-        rf"|@Table\s*\(\s*name\s*=\s*[\"']{table}"
-        rf"|\bclass\s+{ident}\b"
-        rf"|\b{ident}Repository\b"
-        rf"|\b(?:find|save|delete){ident}\w*\s*\(",
-        re.IGNORECASE,
-    )
 
 
 def _terms(frame: TrapFrame, seed: FeatureSeed | None) -> list[str]:

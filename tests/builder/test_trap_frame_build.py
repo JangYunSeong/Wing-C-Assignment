@@ -66,12 +66,25 @@ async def test_the_contract_step_uses_the_framed_material_and_forbidden_storage(
         seen["seed"] == framed.seed and c.seed == framed.seed
     )  # 생성기 입력(BuildInputs.seed)도 틀 적용 재료
     assert list(seen["forbidden_storage"]) == [SESSION]
+    # 같은 목록을 빌드 입력(정적 검사·README 검사)에도 — 계약 단계만 받으면 시작 코드가 금지 저장을 둔다 (설계 검사 #332 T-F2)
+    assert c.forbidden_storage == (SESSION,)
+    captured: list[Any] = []
+
+    async def stop(b: Any, *_: Any, **__: Any) -> Any:
+        captured.append(b)
+        raise StepFailed("build: 가상 멈춤")
+
+    monkeypatch.setattr(steps_mod, "build_and_repair", stop)
+    with pytest.raises(StepFailed):
+        await steps.build(job, c)
+    assert captured and captured[0].forbidden_storage == (SESSION,)
     # 틀이 없는 공고는 원 재료 그대로 — 공용 재료는 바꾸지 않는다
     plain = await _job(tmp_path)
     await steps.contract(plain)
     original = await steps.incident_for(plain.task)
     assert original is not None and seen["seed"] == original.feature
     assert list(seen["forbidden_storage"]) == []
+    assert (await steps.contract(plain)).forbidden_storage == ()
 
 
 async def test_a_build_reads_the_framed_material_of_its_common_task(tmp_path: Path) -> None:
@@ -113,12 +126,14 @@ async def test_the_common_task_keeps_the_framed_material_with_its_draft(tmp_path
 def test_forbidden_storage_is_told_up_front_and_rejected_as_an_entity() -> None:
     """검사 4 (#318): 틀이 금지한 저장 방식이 계약 엔티티면 재요청 — 새·기존 모두, 이름은 단·복수 같게. 계약 입력에도 미리 알린다."""
     java = load_template("backend/java-spring-boot3-jpa")
-    order = ForbiddenStorage(entity="orders", why="가상 이유")
+    order = ForbiddenStorage(entity="orders", why="가상 해법 — 상태를 DB 밖에 둔다")
     got = _check(manifest=java.manifest, forbidden_storage=[order]).problems
-    assert _has(got, "엔티티 Order(m1) 는 공개 계약에 두지 않는다", "가상 이유", "함정 틀")
+    assert _has(got, "엔티티 Order(m1) 는 공개 계약에 두지 않는다", "함정 틀")
     assert not _has(_check(manifest=java.manifest).problems, "공개 계약에 두지 않는다")
     from tests.starter.test_plan_contract import _task
 
     text = plan_input(_task(), java, forbidden_storage=[order]).seed_rules
-    assert "공개 계약에 엔티티(테이블)로 두지 않는 것" in text and "orders (가상 이유)" in text
+    assert "공개 계약에 엔티티(테이블)로 두지 않는 것" in text and "orders" in text
     assert "공개 계약에 엔티티(테이블)로 두지 않는 것" not in plan_input(_task(), java).seed_rules
+    # 틀의 why(LLM 글 — 해법이 들어 있을 수 있음)는 계약 입력·재요청 사유 어디에도 싣지 않는다 (설계 검사 B-F10)
+    assert "DB 밖" not in text and not any("DB 밖" in p for p in got)

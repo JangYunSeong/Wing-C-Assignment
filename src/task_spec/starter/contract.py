@@ -48,6 +48,7 @@ from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_t
 from task_spec.starter.feasibility import feasibility_problems
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
+from task_spec.starter.forbidden_storage import forbidden_for
 from task_spec.starter.header_values import header_problems
 from task_spec.starter.interface import interface_problems, without_fixed
 from task_spec.starter.seed_rows import (
@@ -1784,23 +1785,16 @@ def _related_problems(contract: TaskContract, note: str) -> list[str]:
 def _forbidden_storage(contract: TaskContract, forbidden: Sequence[ForbiddenStorage]) -> list[str]:
     """함정 틀 검사 4 (#318) — 계약 엔티티가 틀이 금지한 저장 방식이면 재요청 (빌드 안전망 — 다른 틀 검사는 표시만).
     새 엔티티만 보면 b3 의 Session(existing=true)을 놓쳐 새·기존 모두 본다. 낱말 대조(_leaks)로는 못 한다 — 식별자를 낱말로 풀어
-    sessionId 같은 공개 칸까지 걸리고, 업무 요구에 나온 말('세션')은 숨은 낱말에서 빠진다. 그래서 엔티티 이름 단위로 (단·복수 같게)."""
-
-    def key(name: str) -> str:
-        return re.sub(r"[^0-9a-z가-힣]", "", name.lower())
-
+    sessionId 같은 공개 칸까지 걸리고, 업무 요구에 나온 말('세션')은 숨은 낱말에서 빠진다. 그래서 엔티티 이름 단위로 — 시작 코드 정적
+    검사와 같은 규칙(starter/forbidden_storage.names_entity: 끝 낱말들이 같으면, 단·복수 같게 — UserSession·LoginSession 도).
+    틀의 why(LLM 글)는 싣지 않는다 — 허용 설계(해법)가 들어 있을 수 있고 계약은 지원자가 받는다 (설계 검사 B-F10)."""
     out: list[str] = []
-    for s in forbidden:
-        want = key(s.entity)
-        if not want:
-            continue
-        for m in contract.entities:
-            got = key(m.name)
-            if got in (want, f"{want}s") or f"{got}s" == want:
-                out.append(
-                    f"엔티티 {m.name}({m.entity_id}) 는 공개 계약에 두지 않는다 — {s.why} (함정 틀: 흔한 구현의 저장 방식). "
-                    "entities·seed·공개 테스트에서 빼고, 그 상태를 어떻게 둘지는 구현 몫으로 남긴다"
-                )
+    for m in contract.entities:
+        if forbidden_for(m.name, forbidden) is not None:
+            out.append(
+                f"엔티티 {m.name}({m.entity_id}) 는 공개 계약에 두지 않는다 — 함정 틀: 흔한 구현의 저장 방식이라 숨은 요구를 드러낸다. "
+                "entities·seed·공개 테스트에서 빼고, 그 상태를 어떻게 둘지는 구현 몫으로 남긴다"
+            )
     return out
 
 

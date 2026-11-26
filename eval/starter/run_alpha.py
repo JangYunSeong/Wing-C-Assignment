@@ -57,10 +57,13 @@ from task_spec.spec.incidents import (
     pin_feature_incident,
     with_incident,
 )
+from task_spec.starter.contract import SpecView
+from task_spec.starter.forbidden_storage import storage_hits
 from task_spec.starter.hand_refs import load_references
 from task_spec.starter.interface import interface_ref
 from task_spec.starter.material_guide import guide_ref, load_guides
 from task_spec.starter.render import render_readme, thin_readme
+from task_spec.starter.static_check import readme_flags
 from task_spec.starter.templates import load_template, select_template
 from task_spec.starter.verify import verifier_for
 from task_spec.starter.verify.workspace import assemble
@@ -364,6 +367,8 @@ async def main() -> None:
         avoid_terms=tuple(inc.avoid_terms),
         references=hand.checked_against(interface) if hand is not None else None,
         guide=guide,
+        # 운영 빌드(builder/steps)와 같게 — 금지 저장 엔티티를 정적 검사에도 (설계 검사 #332 T-F2·T-F9)
+        forbidden_storage=tuple(frame.forbidden_storage) if frame is not None else (),
     )
     built_out = await build_and_repair(
         b,
@@ -401,6 +406,21 @@ async def main() -> None:
         # 시작 코드가 정해진 뒤 다시 — '시작 코드' 절(이미 있는 파일·함수 이름)을 그 시작 코드에서 뽑아 넣는다 (starter/code_map.py)
         readme = render_readme(task, res.contract, template, starter=starter.files)
         (out / "candidate" / readme.path).write_text(readme.content, "utf-8")
+        # 운영(builder/steps)과 같은 README 검사 — 예전 알파는 README 를 렌더만 했다 (설계 검사 #332 T-F9)
+        report["readme_flags"] = readme_flags(
+            readme,
+            spec=SpecView.from_task(task),
+            seed=inc.feature,
+            avoid_terms=tuple(inc.avoid_terms),
+            forbidden_storage=b.forbidden_storage,
+        )
+        if frame is not None:
+            # 함정 틀 지표 — 시작 코드·README 에 남은 금지 저장 (계약 단계 지표만으로는 시작 코드 쪽 재발이 안 보였다, #332 T-F2)
+            report["frame_storage_left"] = [
+                f"{f.path}: {e} '{s}'"
+                for f in (*starter.files, readme)
+                for e, s in storage_hits(f.content, b.forbidden_storage)
+            ]
         if thin_readme(task):  # 문제 분석 판 — 원래 판은 응시자 폴더 밖에 (diff 로 두 판을 견준다)
             full = render_readme(task, res.contract, template, starter=starter.files, full=True)
             (out / full.path).write_text(full.content, "utf-8")

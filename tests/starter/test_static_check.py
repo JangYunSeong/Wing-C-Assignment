@@ -1170,3 +1170,39 @@ def test_the_code_written_public_helper_is_not_leak_checked() -> None:
     both = [p.message for p in _run(_overlays(public_test=[helper, written])).problems]
     leaks = [m for m in both if "드러내는 말" in m]
     assert len(leaks) == 1 and "Pt1Test.java" in leaks[0] and "동시 요청" in leaks[0]
+
+
+def test_trap_frame_forbidden_storage_in_the_starter_is_a_problem() -> None:
+    """설계 검사 #332 T-F2: 함정 틀이 금지한 저장 엔티티는 시작 코드(지원자가 받는 기존 시스템)에도 두지 않는다 — 테이블·저장소 어느
+    꼴이든, 템플릿 테이블 규칙·발급 값 예외와 상관없이. 틀이 없으면 같은 코드가 이 문제로 걸리지 않는다."""
+    from task_spec.schemas import ForbiddenStorage
+
+    session = ForbiddenStorage(entity="Session", why="가상 이유")
+    starter = [
+        _f(f"{PKG}/order/Order.java", ORDER),
+        _f(
+            "src/main/resources/schema.sql",
+            "CREATE TABLE orders (id BIGINT PRIMARY KEY, status VARCHAR(20));\n"
+            "CREATE TABLE user_session (token VARCHAR(64) PRIMARY KEY, user_id BIGINT);\n",
+        ),
+        _f(
+            f"{PKG}/auth/UserSessionRepository.java",
+            "package com.example.service.auth;\npublic interface UserSessionRepository {}\n",
+        ),
+    ]
+
+    def run(forbidden: tuple[ForbiddenStorage, ...]) -> list[str]:
+        res = static_check(
+            _overlays(starter=starter),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            seed=BACKEND_SEED,
+            forbidden_storage=forbidden,
+        )
+        return res.for_target("gen_starter")
+
+    got = run((session,))
+    assert _has(got, "함정 틀이 금지한 저장 방식 Session", "schema.sql", "user_session")
+    assert _has(got, "함정 틀이 금지한 저장 방식 Session", "UserSessionRepository")
+    assert not _has(run(()), "함정 틀")

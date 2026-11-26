@@ -4,7 +4,7 @@
 > 구현: 1단계 뼈대 (#318, 브랜치 `feat/trap-frame`) — 틀 스키마(`schemas/trap_frame.py`)·프롬프트 `trap_frame` v1(`eval: pending`, CURRENT 없음 → 틀 단계를 건너뛰어 지금 동작 그대로)·틀 적용 재료(`interview/trap_frame.apply_frame`)·생성 흐름·공통 과제 행 저장(`common_task.framed`)·빌드 계약 단계·검사 4.
 > 2단계 (같은 브랜치): 프롬프트 `trap_frame` v1→v3 평가(qwen, `eval/interview/run_trap_frame.py`) → **CURRENT = v3** (2026-11-26 사용자, `prompts/trap_frame/PROMOTIONS.md`). v1 은 평범한 재료의 숨은 요구를 다시 쓰며 조건을 빼거나 설계를 좁혔고 업무 엔티티를 금지했다. design 틀의 숨은 요구는 재료 것을 글자 그대로 담아야 쓴다(`keeps_hidden`, 아니면 재료 것). 금지 엔티티 이름은 영문 PascalCase. `draft_feature_task` v13 (틀의 공개 쪽 입력 `frame_public_text`)은 평가했으나 올리지 않았다 — 이득이 보이지 않았고 규칙이 2단계 자료까지 덮는다 (2026-11-26 사용자, `prompts/draft_feature_task/PROMOTIONS.md`). 연결 코드는 남긴다.
 > 3단계 (같은 브랜치, 2026-11-26): 검사 1·2·3·5 — 모두 코드, 표시만 (검사 4 만 재요청). 결정 D5·D6·D7 은 §10. `interview/trap_frame.evidence_gaps`·`design_questions`·`match_design`, `interview/frame_leaks.py`, 보강 질문 `material_analysis.reinforce_questions`.
-> 5단계 (2026-11-26, 4단계보다 먼저): 함정 틀 빌드 알파 6회 (`eval/starter/run_alpha --virtual-incident session --trap-frame`, 가상 세션 유지 재료·JWT 를 사람이 뺀 것처럼·템플릿 Java v5) — 틀·계약 6/6 (원인 1·2 가 모든 회차에서 사라짐), 빌드 관문 1/3 (보정 창 없음 2회 = 하네스 재현성, 원인 3 — #327 의 근거), 검사 3 이 명세 초안 v12 의 금지 엔티티 노출(`CREATE TABLE sessions`)을 잡음. 알파가 찾은 빌드 버그(코드가 쓰는 공개 도우미의 주석이 운영 조건 낱말에 걸림)는 고침. 4단계는 #327.
+> 5단계 (2026-11-26, 4단계보다 먼저): 함정 틀 빌드 알파 6회 (`eval/starter/run_alpha --virtual-incident session --trap-frame`, 가상 세션 유지 재료·JWT 를 사람이 뺀 것처럼·템플릿 Java v5) — 틀·계약 6/6 (계약 단계에서 원인 1·2 가 모든 회차에서 사라짐 — 시작 코드 생성기는 3/3 session·user_session 테이블을 만들었고, 그때는 정적 검사 '계약 테이블 밖'이 막았지만 뒤에 main 에 들어온 발급 값 예외(#322)가 통과시켜 #332 T-F2 에서 정적 검사가 금지 저장 엔티티를 직접 막게 함), 빌드 관문 1/3 (보정 창 없음 2회 = 하네스 재현성, 원인 3 — #327 의 근거), 검사 3 이 명세 초안 v12 의 금지 엔티티 노출(`CREATE TABLE sessions`)을 잡음. 알파가 찾은 빌드 버그(코드가 쓰는 공개 도우미의 주석이 운영 조건 낱말에 걸림)는 고침. 4단계는 #327.
 > 근거: #308 본문, 팩트체크 1~4차 댓글, 정리 댓글(남은 일·순서), 운영 분석(r3 빼먹기, 2026-11-25), 5차 팩트체크(이 초안의 코드 대조 — 틀이 계약 단계에 닿는 길, 재료 칸을 그대로 쓰는 코드).
 
 명세를 쓰기 **전에** 함정의 모양을 정한다. 무엇을 숨기고 무엇을 공개하며, 공개 쪽에 무엇을 쓰면 안 되는지, 허용 설계가 공개 요구를 지킬 수 있는지를 먼저 정한다. 그다음 명세·계약 생성과 검사가 그 틀을 따른다.
@@ -100,6 +100,7 @@ provenance 는 다른 LLM 산출물과 같다 (`prompt_id@version+hash`, 모델�
    - 저장 방식: 계약 엔티티가 틀이 금지한 저장 방식이면 거절한다. 새 엔티티만 보면 b3 의 Session(`existing=true`)을 놓치므로 새·기존 모두 본다. 낱말 대조로는 못 한다 — `contract_places` 가 식별자를 낱말로 풀어 `sessionId` 같은 공개 칸까지 걸리고, `hidden_terms` 는 공개 업무 요구(`business_need`)에 나온 말('세션')을 뺀다. 그래서 엔티티 단위로 본다.
    - 낱말: `public_forbidden` 의 낱말은 틀 적용 재료의 `leak_terms` 를 거쳐 `hidden_terms` 로 들어가므로, 지금 `contract._leaks` 가 그대로 본다.
    - `contract._needs` 와의 충돌은 §6 에서 정리한다.
+   - 시작 코드·README [구현: #332 T-F2]: 같은 금지 목록을 빌드 입력(`ContractResult` → `BuildInputs.forbidden_storage`)으로 넘겨, 정적 검사(`static_check._starter_forbidden_storage`)가 시작 코드의 테이블·엔티티·저장소·조회 메서드 꼴을 생성기 재생성 사유로 막고(발급 값 예외로도 통과하지 않음, 테이블 선언 규칙이 없는 템플릿도) README 는 승인자 표시로 남긴다. 이름 대조는 계약 검사 4·정적 검사가 한 규칙(`starter/forbidden_storage.names_entity` — 끝 낱말들이 같으면, 단·복수 같게: `UserSession`·`user_session` 도 Session)을 쓴다. 틀의 why(LLM 글 — 허용 설계가 들어 있을 수 있음)는 계약 입력·재요청 사유에 싣지 않는다 (#332 B-F10). 생성기 입력에 금지 목록을 알리는 것은 gen_starter 새 판에서 (#332 WP7).
 5. **인터뷰 보강.** [구현: 3단계 — 설계 질문 → 재현 근거 → 틀 빈칸 → 분석 빈칸, 합쳐 셋 (D6). 회사 사례는 표시만] #317 첫 판(빠진 정보 → ⑧ 질문 → ⑦ 로 되돌려 다시 만들기) 위에 틀 질문을 더한다. 사유별 필수 근거의 빈칸과, 설계 충돌에서 무엇을 남길지를 묻는다. 회사 사례는 표시만 한다.
 
 ## 6. stateful_target (`contract._needs`) [미정 — 틀에 합치기를 제안]

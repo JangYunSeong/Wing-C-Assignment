@@ -32,6 +32,7 @@ from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     AcceptedDesign,
     FeatureSeed,
+    ForbiddenStorage,
     GeneratedFile,
     GeneratedFiles,
     GenHiddenInput,
@@ -666,6 +667,8 @@ class BuildInputs:
     references: HandReferences | None = None
     # 재료 숨은 안내 (#256 재료 옮기기) — 템플릿에 합쳐 붙인다 (사유·허용 구현 조건·생성기 입력의 재료 안내). 없으면 템플릿 그대로
     guide: MaterialGuide | None = None
+    # 함정 틀이 금지한 저장 엔티티 (#318) — 정적 검사가 시작 코드에서 막는다 (설계 검사 #332 T-F2). 생성기 입력에는 아직 쓰지 않는다
+    forbidden_storage: tuple[ForbiddenStorage, ...] = ()
 
     def __post_init__(self) -> None:
         # 재료 안내를 합친 뒤, 재료가 사유를 적었으면 빌드의 모든 생성기 입력·정적 검사가 그 사유 목록만 본다
@@ -692,6 +695,7 @@ class BuildInputs:
             seed=self.seed,
             avoid_terms=self.avoid_terms,
             hidden_cases_only=cases,
+            forbidden_storage=self.forbidden_storage,
         )
         return res.for_target(KIND_TARGET[overlay.kind])
 

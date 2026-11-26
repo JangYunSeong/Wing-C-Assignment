@@ -181,6 +181,7 @@ class RealSteps:
             raise StepFailed(
                 f"contract: 재료 숨은 안내가 템플릿과 맞지 않음 — {'; '.join(bad)}"[:280]
             )
+        forbidden = tuple(framed.frame.forbidden_storage) if framed is not None else ()
         res = await plan_contract(
             task,
             template,
@@ -190,7 +191,7 @@ class RealSteps:
             seed=inc.feature,
             interface=interface,
             guide=guide,
-            forbidden_storage=framed.frame.forbidden_storage if framed is not None else (),
+            forbidden_storage=forbidden,
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
             raise StepFailed(
@@ -207,6 +208,7 @@ class RealSteps:
             interface=interface,
             guide=guide,
             avoid_terms=tuple(inc.avoid_terms),
+            forbidden_storage=forbidden,
             review_flags=tuple(res.flags),
             provenance=tuple(res.provenance),
         )
@@ -223,6 +225,7 @@ class RealSteps:
             avoid_terms=c.avoid_terms,
             references=refs.checked_against(c.interface) if refs is not None else None,
             guide=c.guide,
+            forbidden_storage=c.forbidden_storage,
         )
         g = verifier_for(c.template, job.work / "verify")
         out = await build_and_repair(
@@ -256,7 +259,13 @@ class RealSteps:
         readme = render_readme(job.task, c.contract, c.template, starter=starter)
         # 응시용 README 누설 검사 → 승인 화면 README 경고 칸 (#232: 렌더만 하고 검사하지 않았다)
         spec = SpecView.from_task(job.task)
-        flags = readme_flags(readme, spec=spec, seed=c.seed, avoid_terms=c.avoid_terms)
+        flags = readme_flags(
+            readme,
+            spec=spec,
+            seed=c.seed,
+            avoid_terms=c.avoid_terms,
+            forbidden_storage=c.forbidden_storage,
+        )
         # 문제 분석 판 — 원래 판도 같은 명세에서 (손으로 고치지 않는다, analysis-stage.md §6)
         full = (
             render_readme(job.task, c.contract, c.template, starter=starter, full=True)

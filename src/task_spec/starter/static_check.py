@@ -35,7 +35,7 @@ from typing import Any
 
 import yaml
 
-from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
+from task_spec.schemas import FeatureSeed, ForbiddenStorage, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.spec.feature import find_terms, title_allowed_text
@@ -43,6 +43,7 @@ from task_spec.starter.auth_rule import credentials, issued_rule, locked_existin
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
+from task_spec.starter.forbidden_storage import forbidden_for, storage_hits
 from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
     api_functions,
@@ -1113,8 +1114,37 @@ def _timed_requests(
     return out
 
 
-def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
-    """시작 코드가 선언한 테이블(CREATE TABLE·@Table 등)은 계약이 정한 이름이어야 한다 — 숨은 테스트가 그 이름으로 오류를 주입한다."""
+def _starter_forbidden_storage(
+    o: Overlay, forbidden: Sequence[ForbiddenStorage]
+) -> list[StaticProblem]:
+    """함정 틀이 금지한 저장 엔티티 (#318 검사 4 의 빌드 쪽, 설계 검사 #332 T-F2) — 시작 코드(지원자가 받는 기존 시스템)에 테이블·엔티티·
+    저장소·조회 메서드로 두지 않는다. 템플릿의 테이블 선언 규칙이 없어도(비 Java) 같은 글 꼴로 본다. 두면 틀이 숨은 요구로 막은 흔한
+    구현(예: 요청마다 세션 테이블 조회)이 기존 시스템으로 나가고, README '시작 코드' 절에도 실린다. 2026-11-26 알파 r2 3/3 이 기존 API 의
+    세션 확인에 쓸 session·user_session 테이블을 만들었다."""
+    if not forbidden:
+        return []
+    out: list[StaticProblem] = []
+    for f in o.files:
+        for entity, shown in storage_hits(f.content, forbidden):
+            out.append(
+                StaticProblem(
+                    "gen_starter",
+                    f"시작 코드 {f.path} 에 함정 틀이 금지한 저장 방식 {entity} ('{shown}') — 그 상태를 테이블·엔티티·저장소로 "
+                    "두지 않는다. 이미 있는 API 에는 공개 요구가 더하는 발급 값 확인을 넣지 않고, 저장 방식은 지원자 몫으로 남긴다",
+                )
+            )
+    return out
+
+
+def _starter_tables(
+    o: Overlay,
+    t: Template,
+    contract: TaskContract | None,
+    forbidden: Sequence[ForbiddenStorage] = (),
+) -> list[StaticProblem]:
+    """시작 코드가 선언한 테이블(CREATE TABLE·@Table 등)은 계약이 정한 이름이어야 한다 — 숨은 테스트가 그 이름으로 오류를 주입한다.
+    함정 틀이 금지한 저장 엔티티의 테이블은 여기서 다루지 않는다 — 발급 값 예외로도 통과하지 않고 _starter_forbidden_storage 가 따로
+    막는다 (설계 검사 #332 T-F2: 예외가 세션 테이블을 통과시켰다)."""
     naming = t.manifest.naming.table
     if contract is None or naming is None or not naming.declare_patterns:
         return []
@@ -1136,6 +1166,7 @@ def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> l
         for d in declared_tables(o.files, naming.declare_patterns)
         if not any(same_table(d, e, naming) for e in expected.values())
         and not any(same_table(d, s, naming) for s in stores)
+        and forbidden_for(d, forbidden) is None
     ]
     if not stray:
         return []
@@ -2797,8 +2828,10 @@ def static_check(
     avoid_terms: Sequence[str] = (),
     public_tests_visible: bool = False,
     hidden_cases_only: Collection[str] | None = None,
+    forbidden_storage: Sequence[ForbiddenStorage] = (),
 ) -> StaticResult:
-    """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게."""
+    """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게.
+    forbidden_storage: 이 공고의 함정 틀이 금지한 저장 엔티티 (틀 적용 재료가 있을 때 — 계약 단계와 같은 목록)."""
     res = StaticResult()
     hidden_files = [f for o in overlays if o.kind == "hidden" for f in o.files]
     # 코드가 쓴 파일(조절값·계약 도우미)의 이름은 빼고 — 2026-11-09 React 알파: 숨은 도우미 contract.ts 의 이름이 공개 테스트의
@@ -2844,7 +2877,8 @@ def static_check(
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
-            res.problems += _starter_tables(o, template, contract)
+            res.problems += _starter_tables(o, template, contract, forbidden_storage)
+            res.problems += _starter_forbidden_storage(o, forbidden_storage)
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
             res.problems += _starter_issued_calls(o, contract, spec)
@@ -2870,7 +2904,13 @@ def static_check(
             res.problems += _harness_overrides(o, starter, template, plan)
 
     if readme is not None:
-        res.review_flags += readme_flags(readme, spec=spec, seed=seed, avoid_terms=avoid_terms)
+        res.review_flags += readme_flags(
+            readme,
+            spec=spec,
+            seed=seed,
+            avoid_terms=avoid_terms,
+            forbidden_storage=forbidden_storage,
+        )
     res.review_flags = list(dict.fromkeys(res.review_flags))
     return res
 
@@ -2881,6 +2921,7 @@ def readme_flags(
     spec: SpecView,
     seed: FeatureSeed | None = None,
     avoid_terms: Sequence[str] = (),
+    forbidden_storage: Sequence[ForbiddenStorage] = (),
 ) -> list[str]:
     """지원자 README 검사 — 승인자 표시(review_flags)만. README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제
     (재생성으로 못 고침). 표시는 '{README} …' 로 시작한다 (승인 화면 README 경고 칸이 이 머리로 고른다 — api/routers/builds.py).
@@ -2924,6 +2965,13 @@ def readme_flags(
         if shown
         else []
     )
+    # 함정 틀이 금지한 저장 방식 (설계 검사 #332 T-F2) — README 계약 절·'시작 코드' 절(시작 코드의 public 클래스)에서
+    if hits := storage_hits(readme.content, forbidden_storage):
+        out.append(
+            f"{README} 에 함정 틀이 금지한 저장 방식: "
+            + ", ".join(f"{e} '{s}'" for e, s in dict.fromkeys(hits))
+            + " — 계약 또는 시작 코드에서 유래함, 확인 필요"
+        )
     out += _hygiene(None, [readme], avoid_terms)
     out += _secret_hints(None, [readme])
     return out

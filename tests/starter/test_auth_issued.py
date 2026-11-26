@@ -501,3 +501,27 @@ def test_the_starter_may_keep_its_own_issued_value_table() -> None:
     # 발급 규칙이 없는 계약에서는 세션 테이블도 계약 밖이다
     plain = TaskContract.model_validate(_contract())
     assert "user_session" in problems(plain, store)[0]
+
+
+def test_a_trap_frame_forbidden_store_is_not_excused_by_the_issued_value_exception() -> None:
+    """설계 검사 #332 T-F2: 발급 값 예외(#322)는 함정 틀이 금지한 저장 엔티티를 통과시키지 않는다. 예외 전 코드에서 돈 알파(r2 3/3)는
+    '계약 테이블 밖'이 막았지만, 예외가 들어온 뒤에는 token·session_id 열을 가진 세션 테이블이 그대로 시작 코드로 나갔다."""
+    from task_spec.schemas import ForbiddenStorage
+    from task_spec.starter.static_check import _starter_forbidden_storage, _starter_tables
+    from task_spec.starter.templates import load_template
+    from tests.starter.test_templates import JAVA
+
+    t = load_template(JAVA)
+    store = "CREATE TABLE user_session (\n  id BIGINT PRIMARY KEY,\n  session_id VARCHAR(64) NOT NULL,\n  member_id BIGINT\n);"
+    starter = Overlay(
+        kind="starter",
+        files=(GeneratedFile(path="src/main/resources/schema.sql", content=store),),
+    )
+    session = ForbiddenStorage(entity="Session", why="가상 이유")
+    issued = _fit(_session())
+    assert [p.message for p in _starter_tables(starter, t, issued)] == []  # 틀이 없으면 예외 그대로
+    assert [
+        p.message for p in _starter_tables(starter, t, issued, [session])
+    ] == []  # 금지 테이블은 전용 검사 몫
+    got = [p.message for p in _starter_forbidden_storage(starter, [session])]
+    assert len(got) == 1 and "user_session" in got[0] and "함정 틀" in got[0]
