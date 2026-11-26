@@ -186,6 +186,7 @@ from task_spec.schemas.interview_state import (
     TrapAnswers,
 )
 from task_spec.schemas.pseudo_text import PseudonymizedText
+from task_spec.spec.case_frame import CaseFrame
 from task_spec.spec.company_incidents import (
     FLAG_COMPANY_REUSED,
     CompanyIncidentRepo,
@@ -1519,6 +1520,45 @@ class InterviewService:
             len(gaps),
         )
         return _MaterialCheck(flags, [provenance], gaps, analysis)
+
+    async def frame_shared_case(self, coding: PublicIncident, profile: PostingProfile) -> CaseFrame:
+        """공유 회사 사례(co:) 기능형 재료의 함정 틀 — 일반 파이프라인(지원자 실행)이 그 재료로 공통 과제를 만들 때 (설계 검사 #332 S-F8,
+        사용자 결정 2026-11-26). 인터뷰의 공유 재료와 같은 길: 등록 규칙으로 다시 보고(blocked_findings) 그 재료의 토큰만 허용하는
+        shared_json — 이 공고에는 인터뷰가 없어 대응표는 비어 있다. 재료 분석·틀이 실패하거나 건너뛰어도 막지 않고 원 재료와 표시로."""
+        if self.llm is None or self.prompts is None or coding.feature is None:
+            return CaseFrame(incident=coding)
+        try:
+            template = coding_template(profile.sub or "")
+        except TaskGenerationFailed:
+            return CaseFrame(incident=coding)
+        inp = _GenerationInputs(
+            interview=False,
+            llm=self.llm,
+            prompts=self.prompts,
+            tasks=self.tasks,  # type: ignore[arg-type]
+            common_store=self.common_store,  # type: ignore[arg-type]
+            incident=coding,
+            mapping=RunMapping(),
+            profile=profile,
+            chosen=profile,
+            matches=[],
+            all_matches=[],
+            template=template,
+            reviewer_note=None,
+        )
+        checked = await self._material_check(coding, inp, shared=True)
+        framed = await self._trap_frame(coding, inp, checked.analysis, shared=True)
+        flags = [*checked.flags, *framed.flags]
+        provenance = [*checked.provenance, *framed.provenance]
+        if framed.framed is None or framed.frame is None:
+            return CaseFrame(incident=coding, flags=flags, provenance=provenance)
+        return CaseFrame(
+            incident=coding.model_copy(update={"feature": framed.framed}),
+            frame=framed.frame,
+            framed=FramedMaterial(seed=framed.framed, frame=framed.frame),
+            flags=flags,
+            provenance=provenance,
+        )
 
     async def _guarded_material(
         self, coding: PublicIncident, block: dict[str, Any], inp: _GenerationInputs, *, shared: bool

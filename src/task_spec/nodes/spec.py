@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -23,6 +24,7 @@ from task_spec.prompting import PromptError, PromptRegistry
 from task_spec.schemas import (
     ApprovalDecision,
     CommonRef,
+    FramedMaterial,
     NodeError,
     PostingProfile,
     Provenance,
@@ -36,6 +38,7 @@ from task_spec.schemas import (
 from task_spec.spec.analysis_request import TASK as ANALYSIS_TASK
 from task_spec.spec.analysis_request import apply_analysis, draft_analysis_request
 from task_spec.spec.build import build_common
+from task_spec.spec.case_frame import FLAG_CASE_FRAME_FAILED, CaseFrame, CaseFramer
 from task_spec.spec.company_incidents import (
     FLAG_COMPANY_REUSED,
     CompanyIncident,
@@ -73,6 +76,8 @@ from task_spec.spec.summary import approval_summary
 
 ApprovalRoute = Literal["finalize", "draft_spec", "__end__"]
 
+
+logger = logging.getLogger(__name__)
 
 FLAG_NO_DRAFTER = "draft_task 미연결 — 결정적 골격만 (제목·상황·행동 기준 없음)"
 SKELETON_REF = "skeleton"
@@ -161,6 +166,7 @@ def make_draft_spec(
     feature_default: bool = False,
     company_incidents: CompanyIncidentRepo | None = None,
     company_of: CompanyResolver | None = None,
+    case_framer: CaseFramer | None = None,
 ) -> Callable[[RunState], Awaitable[dict[str, Any]]]:
     """공통 과제 = 결정적 골격 + 서술(LLM). 공고·온톨로지만 쓴다 — 지원자 문서·주장을 읽지 않는다 (불변식 3).
 
@@ -294,6 +300,9 @@ def make_draft_spec(
                 rule_feature_on=feature_default and feature_ready and (seed_ok or not seed_needed),
             )
             catalog = incidents
+            company_case: PublicIncident | None = (
+                None  # 이 실행이 고른 공유 회사 사례 (함정 틀 대상 — S-F8)
+            )
             if keeping:
                 kind_flags = [*kind_flags, *await _kept_company_flags(store, state)]
             elif store is not None and (company_pool or posting_used):
@@ -308,6 +317,7 @@ def make_draft_spec(
                 )
                 if pick.incident is not None:
                     catalog = with_incident(incidents, pick.incident)
+                    company_case = pick.incident
                 kind_flags = [*kind_flags, *pick.flags]
             built = await build_common(
                 p,
@@ -366,6 +376,10 @@ def make_draft_spec(
                 # 그 사이 승인된 판·다른 실행의 새 판·바뀐 프롬프트의 새 판으로 바뀌어 승인자가 본 과제가 사라진다
                 prev = state.spec if revise is not None and not redo_common else None
                 kept = prev.common_tasks[0] if prev is not None and prev.common_tasks else None
+                # 공유 회사 사례의 함정 틀 (S-F8) — 새 초안을 쓸 때만 채운다
+                framed_material: FramedMaterial | None = None
+                frame_flags: list[str] = []
+                frame_prov: list[Provenance] = []
                 reused = (
                     await store.reusable(key)
                     if store is not None and not redo_common and kept is None
@@ -409,6 +423,29 @@ def make_draft_spec(
                     else:
                         assert built.ctx is not None and llm is not None and prompts is not None
                         if kind == "feature":
+                            if (
+                                case_framer is not None
+                                and company_case is not None
+                                and built.ctx.incident is not None
+                                and built.ctx.incident.incident_id == company_case.incident_id
+                            ):
+                                # 공유 회사 사례도 인터뷰처럼 재료 분석·함정 틀 (설계 검사 #332 S-F8) — 새 초안을 쓸 때만 (재사용 초안은 저장된
+                                # 틀). 저장 키는 원 재료 기준이라 그대로 — 틀은 LLM 글이라 실행마다 달라질 수 있다
+                                try:
+                                    cf = await case_framer(built.ctx.incident, p)
+                                except Exception as exc:  # noqa: BLE001 — 틀은 막지 않는다: 원 재료로 (개인정보 점검 M1)
+                                    logger.warning("case_frame_failed type=%s", type(exc).__name__)
+                                    cf = CaseFrame(
+                                        incident=built.ctx.incident,
+                                        flags=[FLAG_CASE_FRAME_FAILED],
+                                    )
+                                built.ctx.incident = cf.incident
+                                built.ctx.trap_frame = cf.frame
+                                framed_material, frame_flags, frame_prov = (
+                                    cf.framed,
+                                    cf.flags,
+                                    cf.provenance,
+                                )
                             res = await draft_feature_task(
                                 built.ctx,
                                 llm=llm,
@@ -416,6 +453,10 @@ def make_draft_spec(
                                 reviewer_note=note if redo_common else None,
                             )
                             task = apply_feature(task, res)
+                            if frame_flags:
+                                task = task.model_copy(
+                                    update={"review_flags": [*task.review_flags, *frame_flags]}
+                                )
                         else:
                             res = await draft_task(
                                 built.ctx,
@@ -424,7 +465,10 @@ def make_draft_spec(
                                 reviewer_note=note if redo_common else None,
                             )
                             task = apply(task, res)
-                        update = {"provenance": res.provenance, "errors": res.errors}
+                        update = {
+                            "provenance": [*frame_prov, *res.provenance],
+                            "errors": res.errors,
+                        }
                         if use_analysis and task.title:
                             ares = await draft_analysis_request(
                                 task,
@@ -461,7 +505,9 @@ def make_draft_spec(
                                 "errors": [*update["errors"], *sres.errors],
                             }
                     if store is not None:
-                        saved = await store.save_draft(key, task, update.get("provenance", []))
+                        saved = await store.save_draft(
+                            key, task, update.get("provenance", []), framed=framed_material
+                        )
                         task = saved.task
                         refs.append(
                             CommonRef(

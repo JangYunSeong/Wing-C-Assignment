@@ -419,3 +419,49 @@ def test_removed_designs_are_named_in_the_notes() -> None:
     ), notes
     _, notes = apply_frame(seed3, _frame(), removed_designs=[designs[2][:12]])
     assert any("허용 설계 1개를 뺌 (사람 결정): 가상 세 번째 설계" in n for n in notes), notes
+
+
+async def test_a_shared_company_case_is_framed_for_the_general_pipeline(frame_env: Any) -> None:
+    """설계 검사 #332 S-F8: 일반 파이프라인이 공유 회사 사례로 공통 과제를 만들 때 인터뷰 서비스가 같은 가명화 길(등록 규칙·shared_json —
+    그 재료의 토큰만 허용, 대응표 없음)로 재료 분석·함정 틀을 만든다. 틀 적용 재료는 기능형 칸만 바꾼 사본이다."""
+    from tests.interview.conftest import POSTING_ID
+
+    session, _, _ = frame_env
+    case = known_incident().model_copy(
+        update={
+            "incident_id": "co:sw.backend:aaaa00000001",
+            "feature": SEED,
+            "known_incident_cases": [],
+        }
+    )
+    profile = await session.service.postings.profile(POSTING_ID)
+    assert profile is not None
+    session.backend.push(ANALYSIS, Completion(_frame().model_dump_json()))
+    framed = await session.service.frame_shared_case(case, profile)
+    assert framed.framed is not None and framed.frame == _frame()
+    assert framed.incident.feature is not None
+    assert framed.incident.feature.hidden_requirement == HIDDEN
+    assert framed.incident.incident_id == case.incident_id  # 기능형 칸만 바꾼 사본
+    assert framed.provenance  # 재료 분석·틀 호출 출처
+
+
+async def test_a_shared_case_frame_with_a_forged_token_is_not_used(frame_env: Any) -> None:
+    """개인정보 점검 권고 (#332 S-F8): 공유 회사 사례 경로는 빈 대응표 + 그 재료의 토큰만 허용한다 — 틀 출력에 재료에 없는 토큰이 있으면
+    (위조·다른 대응표의 토큰) 틀을 쓰지 않고 원 재료와 표시로 남는다."""
+    from tests.interview.conftest import POSTING_ID
+
+    session, _, _ = frame_env
+    case = known_incident().model_copy(
+        update={
+            "incident_id": "co:sw.backend:aaaa00000002",
+            "feature": SEED,
+            "known_incident_cases": [],
+        }
+    )
+    profile = await session.service.postings.profile(POSTING_ID)
+    assert profile is not None
+    forged = _frame(hidden_requirement=HIDDEN + " [PERSON_77] 의 세션은 따로 둔다.")
+    session.backend.push(ANALYSIS, Completion(forged.model_dump_json()))
+    framed = await session.service.frame_shared_case(case, profile)
+    assert framed.framed is None and framed.frame is None
+    assert framed.incident == case and framed.flags

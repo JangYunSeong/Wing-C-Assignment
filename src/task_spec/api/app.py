@@ -155,6 +155,8 @@ def create_app(
                 feature_task_default=app.state.settings.feature_task_default,
                 company_incidents=company_incidents,
                 company_of=company_of,
+                # 공유 회사 사례도 인터뷰처럼 재료 분석·함정 틀 (설계 검사 #332 S-F8) — 인터뷰와 같은 가명화 길
+                case_framer=app.state.interviews.frame_shared_case,
             )
             app.state.launcher = RunLauncher(app.state.graph)
             # 빌드(시작 코드) 승인 — 실행 그래프와 같은 체크포인터, thread 는 빌드·결과마다 (#130)
