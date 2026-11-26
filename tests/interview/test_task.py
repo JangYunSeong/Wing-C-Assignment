@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,6 +168,7 @@ class FakeTaskMaker:
     slot_scenario: str | None = None
     fail: Exception | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
+    slot_profiles: list[list[str]] = field(default_factory=list)  # 슬롯 단계가 받은 역량 (S-F18)
     gate: asyncio.Event | None = (
         None  # 있으면 기능형 초안 단계가 열릴 때까지 기다린다 (생성 중 상태를 보려고)
     )
@@ -207,6 +209,9 @@ class FakeTaskMaker:
         return made
 
     async def slots(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        self.slot_profiles.append(
+            [c.competency_id for c in (req.slot_profile or req.profile).competencies]
+        )
         if not self.slot_scenario:
             return made
         slots = [slot_task(req.profile, self.slot_scenario)]
@@ -451,6 +456,7 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
     async def build_slots(profile: Any, matches: Any, task: Any, ctx: Any, **kwargs: Any) -> Any:
         seen["slots_ctx"] = (ctx.with_known_answers, ctx.env.basis)
         seen["slots_note"] = kwargs.get("reviewer_note")
+        seen["slots_profile"] = [c.competency_id for c in profile.competencies]
         return SimpleNamespace(slots=[], provenance=[], flags=["가상 슬롯"])
 
     monkeypatch.setattr(task_module, "build_common", build_common)
@@ -474,6 +480,21 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
     assert seen["answers"] is True and seen["incidents"] == {"sw.backend": incident}
     # 수정 요청은 요청 글·확장 슬롯에도 (설계 검사 #332 S-F17)
     assert seen["request_note"] == seen["slots_note"] == req.reviewer_note
+    # 확장 슬롯은 공고 전체 역량으로 — 공통 과제 밖 역량을 슬롯이 먼저 본다 (설계 검사 #332 S-F18)
+    whole = PROFILE.model_copy(
+        update={
+            "sub": "sw.backend",
+            "competencies": [
+                *PROFILE.competencies,
+                PostingCompetency(
+                    competency_id="comp:extra", label="가상 다른 역량", primary=False
+                ),
+            ],
+        }
+    )
+    wide = dataclasses.replace(req, slot_profile=whole, slot_matches=[])
+    await maker.slots(wide, made)
+    assert "comp:extra" in seen["slots_profile"]
     assert made.task.tech_env.basis == "직군 기본 코딩 템플릿" and made.flags == [
         "가상 골격",
         "가상 슬롯",
@@ -1163,3 +1184,12 @@ def test_seed_words_already_in_the_business_need_are_dropped_with_a_flag() -> No
     fitted, notes = fit_seed_to_template(seed, manifest)
     assert fitted.leak_terms == ["커넥션 풀"]
     assert any(n.startswith(FLAG_SEED_FIT) and "감사 기록" in n for n in notes)
+
+
+async def test_interview_slots_see_the_whole_posting(task_session) -> None:
+    """설계 검사 #332 S-F18 (사용자 결정 2026-11-26): 공통 과제는 고른 역량으로, 확장 슬롯은 공고 전체 역량으로 — 슬롯이 공통 과제 밖
+    역량을 먼저 확인한다. 예전에는 고른 역량만 넘겨 그 규칙이 성립하지 않았다."""
+    session, maker, _ = task_session
+    await generated(session)
+    assert maker.slot_profiles and set(maker.slot_profiles[-1]) == {c for c, _ in COMPETENCIES}
+    assert set(SELECTED) < set(maker.slot_profiles[-1])

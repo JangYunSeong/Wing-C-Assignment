@@ -241,6 +241,8 @@ class _GenerationInputs:
     profile: PostingProfile
     chosen: PostingProfile  # 고른 역량만
     matches: list[CompetencyEvidence]
+    # 공고 전체 역량의 근거 — 확장 슬롯이 공통 과제 밖 역량을 고른다 (설계 검사 #332 S-F18)
+    all_matches: list[CompetencyEvidence]
     template: Template
     reviewer_note: str | None
     # ⑧ 보강 질문의 답 (#308, 인터뷰 사례만) — seed 가 기능형 재료·재료 분석 입력에 넣는다
@@ -1440,6 +1442,7 @@ class InterviewService:
             profile=profile,
             chosen=chosen,
             matches=[e for e in choice.matches if e.competency_id in selected],
+            all_matches=list(choice.matches),
             template=coding_template(profile.sub or ""),
             reviewer_note=self._reviewer_note(state),
             reinforce=tuple(state.reinforce_answers) if interview else (),
@@ -1642,6 +1645,8 @@ class InterviewService:
         req = TaskRequest(
             profile=inp.chosen,
             matches=inp.matches,
+            slot_profile=inp.profile,  # 확장 슬롯은 공고 전체 역량으로 (설계 검사 #332 S-F18)
+            slot_matches=inp.all_matches,
             coding_incident=self._framed(
                 g
             ),  # 틀 적용 재료가 있으면 그것으로 (#318) — 명세가 재료에서 숨은 요구·허용 설계를 복사한다

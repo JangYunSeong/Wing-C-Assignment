@@ -448,6 +448,10 @@ class TaskRequest:
     reviewer_note: str | None = None
     # 이 공고의 함정 틀 (#318) — 명세 초안이 공개 쪽을 받는다 (draft_feature_task v13). coding_incident 는 이미 틀 적용 재료다
     frame: TrapFrame | None = None
+    # 확장 슬롯은 공고 전체 역량·근거로 — 공통 과제가 다루지 않은 역량을 슬롯이 먼저 확인한다 (spec/slots.plan_slots). 고른 역량만 넘기면
+    # 그 규칙이 성립하지 않았다 (설계 검사 #332 S-F18, 사용자 결정 2026-11-26). None 이면 profile·matches 그대로 (예전 호출)
+    slot_profile: PostingProfile | None = None
+    slot_matches: list[CompetencyEvidence] | None = None
 
 
 class TaskMaker(Protocol):
@@ -585,8 +589,8 @@ class OntologyTaskMaker:
     async def slots(self, req: TaskRequest, made: MadeTask) -> MadeTask:
         _, ctx, _ = await self._context(req)
         slots = await build_slots(
-            req.profile,
-            req.matches,
+            req.slot_profile or req.profile,
+            req.slot_matches if req.slot_matches is not None else req.matches,
             made.task,
             ctx,
             ontology=self.ontology,
