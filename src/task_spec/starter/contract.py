@@ -527,6 +527,24 @@ def _show(expected: tuple[float, float] | None) -> str:
     return f"{lo:g}" if lo == hi else f"{lo:g}~{hi:g}"
 
 
+# 단위 없는 근거 값을 다른 시간 단위로 읽기 — 조절값 단위 → (곱할 수, 승인자 표시). 근거에 단위가 없어 어느 쪽인지 정할 수 없을 때만
+_BARE_SWAP: dict[str, tuple[float, str]] = {
+    "ms": (
+        1000.0,
+        "근거 값 글자 {vt!r} 에 단위가 없어 초로 읽은 값 (밀리초로 읽으면 다름) — 승인자 확인",
+    ),
+    "s": (
+        0.001,
+        "근거 값 글자 {vt!r} 에 단위가 없어 밀리초로 읽은 값 (초로 읽으면 다름) — 승인자 확인",
+    ),
+}
+
+
+def _swapped_notes(notes: list[str], note: str) -> tuple[str, ...]:
+    """단위를 바꿔 읽은 값이면 '조절값 단위로 읽음' 표시를 바꿔 읽은 표시로."""
+    return (*(n for n in notes if "조절값 단위" not in n), note)
+
+
 def value_check(
     value: HarnessValue,
     quote: str,
@@ -616,10 +634,20 @@ def value_check(
             return ValueCheck("ambiguous", source=tuple(t.raw for t in cands))
         notes.append(f"근거 인용에 같은 종류의 숫자가 여럿 — 값 글자 {vt!r} 를 씀")
     v, eps = float(value), 1e-9
+    # 근거 값에 단위가 없으면(머리 줄·붙은 단위 모두 없음) 어느 단위인지 정할 수 없다 — 조절값 단위로 읽은 값과 초↔밀리초로 바꿔 읽은
+    # 값을 둘 다 받고, 바꿔 읽은 쪽이면 승인자 표시. 표기 패턴(메트릭 이름의 _seconds 등)을 하나씩 더하지 않는다.
+    # 2026-11-25 목록 조회 알파: 'db_query_roundtrip_latency_seconds … p50=0.038' 을 ms 로만 읽어 0 을 강요, 38 을 거절해 계약 실패
+    alt = _BARE_SWAP.get(unit or "") if kind(claimed) == "bare" else None
     if rule is not None:
         expected = (_fit(lo, rule.round), _fit(hi, rule.round))
         if expected[0] - eps <= v <= expected[1] + eps:
             return ValueCheck("ok", expected, (claimed.raw,), tuple(notes))
+        if alt is not None:
+            swapped = (_fit(lo * alt[0], rule.round), _fit(hi * alt[0], rule.round))
+            if swapped[0] - eps <= v <= swapped[1] + eps:
+                return ValueCheck(
+                    "ok", swapped, (claimed.raw,), _swapped_notes(notes, alt[1].format(vt=vt))
+                )
         return ValueCheck("mismatch", expected, (claimed.raw,))
     # 규칙 없는 조절값 — 값 그대로, 또는 정수로 맞춘 값. 시간 단위를 바꾼 값의 반올림·올림은 표시 없이 받고(500ms → 1초),
     # 그 밖에 정수로 맞춘 것은 승인자 표시 [확정: 2026-11-11 사용자 — 'p50: 8.1' 로 8]
@@ -632,6 +660,19 @@ def value_check(
         if v in (_fit(x, "nearest"), _fit(x, "down"), _fit(x, "up")):
             notes.append(f"근거 값 글자 {claimed.raw!r} 를 정수로 맞춘 값")
             return ValueCheck("ok", (lo, hi), (claimed.raw,), tuple(notes))
+    if alt is not None:
+        for x in (lo * alt[0], hi * alt[0]):
+            if lo * alt[0] - eps <= v <= hi * alt[0] + eps or v in (
+                _fit(x, "nearest"),
+                _fit(x, "up"),
+                _fit(x, "down"),
+            ):
+                return ValueCheck(
+                    "ok",
+                    (lo * alt[0], hi * alt[0]),
+                    (claimed.raw,),
+                    _swapped_notes(notes, alt[1].format(vt=vt)),
+                )
     return ValueCheck("mismatch", (lo, hi), (claimed.raw,))
 
 

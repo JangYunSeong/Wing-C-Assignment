@@ -226,14 +226,38 @@ def test_material_listing_params_keeps_only_those() -> None:
     )
     fixed, notes = fit_material_params(plan, t.manifest, known)
     assert fixed.harness == {"query_delay_ms": 12, "request_timeout_s": 1, "pool": 3}
-    assert not any(d.burst for c in fixed.cases for d in c.data)
-    assert "concurrency, pool_size" in notes[0] and "버스트 표시도 끔" in notes[0]
-    # 갱신 손실 재료는 concurrency 만 나열 — 다른 운영 값은 빼지만 버스트 장치(bursts)는 남아 버스트 표시를 끄지 않는다.
+    assert "concurrency, pool_size" in notes[0]
+    # 버스트 표시는 여기서 건드리지 않는다 — 조절값을 다 맞춘 뒤 fit_burst_marks 가 최종 상태로 본다 (2026-11-25)
+    assert all(d.burst for c in fixed.cases for d in c.data)
+    # 갱신 손실 재료는 concurrency 만 나열 — 다른 운영 값은 뺀다.
     # 지연(query_delay_ms)은 v4 부터 숨은 장치(기본값 20)라 재료 나열과 무관하게 남는다 (template_mechanics)
     fixed, notes = fit_material_params(plan, lt.manifest, known)
     assert fixed.harness == {"query_delay_ms": 12, "concurrency": 1, "pool": 3}
     assert all(d.burst for c in fixed.cases for d in c.data)
-    assert "버스트 표시도 끔" not in notes[0]
+
+
+def test_burst_marks_without_burst_params_are_turned_off_unless_the_reason_is_a_peak() -> None:
+    """2026-11-25 재시도 중복 알파 2회: hc2(같은 X-Request-Id 를 동시에)에 burst 를 붙였는데 concurrency 가 처음부터 없어, '버스트 행 수를
+    잴 조절값 없음'과 'concurrency 는 자료에 없으니 뺀다'가 서로 막았다. 예전에는 코드가 조절값을 뺄 때만 표시를 껐다 — 이제 조절값을
+    다 맞춘 뒤 최종 상태로 본다. 운영 피크 사유(pool_acquire_timeout)는 동시 요청 수가 있어야 하니 끄지 않는다 (검사가 다시 묻는다)."""
+    from task_spec.nodes.starter.plan_contract import fit_burst_marks
+    from task_spec.starter.templates import load_template
+
+    m = load_template("backend/java-spring-boot3-jpa").manifest
+    burst = [{"entity_id": "m1", "rows": 1, "burst": True}]
+
+    def plan(reason: str, harness: dict[str, Any]) -> HiddenPlan:
+        return HiddenPlan.model_validate(
+            _with({"intended_reason": reason, "data": burst}) | {"harness": harness}
+        )
+
+    fixed, notes = fit_burst_marks(plan("duplicate_record", {"bursts": 3}), m)
+    assert not any(d.burst for c in fixed.cases for d in c.data)
+    assert "버스트 표시를 끔" in notes[0] and "concurrency" in notes[0]
+    peak = plan("pool_acquire_timeout", {"bursts": 3})
+    assert fit_burst_marks(peak, m) == (peak, [])
+    full = plan("duplicate_record", {"concurrency": 4, "bursts": 3})
+    assert fit_burst_marks(full, m) == (full, [])
 
 
 def test_fault_items_must_list_test_items_and_leave_one_unfailed() -> None:

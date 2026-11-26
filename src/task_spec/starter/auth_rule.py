@@ -118,6 +118,120 @@ def login_candidates(contract: TaskContract, rule: AuthRule) -> list[Entity]:
     return [m for m in contract.entities if names <= {f.name for f in m.fields}]
 
 
+_ENTITY_REF = re.compile(r"\bm\d{1,2}\b")
+
+
+def issued_stores(contract: TaskContract) -> list[str]:
+    """로그인이 발급하는 값(issued_field — 예: sessionId)을 칸으로 가진 엔티티 중 로그인 엔티티가 아니고 어느 API 도 돌려주지 않는 것.
+    발급 값을 어디에 둘지(DB 테이블·토큰 자체·메모리)는 지원자의 설계 몫이다 — 허용 설계(JWT·메모리)는 이 저장소를 읽지 않는다.
+    API 가 그 엔티티를 돌려주면(returns) 공개 동작이라 저장소가 아니다."""
+    rules = [
+        e.auth
+        for e in contract.endpoints
+        if e.auth is not None and e.auth.kind == "issued" and e.auth.issued_field
+    ]
+    if not rules:
+        return []
+    fields = {r.issued_field for r in rules}
+    login = {m.entity_id for r in rules for m in login_candidates(contract, r)}
+    observed = {
+        ref
+        for e in contract.endpoints
+        for resp in e.responses
+        if resp.returns
+        for ref in _ENTITY_REF.findall(resp.returns)
+    }
+    return [
+        m.entity_id
+        for m in contract.entities
+        if m.entity_id not in login
+        and m.entity_id not in observed
+        and any(f.name in fields for f in m.fields)
+    ]
+
+
+def fit_issued_store(
+    contract: TaskContract, plan: HiddenPlan
+) -> tuple[TaskContract, HiddenPlan, list[str]]:
+    """발급 값의 저장소 엔티티(issued_stores)를 공개 계약에서 뺀다 — 엔티티·시드·공개 몫 행·covers·외래 키, 그 행을 쓰던 숨은 케이스
+    data 는 로그인 엔티티 행으로 옮긴다 (요청마다 다른 사용자로 로그인 — 행별 자격 증명은 도우미가 준다).
+    2026-11-25 운영 b6 (세션 유지): 재료의 계약 요구가 '세션 엔티티'를 가리켜 계약이 Session 을 시드 323행의 기존 테이블로 만들었다.
+    규칙 글('id 6~10 은 만료')을 믿은 시작 코드 테스트와, 세션 행 공개 몫으로 로그인한 공개 테스트가 떨어졌다. 같은 명세의 알파는
+    Session 을 빈 새 엔티티로 두어 통과 — 그래도 저장 확인(PersistenceCheckTest)이 Session JPA 엔티티를 요구해 'DB 에 둔다'를
+    유도했다 (#308 원인 1). 흔한 구현은 자기 테이블을 스스로 만든다 (참조 구현은 schema.sql 을 다시 쓸 수 있다)."""
+    stores = issued_stores(contract)
+    if not stores:
+        return contract, plan, []
+    names = {m.entity_id: m.name for m in contract.entities}
+    gone = {names[s] for s in stores}
+    rules = [e.auth for e in contract.endpoints if e.auth is not None and e.auth.kind == "issued"]
+    logins = list(dict.fromkeys(m.entity_id for r in rules for m in login_candidates(contract, r)))
+    login = logins[0] if len(logins) == 1 else None
+    entities = [
+        m.model_copy(
+            update={
+                "foreign_keys": [
+                    fk for fk in m.foreign_keys if fk.split("→")[-1].strip() not in gone
+                ]
+            }
+        )
+        for m in contract.entities
+        if m.entity_id not in stores
+    ]
+    endpoints = [
+        e.model_copy(update={"auth": e.auth.model_copy(update={"entity": login})})
+        if e.auth is not None and e.auth.entity in stores
+        else e
+        for e in contract.endpoints
+    ]
+    moved: list[str] = []
+    cases = []
+    for c in plan.cases:
+        data = []
+        for d in c.data:
+            if d.entity_id not in stores:
+                data.append(d)
+            elif login is not None:
+                # 처음 값은 옮기지 않는다 — 저장소 칸의 뜻은 로그인 엔티티로 넘어가지 않는다 (운영 b6: 세션의 외래 키 userId=1 이
+                # 회원의 기본 키 userId 와 이름만 같아, 300행이 같은 기본 키를 요구하는 꼴이 됐다)
+                data.append(d.model_copy(update={"entity_id": login, "initial": {}}))
+                moved.append(c.case_id)
+        cases.append(c.model_copy(update={"data": data}))
+    contract = TaskContract.model_validate(
+        contract.model_copy(
+            update={
+                "entities": entities,
+                "endpoints": endpoints,
+                "seed": [s for s in contract.seed if s.entity_id not in stores],
+                "public_tests": [
+                    t.model_copy(update={"rows": [u for u in t.rows if u.entity_id not in stores]})
+                    for t in contract.public_tests
+                ],
+                "covers": {
+                    k: [x for x in v if x not in stores] for k, v in contract.covers.items()
+                },
+                "fixtures": [f for f in contract.fixtures if f.entity not in stores],
+            }
+        ).model_dump()
+    )
+    plan = HiddenPlan.model_validate(plan.model_copy(update={"cases": cases}).model_dump())
+    field = ", ".join(sorted({r.issued_field for r in rules if r.issued_field}))
+    where = (
+        f" · 숨은 케이스 {', '.join(dict.fromkeys(moved))} 의 그 행을 로그인 엔티티 {names[login]} 행으로"
+        if moved and login is not None
+        else ""
+    )
+    return (
+        contract,
+        plan,
+        [
+            f"{', '.join(sorted(gone))} 엔티티를 공개 계약에서 뺌 — 로그인이 발급하는 값({field})을 담는 저장소는 지원자 설계 몫 "
+            "(계약에 두면 'DB 에 둔다'를 유도하고, 시드·테스트가 쓰면 그 저장소를 읽지 않는 허용 설계가 떨어진다)"
+            + where
+        ],
+    )
+
+
 def login_fields(contract: TaskContract) -> dict[str, list[str]]:
     """로그인(issued) 엔티티 id → 발급 API 요청 칸(자격 증명) 이름. 로그인 행(rows)이 정해지기 전에도 찾는다 — 엔티티는 fit_auth
     (_fit_login_entity)와 같이 정한다: 적힌 entity 가 후보면 그것, 아니면 후보가 하나일 때 그것.

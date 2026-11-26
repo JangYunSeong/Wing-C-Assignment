@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from task_spec.schemas.build import HiddenPlan
-from task_spec.starter.feasibility import evaluate, feasibility_problems, harness_env, parse
+from task_spec.starter.feasibility import (
+    evaluate,
+    feasibility_problems,
+    fit_feasible_rows,
+    harness_env,
+    parse,
+)
 from task_spec.starter.templates import load_template
 
 JAVA = load_template("backend/java-spring-boot3-jpa").manifest
@@ -54,6 +60,22 @@ def test_list_query_per_row_must_be_able_to_time_out() -> None:
     assert feasibility_problems(_plan({"query_delay_ms": 0}, "request_timeout"), JAVA)  # 지연 없음
     ok = _plan({"query_delay_ms": 11, "request_timeout_s": 1}, "request_timeout")  # 2.2초 ≥ 1초
     assert feasibility_problems(ok, JAVA) == []
+
+
+def test_case_rows_are_raised_until_the_reason_can_hold() -> None:
+    """2026-11-25 목록 조회 알파: 행 50 × 지연 12ms < 한도 2초를 계약 재요청 3회 안에 못 맞춰 실패 — 행 수는 운영 값이 아니라 케이스 안에서
+    정하는 값이라 코드가 템플릿 식으로 계산해 늘린다. 상한(2000행) 안에서 못 맞추면 그대로 두어 검사가 다시 묻는다."""
+    plan = _plan({"query_delay_ms": 12, "request_timeout_s": 2}, "request_timeout", rows=50)
+    fixed, notes = fit_feasible_rows(plan, JAVA)
+    assert fixed.cases[0].data[0].rows == 167 and feasibility_problems(fixed, JAVA) == []
+    assert "행 50 → 167" in notes[0]
+    ok = _plan({"query_delay_ms": 11, "request_timeout_s": 1}, "request_timeout")
+    assert fit_feasible_rows(ok, JAVA) == (ok, [])
+    far = _plan({"query_delay_ms": 1, "request_timeout_s": 30}, "request_timeout", rows=50)
+    assert fit_feasible_rows(far, JAVA) == (far, [])
+    # 행 수를 쓰지 않는 조건(풀 고갈)은 건드리지 않는다
+    pool = _plan({"pool_size": 20, "concurrency": 10}, "pool_acquire_timeout")
+    assert fit_feasible_rows(pool, JAVA) == (pool, [])
 
 
 def test_pool_exhaustion_needs_concurrency_at_least_the_pool() -> None:
