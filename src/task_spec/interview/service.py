@@ -19,7 +19,7 @@ import asyncio
 import copy
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -92,6 +92,7 @@ from task_spec.interview.stream import QuestionStream
 from task_spec.interview.task import (
     FEATURE_SEED_PROMPT,
     TARGETED_PROMPT,
+    TARGETED_TASK_FIELDS,
     CompetencyChoice,
     MadeTask,
     TaskGenerationFailed,
@@ -106,6 +107,7 @@ from task_spec.interview.task import (
     pseudonymize_changes,
     questions_for,
     ready_coding_incident,
+    targeted_draft_texts,
     task_frame,
     task_kind_for,
     with_content_flags,
@@ -477,6 +479,16 @@ class InterviewService:
 
     def _check(self, mapping: RunMapping) -> Callable[[str], str]:
         return partial(self.pseudo.derived, mapping=mapping)
+
+    def _rejected_paths(self, texts: Iterable[tuple[str, str]], mapping: RunMapping) -> list[str]:
+        """LLM 입력 검사(`derived`)가 거절할 글의 칸 경로 — 사유 문구 대신 고칠 칸을 알릴 때."""
+        rejected: list[str] = []
+        for path, text in texts:
+            try:
+                self.pseudo.derived(text, mapping)
+            except InterviewTextRejected:
+                rejected.append(path)
+        return rejected
 
     def _stored_json(self, mapping: RunMapping) -> Callable[..., PseudonymizedText]:
         def stored(value: Any, *, compact: bool = False) -> PseudonymizedText:
@@ -1750,6 +1762,7 @@ class InterviewService:
                     [*made.flags, *task.review_flags, *reuse, *seed_flags],
                     task,
                     coding_incident,
+                    targeted,  # 숨은 조건도 답 초안 입력이다 (답은 아직 없다)
                     frame=g.trap_frame,
                 ),
                 reinforce_questions=questions,
@@ -1873,7 +1886,8 @@ class InterviewService:
         self, interview_id: str, question_id: str, *, revision: int, question: str
     ) -> dict[str, Any]:
         """짚은 질문에 줄 답의 편집용 초안 (저장하지 않음). 내부 자료 id 가 들어가거나 기준 답안을 옮겨 적거나
-        너무 길면 한 번 더 받는다 — 두 번 다 걸리면 503 (담당자는 직접 적을 수 있다)."""
+        너무 길면 한 번 더 받는다 — 두 번 다 걸리면 503 (담당자는 직접 적을 수 있다).
+        입력으로 보낼 과제 글이 입력 검사에 걸리면 422 와 그 칸 경로 (과제를 고쳐야 한다)."""
         async with self._lock(interview_id):
             row = await self._load(interview_id)
             self._expect_revision(row, revision)
@@ -1891,17 +1905,18 @@ class InterviewService:
             text = await self._pseudonymize(question, mapping)
             if not text:
                 raise InterviewInvalid("질문을 입력해 주세요")
-            task_json = spec.common_task.model_dump_json(
-                include={
-                    "scenario": True,
-                    "requirements": {"__all__": {"text"}},
-                    "facts": {"__all__": {"topic", "ask_when", "answer", "answer_hint"}},
-                    "clarifications": {
-                        "__all__": {"topic", "ask_when", "match_terms", "answer", "answer_hint"}
-                    },
-                    "artifacts": {"__all__": {"title", "content"}},
-                }
+            # 입력 검사가 거절할 과제 글은 LLM 을 부르기 전에 칸으로 알린다 — 같은 글이면 다시 시도해도 똑같이 거절된다.
+            # 생성 때 붙는 표시(contact_pattern_flags)와 같은 칸이고, 입력 검사도 칸마다 한다(stored_json)
+            blocked = self._rejected_paths(
+                targeted_draft_texts(spec.common_task, [target]), mapping
             )
+            if blocked:
+                logger.info("interview_targeted_blocked fields=%d", len(blocked))
+                raise InterviewInvalid(
+                    f"과제 글({', '.join(blocked[:5])})에 링크·연락처 형식이나 이 인터뷰에 없는 가명화 토큰이 있어"
+                    " 답할 범위 초안을 만들 수 없습니다. 과제를 고친 뒤 다시 시도해 주세요"
+                )
+            task_json = spec.common_task.model_dump(mode="json", include=TARGETED_TASK_FIELDS)
             check = self._check(mapping)
             try:
                 prompt = assemble(
@@ -1909,7 +1924,7 @@ class InterviewService:
                     TargetedAnswerDraftInput(
                         question=self.pseudo.stored(text, mapping),
                         hidden_condition=self.pseudo.stored(target.hidden_condition, mapping),
-                        task_json=self.pseudo.stored(task_json, mapping),
+                        task_json=self.pseudo.stored_json(task_json, mapping, compact=True),
                     ),
                     ontology_version=spec.ontology_version,
                 )

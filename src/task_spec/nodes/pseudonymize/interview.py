@@ -70,6 +70,12 @@ _KEEP_OPEN, _KEEP_CLOSE = "", ""
 _KEPT = re.compile(f"{_KEEP_OPEN}(\\d+){_KEEP_CLOSE}")
 
 
+def has_contact_pattern(text: str) -> bool:
+    """LLM 이 쓴 글에 연락처·링크 같은 개인정보 형식이 있는지 (`derived` 의 패턴 판정 — 생성 글 표시도 같은 판정을 쓴다).
+    시스템 id(uuid·사례 id)는 가린 뒤 본다 — id 는 개인정보가 아니고, 우연히 전화번호 모양이 될 뿐이다."""
+    return bool(detect_patterns(_SYSTEM_ID.sub("ID", text)))
+
+
 class InterviewTextRejected(ValueError):
     """담당자 글을 LLM 에 보낼 수 없다 — 비밀 값·길이 초과·가명화 누락. 메시지는 화면에 그대로 보여도 되는 말만."""
 
@@ -161,10 +167,10 @@ class InterviewPseudonymizer:
     # ------------------------------------------------------------------ 저장된 가명화 글·LLM 글
     def derived(self, text: str, mapping: RunMapping, shared: Collection[str] = ()) -> str:
         """LLM 이 가명화 입력으로 쓴 글을 저장·표시 전에 검사한다. 통과하면 그대로 돌려준다.
-        시스템 id(uuid·사례 id)는 가린 뒤 패턴을 본다 — id 는 개인정보가 아니고, 우연히 전화번호 모양이 될 뿐이다.
+        패턴 판정은 `has_contact_pattern`.
         shared: 입력으로 쓴 공유 회사 사례 재료에 실제로 있던 토큰(`shared_json` 이 돌려준 것) — 출력이 그 토큰을 옮겨 쓴 것만
         더 허용한다. 지어낸 토큰은 그대로 거절한다."""
-        if detect_patterns(_SYSTEM_ID.sub("ID", text)):
+        if has_contact_pattern(text):
             raise InterviewTextRejected("생성한 글에 연락처·링크 같은 개인정보 형식이 있습니다")
         if any(
             m.group(0) not in mapping.tokens and m.group(0) not in shared
