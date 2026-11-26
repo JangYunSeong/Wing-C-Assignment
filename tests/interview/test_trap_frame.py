@@ -404,3 +404,18 @@ def test_frame_words_already_public_or_operating_conditions_are_not_added() -> N
     framed, _ = apply_frame(SEED, _frame(forbidden_terms=["감사 기록", "동시 요청", "세션 테이블"]))
     assert "세션 테이블" in framed.leak_terms
     assert "감사 기록" not in framed.leak_terms and "동시 요청" not in framed.leak_terms
+
+
+def test_removed_designs_are_named_in_the_notes() -> None:
+    """설계 검사 #332 S-F4: 사람이 뺀 설계를 다시 만든 재료에서 못 찾으면 개수만이 아니라 어느 설계인지 보인다 (무엇을 확인할지),
+    뺀 설계도 무엇과 맞췄는지 남긴다."""
+    designs = [*SEED.accepted_designs, "[설계] 가상 세 번째 설계 — 조건: x — 함정: y"]
+    seed3 = SEED.model_copy(update={"accepted_designs": designs})
+    _, notes = apply_frame(
+        seed3, _frame(), removed_designs=["[설계] 다시 만들며 사라진 가상 설계 — 조건: z"]
+    )
+    assert any(
+        "다시 만든 재료에 없음" in n and "다시 만들며 사라진 가상 설계" in n for n in notes
+    ), notes
+    _, notes = apply_frame(seed3, _frame(), removed_designs=[designs[2][:12]])
+    assert any("허용 설계 1개를 뺌 (사람 결정): 가상 세 번째 설계" in n for n in notes), notes

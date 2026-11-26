@@ -246,6 +246,13 @@ def keeps_hidden(seed: FeatureSeed, frame: TrapFrame) -> bool:
     return _key(seed.hidden_requirement) in _key(frame.hidden_requirement)
 
 
+def _design_head(design: str) -> str:
+    """표시용 설계 머리 — '[설계] 요약 — 조건…' 의 요약 앞부분."""
+    body = design.split("] ", 1)[1] if design.startswith("[") and "] " in design else design
+    head = body.split(" — ", 1)[0].strip()
+    return head[:40] + ("…" if len(head) > 40 else "")
+
+
 def apply_frame(
     seed: FeatureSeed,
     frame: TrapFrame,
@@ -276,14 +283,20 @@ def apply_frame(
     if removed_designs:
         matched = [match_design(r, seed.accepted_designs) for r in removed_designs]
         gone = {d for d in matched if d is not None}
-        if lost := sum(1 for d in matched if d is None):
+        if lost := [r for r, d in zip(removed_designs, matched, strict=True) if d is None]:
+            # 어느 설계인지 보인다 — 다시 만든 재료는 문구가 바뀌어 앞부분 맞춤이 못 찾을 수 있다 (설계 검사 #332 S-F4: 개수만 보여 무엇을
+            # 확인할지 몰랐다). 찾은 설계도 무엇과 맞췄는지 남긴다
             notes.append(
-                f"사람이 뺀 설계 {lost}개가 다시 만든 재료에 없음 (이미 빠졌을 수 있음) — 사람 확인"
+                f"사람이 뺀 설계 {len(lost)}개가 다시 만든 재료에 없음 (이미 빠졌을 수 있음) — 사람 확인: "
+                + "; ".join(_design_head(r) for r in lost)
             )
         kept = [d for d in seed.accepted_designs if d not in gone]
         if gone and len(kept) >= 2:
             update["accepted_designs"] = kept
-            notes.append(f"허용 설계 {len(gone)}개를 뺌 (사람 결정)")
+            notes.append(
+                f"허용 설계 {len(gone)}개를 뺌 (사람 결정): "
+                + "; ".join(_design_head(d) for d in gone)
+            )
         elif gone:
             notes.append(
                 "허용 설계를 빼면 둘 미만이라 그대로 둠 — 대신 인정할 설계 필요, 사람 확인"
