@@ -23,8 +23,10 @@ from task_spec.graph.interview_generate import interview_generate_graph
 from task_spec.interview.errors import OutputRejected
 from task_spec.interview.task import (
     FLAG_ANSWER_LEAK,
+    FLAG_CONTACT_PATTERN,
     FLAG_INTERVIEW_INCIDENT,
     FLAG_TOKEN_VISIBLE,
+    TARGETED_TASK_FIELDS,
     CompetencyChoice,
     MadeTask,
     OntologyTaskMaker,
@@ -32,10 +34,12 @@ from task_spec.interview.task import (
     TaskRequest,
     answer_leak_flags,
     coding_template,
+    contact_pattern_flags,
     make_task,
     prepare_coding_incident,
     pseudonymize_changes,
     questions_for,
+    targeted_draft_texts,
     token_flags,
     with_content_flags,
     with_interview_flag,
@@ -109,6 +113,8 @@ def fake_task(
     scenario: str,
     source_incident: str | None = None,
     slots: list[TaskItem] | None = None,
+    memo: str = "가상 메모",
+    observed: str = "요청 식별자 검증",
 ) -> TaskItem:
     return TaskItem(
         task_id=task_id,
@@ -127,9 +133,9 @@ def fake_task(
         artifacts=[
             Artifact(artifact_id="a1", title="재시도 기록", content="가상 기록", role="key"),
             Artifact(artifact_id="a2", title="저장 결과", content="가상 결과", role="support"),
-            Artifact(artifact_id="a3", title="배포 메모", content="가상 메모", role="distractor"),
+            Artifact(artifact_id="a3", title="배포 메모", content=memo, role="distractor"),
         ],
-        observables=[Observable(kind="first_mention_of", value="요청 식별자 검증")],
+        observables=[Observable(kind="first_mention_of", value=observed)],
         traps=[Trap(trap_id="t1", description="재시도 금지", why_ai_fails="복구를 막음")],
         behavioral_anchors=BehavioralAnchors(
             level_1=Anchor(behavior="가상 수준 1", criterion_ids=["c1"]),
@@ -164,6 +170,8 @@ def known_incident(answer: str = KNOWN_ANSWER) -> PublicIncident:
 class FakeTaskMaker:
     scenario: str = "가상 배송 서비스에서 같은 상태가 두 번 기록된다는 문의가 들어왔다."
     slot_scenario: str | None = None
+    memo: str = "가상 메모"  # 자료 a3 글 — LLM 이 지어 쓴 예시 값을 흉내 낼 때
+    observed: str = "요청 식별자 검증"  # 관찰할 개념 = 짚은 질문의 숨은 조건
     fail: Exception | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
     gate: asyncio.Event | None = (
@@ -199,6 +207,8 @@ class FakeTaskMaker:
             req.task_id,
             scenario=self.scenario,
             source_incident=req.coding_incident.incident_id,
+            memo=self.memo,
+            observed=self.observed,
         )
         return MadeTask(task=task, flags=["가상 생성기 표시"])
 
@@ -558,6 +568,53 @@ def test_tokens_left_in_visible_text_are_flagged() -> None:
     assert token_flags(hidden_only) == []  # 숨은 칸은 지원자에게 보이지 않는다
 
 
+URL = "https://cdn.example-media.io/avatars/101.jpg"  # 가상 — LLM 이 API 응답 예시에 지어 쓴 꼴
+
+
+def test_contact_patterns_in_the_answer_draft_input_are_flagged() -> None:
+    """답할 범위 초안이 LLM 에 다시 보내는 칸만 본다 — 걸린 칸 경로를 적고, 고치면 빠진다."""
+    task = fake_task(PROFILE, "t", scenario="가상 배송", memo=f'응답 예: {{"avatar": "{URL}"}}')
+    _, targeted = questions_for(task)
+    [flag] = contact_pattern_flags(task, targeted)
+    assert flag.startswith(FLAG_CONTACT_PATTERN) and "(artifacts[a3].content)" in flag
+    # 10자리 유닉스 타임스탬프도 휴대전화 형식에 걸린다 (입력 검사와 같은 판정이라 문구에 적어 둔다)
+    stamped = task.model_copy(update={"artifacts": [*task.artifacts[:2]]})
+    stamped = stamped.model_copy(update={"scenario": "기록 timestamp=1732600000"})
+    assert "(scenario)" in contact_pattern_flags(stamped)[0]
+    hidden = [targeted[0].model_copy(update={"hidden_condition": f"{URL} 검증"})]
+    assert "targeted_questions[q1].hidden_condition" in contact_pattern_flags(stamped, hidden)[0]
+
+
+def test_contact_patterns_outside_the_answer_draft_input_are_not_flagged() -> None:
+    """확장 슬롯·숨은 칸은 다시 LLM 에 가지 않고 지어낸 예시 값이라 표시하지 않는다. 시스템 id 는 가린 뒤 본다."""
+    slot = slot_task(PROFILE, f"이미지는 {URL} 에서 받는다")
+    task = fake_task(
+        PROFILE,
+        "t",
+        scenario="사례 co:sw.backend:0123456789ab 의 항목 00000000-0000-4000-8000-000000000001",
+        slots=[slot],
+    ).model_copy(update={"invariant": f"{URL} 형식 유지"})
+    _, targeted = questions_for(task)
+    assert contact_pattern_flags(task, targeted) == []
+
+
+def test_flagged_fields_are_the_fields_the_answer_draft_sends() -> None:
+    """표시가 보는 글 = 초안 입력(TARGETED_TASK_FIELDS)의 모든 글 + 숨은 조건 — 칸 목록이 둘로 갈라지지 않게."""
+    task = fake_task(PROFILE, "t", scenario="가상 배송")
+    _, targeted = questions_for(task)
+
+    def leaves(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        items = value.values() if isinstance(value, dict) else value
+        return [s for item in items for s in leaves(item)]
+
+    sent = leaves(task.model_dump(mode="json", include=TARGETED_TASK_FIELDS))
+    texts = targeted_draft_texts(task, targeted)
+    assert sorted(t for _, t in texts) == sorted([*sent, *(q.hidden_condition for q in targeted)])
+    assert all("_id" not in path.rsplit(".", 1)[-1] for path, _ in texts)  # id 칸은 경로에만
+
+
 def test_recomputing_drops_computed_flags_saved_in_the_old_wording() -> None:
     """2026-11-23 문구를 바꾸기 전에 저장된 인터뷰 과제 — 다시 계산할 때 옛 문구 표시도 지워 두 판이 함께 남지 않는다."""
     old_leak = "기준 답안 문장이 지원자에게 보이는 글에 들어감 — 채점 근거가 새지 않았는지 승인자 확인 필요"
@@ -692,6 +749,44 @@ async def test_targeted_answer_draft_retries_on_artifact_ids_and_copied_answers(
     failed = await session.post("answers/q1/draft", question=question)
     assert failed.status_code == 503 and failed.json()["error"]["code"] == "service_unavailable"
     assert session.revision == revision  # 초안은 저장하지 않는다
+
+
+async def test_generated_contact_patterns_are_flagged_and_name_the_field_on_answer_draft(
+    task_session,
+) -> None:
+    """LLM 이 과제 자료에 지어 쓴 URL — 생성 때 표시하고, 답할 범위 초안은 LLM 을 부르지 않고 고칠 칸을 422 로 알린다
+    (예전엔 입력 검사에서 매번 거절돼 503 '다시 시도'). 담당자가 예시 값을 바꾸면 표시가 빠지고 초안이 나온다."""
+    session, maker, _ = task_session
+    maker.memo = f'응답 예: {{"avatar": "{URL}"}}'
+    spec = (await generated(session))["spec"]
+    [flag] = [f for f in spec["review_flags"] if f.startswith(FLAG_CONTACT_PATTERN)]
+    assert "(artifacts[a3].content)" in flag
+    calls = len(session.backend.prompts)
+    question = "이미지 주소도 알려 주나요?"
+    blocked = await session.post("answers/q1/draft", question=question)
+    assert blocked.status_code == 422 and "artifacts[a3].content" in blocked.text
+    assert len(session.backend.prompts) == calls  # LLM 을 부르지 않는다
+    task = copy.deepcopy(spec["common_task"])
+    task["artifacts"][2]["content"] = '응답 예: {"avatar": "<이미지 주소>"}'
+    revised = await session.post("revise", target="common", note="예시 값 바꿈", task=task)
+    assert revised.status_code == 200, revised.text
+    body = revised.json()["spec"]
+    assert not any(f.startswith(FLAG_CONTACT_PATTERN) for f in body["review_flags"])
+    session.backend.push(draft("자료로 확인할 수 있는 범위만"))
+    ok = await session.post("answers/q1/draft", question=question)
+    assert ok.status_code == 200, ok.text
+    # 초안 입력은 칸마다 검사하지만 LLM 에 가는 글은 예전(model_dump_json)과 같다
+    edited = TaskItem.model_validate(body["common_task"])
+    assert edited.model_dump_json(include=TARGETED_TASK_FIELDS) in session.backend.prompts[-1]
+
+
+async def test_generation_flags_contact_patterns_in_hidden_conditions(task_session) -> None:
+    """짚은 질문의 숨은 조건도 답 초안 입력이다 — 생성 마무리가 짚은 질문까지 넘겨 표시를 계산한다."""
+    session, maker, _ = task_session
+    maker.observed = f"{URL} 형식 검증"
+    spec = (await generated(session))["spec"]
+    [flag] = [f for f in spec["review_flags"] if f.startswith(FLAG_CONTACT_PATTERN)]
+    assert "(targeted_questions[q1].hidden_condition)" in flag
 
 
 # ================================================================ 과제·질문 고치기
