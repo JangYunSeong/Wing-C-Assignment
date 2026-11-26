@@ -149,6 +149,28 @@ async def test_sources_list_public_cases_and_this_companys_shared_cases(env) -> 
     assert company["co:sw.backend:aaaa00000001"]["used_by_postings"] == 0
 
 
+async def test_a_document_task_interview_can_choose_cases_without_feature_material(env) -> None:
+    """사례형 인터뷰(코딩 템플릿 없는 직군 — 명세가 곧 과제)는 기능형 재료가 없는 그 직군 사례도 쓸 수 있다. 2026-11-26 운영:
+    템플릿 없는 직군 공고에서 공개 사례를 고르면 '기능형 재료가 없습니다'(422)로 막혀 담당자가 인터뷰를 버렸다."""
+    s = env.session
+    s.postings.sub = "sw.embedded"  # 기본 코딩 템플릿이 없는 직군 (가상 공고)
+    await company_case(
+        env,
+        "eeee00000001",
+        feature=False,
+        sub="sw.embedded",
+        incident_id="co:sw.embedded:eeee00000001",
+    )
+    await s.start()
+    body = (await s.client.get(f"/interviews/{s.interview_id}/incident/sources")).json()
+    public = {p["incident_id"]: p["usable"] for p in body["public"]}
+    assert public and all(public.values())  # 공개 사례에 기능형 재료가 없어도 쓸 수 있다
+    assert [c["usable"] for c in body["company"]] == [True]
+    chosen = await choose(s, "public_fixed", next(iter(public)))
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["stage"] == "incident_review" and chosen.json()["task_kind"] == "incident"
+
+
 async def test_a_public_case_makes_the_task_and_is_approved_without_registering(env) -> None:
     s = env.session
     body = await task_review(s, "public_fixed")  # incident_id 없으면 직군 기본 사례 (포크와 같음)
