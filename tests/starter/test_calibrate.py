@@ -65,14 +65,19 @@ def _queue(naive_statements: int = 4, accepted_statements: int = 1, waves: int =
 def test_knobs_are_the_hidden_tunes_the_material_did_not_list() -> None:
     k = knobs(POOL, V4, POOL_PLAN)
     assert k == Knobs(
-        POOL, "connection_timeout_ms", (2000, 1000, 500, 250), "query_delay_ms", (20, 50)
+        POOL,
+        "connection_timeout_ms",
+        (2000, 1000, 500, 250),
+        "query_delay_ms",
+        (20, 50),
+        looser=(4000, 8000),
     )
     # 계획이 지연을 정했으면 그 값부터 (계약 단계가 숨긴 값은 빼지만 재료가 정한 값일 수 있다)
     delayed = POOL_PLAN.model_copy(update={"harness": {**POOL_PLAN.harness, "query_delay_ms": 30}})
     assert knobs(POOL, V4, delayed) == replace(k, loads=(30, 50))
     # 재료가 지연을 나열했으면(명세에 보이는 값) 한도만 잰다
     assert knobs(POOL, V4, POOL_PLAN, ["query_delay_ms"]) == Knobs(
-        POOL, "connection_timeout_ms", (2000, 1000, 500, 250)
+        POOL, "connection_timeout_ms", (2000, 1000, 500, 250), looser=(4000, 8000)
     )
 
 
@@ -202,6 +207,48 @@ def test_pick_is_the_geometric_middle(lo: int, hi: int, want: int) -> None:
     assert pick(lo, hi) == want
 
 
+async def test_looser_limits_are_tried_when_the_accepted_design_fails_at_the_top_rung() -> None:
+    """#337 7절: 명세 부하가 무거우면 가장 느슨한 한도(2000)에서도 허용 구현이 떨어진다 (#334 알파 2·3회차, 동시/풀 82/20·124/20) —
+    예전에는 사다리를 더 내려가지 않고 2회 만에 끝났다. 더 느슨한 한도(4000·8000)부터 다시 잰다."""
+    k = knobs(POOL, V4, POOL_PLAN)
+    assert k is not None
+    # 지연 20: 허용 구현 대기 2400(2000 에서 실패) · 흔한 구현 9600 → 4000·8000 에서 허용 구현 통과·흔한 구현 실패 → 창 [4000, 8000]
+    cal = await search(k, _queue(naive_statements=120, accepted_statements=30), ["hc1"])
+    assert cal.status == "calibrated" and cal.window == (4000, 8000)
+    assert [t.values["connection_timeout_ms"] for t in cal.trials] == [2000, 4000, 8000, 5660, 5660]
+    assert dict(cal.values) == {"connection_timeout_ms": 5660, "query_delay_ms": 20}
+
+
+async def test_accepted_failing_at_every_limit_is_a_spec_load_verdict() -> None:
+    """#337 7절: 더 느슨한 한도로도 허용 구현이 떨어지면 조절값으로는 가를 수 없다 — 명세 수치(동시 요청·풀 크기) 문제다 (시험 불가 꼴,
+    '재료 판정: ' 머리로 무력화·겹침과 같은 갈래). 예전에는 '흔한 구현이 안 떨어짐'으로 재생성 예산을 다 썼다."""
+    k = knobs(POOL, V4, POOL_PLAN)
+    assert k is not None
+    cal = await search(k, _queue(naive_statements=200, accepted_statements=120), ["hc1"])
+    assert cal.status == "overloaded" and not cal.values
+    assert [t.values["connection_timeout_ms"] for t in cal.trials] == [2000, 4000, 8000] * 2
+    verdict = cal.verdict()
+    assert verdict.startswith("명세 부하가 허용 구현도 떨어뜨림 — ")
+    assert "8000" in verdict and verdict.endswith("명세 수치 확인 (사람)")
+
+
+async def test_a_calibration_names_only_the_cases_the_naive_failed() -> None:
+    """케이스마다 따로 (#337 7절) — 흔한 구현이 hc1 에서만 떨어지면 보정은 hc1 로 하고, 승인 화면에 hc2 는 보정 밖이라고 적는다
+    (hc2 는 다음 회차 기존 경로). 예전에는 '요청한 케이스 모두'를 조건으로 봐 보정이 통째로 안 됐다."""
+    k = knobs(POOL, V4, POOL_PLAN)
+    assert k is not None
+    base = _queue()
+
+    async def run(values: dict[str, int]) -> Trial:
+        t = await base(values)
+        return replace(t, caught_cases=("hc1",) if t.caught else ())
+
+    cal = await search(k, run, ["hc1", "hc2"])
+    assert cal.status == "calibrated" and cal.missed == ("hc2",)
+    assert "흔한 구현이 hc1 에서 pool_acquire_timeout 로 실패" in cal.flag()
+    assert cal.flag().endswith(" · hc2 는 흔한 구현이 떨어지지 않아 보정 밖")
+
+
 # ── 한 조합의 판정 ─────────────────────────────────────────────────
 
 
@@ -234,6 +281,25 @@ def test_judge_reads_relabelled_runs_and_the_material_reason_family() -> None:
     assert judge(report, {}, [("naive-all", "hc1")], {"hc1": POOL}, family).caught
     broken = _trial_report(caught, _t("hidden", "hc1"), _t("hidden", "hc1", "ASSERT", POOL))
     assert not judge(broken, {}, [("naive-all", "hc1")], {"hc1": POOL}).clean
+
+
+def test_judge_counts_a_case_the_naive_failed_even_when_another_case_passed() -> None:
+    """#337 7절: 흔한 구현은 hc1 에서 의도한 사유로 떨어졌는데 누구에게나 가벼운 hc2 를 통과하자 '흔한 구현이 안 떨어짐'으로 분류됐다
+    (#334 알파 2·3회차) → T-F1·재료 판정 대신 재생성 예산을 다 썼다. 케이스마다 따로 — 한 케이스라도 떨어지면 잡은 것."""
+    report = VerifyReport(
+        runs=[
+            _run(
+                "cal1-naive-all",
+                "ref_naive",
+                _t("hidden", "hc1", "ASSERT", POOL),
+                _t("hidden", "hc2"),
+            ),
+            _run("cal1-d1", "ref_accepted", _t("hidden", "hc1"), _t("hidden", "hc2")),
+        ]
+    )
+    request = [("naive-all", "hc1"), ("naive-all", "hc2")]
+    trial = judge(report, {}, request, {"hc1": POOL, "hc2": POOL})
+    assert trial.caught and trial.caught_cases == ("hc1",)
 
 
 # ── 수리 배정 ───────────────────────────────────────────────────────
@@ -445,6 +511,25 @@ async def test_no_window_stops_the_build_for_a_person() -> None:
     retry = [u for n, u in backend.users if n == "gen_hidden"][-1]
     assert "둘을 가를 창이 없었다" in retry and "흔한 구현" in retry
     assert [(r.gate, r.target) for r in out.repairs][:1] == [("③", "gen_hidden")]
+
+
+async def test_a_spec_load_the_accepted_design_cannot_bear_stops_for_a_person() -> None:
+    """#337 7절: 더 느슨한 한도(8000)까지 올려도 허용 구현이 떨어지면 — 창 없음처럼 처음에는 숨은 케이스를 한 번 다시 만들어 다시
+    보정하고 (그 케이스가 허용 설계도 못 버티게 짜였을 수 있다), 그래도 같으면 '재료 판정: 명세 부하가 허용 구현도 떨어뜨림' 으로
+    멈춘다. 예전에는 '흔한 구현이 안 떨어짐'으로 흔한 구현·숨은 테스트를 다시 만들며 예산을 다 썼다 (#334 알파 2·3회차)."""
+    out, backend = await _loop(QueueVerifier(accepted_statements=140))
+    assert out.status == "failed" and out.calibration is not None
+    assert out.calibration.status == "overloaded" and out.hidden_plan is None
+    assert len(out.calibration_tries) == 1 and out.calibration_tries[0].status == "overloaded"
+    assert any(
+        f.startswith(f"{MATERIAL_VERDICT}명세 부하가 허용 구현도 떨어뜨림")
+        and "한 번 다시 만든 뒤에도" in f
+        for f in out.review_flags
+    )
+    assert backend.calls.count("gen_naive") == 1  # 흔한 구현은 다시 만들지 않는다
+    assert backend.calls.count("gen_hidden") == 2  # 처음 + 한 번
+    retry = [u for n, u in backend.users if n == "gen_hidden"][-1]
+    assert "허용 구현도 떨어졌다" in retry
 
 
 @pytest.mark.usefixtures("no_variant_gates")

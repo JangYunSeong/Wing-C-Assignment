@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import PurePosixPath
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from task_spec.llm import LLMClient
 from task_spec.nodes.starter.generate import (
@@ -838,18 +838,34 @@ def _no_window_retry(
     if out.calibration_tries or round_no + 1 >= max_rounds or not cal.cases:
         return None
     row = cal.row()
+
+    def naive(t: dict[str, Any]) -> str:
+        where = f"{', '.join(t['caught_cases'])} 에서 " if t.get("caught_cases") else ""
+        return f"흔한 구현 {where}떨어짐" if t["caught"] else "흔한 구현 통과"
+
     grid = "; ".join(
-        f"{t['values']} → 흔한 구현 {'떨어짐' if t['caught'] else '통과'}, 허용 구현 {'모두 통과' if t['clean'] else '일부 떨어짐'}"
+        f"{t['values']} → {naive(t)}, 허용 구현 {'모두 통과' if t['clean'] else '일부 떨어짐'}"
         for t in row["trials"]
     )
+    cases = ", ".join(cal.cases)
+    if cal.status == "overloaded":
+        # 더 느슨한 한도까지 허용 구현이 떨어짐 (#337 7절) — 그 케이스가 허용 설계도 못 버티게 짜였을 수 있다 (알파 fix332-3: 직원 테이블
+        # 조회 실패 주입). 그래도 같으면 명세 수치 판정
+        reason = f"명세 부하로 허용 구현도 실패 — 숨은 케이스 {cases} 를 한 번 다시"
+        head = f"조절값 보정 시험에서 한도를 가장 느슨하게 해도 허용 구현도 떨어졌다 (숨은 케이스 {cases}, 사유 {row['reason'] or '-'}): "
+    else:
+        reason = f"보정 창 없음 — 숨은 케이스 {cases} 를 한 번 다시"
+        head = (
+            f"조절값 보정 시험에서 흔한 구현이 떨어지기 시작한 한도에서 허용 구현도 함께 떨어져 둘을 가를 창이 없었다 "
+            f"(숨은 케이스 {cases}, 사유 {row['reason'] or '-'}): "
+        )
     return RepairAction(
         generator="gen_hidden",
         label="",
         gate="③",
-        reason=f"보정 창 없음 — 숨은 케이스 {', '.join(cal.cases)} 를 한 번 다시",
+        reason=reason,
         note=(
-            f"조절값 보정 시험에서 흔한 구현이 떨어지기 시작한 한도에서 허용 구현도 함께 떨어져 둘을 가를 창이 없었다 "
-            f"(숨은 케이스 {', '.join(cal.cases)}, 사유 {row['reason'] or '-'}): {grid}. "
+            f"{head}{grid}. "
             "시간을 재는 요청 묶음(버스트)을 업무 조회가 가벼운 경로로 보내거나 묶음 크기를 줄여, 허용 설계는 견디고 흔한 구현만 "
             "떨어지게 그 케이스만 고친다. 사유와 확인하는 결과는 바꾸지 않는다."
         ),
@@ -1490,9 +1506,10 @@ async def _build_and_repair(
                 if cal.status == "calibrated":
                     b = _apply_calibration(out, b, cal)
                     continue
-                # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음은 재료 판정으로 멈춤)
+                # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음·명세 부하는
+                # 숨은 케이스 한 번 다시 뒤 재료 판정으로 멈춤 — #337 7절)
                 plan = assign_now()
-                if cal.status == "no_window":
+                if cal.status in ("no_window", "overloaded"):
                     retry = _no_window_retry(out, cal, round_no, max_rounds)
                     if retry is not None:
                         # 처음 창 없음 — 시험 격자를 주고 그 숨은 케이스를 한 번 다시 만든 뒤 다시 보정한다 (설계 검사 #332 T-F1).
@@ -1502,8 +1519,9 @@ async def _build_and_repair(
                         out.calibration_tries.append(cal)
                         out.calibration = None
                     else:
+                        same = "창 없음" if cal.status == "no_window" else "허용 구현 실패"
                         again = (
-                            " — 숨은 케이스를 한 번 다시 만든 뒤에도 창 없음"
+                            f" — 숨은 케이스를 한 번 다시 만든 뒤에도 {same}"
                             if out.calibration_tries
                             else ""
                         )
