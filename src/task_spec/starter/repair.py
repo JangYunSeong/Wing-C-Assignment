@@ -125,6 +125,10 @@ ALL_ACCEPTED_FAIL = "허용 구현 모두 "
 CONTRACT_SUSPECT = "계약 결함 의심"
 # 흔한 구현이 정답 장치를 쓴다는 재료 판정 — 막는 표시(unresolved)로 옮긴다 (assign)
 MATERIAL_VERDICT = "재료 판정: "
+# 흔한 구현만 떨어지고 허용 구현은 모두 통과한 공개 테스트의 blame 머리 (#337 3절) — 그 테스트를 다시 만든 뒤에도 같으면 겹침 판정.
+# 모든 구현 실패의 blame(`public:X`)과 갈라 둔다 — 그쪽은 계약 결함 의심
+NAIVE_ONLY = "naive-only:"
+OVERLAP = "구별 불가(겹침)"
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
 # (#182: 예전 문구의 괄호 '무엇을 어디서 열고, 어느 범위 안에서 부르는지'는 트랜잭션 사례의 모양이라 모든 스택에 나갔다 — 2026-11-09 dc2b08b)
 KEEP_NAIVE = (
@@ -538,6 +542,12 @@ def _public_refs(
                 )
             continue
         if len(bad) < len(runs):
+            accepted = [t for x, t in res if x.kind == "ref_accepted"]
+            # 허용 구현이 모두 이 테스트를 통과 — 흔한 구현만 떨어진다. 공개 테스트를 다시 만든 뒤에도 같으면 겹침 (#337 3절, _contract_suspects).
+            # 허용 구현도 떨어지면 테스트 쪽 문제라 겹침 후보가 아니다 (알파 ct-f608-v4-1: d2 도 Pt1 에서 실패)
+            naive_only = bool(accepted) and all(
+                t is not None and t.result == "PASS" for t in accepted
+            )
             for r, _ in bad:
                 if r.kind == "ref_naive" and exhausted(regen_counts, "gen_naive", r.target):
                     out.append(
@@ -548,6 +558,7 @@ def _public_refs(
                             f"흔한 구현만 공개 테스트 {name} 에서 계속 실패 — 누설 의심",
                             f"흔한 구현({r.target})이 다시 만든 뒤에도 공개 테스트 {name} 에서만 실패한다: {_short(msgs[r.target])} — "
                             "공개 테스트가 숨은 요구(동시성·저장 실패 처리 등)를 시험하고 있을 수 있다. 공개 수용 기준이 말하는 응답·기록만 확인한다.",
+                            blame=(f"{NAIVE_ONLY}public:{name}",) if naive_only else (),
                         )
                     )
                     continue
@@ -1672,10 +1683,22 @@ def _contract_suspects(
             and again
             and exhausted(counts, a.generator, a.label, a.pool)
         ):
-            out.append(
-                f"{CONTRACT_SUSPECT} — {', '.join(again)} 에서 모든 구현이 그 테스트를 다시 만든 뒤에도 실패: {_short(a.note)} — "
-                "계약의 명령·입출력·규칙이 이 테스트를 성립시킬 수 있는지 사람 확인"
-            )
+            overlap = [
+                b.removeprefix(f"{NAIVE_ONLY}public:") for b in again if b.startswith(NAIVE_ONLY)
+            ]
+            every = [b for b in again if not b.startswith(NAIVE_ONLY)]
+            if overlap:
+                # 흔한 구현·공개 테스트를 모두 다시 만들었는데 흔한 구현만 같은 공개 테스트에서 떨어지고 허용 구현은 모두 통과 — 공개 요구가
+                # 숨은 요구를 이미 시험한다 (#337 3절, 운영 ct-9433 b2). 다시 빌드해도 같으므로 명세를 고칠 사람에게 (재료 판정 → material)
+                out.append(
+                    f"{MATERIAL_VERDICT}{OVERLAP} — 공개 테스트 {', '.join(overlap)} 에서 흔한 구현만 실패 "
+                    "(흔한 구현·공개 테스트를 다시 만든 뒤에도, 허용 구현은 모두 통과) · 공개 요구가 숨은 요구를 이미 시험함 — 명세 확인 (사람)"
+                )
+            if every:
+                out.append(
+                    f"{CONTRACT_SUSPECT} — {', '.join(every)} 에서 모든 구현이 그 테스트를 다시 만든 뒤에도 실패: {_short(a.note)} — "
+                    "계약의 명령·입출력·규칙이 이 테스트를 성립시킬 수 있는지 사람 확인"
+                )
             continue
         kept.append(a)
     return kept, out
