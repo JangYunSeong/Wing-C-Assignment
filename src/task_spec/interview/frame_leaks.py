@@ -1,8 +1,9 @@
 """함정 틀 검사 3 공개 중립성 (#318, docs/design/trap-frame.md §5.3) — 명세 뒤, 틀이 막은 것이 지원자가 볼 글에 나왔는가 (코드, 표시만).
 
-지금 명세 검사(spec/feature.check_feature)의 금지 낱말 대조는 1단계 지원자 화면(제목·상황·공개 요구·수용 기준·추가 요구 답·자료 제목)만
-본다. 이 검사는 1단계의 다른 글 — 자료 본문(방해 자료의 기존 코드 포함)·추가 요구 답·사실(f#)의 답 — 에서 틀의 금지 낱말과 금지 저장
-엔티티를 찾는다. 2026-11-24 세션 유지 과제(ct-f6087a7ba679)에서 방해 자료의 기존 코드(findSessionById)가 흔한 구현의 저장 방식을 보였다.
+1단계에서 지원자가 받는 글 — 제목·상황·공개 요구·공개 수용 기준·자료(방해 자료의 기존 코드 포함)·추가 요구 답·사실(f#)의 답 — 에서
+틀의 금지 낱말과 금지 저장 엔티티를 찾는다. 2026-11-24 세션 유지 과제(ct-f6087a7ba679)에서 방해 자료의 기존 코드(findSessionById)가 흔한
+구현의 저장 방식을 보였다. 명세 검사(spec/feature.check_feature)도 제목·상황·공개 요구·수용 기준의 금지 낱말을 보지만 생성 재요청 루프에서만
+돈다 — ⑧ 에서 담당자가 고친 글은 이 표시만 다시 계산하고, 금지 저장 꼴(테이블·조회 SQL)은 명세 검사가 보지 않는다 (설계 검사 B-F6).
 
 - 2단계 자료는 보지 않는다 — 흔한 구현을 배포한 뒤의 증상을 진단하는 단계라 그 저장 방식이 단서로 보여야 한다
   (2026-11-26 draft_feature_task v13 평가에서 v12·v13 모두 2단계 자료에 세션 조회 로그를 썼다).
@@ -56,7 +57,15 @@ def _terms(frame: TrapFrame, seed: FeatureSeed | None) -> list[str]:
 
 
 def _places(task: TaskItem) -> Iterator[tuple[str, str]]:
-    """(자리, 글) — 1단계에서 지원자가 받는 글 가운데 지금 명세 검사가 낱말을 보지 않는 곳 (자료는 제목도 저장 꼴로 본다)."""
+    """(자리, 글) — 1단계에서 지원자가 받는 글 (자료는 제목도 저장 꼴로 본다)."""
+    if task.title:
+        yield "제목", task.title
+    if task.scenario:
+        yield "상황", task.scenario
+    for r in task.requirements:
+        yield f"공개 요구 {r.req_id}", r.text
+    for ac in task.acceptance_public:
+        yield f"공개 수용 기준 {ac.ac_id}", ac.text
     for a in task.artifacts:
         yield (
             f"자료 {a.artifact_id}({_ROLE.get(a.role, a.role)}) '{a.title}'",

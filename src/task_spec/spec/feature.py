@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import random
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, cast
 
 from task_spec.llm import LLMClient
@@ -743,6 +743,35 @@ def check_hidden_faults(out: DraftFeatureOutput, seed: FeatureSeed | None) -> li
     return out_
 
 
+def trap_link_problems(
+    trap_ids: Sequence[str],
+    hidden: Sequence[HiddenAcceptance],
+    designs: Sequence[AcceptedDesign],
+) -> list[str]:
+    """숨은 요구 ↔ 숨김 수용 기준 ↔ 허용 설계 연결 — 참조가 숨은 요구 안에 있고, 숨은 요구마다 숨김 수용 기준이 있고 허용 설계가
+    2개 이상(한 가지 정답으로 감점하지 않게). 명세 초안 검사(check_feature)와 ⑧ 과제 고치기(설계 검사 B-F5)가 같은 규칙을 쓴다."""
+    traps = set(trap_ids)
+    problems: list[str] = []
+    for h in hidden:
+        if h.trap_id not in traps:
+            problems.append(f"숨김 수용 기준 {h.ac_id} 의 trap_id {h.trap_id} 가 traps 에 없음")
+    for d in designs:
+        bad = [t for t in d.trap_ids if t not in traps]
+        if bad:
+            problems.append(
+                f"허용 설계 {d.design_id} 의 trap_ids 에 없는 trap_id: {', '.join(bad)}"
+            )
+    for t in trap_ids:
+        if not any(h.trap_id == t for h in hidden):
+            problems.append(f"숨은 요구 {t} 에 숨김 수용 기준이 없음")
+        n = sum(t in d.trap_ids for d in designs)
+        if n < 2:
+            problems.append(
+                f"숨은 요구 {t} 를 만족하는 허용 설계가 {n}개 — 2개 이상 (한 가지 정답으로 감점하지 않게)"
+            )
+    return problems
+
+
 def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다."""
     # 이슈형 공통 규칙 (제목·상황·산출물·1단계 자료 목록의 노출 검사, 1단계 관찰 행동 id 포함)
@@ -773,29 +802,13 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     problems += _dup("accepted_designs", [d.design_id for d in out.accepted_designs])
 
     # id 참조 — 숨은 요구(traps) 안에서만
-    for h in out.acceptance_hidden:
-        if h.trap_id not in traps:
-            problems.append(f"숨김 수용 기준 {h.ac_id} 의 trap_id {h.trap_id} 가 traps 에 없음")
     for c in out.clarifications:
         bad = [t for t in c.reveals if t not in traps]
         if bad:
             problems.append(
                 f"추가 요구 {c.clarification_id} 의 reveals 에 없는 trap_id: {', '.join(bad)}"
             )
-    for d in out.accepted_designs:
-        bad = [t for t in d.trap_ids if t not in traps]
-        if bad:
-            problems.append(
-                f"허용 설계 {d.design_id} 의 trap_ids 에 없는 trap_id: {', '.join(bad)}"
-            )
-    for t in trap_ids:
-        if not any(h.trap_id == t for h in out.acceptance_hidden):
-            problems.append(f"숨은 요구 {t} 에 숨김 수용 기준이 없음")
-        n = sum(t in d.trap_ids for d in out.accepted_designs)
-        if n < 2:
-            problems.append(
-                f"숨은 요구 {t} 를 만족하는 허용 설계가 {n}개 — 2개 이상 (한 가지 정답으로 감점하지 않게)"
-            )
+    problems += trap_link_problems(trap_ids, out.acceptance_hidden, out.accepted_designs)
     for o in out.observables:
         if o.kind == "asks_clarification" and o.value not in clar:
             problems.append(f"asks_clarification 값 {o.value} 가 clarifications 의 id 가 아님")

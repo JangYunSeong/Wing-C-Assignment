@@ -124,8 +124,8 @@ from task_spec.interview.text import (
     posting_team_context,
 )
 from task_spec.interview.trap_frame import FAILED as TRAP_FAILED
-from task_spec.interview.trap_frame import TASK as TRAP_TASK
 from task_spec.interview.trap_frame import (
+    FLAG_FRAME_EDITED,
     apply_frame,
     design_questions,
     evidence_gaps,
@@ -135,6 +135,7 @@ from task_spec.interview.trap_frame import (
     frame_texts,
     make_frame,
 )
+from task_spec.interview.trap_frame import TASK as TRAP_TASK
 from task_spec.llm import LLMClient, SchemaViolation, TransientLLMError
 from task_spec.llm.backend import TextCallback
 from task_spec.llm.client import EmptyResponse
@@ -193,6 +194,7 @@ from task_spec.spec.company_incidents import (
     new_incident_id,
 )
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID, FLAG_DRAFT_INVALID_LEGACY
+from task_spec.spec.feature import trap_link_problems
 from task_spec.spec.incidents import incident_block, incident_by_id, known_cases_block
 from task_spec.spec.store import CommonKey, CommonTaskRepo, InterviewTaskConflict, StoredCommon
 from task_spec.starter.store import BuildRepo, BuildRuleError
@@ -262,6 +264,45 @@ class _FrameResult(NamedTuple):
     flags: list[str]
     provenance: list[Provenance]
     gaps: tuple[str, ...] = ()
+
+
+def _links(task: TaskItem) -> list[str]:
+    return trap_link_problems(
+        [t.trap_id for t in task.traps], task.acceptance_hidden, task.accepted_designs
+    )
+
+
+def _design_counts(task: TaskItem) -> dict[str, int]:
+    return {
+        t.trap_id: sum(t.trap_id in d.trap_ids for d in task.accepted_designs) for t in task.traps
+    }
+
+
+def _broken_links(old: TaskItem, edited: TaskItem) -> list[str]:
+    """고친 기능형 과제가 새로 깨뜨린 숨은 요구 연결 (설계 검사 B-F5) — 고치기 전에도 있던 문제는 뺀다. 허용 설계 수는 줄었을 때만
+    (예전 판이 이미 모자랐으면 늘리는 고침은 막지 않는다 — 문장에 개수가 들어 있어 문장 비교로는 못 가린다)."""
+    if edited.task_kind != "feature":
+        return []
+    before = set(_links(old))
+    was, now = _design_counts(old), _design_counts(edited)
+    fewer = {t for t, n in now.items() if n < 2 and n < was.get(t, 2)}
+    out: list[str] = []
+    for p in _links(edited):
+        if p in before:
+            continue
+        if "를 만족하는 허용 설계가" in p and not any(
+            p.startswith(f"숨은 요구 {t} ") for t in fewer
+        ):
+            continue
+        out.append(p)
+    return out
+
+
+def _hidden_edited(old: TaskItem, new: TaskItem) -> bool:
+    """숨은 요구 글·허용 설계를 고쳤는가 — 틀 적용 재료(빌드 계약 단계)와 글(숨은 테스트·허용 구현)이 갈린다."""
+    return [t.model_dump() for t in old.traps] != [t.model_dump() for t in new.traps] or [
+        d.model_dump() for d in old.accepted_designs
+    ] != [d.model_dump() for d in new.accepted_designs]
 
 
 def _with_trap(incident: PublicIncident, trap: TrapAnswers) -> PublicIncident:
@@ -1932,6 +1973,12 @@ class InterviewService:
                 raise InterviewInvalid(
                     "자료와 숨은 조건(관찰할 개념 또는 함정)이 있어야 지원자 질문을 만들 수 있습니다"
                 )
+            if broken := _broken_links(old, edited):
+                # 생성 때 명세 검사의 연결 규칙(숨은 요구마다 숨김 수용 기준·허용 설계 2개 이상)을 고친 글에도 — 빌드의 숨은 테스트·허용
+                # 구현은 이 글로 만든다 (설계 검사 B-F5). 고친 글이 새로 깨뜨린 것만 막는다 (예전 판에 이미 있던 것은 그대로)
+                raise InterviewInvalid(
+                    "숨은 요구·숨김 수용 기준·허용 설계 연결을 고쳐 주세요 — " + "; ".join(broken)
+                )
             artifact_ids = {a.artifact_id for a in edited.artifacts}
             general_q = (
                 spec.general_questions
@@ -1942,10 +1989,14 @@ class InterviewService:
                 q.hidden_condition for q in questions_for(old)[1]
             ]
             targeted_q = spec.targeted_questions if same_hidden else new_targeted
+            # 함정 틀은 재료·템플릿에서 정해지고 글 고치기로 바뀌지 않는다 (#318 D1) — 틀 적용 재료를 새 판이 이어받는다.
+            # 승인은 최신 판을 승인한 뒤 다른 초안 판을 지우므로, 여기서 옮기지 않으면 틀을 가진 생성 판과 함께 사라진다 (설계 검사 S-F1)
+            framed = await common_store.framed(old.task_id)
             saved = await common_store.save_draft(
                 CommonKey(spec.posting_id, spec.ontology_version, f"interview:{interview_id}"),
                 edited,
                 spec.generation_provenance,
+                framed=framed,
             )
             new_task = saved.task
             old_flags = {*old.review_flags, *(f for slot in old.slots for f in slot.review_flags)}
@@ -1972,7 +2023,15 @@ class InterviewService:
                     "hidden_requirements": hidden_requirements(new_task, targeted_q),
                     "evaluation_criteria": evaluation_criteria(new_task),
                     "review_flags": with_content_flags(
-                        [*kept, *new_flags],
+                        [
+                            *kept,
+                            *new_flags,
+                            *(
+                                [FLAG_FRAME_EDITED]
+                                if spec.trap_frame is not None and _hidden_edited(old, new_task)
+                                else []
+                            ),
+                        ],
                         new_task,
                         spec.coding_incident,
                         targeted_q,
@@ -2234,7 +2293,16 @@ class InterviewService:
                 await self._company_case(spec.coding_incident.incident_id, state)
             except InterviewInvalid:
                 source_problem = "고른 회사 사례를 더 쓸 수 없습니다(보관·반려). 다른 사례를 골라 과제를 다시 만들어 주세요"
-        problems = approval_problems(state, stored, company, blocked, source_problem)
+        framed_missing = (
+            spec is not None
+            and spec.trap_frame is not None
+            and stored is not None
+            and self.common_store is not None
+            and await self.common_store.framed(stored.id) is None
+        )
+        problems = approval_problems(
+            state, stored, company, blocked, source_problem, framed_missing=framed_missing
+        )
         if self.approvals is None or self.common_store is None:
             problems.append("승인 저장소가 준비되지 않았습니다")
         if self._generating(
