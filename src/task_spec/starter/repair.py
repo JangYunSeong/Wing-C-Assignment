@@ -129,6 +129,8 @@ MATERIAL_VERDICT = "재료 판정: "
 # 모든 구현 실패의 blame(`public:X`)과 갈라 둔다 — 그쪽은 계약 결함 의심
 NAIVE_ONLY = "naive-only:"
 OVERLAP = "구별 불가(겹침)"
+# 흔한 구현이 허용 설계의 장치를 쓰는 재료 판정의 머리 (#337 — 겹침·명세 부하와 같은 갈래, 판정 문구로 가른다)
+NEUTRALIZED = "구별 불가(무력화)"
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
 # (#182: 예전 문구의 괄호 '무엇을 어디서 열고, 어느 범위 안에서 부르는지'는 트랜잭션 사례의 모양이라 모든 스택에 나갔다 — 2026-11-09 dc2b08b)
 KEEP_NAIVE = (
@@ -1123,14 +1125,25 @@ def _hidden_broken(
     return out
 
 
+_STYLESHEET = (".css", ".scss", ".sass", ".less")
+
+
 def marker_hits(overlay: Overlay | None, markers: Sequence[str]) -> list[str]:
-    """흔한 구현 코드(테스트 제외)에 나온 정답 장치 표지 — 재료 fix_markers."""
+    """구현 코드(테스트·스타일시트 제외)에 나온 정답 장치 표지 — 재료 fix_markers. 스타일시트는 장치가 아니다 — `cursor: pointer` 가
+    페이지 밀림 재료 표지(`\\bcursor\\b`)에 걸렸다 (#337 2절)."""
     if overlay is None or not markers:
         return []
     text = "\n".join(
-        f.content for f in overlay.files if "/test/" not in f.path and ".test." not in f.path
+        f.content
+        for f in overlay.files
+        if "/test/" not in f.path and ".test." not in f.path and not f.path.endswith(_STYLESHEET)
     )
     return sorted({m.group(0) for rx in markers for m in re.finditer(rx, text)})[:6]
+
+
+STARTER_HIT = (
+    " — 시작 코드"  # 시작 코드에만 있는 표지의 꼬리 (③ 수리 메모·재료 판정에서 어디에 있는지)
+)
 
 
 def _gate3(
@@ -1207,7 +1220,7 @@ def _gate3(
         return (
             [],
             [
-                f"{MATERIAL_VERDICT}흔한 구현({run.target})이 다시 생성한 뒤에도 허용 설계의 장치({found})를 사용해 숨은 케이스 {ids} 를 통과 — "
+                f"{MATERIAL_VERDICT}{NEUTRALIZED} — 흔한 구현({run.target})이 다시 생성한 뒤에도 허용 설계의 장치({found})를 사용해 숨은 케이스 {ids} 를 통과 — "
                 "AI 흔한 구현이 기본으로 정답을 사용하므로 이 함정은 AI 첫 답을 구별하지 못할 수 있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
             ],
             [],
@@ -1632,6 +1645,13 @@ def assign(
     for run in judged:
         if run.kind == "ref_naive":
             hits = marker_hits(overlays.get(run.target), fix_markers)
+            # 시작 코드의 장치도 같이 본다 (#337 2절, 운영 ct-9433 b3) — 흔한 구현이 따라 쓰면 함정이 무력화된다. 흔한 구현 파일에 없어도
+            # 기존 갈래(흔한 구현 한 번 다시 → 재료 판정)로 예산을 다 쓰기 전에 멈춘다
+            hits += [
+                f"{h}{STARTER_HIT}"
+                for h in marker_hits(overlays.get(STARTER), fix_markers)
+                if h not in hits
+            ]
             acts, flags, weak, tune = _gate3(
                 run,
                 plan,

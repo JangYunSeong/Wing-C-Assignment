@@ -70,6 +70,7 @@ from task_spec.starter.repair import (
     assign,
     contract_signals,
     gates_of,
+    marker_hits,
 )
 from task_spec.starter.repair import HAND as HAND_POOL
 from task_spec.starter.repair import TRAP_GATE as TRAP_POOL
@@ -347,6 +348,68 @@ def _ref_regen(
         public=public,
         **kw,  # type: ignore[arg-type]
     )
+
+
+STARTER_MECHANISM = (
+    "시작 코드가 허용 설계의 장치"  # 다시 만든 뒤에도 남은 장치의 검토 표시 머리 (#337 2절)
+)
+
+
+async def _starter_without_mechanism(
+    out: BuildOutcome,
+    b: BuildInputs,
+    starter: Overlay,
+    public: Overlay | None,
+    hits: list[str],
+    markers: Sequence[str],
+    kw: dict[str, object],
+    compiler: TestCompiler | None,
+) -> Overlay:
+    """시작 코드에 허용 설계의 장치(재료 표지)가 있다 — 흔한 구현이 따라 써 함정이 무력화된다 (#337 2절, 운영 ct-9433 b3: 시작 코드의
+    useQuery 가 경쟁 조건을 막음). 참조 구현을 만들기 전에 '이 장치 없이' 한 번 다시 만든다 (검증 뒤에 시작 코드를 다시 만들면 참조 구현도
+    모두 다시). 다시 만들지 못하거나 그래도 남으면 이전·새 판 그대로 두고 표시만 — 막지 않는다: 표지는 테스트 밖 모든 파일을 봐
+    헛걸림이 있을 수 있고, ③ 이 시작 코드의 표지도 같이 보고 흔한 구현이 숨은 케이스를 통과하면 재료 판정으로 멈춘다."""
+    found = ", ".join(hits)
+    note = (
+        "정적 검사 문제 — 고쳐서 다시 쓴다:\n"
+        f"- 시작 코드에 이 장치를 쓰지 않는다: {found} — 같은 기능을 이 장치 없이 쓴다 (기존 동작·계약·파일 구성은 그대로)"
+    )
+    r = await gen_starter(b, note=note, previous=starter, public=public, **kw)  # type: ignore[arg-type]
+    if r.first_problems:
+        out.static_retries.append(
+            "gen_starter: " + " | ".join(p[:160] for p in r.first_problems[:4])
+        )
+    out.provenance += r.provenance
+    out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
+    candidate = r.overlay if r.ok else None
+    if candidate is not None and compiler is not None:
+        fix = await compile_impl_and_fix(
+            "gen_starter",
+            candidate,
+            _starter_around(public),
+            lambda n, prev: gen_starter(b, note=n, previous=prev, public=public, **kw),  # type: ignore[arg-type]
+            compiler,
+        )
+        out.provenance += [p for x in fix.results for p in x.provenance]
+        out.repairs += fix.repairs
+        candidate = None if fix.errors else fix.overlay
+    out.repairs.append(
+        RepairRecord(
+            gate="static",
+            target="gen_starter",
+            reason=f"시작 코드에 정답 장치 표지: {found}"[:300],
+            result="regenerated" if candidate is not None else "failed",
+        )
+    )
+    if candidate is not None:
+        starter = candidate
+        hits = marker_hits(starter, markers)
+    if hits:
+        out.review_flags.append(
+            f"{STARTER_MECHANISM}({', '.join(hits)})를 씀 — 한 번 다시 만든 뒤에도 "
+            "(흔한 구현이 따라 쓰면 함정이 무력화될 수 있음 — ③ 이 같이 봄)"
+        )
+    return starter
 
 
 def _compile_flag(what: str, fix: ImplFix) -> str:
@@ -1350,6 +1413,10 @@ async def _build_and_repair(
             out.failed_steps.append("시작 코드 컴파일")
             out.overlays = {STARTER: starter, **made_tests}
             return out
+    if hits := marker_hits(starter, markers):
+        starter = await _starter_without_mechanism(
+            out, b, starter, public, hits, markers, kw, compiler
+        )
     first = await asyncio.gather(
         gen_naive(b, starter, public=public, **kw),  # type: ignore[arg-type]
         *(gen_accepted(b, starter, d, public=public, **kw) for d in designs),  # type: ignore[arg-type]

@@ -14,7 +14,7 @@ from task_spec.llm import Completion, LLMClient
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import GeneratedFile, HiddenPlan, TargetRun, VerifyReport
-from task_spec.starter.repair import DESIGN, NAIVE_FIRST, RepairPlan, assign
+from task_spec.starter.repair import DESIGN, NAIVE_FIRST, RepairPlan, assign, marker_hits
 from task_spec.starter.static_check import Overlay
 from tests.starter.test_generate import D1, D2, SERVICE, STARTER, _files, _inputs, _task
 from tests.starter.test_static_check import CASES, HC1, PKG, PLAN
@@ -1194,6 +1194,42 @@ def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> No
     ] and "정답 장치" not in plain.actions[0].reason
 
 
+def test_marker_hits_ignore_stylesheets() -> None:
+    """#337 2절: 표지는 코드의 장치다 — CSS 의 `cursor: pointer` 가 페이지 밀림 재료 표지(`\\bcursor\\b`)에 걸리면 헛걸림이다."""
+    overlay = Overlay(
+        kind="starter",
+        files=(
+            GeneratedFile(path="src/styles/app.css", content="a { cursor: pointer; }"),
+            GeneratedFile(path="src/pages/List.tsx", content="const next = lastId;"),
+        ),
+    )
+    assert marker_hits(overlay, [r"\bcursor\b", r"\blastId\b"]) == ["lastId"]
+
+
+def test_gate3_sees_the_mechanism_in_the_starter_too() -> None:
+    """#337 2절: 장치가 시작 코드에 있으면 흔한 구현이 따라 써 함정이 무력화된다 (운영 ct-9433 b3: 시작 코드의 useQuery 가 경쟁 조건을
+    막음). 흔한 구현 파일에 표지가 없어도 ③ 이 시작 코드의 표지를 같이 보고 기존 갈래(흔한 구현 한 번 다시 → 재료 판정)로 멈춘다."""
+    naive = _run("naive-all", "ref_naive", *GOOD_ACC)  # 숨은 케이스를 모두 통과
+    starter = Overlay(
+        kind="starter",
+        files=(
+            GeneratedFile(
+                path="src/api/creator.ts", content="return useQuery({ queryKey: ['creator', id] })"
+            ),
+        ),
+    )
+    overlays = {**OVERLAYS, "starter": starter}
+    markers = [r"\buseQuery\s*\("]
+    report = _report(naive, _run("d1", "ref_accepted", *GOOD_ACC))
+    plan = assign(report, PLAN2, overlays, MISSED, {}, fix_markers=markers)
+    assert [(a.key, a.gate) for a in plan.actions] == [("gen_naive:naive-all", "③")]
+    assert "시작 코드" in plan.actions[0].note
+    again = assign(
+        report, PLAN2, overlays, MISSED, {"gen_naive:naive-all#naive-first": 1}, fix_markers=markers
+    )
+    assert any(u.startswith("재료 판정: 구별 불가(무력화) — ") for u in again.unresolved)
+
+
 def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() -> None:
     """2026-11-10 응답 순서 cf4: 공개 테스트가 지난 요청에 응답해, 지난 응답을 무시하는 허용 구현 d2 만 계속 떨어졌다."""
 
@@ -1704,7 +1740,7 @@ ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
     "material": {
         "actions": [],
         "unresolved": [
-            "재료 판정: 흔한 구현(naive-all)이 다시 생성한 뒤에도 허용 설계의 장치(let cancelled =)를 사용해 숨은 "
+            "재료 판정: 구별 불가(무력화) — 흔한 구현(naive-all)이 다시 생성한 뒤에도 허용 설계의 장치(let cancelled =)를 사용해 숨은 "
             "케이스 hc1, hc2 를 통과 — AI 흔한 구현이 기본으로 정답을 사용하므로 이 함정은 AI 첫 답을 구별하지 못할 수 "
             "있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
         ],
