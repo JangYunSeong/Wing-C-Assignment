@@ -497,6 +497,7 @@ HARNESS_EXPORTS: dict[str, str] = {
     "openRoute": "(",
     "reason": "(",
     "tag": "(",
+    "headMeta": "(",  # React v15 — 문서 머리의 meta 값
 }
 # @testing-library/react(템플릿이 고정한 16.3)와 그것이 다시 내보내는 @testing-library/dom(10.4)의 값 내보내기 → 쓰는 꼴('.' 속성, '(' 호출).
 # 빠진 import 를 코드가 채운다 (ensure_test_imports). #177: screen·waitFor·within 셋만 채워 하네스가 쓰는 act·cleanup·render·fireEvent 는
