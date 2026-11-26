@@ -149,12 +149,12 @@ class Calibration:
         names = "·".join(n for n in (self.knobs.threshold, self.knobs.load) if n)
         if self.status == "overloaded":
             top = max(t.values[self.knobs.threshold] for t in self.trials)
-            # 알파 사실(2026-11-26): 보정이 성공한 회차는 버스트가 22행 표를 읽었고, 실패한 회차들은 동시 요청만큼 더한 행이 버스트가
-            # 읽는 목록 표에 들어가 400~550행을 매 요청 읽었다 — 명세 수치만의 문제가 아니라 숨은 케이스 버스트 설계를 먼저 본다
+            # 일반 문장 + 사례 (2026-11-26): 세션 재료 알파에서 보정이 성공한 회차는 버스트가 22행 표를 읽었고, 실패한 회차들은 동시
+            # 요청만큼 더한 행이 버스트가 읽는 목록 표에 들어가 400~550행을 매 요청 읽었다 — 다른 재료에서는 확인 전이라 '예:' 로만 단다
             return (
                 f"{OVERLOADED} — {self.knobs.threshold} 를 {top} 까지 늘려도 허용 구현이 실패 "
-                f"({self.knobs.reason}, {names} 변경, 시험 {len(self.trials)}회) · 숨은 케이스 버스트가 부르는 API 가 읽는 행 수"
-                "(동시 요청만큼 더한 행이 그 목록에 들어가는지)와 동시 요청·풀 크기 확인 (사람)"
+                f"({self.knobs.reason}, {names} 변경, 시험 {len(self.trials)}회) · 동시 요청·풀 크기·버스트가 읽는 데이터 양 확인 "
+                "(사람 — 예: 동시 요청만큼 더한 행이 버스트가 읽는 목록 표에 들어감)"
             )
         hit = sorted(
             {t.values[self.knobs.threshold] for t in self.trials if t.caught}, reverse=True

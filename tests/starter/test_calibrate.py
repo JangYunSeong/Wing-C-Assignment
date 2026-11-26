@@ -229,8 +229,9 @@ async def test_accepted_failing_at_every_limit_is_a_spec_load_verdict() -> None:
     assert [t.values["connection_timeout_ms"] for t in cal.trials] == [2000, 4000, 8000] * 2
     verdict = cal.verdict()
     assert verdict.startswith("허용 구현도 버티지 못하는 부하 — ")
-    # 알파 사실: 실패한 회차는 버스트가 읽는 목록 표에 동시 요청만큼 행이 더해졌다 — 버스트 설계를 먼저 보게 한다
-    assert "8000" in verdict and "버스트" in verdict and verdict.endswith("확인 (사람)")
+    # 일반 문장(동시 요청·풀 크기·버스트가 읽는 데이터 양) + 세션 재료 알파 사례는 '예:' 로만 — 다른 재료는 확인 전
+    assert "8000" in verdict and "동시 요청·풀 크기·버스트가 읽는 데이터 양 확인" in verdict
+    assert "예: 동시 요청만큼 더한 행이 버스트가 읽는 목록 표에 들어감" in verdict
 
 
 async def test_a_calibration_names_only_the_cases_the_naive_failed() -> None:
