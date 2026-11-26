@@ -7,6 +7,9 @@
   지원자에게 보이는 글(확장 슬롯·짚은 질문의 답 포함)로 새는지 결정적으로 검사한다. 보이는 글에 남은 가명화 토큰도 표시한다.
 - 무거운 생성기(build_common → draft_feature_task → 요청 글 → 슬롯)는 TaskMaker 로 묶어 테스트에서 갈아 끼운다.
   단계(feature·request·slots)로 나눠 두어 끊긴 단계부터 이을 수 있다 (#280).
+- 코딩 템플릿이 없는 직군은 사례형(incident) — 명세가 곧 과제다 (2026-11-26 사용자). 공고 경로(nodes/spec.py)처럼
+  build_common(task_kind="incident") → draft_task, 요청 글(문제 분석 판)은 기능형만이고 슬롯은 같다.
+  코딩 재료·재현 분석·함정 틀·빌드는 없다.
 
 오류 구분: 고른 역량·직군으로는 만들 수 없음 = TaskGenerationFailed (422, 선택을 바꿔야 함),
 모델 출력을 쓰지 못함 = OutputRejected·LLM 오류 (503, 다시 시도). 메시지는 둘 다 이 모듈의 고정 문구다.
@@ -39,6 +42,7 @@ from task_spec.schemas import (
     Provenance,
     PublicIncident,
     TaskItem,
+    TaskKind,
     TrapFrame,
 )
 from task_spec.schemas.interview_incident import InterviewFeatureSeedInput
@@ -51,7 +55,7 @@ from task_spec.spec.common import (
     FLAG_COMPANY_INCIDENT_LEGACY,
     plan_common,
 )
-from task_spec.spec.draft import DraftContext
+from task_spec.spec.draft import DraftContext, apply, draft_task
 from task_spec.spec.feature import apply_feature, draft_feature_task
 from task_spec.spec.incidents import IncidentCatalog
 from task_spec.spec.slots import build_slots
@@ -128,8 +132,20 @@ class TaskGenerationFailed(ValueError):
     선택을 바꿔야 한다 (422). 메시지는 고정 문구라 화면에 그대로 보여도 된다."""
 
 
+def task_kind_for(sub: str) -> TaskKind:
+    """인터뷰 과제 종류 — 직군 기본 코딩 템플릿이 있으면 기능형, 없으면 사례형(명세가 곧 과제, 2026-11-26 사용자).
+    인터뷰를 시작할 때 정해 상태에 둔다 — 예전에는 인터뷰를 다 한 뒤 ⑦ 역량 고르기에서야 '템플릿 없음'으로 막혔다."""
+    return "feature" if sub in TEMPLATE_FOR_SUB else "incident"
+
+
+def interview_template(kind: TaskKind, sub: str) -> Template | None:
+    """과제 종류의 템플릿 — 기능형은 직군 기본 코딩 템플릿(읽지 못하면 TaskGenerationFailed), 사례형은 없다."""
+    return coding_template(sub) if kind == "feature" else None
+
+
 def coding_template(sub: str) -> Template:
-    """직군 기본 코딩 템플릿 — 없으면 이 직군은 인터뷰 과제를 만들 수 없다 (포크는 세 템플릿 중 고르게 했다)."""
+    """기능형 과제의 직군 기본 코딩 템플릿 (포크는 세 템플릿 중 고르게 했다). 없는 직군은 task_kind_for 가 사례형으로 정하므로
+    여기까지 오지 않는다 — 오면 기능형으로는 만들 수 없다는 뜻이다."""
     template_id = TEMPLATE_FOR_SUB.get(sub)
     if template_id is None:
         raise TaskGenerationFailed(
@@ -451,17 +467,21 @@ class MadeTask:
 
 @dataclass(frozen=True)
 class TaskRequest:
-    """기능형 공통 과제 한 번 만들기의 입력 — 단계마다 같은 값을 넘긴다 (#280: 단계별로 나눠 돌리고 끊긴 단계부터 잇는다).
-    profile·matches 는 선택한 역량만 담는다."""
+    """공통 과제 한 번 만들기의 입력 — 단계마다 같은 값을 넘긴다 (#280: 단계별로 나눠 돌리고 끊긴 단계부터 잇는다).
+    profile·matches 는 선택한 역량만 담는다. 템플릿이 없으면 사례형(명세가 곧 과제)이다."""
 
     profile: PostingProfile
     matches: list[CompetencyEvidence]
-    coding_incident: PublicIncident
-    template: Template
+    coding_incident: PublicIncident  # 과제의 재료 — 사례형이면 기능형 칸 없는 사례 그대로
+    template: Template | None
     task_id: str
     reviewer_note: str | None = None
     # 이 공고의 함정 틀 (#318) — 명세 초안이 공개 쪽을 받는다 (draft_feature_task v13). coding_incident 는 이미 틀 적용 재료다
     frame: TrapFrame | None = None
+
+    @property
+    def task_kind(self) -> TaskKind:
+        return "feature" if self.template is not None else "incident"
 
 
 class TaskMaker(Protocol):
@@ -471,7 +491,7 @@ class TaskMaker(Protocol):
     async def competencies(self, profile: PostingProfile) -> CompetencyChoice: ...
 
     async def feature(self, req: TaskRequest) -> MadeTask:
-        """공통 과제 뼈대(build_common) → 기능형 초안(draft_feature_task)."""
+        """공통 과제 뼈대(build_common) → 초안 (기능형 draft_feature_task · 사례형 draft_task). 단계 이름은 API 그대로."""
         ...
 
     async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
@@ -531,12 +551,12 @@ class OntologyTaskMaker:
             ontology_version=req.profile.ontology_version,
             ontology=self.ontology,
             incidents=catalog,
-            task_kind="feature",
+            task_kind=req.task_kind,
         )
         task, ctx = built.task, built.ctx
         if task is None or ctx is None:
             raise TaskGenerationFailed("선택 역량의 과제 근거가 부족합니다")
-        stack = req.template.manifest.stack
+        stack = req.template.manifest.stack if req.template is not None else None
         if stack is not None:
             env = task.tech_env.model_copy(
                 update={
@@ -554,12 +574,18 @@ class OntologyTaskMaker:
 
     async def feature(self, req: TaskRequest) -> MadeTask:
         base, ctx, flags = await self._context(req)
-        result = await draft_feature_task(
-            ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
-        )
+        # 공고 경로(nodes/spec.py)와 같은 갈래 — 사례형은 기준 답안을 넣지 않는 사례 블록(incident_block)으로 만든다
+        if req.task_kind == "feature":
+            result = await draft_feature_task(
+                ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
+            )
+        else:
+            result = await draft_task(
+                ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
+            )
         if result.output is None:
             raise OutputRejected("과제 초안을 만들지 못했습니다")
-        task = apply_feature(base, result)
+        task = (apply_feature if req.task_kind == "feature" else apply)(base, result)
         if task.behavioral_anchors is None:
             raise OutputRejected("평가 행동 기준이 생성되지 않았습니다")
         if {c.competency_id for c in task.target_competencies} != {
@@ -571,6 +597,10 @@ class OntologyTaskMaker:
         return MadeTask(task=task, provenance=list(result.provenance), flags=list(flags))
 
     async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
+        if (
+            req.task_kind != "feature"
+        ):  # 요청 글(문제 분석 판)은 기능형 명세 칸 — 공고 경로도 기능형만 (nodes/spec.py)
+            return made
         _, ctx, _ = await self._context(req)
         analysis = await draft_analysis_request(made.task, ctx, llm=self.llm, prompts=self.prompts)
         return MadeTask(

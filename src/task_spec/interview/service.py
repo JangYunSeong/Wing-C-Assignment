@@ -98,10 +98,10 @@ from task_spec.interview.task import (
     TaskGenerationFailed,
     TaskMaker,
     TaskRequest,
-    coding_template,
     copies_answer,
     evaluation_criteria,
     hidden_requirements,
+    interview_template,
     mentions_artifact_id,
     prepare_coding_incident,
     pseudonymize_changes,
@@ -109,6 +109,7 @@ from task_spec.interview.task import (
     ready_coding_incident,
     targeted_draft_texts,
     task_frame,
+    task_kind_for,
     with_content_flags,
     with_interview_flag,
 )
@@ -159,6 +160,7 @@ from task_spec.schemas import (
     Provenance,
     PublicIncident,
     TaskItem,
+    TaskKind,
     TrapFrame,
 )
 from task_spec.schemas.interview_answer import (
@@ -240,10 +242,20 @@ class _GenerationInputs:
     profile: PostingProfile
     chosen: PostingProfile  # 고른 역량만
     matches: list[CompetencyEvidence]
-    template: Template
+    # 사례형(명세가 곧 과제)은 없음 — 코딩 재료·재현 분석·함정 틀을 건너뛴다
+    template: Template | None
     reviewer_note: str | None
     # ⑧ 보강 질문의 답 (#308, 인터뷰 사례만) — seed 가 기능형 재료·재료 분석 입력에 넣는다
     reinforce: tuple[ReinforceAnswer, ...] = ()
+
+    @property
+    def coding_template(self) -> Template:
+        """기능형 단계(재료 정리·재현 분석·함정 틀)의 템플릿 — 사례형은 seed 에서 먼저 빠지므로 여기까지 오지 않는다."""
+        if self.template is None:
+            raise InterviewConflict(
+                "과제 만들기 단계 순서가 어긋났습니다. 과제를 다시 만들어 주세요"
+            )
+        return self.template
 
 
 class _MaterialCheck(NamedTuple):
@@ -587,6 +599,7 @@ class InterviewService:
                     ontology_version=profile.ontology_version,
                 ),
                 incident_sub=profile.sub,
+                task_kind=task_kind_for(profile.sub),
                 jd_text="\n".join(jd_lines)[:40000],
                 team_context=scope,
                 scope_fields=fields,
@@ -604,7 +617,11 @@ class InterviewService:
                 await asyncio.to_thread(self.pseudo.delete, interview_id)
                 raise
         logger.info(
-            "interview_created id=%s stage=%s lines=%d", interview_id, state.stage, len(jd_lines)
+            "interview_created id=%s stage=%s kind=%s lines=%d",
+            interview_id,
+            state.stage,
+            state.task_kind,
+            len(jd_lines),
         )
         return self.view(row)
 
@@ -1149,20 +1166,36 @@ class InterviewService:
             raise PostingMissing("공고를 찾을 수 없습니다")
         return profile
 
+    @staticmethod
+    def _task_kind(state: InterviewState) -> TaskKind:
+        """이 인터뷰의 과제 종류 — 시작할 때 정한 값, 그 칸 전에 만든 행이면 직군으로."""
+        return state.task_kind or task_kind_for(state.posting_context.sub)
+
+    @classmethod
+    def _usable(cls, incident: PublicIncident, state: InterviewState) -> bool:
+        """이 인터뷰가 고를 수 있는 공개·회사 사례인가 — 기능형은 직군 템플릿이 시험할 기능형 재료가 있어야 하고(feature_fit),
+        사례형(명세가 곧 과제)은 그 직군 사례면 된다."""
+        return cls._task_kind(state) == "incident" or feature_fit(incident, state.incident_sub)
+
+    def _template(self, state: InterviewState) -> Template | None:
+        """과제 종류의 템플릿 — 기능형은 직군 기본 코딩 템플릿, 사례형은 없음. 읽지 못하면 InterviewInvalid(422)."""
+        try:
+            return interview_template(self._task_kind(state), state.posting_context.sub)
+        except TaskGenerationFailed as exc:
+            raise InterviewInvalid(str(exc)) from None
+
     async def competency_preview(self, interview_id: str) -> dict[str, Any]:
-        """고를 수 있는 공고 역량(수행준거 근거가 있는 것)과 규칙이 권하는 역량, 직군 기본 코딩 템플릿."""
+        """고를 수 있는 공고 역량(수행준거 근거가 있는 것)과 규칙이 권하는 역량, 과제 종류와 직군 기본 코딩 템플릿(사례형은 없음)."""
         row = await self._load(interview_id)
         self._require(row.state, "competencies", "task_review")
         tasks, _ = self._require_tasks()
         profile = await self._profile(row.state.posting_id)
         choice = await self._competencies(tasks, profile)
-        try:
-            template_id = coding_template(profile.sub or "").manifest.template_id
-        except TaskGenerationFailed as exc:
-            raise InterviewInvalid(str(exc)) from None
+        template = self._template(row.state)
         return {
             "ontology_version": profile.ontology_version,
-            "template_id": template_id,
+            "task_kind": self._task_kind(row.state),
+            "template_id": template.manifest.template_id if template is not None else None,
             "competencies": [
                 {
                     "competency_id": c.competency_id,
@@ -1202,12 +1235,10 @@ class InterviewService:
                 or not set(competency_ids) <= available
             ):
                 raise InterviewInvalid("수행준거 근거가 있는 공고 역량 2~3개를 고르세요")
-            try:
-                template = coding_template(profile.sub or "")
-            except TaskGenerationFailed as exc:
-                raise InterviewInvalid(str(exc)) from None
+            template = self._template(state)
+            state.task_kind = self._task_kind(state)  # 칸 전에 만든 행도 여기서 정해 둔다
             state.competency_ids = list(competency_ids)
-            state.template_id = template.manifest.template_id
+            state.template_id = template.manifest.template_id if template is not None else None
             state.spec = None
             state.stage = "competencies"
             return await self._save(row, revision, state, None, steps=(STEP_COMPETENCIES,))
@@ -1363,9 +1394,10 @@ class InterviewService:
         self, interview_id: str, state: InterviewState, g: InterviewGeneration
     ) -> _GenerationInputs:
         interview = state.incident_source == "known_problem"
+        template = self._template(state)
         llm, prompts = (
             self._require_step(FEATURE_SEED_PROMPT, "과제 생성")
-            if interview
+            if interview and template is not None  # 기능형 재료 정리는 기능형 인터뷰 사례만
             else self._require_ready()
         )
         tasks, common_store = self._require_tasks()
@@ -1392,7 +1424,7 @@ class InterviewService:
             profile=profile,
             chosen=chosen,
             matches=[e for e in choice.matches if e.competency_id in selected],
-            template=coding_template(profile.sub or ""),
+            template=template,
             reviewer_note=self._reviewer_note(state),
             reinforce=tuple(state.reinforce_answers) if interview else (),
         )
@@ -1447,7 +1479,7 @@ class InterviewService:
             analysis, provenance = await self._llm(
                 analyze_material(
                     material,
-                    inp.template,
+                    inp.coding_template,
                     llm=inp.llm,
                     prompts=inp.prompts,
                     ontology_version=inp.profile.ontology_version,
@@ -1455,7 +1487,7 @@ class InterviewService:
             )
             flags = [
                 self.pseudo.derived(f, inp.mapping, tokens)
-                for f in analysis_flags(analysis, inp.template, coding.feature)
+                for f in analysis_flags(analysis, inp.coding_template, coding.feature)
             ]
             gaps = [self.pseudo.derived(gap, inp.mapping, tokens) for gap in analysis.gaps]
         except (*_LLM_ERRORS, InterviewError) as exc:
@@ -1499,7 +1531,7 @@ class InterviewService:
             frame, provenance = await self._llm(
                 make_frame(
                     material,
-                    inp.template,
+                    inp.coding_template,
                     llm=inp.llm,
                     prompts=inp.prompts,
                     ontology_version=inp.profile.ontology_version,
@@ -1507,7 +1539,7 @@ class InterviewService:
             )
             for text in frame_texts(frame):
                 self.pseudo.derived(text, inp.mapping, tokens)
-            problems = frame_problems(frame, inp.template)
+            problems = frame_problems(frame, inp.coding_template)
             if problems:
                 logger.warning("interview_trap_frame_unusable problems=%d", len(problems))
                 return _FrameResult(None, None, problems, [provenance])
@@ -1520,7 +1552,7 @@ class InterviewService:
                     f"설계 질문 답 {unread}개를 '{'/'.join(DESIGN_CHOICES)}' 로 읽지 못해 설계를 남김 — 사람 확인"
                 )
             # 검사 1 (#318 §5.1) — 틀 사유의 성립 조건에 쓰는 운영 값의 근거 (등록 재료 기준 — 틀 적용 재료는 조절값을 비울 수 있다)
-            evidence = evidence_gaps(frame.reason, inp.template, coding.feature, analysis)
+            evidence = evidence_gaps(frame.reason, inp.coding_template, coding.feature, analysis)
             flags = [
                 self.pseudo.derived(f, inp.mapping, tokens)
                 for f in [*frame_flags(frame, notes), *(e.flag for e in evidence)]
@@ -1544,6 +1576,12 @@ class InterviewService:
         self, interview_id: str, step: GenerateStep, inp: _GenerationInputs, g: InterviewGeneration
     ) -> dict[str, Any]:
         """seed·feature·request·slots 하나 — 잠금 없이 (LLM 몇 분). 저장할 산출물 칸을 돌려준다."""
+        if step == "seed" and inp.template is None:
+            # 사례형 (명세가 곧 과제) — 확인한 사례를 그대로 재료로. 기능형 재료·재현 분석·함정 틀은 코딩 템플릿 기준이라 없다.
+            # 인터뷰 사례는 승인 때 회사 사례로 등록하므로 등록할 수 있는지 먼저 본다 (기능형과 같은 검사)
+            if inp.interview:
+                self._registrable(inp.incident)
+            return {"coding_incident": inp.incident, "seed_provenance": [], "seed_flags": []}
         if step == "seed":
             if inp.interview:
                 parts = [incident_block(inp.incident), known_cases_block(inp.incident)]
@@ -1553,7 +1591,7 @@ class InterviewService:
                 coding, seed_provenance = await self._llm(
                     prepare_coding_incident(
                         inp.incident,
-                        inp.template,
+                        inp.coding_template,
                         interview=text,
                         llm=inp.llm,
                         prompts=inp.prompts,
@@ -1572,7 +1610,7 @@ class InterviewService:
                     "trap_frame": framed.frame,
                     "framed_seed": framed.framed,
                 }
-            coding = ready_coding_incident(inp.incident, inp.template)
+            coding = ready_coding_incident(inp.incident, inp.coding_template)
             if not is_company_incident(coding.incident_id):
                 # 공개 재료는 서비스에서 보지 않는다 — 평가(eval/interview/run_material_analysis.py)로 한 번 본다 (#301)
                 return {"coding_incident": coding, "seed_provenance": [], "seed_flags": []}
@@ -1699,7 +1737,7 @@ class InterviewService:
                 posting_id=state.posting_id,
                 ontology_version=inp.profile.ontology_version,
                 competency_ids=list(g.competency_ids),
-                template_id=inp.template.manifest.template_id,
+                template_id=inp.template.manifest.template_id if inp.template is not None else None,
                 project=state.project,
                 incident_source=state.incident_source,
                 incident=inp.incident,
@@ -2102,7 +2140,7 @@ class InterviewService:
                     "incident_id": i.incident_id,
                     "title": i.title,
                     "tech": i.tech,
-                    "usable": feature_fit(i, sub),
+                    "usable": self._usable(i, state),
                 }
                 for i in self._public_candidates(sub)
             ],
@@ -2111,7 +2149,7 @@ class InterviewService:
                     "incident_id": r.incident_id,
                     "title": r.incident.title,
                     "tech": r.incident.tech,
-                    "usable": feature_fit(r.incident, sub),
+                    "usable": self._usable(r.incident, state),
                     "from_interview": r.source.get("kind") == "interview",
                     "used_by_postings": used.get(r.incident_id, 0),
                 }
@@ -2159,7 +2197,7 @@ class InterviewService:
                 if not incident_id:
                     raise InterviewInvalid("회사 사례를 골라 주세요")
                 chosen = await self._company_case(incident_id, state)
-            if chosen is not None and not feature_fit(chosen, sub):
+            if chosen is not None and not self._usable(chosen, state):
                 raise InterviewInvalid(
                     "이 사례에는 직군 코딩 템플릿으로 시험할 기능형 재료가 없습니다. 다른 사례를 골라 주세요"
                 )
@@ -2408,6 +2446,12 @@ class InterviewService:
         approval = row.state.approval
         if row.state.stage != "approved" or approval is None:
             raise InterviewConflict("승인한 인터뷰에서만 빌드를 요청할 수 있습니다")
+        spec = row.state.spec
+        if spec is not None and spec.common_task.task_kind != "feature":
+            # 빌드 저장소도 막지만(starter/store — 내부 규칙 문구) 화면에는 왜 없는지 알린다
+            raise InterviewConflict(
+                "문서형(사례형) 과제는 시작 코드를 만들지 않습니다. 승인한 과제 명세가 곧 과제입니다"
+            )
         if self.builds is None:
             raise InterviewNotReady("코딩 과제 빌더가 준비되지 않았습니다")
         ready = next(

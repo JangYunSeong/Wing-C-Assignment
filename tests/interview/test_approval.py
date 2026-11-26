@@ -316,6 +316,30 @@ async def test_build_is_requested_separately_after_approval(env) -> None:
     assert build.requested_by == "가상 승인자"  # 요청자가 없으면 승인자
 
 
+async def test_document_task_is_approved_without_a_template_and_has_no_build(env) -> None:
+    """사례형 (코딩 템플릿 없는 직군 — 명세가 곧 과제, 2026-11-26 사용자): 템플릿·기능형 재료 없이 승인되고, 확인한 사례는 기능형 칸
+    없이 co: 로 등록되며 (다른 공고의 사례형 과제가 다시 쓸 수 있다), 시작 코드 빌드는 요청할 수 없다."""
+    s = env.session
+    s.postings.sub = "sw.embedded"  # 기본 코딩 템플릿이 없는 직군 (가상 공고)
+    await confirmed(s)
+    assert (await s.post("competencies", competency_ids=SELECTED)).status_code == 200
+    made = await s.generate(competency_ids=SELECTED)
+    assert made.status_code == 200, made.text
+    assert (await s.post("answers", answers={"q1": ANSWER})).status_code == 200
+    waiting = await approval(s)
+    assert waiting.status_code == 200 and waiting.json()["problems"] == [], waiting.text
+    decided = await decide(s, revision=s.revision, status="approved")
+    assert decided.status_code == 200, decided.text
+    record = decided.json()["approval"]
+    rec = env.incidents.rows[record["incident_id"]]
+    assert rec.status == "pending" and rec.incident.feature is None
+    [row] = env.rows(s.interview_id)
+    assert row["status"] == "approved" and row["task"].task_kind == "incident"
+    build = await s.post("builds")
+    assert build.status_code == 409 and "문서형" in build.json()["error"]["message"]
+    assert await env.builds.builds(record["common_id"]) == []
+
+
 async def test_discarding_drops_the_interview_drafts(env) -> None:
     s = env.session
     await generated(s)

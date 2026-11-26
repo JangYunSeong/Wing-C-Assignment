@@ -55,6 +55,7 @@ from task_spec.schemas import (
     PublicIncident,
     TargetCompetency,
     TaskItem,
+    TaskKind,
     TechEnv,
     Trap,
 )
@@ -113,13 +114,14 @@ def fake_task(
     scenario: str,
     source_incident: str | None = None,
     slots: list[TaskItem] | None = None,
+    task_kind: TaskKind = "feature",
     memo: str = "가상 메모",
     observed: str = "요청 식별자 검증",
 ) -> TaskItem:
     return TaskItem(
         task_id=task_id,
         track="common",
-        task_kind="feature",
+        task_kind=task_kind,
         target_competencies=[
             TargetCompetency(competency_id=c.competency_id, label=c.label)
             for c in profile.competencies
@@ -191,7 +193,8 @@ class FakeTaskMaker:
             {
                 "competencies": [c.competency_id for c in req.profile.competencies],
                 "incident": req.coding_incident,
-                "template": req.template.manifest.template_id,
+                "template": req.template.manifest.template_id if req.template else None,
+                "task_kind": req.task_kind,
                 "task_id": req.task_id,
                 "reviewer_note": req.reviewer_note,
                 "frame": req.frame,
@@ -207,6 +210,7 @@ class FakeTaskMaker:
             req.task_id,
             scenario=self.scenario,
             source_incident=req.coding_incident.incident_id,
+            task_kind=req.task_kind,
             memo=self.memo,
             observed=self.observed,
         )
@@ -399,13 +403,42 @@ async def test_feature_seed_outside_the_template_is_retried_not_saved(task_sessi
     assert common.rows == [] and session.store.rows[session.interview_id].state.spec is None
 
 
-async def test_posting_without_a_coding_template_cannot_choose_competencies(task_session) -> None:
-    session, _, _ = task_session
-    await confirmed(session)
-    session.postings.sub = "sw.embedded"  # 기본 코딩 템플릿이 없는 직군 (가상)
+async def test_posting_without_a_coding_template_makes_a_document_task(task_session) -> None:
+    """코딩 템플릿이 없는 직군은 사례형 — 명세가 곧 과제다 (2026-11-26 사용자). 시작할 때 종류를 정해 알리고 (예전에는 인터뷰를 다 한 뒤
+    ⑦ 역량 고르기에서 '템플릿 없음'으로 막혔다), 기능형 재료 정리(LLM)·재현 분석·함정 틀 없이 확인한 사례 그대로 초안을 만든다."""
+    session, maker, common = task_session
+    session.postings.sub = "sw.embedded"  # 기본 코딩 템플릿이 없는 직군 (가상 공고)
+    state = await confirmed(session)
+    assert state["task_kind"] == "incident"
     preview = await session.client.get(f"/interviews/{session.interview_id}/competencies")
-    assert preview.status_code == 422 and "템플릿" in preview.json()["error"]["message"]
-    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 422
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["task_kind"] == "incident" and preview.json()["template_id"] is None
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    prompts_before = len(session.backend.prompts)
+    response = await session.generate(
+        competency_ids=SELECTED
+    )  # 기능형 재료 응답을 넣지 않는다 — 부르지 않아야 한다
+    assert response.status_code == 200, response.text
+    spec = response.json()["spec"]
+    assert spec["template_id"] is None and spec["common_task"]["task_kind"] == "incident"
+    assert spec["coding_incident"]["feature"] is None and spec["trap_frame"] is None
+    assert spec["common_task"]["source_incident"] == spec["coding_incident"]["incident_id"]
+    [call] = maker.calls
+    assert call["task_kind"] == "incident" and call["template"] is None and call["frame"] is None
+    assert len(session.backend.prompts) == prompts_before  # 재료 정리·재현 분석·틀 프롬프트 없음
+    [row] = common.rows
+    assert row["task"].task_kind == "incident" and row["framed"] is None
+
+
+async def test_old_interview_rows_take_the_task_kind_from_the_posting(task_session) -> None:
+    """과제 종류 칸 전에 만든 행(None)은 직군으로 정한다 — 템플릿 없는 직군으로 시작한 인터뷰도 막히지 않는다."""
+    session, _, _ = task_session
+    session.postings.sub = "sw.embedded"
+    await confirmed(session)
+    row = session.store.rows[session.interview_id]
+    row.state.task_kind = None  # 예전 행
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    assert session.store.rows[session.interview_id].state.task_kind == "incident"
 
 
 def test_an_unreadable_template_is_reported_without_its_path(monkeypatch) -> None:
