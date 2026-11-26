@@ -35,7 +35,7 @@ def java():  # type: ignore[no-untyped-def]
 
 
 def test_java_template_is_registered_and_clean(java) -> None:  # type: ignore[no-untyped-def]
-    assert JAVA in available() and current_version(JAVA) == 5
+    assert JAVA in available() and current_version(JAVA) == 6
     assert java.manifest.ref == f"{JAVA}@{CUR}"
     assert check_template(java) == []
     assert "build.gradle" in java.files("project")
@@ -99,7 +99,15 @@ def test_params_read_by_harness_are_declared(java) -> None:  # type: ignore[no-u
     assert used and used <= names
 
 
-_HARNESS_INTERNAL = {"getConnection", "postProcessAfterInitialization", "raw", "tag", "uri"}
+# 프레임워크가 부르는 콜백(Spring BeanPostProcessor·TestExecutionListener)과 내부 도우미 — 케이스 작성자가 부르는 API 가 아니다
+_HARNESS_INTERNAL = {
+    "afterTestMethod",
+    "getConnection",
+    "postProcessAfterInitialization",
+    "raw",
+    "tag",
+    "uri",
+}
 
 
 def test_harness_doc_covers_harness_api(java) -> None:  # type: ignore[no-untyped-def]
