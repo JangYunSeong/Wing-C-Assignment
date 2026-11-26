@@ -70,7 +70,6 @@ from task_spec.starter.repair import (
     assign,
     contract_signals,
     gates_of,
-    marker_hits,
 )
 from task_spec.starter.repair import HAND as HAND_POOL
 from task_spec.starter.repair import TRAP_GATE as TRAP_POOL
@@ -348,68 +347,6 @@ def _ref_regen(
         public=public,
         **kw,  # type: ignore[arg-type]
     )
-
-
-STARTER_MECHANISM = (
-    "시작 코드가 허용 설계의 장치"  # 다시 만든 뒤에도 남은 장치의 검토 표시 머리 (#337 2절)
-)
-
-
-async def _starter_without_mechanism(
-    out: BuildOutcome,
-    b: BuildInputs,
-    starter: Overlay,
-    public: Overlay | None,
-    hits: list[str],
-    markers: Sequence[str],
-    kw: dict[str, object],
-    compiler: TestCompiler | None,
-) -> Overlay:
-    """시작 코드에 허용 설계의 장치(재료 표지)가 있다 — 흔한 구현이 따라 써 함정이 무력화된다 (#337 2절, 운영 ct-9433 b3: 시작 코드의
-    useQuery 가 경쟁 조건을 막음). 참조 구현을 만들기 전에 '이 장치 없이' 한 번 다시 만든다 (검증 뒤에 시작 코드를 다시 만들면 참조 구현도
-    모두 다시). 다시 만들지 못하거나 그래도 남으면 이전·새 판 그대로 두고 표시만 — 막지 않는다: 표지는 테스트 밖 모든 파일을 봐
-    헛걸림이 있을 수 있고, ③ 이 시작 코드의 표지도 같이 보고 흔한 구현이 숨은 케이스를 통과하면 재료 판정으로 멈춘다."""
-    found = ", ".join(hits)
-    note = (
-        "정적 검사 문제 — 고쳐서 다시 쓴다:\n"
-        f"- 시작 코드에 이 장치를 쓰지 않는다: {found} — 같은 기능을 이 장치 없이 쓴다 (기존 동작·계약·파일 구성은 그대로)"
-    )
-    r = await gen_starter(b, note=note, previous=starter, public=public, **kw)  # type: ignore[arg-type]
-    if r.first_problems:
-        out.static_retries.append(
-            "gen_starter: " + " | ".join(p[:160] for p in r.first_problems[:4])
-        )
-    out.provenance += r.provenance
-    out.adjustments += [f"{r.task}: {a}" for a in r.adjustments]
-    candidate = r.overlay if r.ok else None
-    if candidate is not None and compiler is not None:
-        fix = await compile_impl_and_fix(
-            "gen_starter",
-            candidate,
-            _starter_around(public),
-            lambda n, prev: gen_starter(b, note=n, previous=prev, public=public, **kw),  # type: ignore[arg-type]
-            compiler,
-        )
-        out.provenance += [p for x in fix.results for p in x.provenance]
-        out.repairs += fix.repairs
-        candidate = None if fix.errors else fix.overlay
-    out.repairs.append(
-        RepairRecord(
-            gate="static",
-            target="gen_starter",
-            reason=f"시작 코드에 정답 장치 표지: {found}"[:300],
-            result="regenerated" if candidate is not None else "failed",
-        )
-    )
-    if candidate is not None:
-        starter = candidate
-        hits = marker_hits(starter, markers)
-    if hits:
-        out.review_flags.append(
-            f"{STARTER_MECHANISM}({', '.join(hits)})를 씀 — 한 번 다시 만든 뒤에도 "
-            "(흔한 구현이 따라 쓰면 함정이 무력화될 수 있음 — ③ 이 같이 봄)"
-        )
-    return starter
 
 
 def _compile_flag(what: str, fix: ImplFix) -> str:
@@ -848,24 +785,14 @@ def _no_window_retry(
         for t in row["trials"]
     )
     cases = ", ".join(cal.cases)
-    if cal.status == "overloaded":
-        # 더 느슨한 한도까지 허용 구현이 떨어짐 (#337 7절) — 그 케이스가 허용 설계도 못 버티게 짜였을 수 있다 (알파 fix332-3: 직원 테이블
-        # 조회 실패 주입). 그래도 같으면 명세 수치 판정
-        reason = f"명세 부하로 허용 구현도 실패 — 숨은 케이스 {cases} 를 한 번 다시"
-        head = f"조절값 보정 시험에서 한도를 가장 느슨하게 해도 허용 구현도 떨어졌다 (숨은 케이스 {cases}, 사유 {row['reason'] or '-'}): "
-    else:
-        reason = f"보정 창 없음 — 숨은 케이스 {cases} 를 한 번 다시"
-        head = (
-            f"조절값 보정 시험에서 흔한 구현이 떨어지기 시작한 한도에서 허용 구현도 함께 떨어져 둘을 가를 창이 없었다 "
-            f"(숨은 케이스 {cases}, 사유 {row['reason'] or '-'}): "
-        )
     return RepairAction(
         generator="gen_hidden",
         label="",
         gate="③",
-        reason=reason,
+        reason=f"보정 창 없음 — 숨은 케이스 {cases} 를 한 번 다시",
         note=(
-            f"{head}{grid}. "
+            f"조절값 보정 시험에서 흔한 구현이 떨어지기 시작한 한도에서 허용 구현도 함께 떨어져 둘을 가를 창이 없었다 "
+            f"(숨은 케이스 {cases}, 사유 {row['reason'] or '-'}): {grid}. "
             "시간을 재는 요청 묶음(버스트)을 업무 조회가 가벼운 경로로 보내거나 묶음 크기를 줄여, 허용 설계는 견디고 흔한 구현만 "
             "떨어지게 그 케이스만 고친다. 사유와 확인하는 결과는 바꾸지 않는다."
         ),
@@ -1429,10 +1356,6 @@ async def _build_and_repair(
             out.failed_steps.append("시작 코드 컴파일")
             out.overlays = {STARTER: starter, **made_tests}
             return out
-    if hits := marker_hits(starter, markers):
-        starter = await _starter_without_mechanism(
-            out, b, starter, public, hits, markers, kw, compiler
-        )
     first = await asyncio.gather(
         gen_naive(b, starter, public=public, **kw),  # type: ignore[arg-type]
         *(gen_accepted(b, starter, d, public=public, **kw) for d in designs),  # type: ignore[arg-type]
@@ -1506,11 +1429,16 @@ async def _build_and_repair(
                 if cal.status == "calibrated":
                     b = _apply_calibration(out, b, cal)
                     continue
-                # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음·명세 부하는
-                # 숨은 케이스 한 번 다시 뒤 재료 판정으로 멈춤 — #337 7절)
+                # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음은 숨은 케이스 한 번
+                # 다시 뒤 재료 판정, 가장 느슨한 한도에서도 허용 구현이 떨어지면(overloaded) 바로 재료 판정 — #337 7절. 재시도는 창 없음에만:
+                # T-F1 재시도는 아직 창을 만든 실적이 없다 (알파 fix332-1: 다시 만든 케이스가 동시 요청을 줄여 다시 창 없음))
                 plan = assign_now()
                 if cal.status in ("no_window", "overloaded"):
-                    retry = _no_window_retry(out, cal, round_no, max_rounds)
+                    retry = (
+                        _no_window_retry(out, cal, round_no, max_rounds)
+                        if cal.status == "no_window"
+                        else None
+                    )
                     if retry is not None:
                         # 처음 창 없음 — 시험 격자를 주고 그 숨은 케이스를 한 번 다시 만든 뒤 다시 보정한다 (설계 검사 #332 T-F1).
                         # 흔한 구현은 다시 만들지 않는다 — 창이 없다는 것은 흔한 구현이 떨어진다는 뜻이다 (예전 재료 판정 때도 건너뛰었다)
@@ -1519,10 +1447,9 @@ async def _build_and_repair(
                         out.calibration_tries.append(cal)
                         out.calibration = None
                     else:
-                        same = "창 없음" if cal.status == "no_window" else "허용 구현 실패"
                         again = (
-                            f" — 숨은 케이스를 한 번 다시 만든 뒤에도 {same}"
-                            if out.calibration_tries
+                            " — 숨은 케이스를 한 번 다시 만든 뒤에도 창 없음"
+                            if out.calibration_tries and cal.status == "no_window"
                             else ""
                         )
                         plan.unresolved.append(

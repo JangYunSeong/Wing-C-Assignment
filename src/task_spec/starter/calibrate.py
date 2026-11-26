@@ -36,7 +36,7 @@ from task_spec.starter.static_check import Overlay
 # 한도 조절값 → 시도할 값 (넉넉한 쪽부터). 대기 한도는 Hikari 하한 250 아래로 가지 않는다 — 1~249 는 기동 실패 (#301 하네스 실험).
 # 사다리가 없는 tunes 값(예: request_timeout_s)은 아직 후보를 정하지 않아 보정하지 않는다 — 그 사유는 기존 재생성 경로로.
 THRESHOLDS: dict[str, tuple[int, ...]] = {"connection_timeout_ms": (2000, 1000, 500, 250)}
-# 사다리 맨 위에서 허용 구현이 떨어질 때 올려 볼 더 느슨한 한도 (낮은 쪽부터) — 명세 부하가 무거우면 2000 에서도 허용 구현이 떨어졌다
+# 사다리 맨 위에서 허용 구현이 떨어질 때 올려 볼 더 느슨한 한도 (낮은 쪽부터) — 버스트 부하가 무거우면 2000 에서도 허용 구현이 떨어졌다
 # (#337 7절, #334 알파 2·3회차 동시/풀 82/20·124/20). 8000 이면 요청 한도는 max(30, 8000×2/1000+5) = 30초 그대로
 LOOSER: dict[str, tuple[int, ...]] = {"connection_timeout_ms": (4000, 8000)}
 # 부하 조절값 → 계획 값으로 창이 안 나올 때 차례로 올려 볼 값
@@ -48,6 +48,7 @@ MAX_TRIALS = 16  # 부하 단계 2 × (사다리 4 + 창 끝 2 + 확인 2)
 STEP = 10  # 고른 한도의 단위
 LABEL = "cal"  # 보정 실행 대상 라벨 cal<n>-<라벨> — 검증기 작업 폴더(r<회차>-<라벨>)가 실제 검증·다른 조합과 겹치지 않게
 FLAG = "조절값 보정: "  # 승인 화면 표시 머리 (막지 않음 — 승인자가 확인)
+OVERLOADED = "허용 구현도 버티지 못하는 부하"  # overloaded 재료 판정의 머리 (#337 7절)
 # 명세 글이 조절값을 적는 로그 문구 — 표기 패턴(spec_patterns)은 설정 꼴만 읽어, 2단계 로그의 Hikari 문구
 # 'Connection is not available, request timed out after 3000ms' 를 못 읽었다 (2026-11-25 #308: 보정 350ms ↔ 공개 로그 3000ms)
 SPEC_LOGS: dict[str, tuple[str, ...]] = {
@@ -88,7 +89,8 @@ class Calibration:
     """보정 한 번의 결과 — calibrated 면 values 를 숨은 계획에 넣는다.
     naive_untouched: 어느 조합·케이스에서도 흔한 구현이 떨어지지 않음 (흔한 구현이 함정을 안 가졌을 수 있다 → 기존 재생성 경로).
     no_window: 흔한 구현은 떨어지는데 허용 구현이 모두 통과하는 넉넉한 창이 없음 (재료가 조절값으로 재현되지 않음 → 사람).
-    overloaded: 더 느슨한 한도까지 올려도 허용 구현이 떨어짐 — 명세 부하(동시 요청·풀 크기)가 허용 설계도 버티지 못함 (#337 7절 → 사람).
+    overloaded: 더 느슨한 한도까지 올려도 허용 구현이 떨어짐 — 버스트가 읽는 행 수·동시 요청이 허용 설계도 버티지 못함
+    (#337 7절 → 사람, 숨은 케이스 재시도 없이 바로 재료 판정).
     skipped: 돌릴 수 없음 (검증기·공개 테스트·보정할 값 없음) → 기존 경로."""
 
     status: Status
@@ -147,9 +149,12 @@ class Calibration:
         names = "·".join(n for n in (self.knobs.threshold, self.knobs.load) if n)
         if self.status == "overloaded":
             top = max(t.values[self.knobs.threshold] for t in self.trials)
+            # 알파 사실(2026-11-26): 보정이 성공한 회차는 버스트가 22행 표를 읽었고, 실패한 회차들은 동시 요청만큼 더한 행이 버스트가
+            # 읽는 목록 표에 들어가 400~550행을 매 요청 읽었다 — 명세 수치만의 문제가 아니라 숨은 케이스 버스트 설계를 먼저 본다
             return (
-                f"명세 부하가 허용 구현도 떨어뜨림 — {self.knobs.threshold} 를 {top} 까지 늘려도 허용 구현이 실패 "
-                f"({self.knobs.reason}, {names} 변경, 시험 {len(self.trials)}회) · 동시 요청·풀 크기 같은 명세 수치 확인 (사람)"
+                f"{OVERLOADED} — {self.knobs.threshold} 를 {top} 까지 늘려도 허용 구현이 실패 "
+                f"({self.knobs.reason}, {names} 변경, 시험 {len(self.trials)}회) · 숨은 케이스 버스트가 부르는 API 가 읽는 행 수"
+                "(동시 요청만큼 더한 행이 그 목록에 들어가는지)와 동시 요청·풀 크기 확인 (사람)"
             )
         hit = sorted(
             {t.values[self.knobs.threshold] for t in self.trials if t.caught}, reverse=True
@@ -305,7 +310,7 @@ async def search(
             if not trial.clean:
                 break  # 한도가 짧을수록 허용 구현에 불리 — 그 아래는 보지 않는다
         if level and not level[0].clean:
-            # 사다리 맨 위에서 허용 구현이 떨어짐 — 명세 부하가 무겁다. 더 느슨한 한도로 올려 본다 (#337 7절). 흔한 구현이 계속 떨어지면
+            # 사다리 맨 위에서 허용 구현이 떨어짐 — 버스트 부하가 무겁다. 더 느슨한 한도로 올려 본다 (#337 7절). 흔한 구현이 계속 떨어지면
             # 창을 넓히려고 한 칸 더, 허용 구현이 통과하고 흔한 구현도 통과하면 거기가 창 위 끝이라 멈춘다
             for value in k.looser:
                 trial = await attempt({k.threshold: value, **fixed})
@@ -350,7 +355,7 @@ async def search(
             )
     status: Status
     if trials and not any(t.clean for t in trials):
-        status = "overloaded"  # 더 느슨한 한도까지 허용 구현이 떨어짐 — 명세 수치 문제 (#337 7절)
+        status = "overloaded"  # 더 느슨한 한도까지 허용 구현이 떨어짐 (#337 7절)
     elif any(t.caught for t in trials):
         status = "no_window"
     else:

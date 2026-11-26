@@ -228,8 +228,9 @@ async def test_accepted_failing_at_every_limit_is_a_spec_load_verdict() -> None:
     assert cal.status == "overloaded" and not cal.values
     assert [t.values["connection_timeout_ms"] for t in cal.trials] == [2000, 4000, 8000] * 2
     verdict = cal.verdict()
-    assert verdict.startswith("명세 부하가 허용 구현도 떨어뜨림 — ")
-    assert "8000" in verdict and verdict.endswith("명세 수치 확인 (사람)")
+    assert verdict.startswith("허용 구현도 버티지 못하는 부하 — ")
+    # 알파 사실: 실패한 회차는 버스트가 읽는 목록 표에 동시 요청만큼 행이 더해졌다 — 버스트 설계를 먼저 보게 한다
+    assert "8000" in verdict and "버스트" in verdict and verdict.endswith("확인 (사람)")
 
 
 async def test_a_calibration_names_only_the_cases_the_naive_failed() -> None:
@@ -513,23 +514,20 @@ async def test_no_window_stops_the_build_for_a_person() -> None:
     assert [(r.gate, r.target) for r in out.repairs][:1] == [("③", "gen_hidden")]
 
 
-async def test_a_spec_load_the_accepted_design_cannot_bear_stops_for_a_person() -> None:
-    """#337 7절: 더 느슨한 한도(8000)까지 올려도 허용 구현이 떨어지면 — 창 없음처럼 처음에는 숨은 케이스를 한 번 다시 만들어 다시
-    보정하고 (그 케이스가 허용 설계도 못 버티게 짜였을 수 있다), 그래도 같으면 '재료 판정: 명세 부하가 허용 구현도 떨어뜨림' 으로
-    멈춘다. 예전에는 '흔한 구현이 안 떨어짐'으로 흔한 구현·숨은 테스트를 다시 만들며 예산을 다 썼다 (#334 알파 2·3회차)."""
+async def test_a_load_the_accepted_design_cannot_bear_stops_for_a_person_without_a_retry() -> None:
+    """#337 7절: 더 느슨한 한도(8000)까지 올려도 허용 구현이 떨어지면 숨은 케이스를 다시 만들지 않고 바로 '재료 판정: 허용 구현도 버티지
+    못하는 부하' 로 멈춘다. 예전에는 '흔한 구현이 안 떨어짐'으로 흔한 구현·숨은 테스트를 다시 만들며 예산을 다 썼다 (#334 알파 2·3회차).
+    재시도는 창 없음에만 — T-F1 재시도는 아직 창을 만든 실적이 없다 (알파 fix332-1, 2026-11-26 팩트체크)."""
     out, backend = await _loop(QueueVerifier(accepted_statements=140))
     assert out.status == "failed" and out.calibration is not None
     assert out.calibration.status == "overloaded" and out.hidden_plan is None
-    assert len(out.calibration_tries) == 1 and out.calibration_tries[0].status == "overloaded"
+    assert not out.calibration_tries
     assert any(
-        f.startswith(f"{MATERIAL_VERDICT}명세 부하가 허용 구현도 떨어뜨림")
-        and "한 번 다시 만든 뒤에도" in f
+        f.startswith(f"{MATERIAL_VERDICT}허용 구현도 버티지 못하는 부하") and "한 번 다시" not in f
         for f in out.review_flags
     )
     assert backend.calls.count("gen_naive") == 1  # 흔한 구현은 다시 만들지 않는다
-    assert backend.calls.count("gen_hidden") == 2  # 처음 + 한 번
-    retry = [u for n, u in backend.users if n == "gen_hidden"][-1]
-    assert "허용 구현도 떨어졌다" in retry
+    assert backend.calls.count("gen_hidden") == 1  # 숨은 케이스도 다시 만들지 않는다
 
 
 @pytest.mark.usefixtures("no_variant_gates")

@@ -14,7 +14,7 @@ from task_spec.llm import Completion, LLMClient
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import GeneratedFile, HiddenPlan, TargetRun, VerifyReport
-from task_spec.starter.repair import DESIGN, NAIVE_FIRST, RepairPlan, assign, marker_hits
+from task_spec.starter.repair import DESIGN, NAIVE_FIRST, RepairPlan, assign
 from task_spec.starter.static_check import Overlay
 from tests.starter.test_generate import D1, D2, SERVICE, STARTER, _files, _inputs, _task
 from tests.starter.test_static_check import CASES, HC1, PKG, PLAN
@@ -368,6 +368,22 @@ def test_naive_regenerated_for_another_failure_keeps_its_structure() -> None:
     plan = _assign(_report(naive, d1))
     [a] = [a for a in plan.actions if a.generator == "gen_naive"]
     assert a.gate == "⑤" and "지적된 실패만 고친다" in a.note and a.pool.suffix == ""
+
+
+def test_starter_that_already_passes_new_public_tests_is_told_to_fix_its_existing_tests_too() -> (
+    None
+):
+    """#337 팩트체크 (알파 fix337-1): 시작 코드가 새 API(로그인)까지 구현하고 그 동작을 확인하는 기존 기능 테스트를 썼다. ②' 수리가
+    새 동작을 자리 표시로 바꾸게 했는데 지시에 기존 테스트 얘기가 없어 — 수리는 고친 파일만 덮어써 — 옛 기존 테스트가 남아 깨졌고
+    시작 코드 예산을 다 썼다. 숨은 케이스 쪽 ②' 지시처럼 기존 기능 테스트도 그 동작만 확인하게 고치라고 한다."""
+    from task_spec.starter.repair import _starter_public
+
+    starter = _run(
+        "starter", "starter", _t("public", "Pt1LoginTest"), _t("public", "Pt2WorkOrdersTest")
+    )
+    acts, _ = _starter_public(starter, {})
+    [a] = acts
+    assert a.gate == "②'" and "기존 기능 테스트" in a.note and "함께 낸다" in a.note
 
 
 def test_starter_that_already_passes_a_hidden_case_is_regenerated() -> None:
@@ -1192,42 +1208,6 @@ def test_gate3_naive_with_fix_markers_is_rebuilt_then_judged_as_material() -> No
     assert [a.key for a in plain.actions] == [
         "gen_naive:naive-all"
     ] and "정답 장치" not in plain.actions[0].reason
-
-
-def test_marker_hits_ignore_stylesheets() -> None:
-    """#337 2절: 표지는 코드의 장치다 — CSS 의 `cursor: pointer` 가 페이지 밀림 재료 표지(`\\bcursor\\b`)에 걸리면 헛걸림이다."""
-    overlay = Overlay(
-        kind="starter",
-        files=(
-            GeneratedFile(path="src/styles/app.css", content="a { cursor: pointer; }"),
-            GeneratedFile(path="src/pages/List.tsx", content="const next = lastId;"),
-        ),
-    )
-    assert marker_hits(overlay, [r"\bcursor\b", r"\blastId\b"]) == ["lastId"]
-
-
-def test_gate3_sees_the_mechanism_in_the_starter_too() -> None:
-    """#337 2절: 장치가 시작 코드에 있으면 흔한 구현이 따라 써 함정이 무력화된다 (운영 ct-9433 b3: 시작 코드의 useQuery 가 경쟁 조건을
-    막음). 흔한 구현 파일에 표지가 없어도 ③ 이 시작 코드의 표지를 같이 보고 기존 갈래(흔한 구현 한 번 다시 → 재료 판정)로 멈춘다."""
-    naive = _run("naive-all", "ref_naive", *GOOD_ACC)  # 숨은 케이스를 모두 통과
-    starter = Overlay(
-        kind="starter",
-        files=(
-            GeneratedFile(
-                path="src/api/creator.ts", content="return useQuery({ queryKey: ['creator', id] })"
-            ),
-        ),
-    )
-    overlays = {**OVERLAYS, "starter": starter}
-    markers = [r"\buseQuery\s*\("]
-    report = _report(naive, _run("d1", "ref_accepted", *GOOD_ACC))
-    plan = assign(report, PLAN2, overlays, MISSED, {}, fix_markers=markers)
-    assert [(a.key, a.gate) for a in plan.actions] == [("gen_naive:naive-all", "③")]
-    assert "시작 코드" in plan.actions[0].note
-    again = assign(
-        report, PLAN2, overlays, MISSED, {"gen_naive:naive-all#naive-first": 1}, fix_markers=markers
-    )
-    assert any(u.startswith("재료 판정: 구별 불가(무력화) — ") for u in again.unresolved)
 
 
 def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() -> None:

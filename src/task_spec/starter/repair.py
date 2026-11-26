@@ -441,7 +441,8 @@ def _starter_public(
                     "②'",
                     "시작 코드만으로 새 기능 공개 테스트를 모두 통과 — 새 기능을 이미 포함함",
                     f"시작 코드에서 새 기능 공개 테스트({', '.join(passed)})가 모두 통과했다 — 공개 요구가 새로 요구하는 동작은 "
-                    "자리 표시(TODO)로 둔다. 이미 있는 API 는 공개 요구 전의 동작만.",
+                    "자리 표시(TODO)로 둔다. 이미 있는 API 는 공개 요구 전의 동작만. 기존 기능 테스트가 자리 표시로 바뀌는 동작을 "
+                    "확인하면 그 테스트 파일도 고쳐 함께 낸다 — 기존 기능 테스트는 공개 요구 전 동작만 확인한다.",
                 )
             )
         else:
@@ -1125,25 +1126,14 @@ def _hidden_broken(
     return out
 
 
-_STYLESHEET = (".css", ".scss", ".sass", ".less")
-
-
 def marker_hits(overlay: Overlay | None, markers: Sequence[str]) -> list[str]:
-    """구현 코드(테스트·스타일시트 제외)에 나온 정답 장치 표지 — 재료 fix_markers. 스타일시트는 장치가 아니다 — `cursor: pointer` 가
-    페이지 밀림 재료 표지(`\\bcursor\\b`)에 걸렸다 (#337 2절)."""
+    """흔한 구현 코드(테스트 제외)에 나온 정답 장치 표지 — 재료 fix_markers."""
     if overlay is None or not markers:
         return []
     text = "\n".join(
-        f.content
-        for f in overlay.files
-        if "/test/" not in f.path and ".test." not in f.path and not f.path.endswith(_STYLESHEET)
+        f.content for f in overlay.files if "/test/" not in f.path and ".test." not in f.path
     )
     return sorted({m.group(0) for rx in markers for m in re.finditer(rx, text)})[:6]
-
-
-STARTER_HIT = (
-    " — 시작 코드"  # 시작 코드에만 있는 표지의 꼬리 (③ 수리 메모·재료 판정에서 어디에 있는지)
-)
 
 
 def _gate3(
@@ -1645,13 +1635,6 @@ def assign(
     for run in judged:
         if run.kind == "ref_naive":
             hits = marker_hits(overlays.get(run.target), fix_markers)
-            # 시작 코드의 장치도 같이 본다 (#337 2절, 운영 ct-9433 b3) — 흔한 구현이 따라 쓰면 함정이 무력화된다. 흔한 구현 파일에 없어도
-            # 기존 갈래(흔한 구현 한 번 다시 → 재료 판정)로 예산을 다 쓰기 전에 멈춘다
-            hits += [
-                f"{h}{STARTER_HIT}"
-                for h in marker_hits(overlays.get(STARTER), fix_markers)
-                if h not in hits
-            ]
             acts, flags, weak, tune = _gate3(
                 run,
                 plan,
