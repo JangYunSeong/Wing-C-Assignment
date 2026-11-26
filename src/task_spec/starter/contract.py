@@ -1421,25 +1421,44 @@ def hidden_terms(seed: FeatureSeed | None, spec: SpecView, extra: Sequence[str] 
     return list(dict.fromkeys(terms))
 
 
-def _contract_hygiene(contract: TaskContract, avoid_terms: Sequence[str]) -> list[str]:
+def plan_places(plan: HiddenPlan) -> list[tuple[str, str]]:
+    """(자리, 글) — 숨은 계획 케이스 글 (숨은 테스트 코드가 되는 것). 근거 인용(evidence·evidence_value)은 명세 문장 그대로여야 해서
+    넣지 않는다 (#337 5절)."""
+    out: list[tuple[str, str]] = []
+    for c in plan.cases:
+        out += [
+            (f"{c.case_id} 시나리오", c.scenario),
+            (f"{c.case_id} 통과 조건", c.expect),
+            *((f"{c.case_id} 준비 {i}", s) for i, s in enumerate(c.setup, 1)),
+            *((f"{c.case_id} 실패 주입", f.model_dump_json()) for f in c.faults),
+            *((f"{c.case_id} 행", r.model_dump_json()) for r in c.data),
+        ]
+    return out
+
+
+def _contract_hygiene(
+    contract: TaskContract, avoid_terms: Sequence[str], plan: HiddenPlan | None = None
+) -> list[str]:
     """계약 글의 비밀 값·외부 주소·원 사례 고유어 (starter/hygiene — 생성기 산출물과 같은 규칙). 시드 SQL·계약 도우미·공개 테스트 값처럼
     코드가 계약에서 쓰는 파일은 생성기 몫 정적 검사에서 빠지므로, 그 글의 출처인 계약에서 보고 계약 재요청으로 고친다 (설계 검사 #332 T-F6:
-    생성기가 고칠 수 없는 재생성이 되었다)."""
+    생성기가 고칠 수 없는 재생성이 되었다). 숨은 계획 케이스 글도 본다 — 숨은 테스트 코드가 되어 숨은 테스트 위생 검사에 막히면 생성기가
+    고칠 수 없다 (#337 5절, 운영 b1: 외부 주소 5곳 중 4곳이 setup)."""
+    places = [(f"공개 계약 {w}", t) for w, t in contract_places(contract)]
+    if plan is not None:
+        places += [(f"숨은 계획 {w}", t) for w, t in plan_places(plan)]
     out: list[str] = []
-    for where, text in contract_places(contract):
+    for where, text in places:
         hits = hygiene_hits(text, avoid_terms)
         if hits.secret:
-            out.append(
-                f"공개 계약 {where} 에 비밀 값처럼 보이는 문자열이 있음 — 시험용 값으로 바꾼다"
-            )
+            out.append(f"{where} 에 비밀 값처럼 보이는 문자열이 있음 — 시험용 값으로 바꾼다")
         if hits.hosts:
             out.append(
-                f"공개 계약 {where} 에 외부 네트워크 주소: {', '.join(hits.hosts)} — 검증·채점은 네트워크 없이 돈다 "
+                f"{where} 에 외부 네트워크 주소: {', '.join(hits.hosts)} — 검증·채점은 네트워크 없이 돈다 "
                 "(example.com·localhost 같은 주소로)"
             )
         if hits.named:
             out.append(
-                f"공개 계약 {where} 에 원 사례의 실존 이름·고유어: {', '.join(hits.named)} — 가상 이름으로"
+                f"{where} 에 원 사례의 실존 이름·고유어: {', '.join(hits.named)} — 가상 이름으로"
             )
     return list(dict.fromkeys(out))
 
@@ -2596,7 +2615,7 @@ def check_contract(
     problems += _added_marked_existing(contract, spec)
     problems += _leaks(without_fixed(contract, interface), spec, seed, check_terms)
     problems += _forbidden_storage(contract, forbidden_storage)
-    problems += _contract_hygiene(contract, avoid_terms)
+    problems += _contract_hygiene(contract, avoid_terms, plan)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)
     problems += _ui_load_and_background(contract)

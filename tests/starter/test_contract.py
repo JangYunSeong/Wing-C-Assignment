@@ -1428,3 +1428,19 @@ def test_contract_text_is_checked_for_real_names_and_external_addresses() -> Non
     assert _has(got, "원 사례의 실존 이름·고유어", "우아한형제들")
     assert _has(got, "외부 네트워크 주소", "api.real-shop.co.kr")
     assert not _has(_check().problems, "외부 네트워크 주소")
+
+
+def test_hidden_plan_cases_are_checked_for_external_addresses_but_not_evidence_quotes() -> None:
+    """#337 5절: 숨은 계획 케이스 글(준비·시나리오·통과 조건·실패 주입)은 숨은 테스트 코드가 된다 — 거기 든 외부 주소는 숨은 테스트
+    위생 검사에 막혀 생성기가 고칠 수 없는 재생성이 됐다 (운영 b1: 외부 주소 5곳 중 4곳이 setup). 계약 재요청으로 고친다.
+    근거 인용(evidence·evidence_value)은 명세 문장 그대로여야 해서 보지 않는다."""
+    plan = _plan()
+    plan["cases"][0]["setup"] = ["상품 이미지를 https://cdn.real-shop.co.kr/a.png 에서 받아 둔다"]
+    plan["cases"][0]["scenario"] = "우아한형제들 주문 32건을 같은 시각에 상태 변경"
+    got = _check(plan=plan, avoid_terms=["우아한형제들"]).problems
+    assert _has(got, "숨은 계획 hc1 준비 1", "외부 네트워크 주소", "cdn.real-shop.co.kr")
+    assert _has(got, "숨은 계획 hc1 시나리오", "원 사례의 실존 이름·고유어", "우아한형제들")
+    quoted = _plan(
+        evidence={"pool_size": "https://wiki.real-shop.co.kr 운영 문서 db.maxConnections=8"}
+    )
+    assert not _has(_check(plan=quoted).problems, "외부 네트워크 주소")
