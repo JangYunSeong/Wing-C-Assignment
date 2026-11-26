@@ -13,11 +13,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
-from task_spec.interview.material_analysis import material_block, reinforce_lines
+from task_spec.interview.material_analysis import DESIGN_CHOICES, material_block, reinforce_lines
 from task_spec.interview.task import template_json
 from task_spec.llm import LLMClient
 from task_spec.prompting import PromptRegistry, assemble
@@ -32,6 +33,7 @@ from task_spec.schemas import (
 from task_spec.schemas.interview_state import ReinforceAnswer
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.schemas.trap_frame import TrapKind
+from task_spec.starter.feasibility import names as condition_names
 from task_spec.starter.templates import Template
 
 TASK = "trap_frame"
@@ -124,13 +126,110 @@ def frame_problems(frame: TrapFrame, template: Template) -> list[str]:
     return out
 
 
-def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def _key(text: str) -> str:
     """글자 대조용 — 영숫자·한글만 남긴다 (띄어쓰기·문장 부호·대소문자 차이는 같게)."""
     return re.sub(r"[^0-9a-z가-힣]", "", text.lower())
+
+
+_MARK = re.compile(r"^\s*\[[^\]]*\]\s*")  # 허용 설계 앞의 '[설계]' 표시
+
+
+def _design_key(text: str) -> str:
+    return _key(_MARK.sub("", text))
+
+
+def match_design(text: str, designs: Sequence[str]) -> str | None:
+    """틀이 옮겨 적은 설계(또는 사람이 뺀 설계 원문)가 재료의 어느 허용 설계인지 — 앞부분 글자가 가장 길게 겹치는 것.
+    띄어쓰기·문장 부호·'[설계]' 표시는 무시한다. 겹친 글자가 8자(text 가 더 짧으면 그 길이) 미만이면 None.
+    다시 만든 재료는 설계 문구가 조금 바뀔 수 있어 글자 그대로가 아니라 앞부분으로 맞춘다 (2026-11-25 평가: 틀이 띄어쓰기만 바꿔 옮겨 적음)."""
+    key = _design_key(text)
+    if not key:
+        return None
+    best, hit = 0, None
+    for d in designs:
+        n = len(os.path.commonprefix([key, _design_key(d)]))
+        if n > best:
+            best, hit = n, d
+    return hit if best >= min(8, len(key)) else None
+
+
+def _summary(design: str) -> str:
+    """'[설계] 요약 — 조건: … — 함정: …' 의 요약 (질문 글에 넣는다)."""
+    return _MARK.sub("", design).split(" — ", 1)[0].strip()[:100]
+
+
+def design_questions(frame: TrapFrame, seed: FeatureSeed) -> list[tuple[str, str]]:
+    """검사 2 설계 호환 (#318 §5.2) — 업무 요구를 못 지킬 수 있는 허용 설계(design_matrix 의 no·partial)를 정답에서 뺄지 묻는
+    (질문 글, 재료 허용 설계 원문). 사람이 고른다 — '뺀다' 면 다음 과제 만들기에서 틀 적용 재료가 그 설계를 뺀다 (apply_frame).
+
+    - yes 설계가 하나도 없으면 묻지 않는다 — 다 빼면 과제가 성립하지 않는다 (검토 표시로만).
+    - 허용 설계는 2개 이상이어야 한다 (스키마·명세 원칙 — 한 가지 정답으로 감점하지 않게). 둘뿐인 재료는 대신 인정할 설계를 함께
+      받는다 — 그 글은 문답으로 다음 재료 만들기(interview_feature_seed) 입력에 들어가 재료가 설계를 바꿀 수 있다.
+    질문은 틀의 글(가명화 검사를 거친 것)과 재료 원문으로만 만든다 — 부르는 쪽이 저장 전에 다시 검사한다."""
+    if not any(d.holds == "yes" for d in frame.design_matrix):
+        return []
+    remove, keep = DESIGN_CHOICES
+    out: list[tuple[str, str]] = []
+    for d in frame.design_matrix:
+        original = None if d.holds == "yes" else match_design(d.design, seed.accepted_designs)
+        if original is None or any(original == o for _, o in out):
+            continue
+        need = f" '{d.requirement}'" if d.requirement else ""
+        why = d.why.strip().rstrip(".")
+        tail = (
+            f" 빼면 허용 설계가 하나만 남아 그대로는 뺄 수 없습니다 — 대신 인정할 설계가 있으면 '{remove} — <설계>' 로 적어 주세요."
+            if len(seed.accepted_designs) <= 2
+            else ""
+        )
+        out.append(
+            (
+                f"허용 설계 '{_summary(original)}'는 업무 요구{need}를 지키지 못할 수 있습니다 — {why}. "
+                f"정답 설계에서 뺄까요? ({remove}/{keep}){tail}",
+                original,
+            )
+        )
+    return out
+
+
+class EvidenceGap(NamedTuple):
+    question: str  # ⑧ 보강 질문 글 (담당자에게 운영 값을 묻는다)
+    flag: str  # 과제 검토 표시
+
+
+def _param_label(template: Template, name: str) -> str:
+    p = template.manifest.param(name)
+    return re.split(r" — |\(", p.description)[0].strip() if p is not None else name
+
+
+def evidence_gaps(
+    reason: str, template: Template, seed: FeatureSeed, analysis: MaterialAnalysis | None
+) -> list[EvidenceGap]:
+    """검사 1 재현 근거 (#318 §5.1) — 틀 사유가 성립하려면 필요한 운영 조건(템플릿 failure_reasons 의 feasible.when 에 나오는
+    조절값)의 근거가 재료에 있는가. 근거 = 재료가 숨은 요구를 재는 데 필요하다고 적은 조절값(harness) ∪ 재료 분석이 짚은 갈림
+    조절값(split_params). 재료가 harness 를 적지 않았으면(None — 템플릿 필수값을 쓴다) 분석만 근거로 본다.
+    수치는 빌드 보정이 실험으로 정한다 [확정: 2026-11-25] — 여기서는 근거가 있는지만. 템플릿 tunes·빌드 성립 검사(#313)는 보지 않는다.
+    조절값이 아닌 이름(예: rows — 시드 행 수)은 보지 않는다. 빠진 것은 검토 표시와 ⑧ 보강 질문 후보 (인터뷰 사례만 묻는다)."""
+    m = template.manifest
+    fr = next((r for r in m.failure_reasons if r.code == reason), None)
+    if fr is None:
+        return []
+    present = set(seed.harness or ()) | set(analysis.split_params if analysis is not None else ())
+    out: list[EvidenceGap] = []
+    for cond in fr.feasible:
+        missing = sorted(
+            n for n in condition_names(cond.when) if m.param(n) is not None and n not in present
+        )
+        if not missing:
+            continue
+        labels = ", ".join(_param_label(template, n) for n in missing)
+        out.append(
+            EvidenceGap(
+                question=f"실패 사유 '{fr.description}'가 성립하는지 볼 운영 값이 재료에 없습니다 — {cond.why}. "
+                f"실제 운영에서 {labels}은(는) 어느 정도였나요? (대략이라도)",
+                flag=f"{FLAG}재현 근거 빈칸 — 사유 {reason} 의 성립 조건 '{cond.when}' 중 {', '.join(missing)} 근거 없음",
+            )
+        )
+    return out
 
 
 def keeps_hidden(seed: FeatureSeed, frame: TrapFrame) -> bool:
@@ -149,7 +248,8 @@ def apply_frame(
 
     - hidden_requirement ← 틀. behavior 면 trigger·why_naive_breaks 도 틀 것으로 (빈 글이면 원 재료).
       design 틀이 재료의 숨은 요구를 글자 그대로 담지 않으면(keeps_hidden) 재료 것을 그대로 두고 적는다 — 재료 조건이 빠지지 않게.
-    - accepted_designs ← 사람이 뺀 설계(removed_designs)를 제외. 둘 미만이 되면 원 재료 그대로 두고 적는다 (스키마 하한).
+    - accepted_designs ← 사람이 뺀 설계(removed_designs — ⑧ 설계 질문에 '뺀다', 재료 원문)를 제외. 다시 만든 재료는 문구가 바뀔 수
+      있어 앞부분으로 맞춘다(match_design). 둘 미만이 되면 원 재료 그대로 두고 적는다 (스키마 하한).
     - reasons ← 틀 사유가 재료 사유와 다르면 [틀 사유]·harness 는 템플릿 필수값(None) — 조절값은 사유마다 다르다.
     - contract_needs ← 틀이 상태 대상을 흔한 구현의 저장 방식이라 하면 stateful_target·transition_rules 를 뺀다 (D4).
       전이 규칙은 그 대상의 상태 칸에 적는 것이라 대상이 빠지면 계약 검사가 다시 요구하게 된다.
@@ -167,16 +267,20 @@ def apply_frame(
         if frame.why_naive_breaks:
             update["why_naive_breaks"] = frame.why_naive_breaks
     if removed_designs:
-        gone = [_norm(r) for r in removed_designs if _norm(r)]
-        kept = [d for d in seed.accepted_designs if not any(_norm(d).startswith(g) for g in gone)]
-        if len(kept) >= 2:
-            if len(kept) < len(seed.accepted_designs):
-                update["accepted_designs"] = kept
-                notes.append(
-                    f"허용 설계 {len(seed.accepted_designs) - len(kept)}개를 뺌 (사람 결정)"
-                )
-        else:
-            notes.append("허용 설계를 빼면 둘 미만이라 그대로 둠 — 사람 확인")
+        matched = [match_design(r, seed.accepted_designs) for r in removed_designs]
+        gone = {d for d in matched if d is not None}
+        if lost := sum(1 for d in matched if d is None):
+            notes.append(
+                f"사람이 뺀 설계 {lost}개가 다시 만든 재료에 없음 (이미 빠졌을 수 있음) — 사람 확인"
+            )
+        kept = [d for d in seed.accepted_designs if d not in gone]
+        if gone and len(kept) >= 2:
+            update["accepted_designs"] = kept
+            notes.append(f"허용 설계 {len(gone)}개를 뺌 (사람 결정)")
+        elif gone:
+            notes.append(
+                "허용 설계를 빼면 둘 미만이라 그대로 둠 — 대신 인정할 설계 필요, 사람 확인"
+            )
     if frame.reason not in seed.reasons:
         update["reasons"] = [frame.reason]
         update["harness"] = None

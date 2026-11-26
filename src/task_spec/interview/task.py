@@ -23,6 +23,7 @@ from typing import Any, Protocol
 import yaml
 
 from task_spec.interview.errors import OutputRejected
+from task_spec.interview.frame_leaks import FLAG_FRAME_LEAK, frame_leak_flags
 from task_spec.llm import LLMClient
 from task_spec.nodes.pseudonymize.detectors import TOKEN_RE
 from task_spec.ontology.queries import evidence
@@ -62,7 +63,8 @@ FLAG_ANSWER_LEAK = (
 )
 FLAG_TOKEN_VISIBLE = "지원자에게 표시하는 글에 가명화 토큰([ORG_1] 같은)이 있음 — 지원자에게 그대로 표시하므로 소재를 변경하거나 삭제해 주세요"
 FLAG_INTERVIEW_INCIDENT = "채용담당자 인터뷰 사례 기반 — 이 공고 담당자가 확인한 사례(공유 승인 전). 원리만 차용하고 소재는 변경함, 승인자 검토 필요"
-_COMPUTED_FLAGS = (FLAG_ANSWER_LEAK, FLAG_TOKEN_VISIBLE)  # 글이 바뀔 때마다 다시 계산하는 표시
+# 글이 바뀔 때마다 다시 계산하는 표시 — 함정 틀 공개 중립성(#318 검사 3)도 과제 글에서 계산한다
+_COMPUTED_FLAGS = (FLAG_ANSWER_LEAK, FLAG_TOKEN_VISIBLE, FLAG_FRAME_LEAK)
 # 2026-11-23 문구를 바꾸기 전 글 — 이미 저장된 인터뷰 과제의 옛 표시도 다시 계산할 때 지운다 (새로 붙이지 않는다)
 _COMPUTED_FLAGS_LEGACY = (
     "기준 답안 문장이 지원자에게 보이는 글에 들어감 — 채점 근거가 새지 않았는지 승인자 확인 필요",
@@ -296,8 +298,10 @@ def with_content_flags(
     task: TaskItem,
     incident: PublicIncident,
     targeted: Iterable[TargetedQuestion] = (),
+    frame: TrapFrame | None = None,
 ) -> list[str]:
-    """글에서 다시 계산하는 표시(기준 답안 누설·토큰)를 지금 글 기준으로 바꾼다 — 나머지 표시는 그대로."""
+    """글에서 다시 계산하는 표시(기준 답안 누설·토큰·함정 틀 공개 중립성)를 지금 글 기준으로 바꾼다 — 나머지 표시는 그대로.
+    frame: 이 공고의 함정 틀 (#318 — 틀이 없거나 예전 과제면 None, 그때는 공개 중립성 표시가 없다)."""
     shown = list(targeted)
     kept = [f for f in flags if not f.startswith((*_COMPUTED_FLAGS, *_COMPUTED_FLAGS_LEGACY))]
     return list(
@@ -306,6 +310,7 @@ def with_content_flags(
                 *kept,
                 *answer_leak_flags(task, incident, shown),
                 *token_flags(task, shown),
+                *frame_leak_flags(task, frame, incident.feature),
             ]
         )
     )

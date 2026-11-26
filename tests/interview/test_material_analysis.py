@@ -203,19 +203,34 @@ async def test_a_failed_analysis_does_not_stop_the_task(analysis_session: Any) -
 
 # ── 보강 질문 (#308 검사 5) ─────────────────────────────────────────
 
-GAPS_FOUND = ["요청 하나가 DB 에 가는 횟수", "커넥션을 쥐는 시간", "세 번째 빠진 정보"]
+GAPS_FOUND = [
+    "요청 하나가 DB 에 가는 횟수",
+    "커넥션을 쥐는 시간",
+    "세 번째 빠진 정보",
+]  # 분석 빈칸은 셋까지
 
 
-async def test_gaps_of_an_interview_material_become_up_to_two_questions(
+TWO_GAPS = GAPS_FOUND[:2]  # 질문 흐름만 보는 테스트 — 질문 둘
+
+
+def _gap(i: int, question: str) -> dict[str, Any]:
+    return {
+        "question_id": f"r{i}",
+        "question": question,
+        "kind": "gap",
+        "design": None,
+        "choices": [],
+    }
+
+
+async def test_gaps_of_an_interview_material_become_up_to_three_questions(
     analysis_session: Any,
 ) -> None:
-    """빠진 정보가 있으면 ⑧ 에서 최대 둘을 묻는다 — 분석 표시는 그대로 남고, 빠진 정보가 없으면 묻지 않는다."""
+    """빠진 정보가 있으면 ⑧ 에서 묻는다 — 최대 셋 (#318 3단계에서 둘 → 셋, 사용자 결정 D6. 설계 질문과 섞인 한도는
+    tests/interview/test_trap_frame.py). 분석 표시는 그대로 남고, 빠진 정보가 없으면 묻지 않는다."""
     session, _ = analysis_session
     spec = await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
-    assert spec["reinforce_questions"] == [
-        {"question_id": "r1", "question": GAPS_FOUND[0]},
-        {"question_id": "r2", "question": GAPS_FOUND[1]},
-    ]
+    assert spec["reinforce_questions"] == [_gap(i, q) for i, q in enumerate(GAPS_FOUND, 1)]
     assert any(f.startswith(GAPS) for f in spec["review_flags"])
 
 
@@ -231,7 +246,7 @@ async def test_answers_go_back_to_competencies_and_into_the_next_material(
     """답하면 가명화해 저장하고 과제를 버린 뒤 ⑦ 로. 다시 만들 때 문답이 기능형 재료 입력과 재료 분석 입력에 들어가고,
     빠진 정보가 또 나와도 다시 묻지 않는다 (한 번만) — 답을 넣어 만들었다는 표시만 남긴다."""
     session, _ = analysis_session
-    await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
+    await _generate(session, Completion(_analysis(gaps=TWO_GAPS).model_dump_json()))
     answered = await session.post(
         "reinforce", answers={"r1": "가상테크 세션 테이블을 요청마다 두 번 읽었다", "r2": None}
     )
@@ -259,7 +274,7 @@ async def test_answers_go_back_to_competencies_and_into_the_next_material(
 
 async def test_reinforce_checks_the_stage_and_the_question_ids(analysis_session: Any) -> None:
     session, _ = analysis_session
-    await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
+    await _generate(session, Completion(_analysis(gaps=TWO_GAPS).model_dump_json()))
     missing = await session.post("reinforce", answers={"r1": "가상 답"})
     assert missing.status_code == 422  # 모든 질문에 답이나 모름
     wrong = await session.post("reinforce", answers={"q1": "가상 답"})
@@ -273,7 +288,7 @@ async def test_reinforce_checks_the_stage_and_the_question_ids(analysis_session:
 async def test_the_answers_are_cleared_when_the_material_changes(analysis_session: Any) -> None:
     """사례 확인이 취소되면(사례가 바뀌면) 그 재료에 물은 질문의 답도 맞지 않는다 — 비우고 다음 재료에 다시 묻는다."""
     session, _ = analysis_session
-    await _generate(session, Completion(_analysis(gaps=GAPS_FOUND).model_dump_json()))
+    await _generate(session, Completion(_analysis(gaps=TWO_GAPS).model_dump_json()))
     assert (await session.post("reinforce", answers={"r1": None, "r2": None})).status_code == 200
     service = session.service
     row = await service.store.get(session.interview_id)

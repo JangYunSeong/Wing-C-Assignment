@@ -29,6 +29,7 @@ from task_spec.interview.errors import (
     InterviewInvalid,
     InterviewNotFound,
 )
+from task_spec.interview.material_analysis import MAX_REINFORCE
 from task_spec.postings.company import company_id as company_key
 from task_spec.schemas import InterviewApprovalState, PublicIncident, TaskItem
 from task_spec.schemas.interview_approval import COMMON_ID
@@ -118,11 +119,12 @@ class AnswersRequest(BaseModel):
 
 
 class ReinforceRequest(BaseModel):
-    # 보강 질문 id → 답 (원문 — 서비스가 가명화한 뒤 다시 길이를 본다). null·빈 글은 '모름'
+    # 보강 질문 id → 답 (원문 — 서비스가 가명화한 뒤 다시 길이를 본다). null·빈 글은 '모름'.
+    # 설계 질문(#318 검사 2)은 '뺀다'·'남긴다'(또는 '뺀다 — <대신 인정할 설계>')로 시작하는 답만 서비스가 읽는다
     answers: dict[
         Annotated[str, Field(pattern=r"^r\d$")],
         Annotated[str, Field(max_length=ANSWER_MAX)] | None,
-    ] = Field(min_length=1, max_length=2)
+    ] = Field(min_length=1, max_length=MAX_REINFORCE)
     revision: int = Field(ge=1)
 
 

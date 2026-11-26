@@ -74,17 +74,19 @@ from task_spec.interview.incident import (
     prepare_incident,
     validate_incident,
 )
-from task_spec.interview.material_analysis import FAILED as MATERIAL_FAILED
-from task_spec.interview.material_analysis import TASK as MATERIAL_TASK
 from task_spec.interview.material_analysis import (
+    DESIGN_CHOICES,
     analysis_flags,
     analyze_material,
+    design_choice,
     material_block,
     reinforce_block,
     reinforce_lines,
     reinforce_questions,
     reinforced_flag,
 )
+from task_spec.interview.material_analysis import FAILED as MATERIAL_FAILED
+from task_spec.interview.material_analysis import TASK as MATERIAL_TASK
 from task_spec.interview.store import CLOSED_STAGES, InterviewRepo, InterviewRow, InterviewSummary
 from task_spec.interview.stream import QuestionStream
 from task_spec.interview.task import (
@@ -125,6 +127,8 @@ from task_spec.interview.trap_frame import FAILED as TRAP_FAILED
 from task_spec.interview.trap_frame import TASK as TRAP_TASK
 from task_spec.interview.trap_frame import (
     apply_frame,
+    design_questions,
+    evidence_gaps,
     frame_block,
     frame_flags,
     frame_problems,
@@ -250,12 +254,14 @@ class _MaterialCheck(NamedTuple):
 
 
 class _FrameResult(NamedTuple):
-    """함정 틀 결과 (#318) — 틀·틀 적용 재료(건너뜀·실패·쓸 수 없으면 None) · 검토 표시 · provenance."""
+    """함정 틀 결과 (#318) — 틀·틀 적용 재료(건너뜀·실패·쓸 수 없으면 None) · 검토 표시 · provenance ·
+    보강 질문 후보 빈칸(재현 근거 검사 1 → 틀의 빈칸 순, 가명화 검사를 거친 글)."""
 
     frame: TrapFrame | None
     framed: FeatureSeed | None
     flags: list[str]
     provenance: list[Provenance]
+    gaps: tuple[str, ...] = ()
 
 
 def _with_trap(incident: PublicIncident, trap: TrapAnswers) -> PublicIncident:
@@ -1493,8 +1499,24 @@ class InterviewService:
             if problems:
                 logger.warning("interview_trap_frame_unusable problems=%d", len(problems))
                 return _FrameResult(None, None, problems, [provenance])
-            framed, notes = apply_frame(coding.feature, frame)
-            flags = [self.pseudo.derived(f, inp.mapping, tokens) for f in frame_flags(frame, notes)]
+            # 검사 2 (#318 §5.2) — ⑧ 설계 질문에 담당자가 '뺀다'고 한 설계를 뺀다 (재료 원문, 다시 만든 재료는 앞부분으로 맞춘다)
+            designs = [a for a in inp.reinforce if a.kind == "design"]
+            removed = [a.design for a in designs if a.choice == "remove" and a.design]
+            framed, notes = apply_frame(coding.feature, frame, removed)
+            if unread := sum(1 for a in designs if a.choice is None and a.answer):
+                notes.append(
+                    f"설계 질문 답 {unread}개를 '{'/'.join(DESIGN_CHOICES)}' 로 읽지 못해 설계를 남김 — 사람 확인"
+                )
+            # 검사 1 (#318 §5.1) — 틀 사유의 성립 조건에 쓰는 운영 값의 근거 (등록 재료 기준 — 틀 적용 재료는 조절값을 비울 수 있다)
+            evidence = evidence_gaps(frame.reason, inp.template, coding.feature, analysis)
+            flags = [
+                self.pseudo.derived(f, inp.mapping, tokens)
+                for f in [*frame_flags(frame, notes), *(e.flag for e in evidence)]
+            ]
+            gaps = tuple(
+                self.pseudo.derived(gap, inp.mapping, tokens)
+                for gap in [*(e.question for e in evidence), *frame.gaps]
+            )
         except (*_LLM_ERRORS, InterviewError) as exc:
             logger.warning("interview_trap_frame_failed type=%s", type(exc).__name__)
             return _FrameResult(None, None, [TRAP_FAILED], [])
@@ -1504,7 +1526,7 @@ class InterviewService:
             len(frame.forbidden_storage),
             sum(1 for d in frame.design_matrix if d.holds != "yes"),
         )
-        return _FrameResult(frame, framed, flags, [provenance])
+        return _FrameResult(frame, framed, flags, [provenance], gaps)
 
     async def _run_step(
         self, interview_id: str, step: GenerateStep, inp: _GenerationInputs, g: InterviewGeneration
@@ -1533,7 +1555,8 @@ class InterviewService:
                     "coding_incident": coding,
                     "seed_provenance": [*seed_provenance, *checked.provenance, *framed.provenance],
                     "seed_flags": [*checked.flags, *framed.flags],
-                    "seed_gaps": checked.gaps,
+                    # 보강 질문 후보 빈칸 — 재현 근거(검사 1) → 틀 → 재료 분석 순 (설계 질문은 마무리 때 틀에서 만든다)
+                    "seed_gaps": list(dict.fromkeys([*framed.gaps, *checked.gaps])),
                     "trap_frame": framed.frame,
                     "framed_seed": framed.framed,
                 }
@@ -1632,7 +1655,20 @@ class InterviewService:
             # 보강 질문 (#308 검사 5) — 인터뷰 사례에 빠진 정보가 있으면 ⑧ 에서 한 번 묻는다. 답한 적이 있으면 다시 묻지 않고
             # 답을 넣어 만들었다는 표시만 (빠진 정보는 분석 표시로 그대로 보인다)
             asked = list(state.reinforce_answers) if inp.interview else []
-            questions = reinforce_questions(g.seed_gaps) if inp.interview and not asked else []
+            questions = (
+                reinforce_questions(
+                    g.seed_gaps,
+                    # 검사 2 (#318 §5.2) — 업무 요구를 못 지킬 수 있는 허용 설계를 뺄지 (설계 질문 먼저)
+                    [  # 질문 글·재료 설계 원문 모두 저장 전에 다시 검사 (설계 원문은 API 응답·다음 만들기 입력으로도 간다)
+                        (self.pseudo.derived(q, inp.mapping), self.pseudo.derived(d, inp.mapping))
+                        for q, d in design_questions(g.trap_frame, coding_incident.feature)
+                    ]
+                    if g.trap_frame is not None and coding_incident.feature is not None
+                    else (),
+                )
+                if inp.interview and not asked
+                else []
+            )
             seed_flags = [*g.seed_flags, *([reinforced_flag(asked)] if asked else [])]
             provenance = [*g.seed_provenance, *made.provenance]
             saved = await inp.common_store.save_draft(
@@ -1673,9 +1709,13 @@ class InterviewService:
                 evaluation_criteria=evaluation_criteria(task),
                 generation_provenance=provenance,
                 review_flags=with_content_flags(
-                    [*made.flags, *task.review_flags, *reuse, *seed_flags], task, coding_incident
+                    [*made.flags, *task.review_flags, *reuse, *seed_flags],
+                    task,
+                    coding_incident,
+                    frame=g.trap_frame,
                 ),
                 reinforce_questions=questions,
+                trap_frame=g.trap_frame,
             )
             state.stage = "task_review"
             state.review_note = None
@@ -1728,7 +1768,15 @@ class InterviewService:
                 if text is not None and len(text) > ANSWER_MAX:
                     raise InterviewInvalid(f"답은 {ANSWER_MAX}자 이내로 적어 주세요")
                 done.append(
-                    ReinforceAnswer(question_id=q.question_id, question=q.question, answer=text)
+                    ReinforceAnswer(
+                        question_id=q.question_id,
+                        question=q.question,
+                        answer=text,
+                        kind=q.kind,
+                        design=q.design,
+                        # 설계 질문은 '뺀다/남긴다' 로 시작하는 답만 읽는다 (#318 검사 2) — 고정 답이라 가명화 전 글에서 읽는다
+                        choice=design_choice(raw) if q.kind == "design" else None,
+                    )
                 )
             state.reinforce_answers = done
             state.spec = None
@@ -1773,7 +1821,11 @@ class InterviewService:
                     "targeted_questions": targeted,
                     # 답은 지원자가 정확히 물으면 그대로 준다 — 기준 답안을 옮겨 적었는지·토큰이 남았는지 다시 본다
                     "review_flags": with_content_flags(
-                        spec.review_flags, spec.common_task, spec.coding_incident, targeted
+                        spec.review_flags,
+                        spec.common_task,
+                        spec.coding_incident,
+                        targeted,
+                        frame=spec.trap_frame,
                     ),
                 }
             )
@@ -1920,7 +1972,11 @@ class InterviewService:
                     "hidden_requirements": hidden_requirements(new_task, targeted_q),
                     "evaluation_criteria": evaluation_criteria(new_task),
                     "review_flags": with_content_flags(
-                        [*kept, *new_flags], new_task, spec.coding_incident, targeted_q
+                        [*kept, *new_flags],
+                        new_task,
+                        spec.coding_incident,
+                        targeted_q,
+                        frame=spec.trap_frame,
                     ),
                 }
             )
@@ -1961,6 +2017,7 @@ class InterviewService:
                         spec.common_task,
                         spec.coding_incident,
                         edited_targeted.root,
+                        frame=spec.trap_frame,
                     ),
                 }
             )

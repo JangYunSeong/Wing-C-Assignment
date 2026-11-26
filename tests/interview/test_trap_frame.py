@@ -16,6 +16,7 @@ import pytest
 
 import task_spec.interview.trap_frame as tf
 from task_spec.api.app import create_app
+from task_spec.interview.frame_leaks import FLAG_FRAME_LEAK
 from task_spec.interview.trap_frame import (
     FLAG,
     allowed_kinds,
@@ -180,12 +181,14 @@ def test_frames_the_template_cannot_measure_are_not_used_and_flags_show_what_mat
 async def frame_env(
     tmp_path: Path, detectors: Any
 ) -> AsyncIterator[tuple[Session, FakeTaskMaker, InMemoryCommonStore]]:
-    """재료 분석·함정 틀 프롬프트를 CURRENT 로 둔 인터뷰 서비스 (레포는 틀이 평가 전이라 CURRENT 가 없다)."""
+    """재료 분석·함정 틀 프롬프트를 CURRENT 로 둔 인터뷰 서비스 — 인터뷰 테스트 레지스트리(prompts_with_current)는 인터뷰
+    프롬프트만 담아 틀 단계를 건너뛰므로, 레포 CURRENT 판을 따로 넣는다 (trap_frame 첫 CURRENT v3, 2026-11-26)."""
     _analysis_prompts(tmp_path)
-    dst = tmp_path / "prompts" / tf.TASK
+    src, dst = REPO / "prompts" / tf.TASK, tmp_path / "prompts" / tf.TASK
     dst.mkdir()
-    shutil.copy(REPO / "prompts" / tf.TASK / "v1.md", dst / "v1.md")
-    (dst / "CURRENT").write_text("v1\n")
+    current = (src / "CURRENT").read_text().strip()
+    shutil.copy(src / f"{current}.md", dst / f"{current}.md")
+    (dst / "CURRENT").write_text(f"{current}\n")
     maker, common = FakeTaskMaker(), InMemoryCommonStore()
     service, backend, store, postings, clock = make_service(
         tmp_path,
@@ -281,3 +284,115 @@ async def test_a_failed_frame_does_not_stop_the_task(frame_env: Any) -> None:
         spec["coding_incident"]["feature"]
     )
     assert await common.framed(spec["common_task"]["task_id"]) is None
+
+
+# ── 3단계: 검사 1·2·3·5 (#318 §5) ──────────────────────────────────
+
+THIRD = "[설계] 가상 세 번째 설계 — 조건: 가상 조건"
+
+
+async def _answer_all(
+    session: Session, spec: dict[str, Any], **first: str | None
+) -> dict[str, Any]:
+    """보강 질문에 답한다 — 첫 질문만 first 의 답, 나머지는 '모름'."""
+    questions = spec["reinforce_questions"]
+    answers = {q["question_id"]: None for q in questions} | {
+        questions[0]["question_id"]: first["answer"]
+    }
+    answered = await session.post("reinforce", answers=answers)
+    assert answered.status_code == 200, answered.text
+    return dict(answered.json())
+
+
+async def test_a_design_question_comes_first_and_removing_it_reaches_the_framed_material(
+    frame_env: Any,
+) -> None:
+    """검사 2: 업무 요구를 못 지킬 수 있는 허용 설계를 ⑧ 에서 먼저 묻고(빈칸과 합쳐 셋), '뺀다' 면 다시 만든 틀 적용 재료와
+    명세 초안에서 그 설계가 빠진다 — 공통 과제 행(빌드 계약 단계가 읽음)에도. 두 번째는 묻지 않는다."""
+    session, maker, common = frame_env
+    designs = [*SEED.accepted_designs, THIRD]
+    matrix = [{"design": d, "holds": "yes", "why": "가상 이유"} for d in designs[:2]]
+    matrix.append(
+        {"design": THIRD, "holds": "no", "requirement": "가상 업무 요구", "why": "가상 기전"}
+    )
+    seed3 = Completion(feature_seed_output(accepted_designs=designs))
+    frame = Completion(_frame(design_matrix=matrix).model_dump_json())
+    await confirmed(session)
+    assert (await session.post("competencies", competency_ids=SELECTED)).status_code == 200
+    session.backend.push(seed3, ANALYSIS, frame)
+    spec = (await session.generate(competency_ids=SELECTED)).json()["spec"]
+    first = spec["reinforce_questions"][0]
+    assert (first["kind"], first["design"], first["choices"]) == (
+        "design",
+        THIRD,
+        ["뺀다", "남긴다"],
+    )
+    # 설계 1 + 재현 근거 1(재료 harness 비어 있고 분석 갈림 조절값 없음) + 틀 빈칸 1 — 셋까지
+    assert [q["kind"] for q in spec["reinforce_questions"]] == ["design", "gap", "gap"]
+    body = await _answer_all(session, spec, answer="뺀다")
+    stored = body["reinforce_answers"][0]
+    assert (stored["kind"], stored["choice"], stored["design"]) == ("design", "remove", THIRD)
+
+    session.backend.push(seed3, ANALYSIS, frame)
+    regenerated = await session.generate(competency_ids=SELECTED)
+    assert regenerated.status_code == 200, regenerated.text
+    spec2 = regenerated.json()["spec"]
+    assert maker.calls[-1]["incident"].feature.accepted_designs == designs[:2]
+    framed = await common.framed(spec2["common_task"]["task_id"])
+    assert framed is not None and framed.seed.accepted_designs == designs[:2]
+    assert spec2["coding_incident"]["feature"]["accepted_designs"] == designs  # 등록 재료는 그대로
+    assert any("허용 설계 1개를 뺌 (사람 결정)" in f for f in spec2["review_flags"])
+    assert spec2["reinforce_questions"] == []
+
+
+async def test_removing_one_of_two_designs_sends_the_substitute_to_the_next_material(
+    frame_env: Any,
+) -> None:
+    """허용 설계는 2개 이상이어야 한다 — 둘뿐이면 '뺀다 — <대신 인정할 설계>' 를 받아 그 글을 다음 재료 만들기 입력에 넣고,
+    다시 만든 재료가 여전히 둘이면 빼지 않고 표시한다 (사람 확인)."""
+    session, _, common = frame_env
+    spec = await _generate_framed(session, ANALYSIS, Completion(_frame().model_dump_json()))
+    first = spec["reinforce_questions"][0]
+    assert first["kind"] == "design" and first["design"] == SEED.accepted_designs[1]
+    assert "대신 인정할 설계" in first["question"]
+    await _answer_all(session, spec, answer="뺀다 — 가상 대신 설계")
+    calls = len(session.backend.prompts)
+    session.backend.push(
+        Completion(feature_seed_output()), ANALYSIS, Completion(_frame().model_dump_json())
+    )
+    spec2 = (await session.generate(competency_ids=SELECTED)).json()["spec"]
+    seed_prompt = session.backend.prompts[calls]
+    assert "허용 설계 확인" in seed_prompt and "가상 대신 설계" in seed_prompt
+    framed = await common.framed(spec2["common_task"]["task_id"])
+    assert framed is not None and framed.seed.accepted_designs == SEED.accepted_designs
+    assert any("둘 미만이라 그대로 둠" in f for f in spec2["review_flags"])
+
+
+async def test_an_unread_design_answer_keeps_the_design(frame_env: Any) -> None:
+    session, _, common = frame_env
+    spec = await _generate_framed(session, ANALYSIS, Completion(_frame().model_dump_json()))
+    body = await _answer_all(session, spec, answer="글쎄요, 팀과 상의해 보겠습니다")
+    assert body["reinforce_answers"][0]["choice"] is None
+    session.backend.push(
+        Completion(feature_seed_output()), ANALYSIS, Completion(_frame().model_dump_json())
+    )
+    spec2 = (await session.generate(competency_ids=SELECTED)).json()["spec"]
+    framed = await common.framed(spec2["common_task"]["task_id"])
+    assert framed is not None and framed.seed.accepted_designs == SEED.accepted_designs
+    assert any("읽지 못해 설계를 남김" in f for f in spec2["review_flags"])
+
+
+async def test_check1_and_check3_reach_the_review_flags(frame_env: Any) -> None:
+    """검사 1: 틀 사유의 성립 조건 근거가 없으면 표시 · 검사 3: 명세 1단계 자료 본문에 틀이 막은 낱말이 있으면 표시 —
+    틀은 명세에 남겨 담당자가 글을 고칠 때 검사 3 을 다시 계산한다 (가짜 생성기의 방해 자료 a3 본문 '가상 메모')."""
+    session, _, _ = frame_env
+    leaky = _frame(forbidden_terms=["가상 메모"])
+    spec = await _generate_framed(session, ANALYSIS, Completion(leaky.model_dump_json()))
+    flags = spec["review_flags"]
+    assert any(
+        f.startswith(f"{FLAG}재현 근거 빈칸") and "concurrency, pool_size" in f for f in flags
+    )
+    assert any(
+        f.startswith(FLAG_FRAME_LEAK) and "자료 a3(방해)" in f and "가상 메모" in f for f in flags
+    )
+    assert spec["trap_frame"]["forbidden_terms"] == ["가상 메모"]
