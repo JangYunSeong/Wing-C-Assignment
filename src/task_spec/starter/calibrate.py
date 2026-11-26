@@ -10,6 +10,12 @@
 창 = [허용 구현이 모두 통과한 가장 작은 한도, 흔한 구현이 의도한 사유로 떨어진 가장 큰 한도]. 비율이 MIN_RATIO 이상이면 기하 중간값 —
 채점은 받는 쪽 기계에서 돌아 시간 기준이 달라질 수 있어 양쪽에 여유를 둔다 (지연은 인위적 sleep 이라 대체로 옮겨진다).
 대기열 모형 추정(#301): 지연 20ms 는 창이 Hikari 하한(250)에 눌려 [250, 250] 처럼 좁고, 50ms 에서 [250, 500] 이 된다.
+
+시험 한 번은 흔들린다 (#308 운영 b7, 2026-11-25): 보정 시험 cal7(500ms·50ms)에서 흔한 구현이 한 번 통과해 창이 [250, 250] 으로 줄어
+빌드가 실패했는데, 같은 코드·조건 재생에서는 500ms 에서 5번 중 3번 떨어지고 350ms 에서는 10번 모두 떨어졌다. 그래서 두 곳만 반복한다 —
+창을 MIN_RATIO 까지 넓힐 바로 위 한도에서 흔한 구현이 통과했으면 그 한도를 EDGE_RETRIES 번 더 돌리고 (한 번이라도 떨어지면 창 끝),
+고른 값은 CONFIRM 번 돌려 흔한 구현이 모두 떨어지고 허용 구현이 모두 통과할 때만 고른다. 허용 구현 쪽 실패는 다시 돌리지 않는다 —
+허용 구현이 흔들리는 한도는 지원자에게도 흔들리므로 창에 넣지 않는 쪽이 안전하다.
 """
 
 from __future__ import annotations
@@ -33,7 +39,9 @@ THRESHOLDS: dict[str, tuple[int, ...]] = {"connection_timeout_ms": (2000, 1000, 
 # 부하 조절값 → 계획 값으로 창이 안 나올 때 차례로 올려 볼 값
 LOADS: dict[str, tuple[int, ...]] = {"query_delay_ms": (50,)}
 MIN_RATIO = 2.0
-MAX_TRIALS = 8
+EDGE_RETRIES = 2  # 창 끝 한도를 더 돌려 볼 횟수 (첫 시험 포함 최대 3번)
+CONFIRM = 2  # 고른 값을 확인할 횟수 — 다음 회차 전체 검증(③)이 한 번 더 본다
+MAX_TRIALS = 16  # 부하 단계 2 × (사다리 4 + 창 끝 2 + 확인 2)
 STEP = 10  # 고른 한도의 단위
 LABEL = "cal"  # 보정 실행 대상 라벨 cal<n>-<라벨> — 검증기 작업 폴더(r<회차>-<라벨>)가 실제 검증·다른 조합과 겹치지 않게
 FLAG = "조절값 보정: "  # 승인 화면 표시 머리 (막지 않음 — 승인자가 확인)
@@ -80,6 +88,8 @@ class Calibration:
     trials: tuple[Trial, ...] = ()
     cases: tuple[str, ...] = ()
     why: str = ""  # skipped 사유
+    # 창에서 골랐지만 확인 시험에서 흔한 구현이 통과했거나 허용 구현이 떨어진 한도
+    unconfirmed: tuple[int, ...] = ()
 
     def flag(self) -> str:
         """승인 화면 표시 (calibrated)."""
@@ -104,6 +114,7 @@ class Calibration:
                 for t in self.trials
             ],
             "why": self.why,
+            "unconfirmed": list(self.unconfirmed),
         }
 
     def verdict(self) -> str:
@@ -113,10 +124,15 @@ class Calibration:
         hit = sorted(
             {t.values[self.knobs.threshold] for t in self.trials if t.caught}, reverse=True
         )
+        shaky = (
+            f", 창에서 고른 {', '.join(map(str, self.unconfirmed))} 는 확인 시험에서 흔한 구현 통과 또는 허용 구현 실패"
+            if self.unconfirmed
+            else ""
+        )
         return (
             f"{self.knobs.reason} 를 조절값으로 재현 불가 — {names} 를 변경해도 허용 구현 모두 통과·흔한 구현 실패인 "
             f"{MIN_RATIO:g}배 창 없음 (시험 {len(self.trials)}회, 흔한 구현이 실패한 {self.knobs.threshold}: "
-            f"{', '.join(map(str, hit))}). 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
+            f"{', '.join(map(str, hit))}{shaky}). 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
         )
 
 
@@ -204,6 +220,23 @@ def window(level: Sequence[Trial], threshold: str) -> tuple[int, int] | None:
     return (lo, hi) if lo <= hi else None
 
 
+def edge(level: Sequence[Trial], threshold: str) -> int | None:
+    """창 끝을 다시 볼 한도 — 흔한 구현이 떨어진 가장 큰 한도 바로 위의 시험한 한도로, 허용 구현은 통과하고 흔한 구현은 통과했으며
+    거기서 떨어지면 창이 MIN_RATIO 에 닿는 것. 흔한 구현이 한 번도 안 떨어졌거나, 위 한도에서 허용 구현이 떨어졌거나, 거기서
+    떨어져도 창이 모자라면 None (다시 돌려도 판정이 안 바뀐다)."""
+    caught = [t.values[threshold] for t in level if t.caught]
+    clean = [t.values[threshold] for t in level if t.clean]
+    if not caught or not clean:
+        return None
+    above = sorted({t.values[threshold] for t in level if t.values[threshold] > max(caught)})
+    if not above:
+        return None
+    top = above[0]
+    if not all(t.clean for t in level if t.values[threshold] == top):
+        return None
+    return top if top >= MIN_RATIO * min(clean) else None
+
+
 def pick(lo: int, hi: int) -> int:
     """창의 기하 중간값 (STEP 단위로 반올림, 창 안으로)."""
     middle = round(math.sqrt(lo * hi) / STEP) * STEP
@@ -216,25 +249,63 @@ Runner = Callable[[dict[str, int]], Awaitable[Trial]]
 async def search(
     k: Knobs, run: Runner, cases: Sequence[str] = (), limit: int = MAX_TRIALS
 ) -> Calibration:
-    """부하 단계마다 한도 사다리를 내려가며 돌리고, 창이 MIN_RATIO 이상이면 그 단계의 기하 중간값을 고른다."""
+    """부하 단계마다 한도 사다리를 내려가며 돌리고, 창이 MIN_RATIO 이상이면 그 단계의 기하 중간값을 고른다.
+    창이 모자라면 창 끝 한도(edge)를 EDGE_RETRIES 번까지 더 돌리고, 고른 값은 CONFIRM 번 돌려 확인한다 (머리말 '시험 한 번은 흔들린다')."""
     trials: list[Trial] = []
+    unconfirmed: list[int] = []
+
+    async def attempt(values: dict[str, int]) -> Trial | None:
+        if len(trials) >= limit:
+            return None
+        trial = await run(values)
+        trials.append(trial)
+        return trial
+
     for load in k.loads or (None,):
         fixed = {k.load: load} if k.load is not None and load is not None else {}
         level: list[Trial] = []
         for value in k.ladder:
-            if len(trials) >= limit:
+            trial = await attempt({k.threshold: value, **fixed})
+            if trial is None:
                 break
-            trial = await run({k.threshold: value, **fixed})
-            trials.append(trial)
             level.append(trial)
             if not trial.clean:
                 break  # 한도가 짧을수록 허용 구현에 불리 — 그 아래는 보지 않는다
         w = window(level, k.threshold)
-        if w is not None and w[1] >= MIN_RATIO * w[0]:
-            values = {k.threshold: pick(*w), **fixed}
-            return Calibration("calibrated", k, values, w, tuple(trials), tuple(cases))
+        top = edge(level, k.threshold) if w is None or w[1] < MIN_RATIO * w[0] else None
+        if top is not None:
+            for _ in range(EDGE_RETRIES):
+                trial = await attempt({k.threshold: top, **fixed})
+                if trial is None:
+                    break
+                level.append(trial)
+                if trial.caught or not trial.clean:
+                    break
+            if not all(t.clean for t in level if t.values[k.threshold] == top):
+                continue  # 창 끝에서 허용 구현이 흔들림 — 이 부하 단계에서는 고르지 않는다
+            w = window(level, k.threshold)
+        if w is None or w[1] < MIN_RATIO * w[0]:
+            continue
+        values = {k.threshold: pick(*w), **fixed}
+        for _ in range(CONFIRM):
+            trial = await attempt(values)
+            if trial is None or not (trial.caught and trial.clean):
+                unconfirmed.append(values[k.threshold])
+                break
+        else:
+            return Calibration(
+                "calibrated",
+                k,
+                values,
+                w,
+                tuple(trials),
+                tuple(cases),
+                unconfirmed=tuple(unconfirmed),
+            )
     status: Status = "no_window" if any(t.caught for t in trials) else "naive_untouched"
-    return Calibration(status, k, {}, None, tuple(trials), tuple(cases))
+    return Calibration(
+        status, k, {}, None, tuple(trials), tuple(cases), unconfirmed=tuple(unconfirmed)
+    )
 
 
 def base_label(target: str) -> str:

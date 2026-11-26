@@ -93,17 +93,21 @@ def test_no_knobs_when_nothing_may_be_tuned(reason: str, listed: list[str], vers
 
 
 async def test_the_hikari_floor_squeezes_the_window_until_the_delay_goes_up() -> None:
-    """#301 대기열 모형: 지연 20 이면 흔한 구현 최대 대기 약 320ms — 하한 250 에서만 떨어져 창 [250, 250] (좁음). 지연 50 이면
-    [250, 500] → 기하 중간값 350. 조합 8회 (대기 한도 4 × 지연 2)."""
+    """#301 대기열 모형: 지연 20 이면 흔한 구현 최대 대기 약 320ms — 하한 250 에서만 떨어져 창 [250, 250] (좁음), 창 끝 500 을
+    두 번 더 돌려도 그대로. 지연 50 이면 [250, 500] → 기하 중간값 350 을 두 번 확인. 조합 12회 (사다리 4 + 창 끝 2 + 사다리 4 + 확인 2)."""
     k = knobs(POOL, V4, POOL_PLAN)
     assert k is not None
     cal = await search(k, _queue(), ["hc1"])
     assert cal.status == "calibrated" and cal.window == (250, 500)
     assert dict(cal.values) == {"connection_timeout_ms": 350, "query_delay_ms": 50}
-    assert [t.values["query_delay_ms"] for t in cal.trials] == [20] * 4 + [50] * 4
+    assert [t.values["connection_timeout_ms"] for t in cal.trials] == [
+        *(2000, 1000, 500, 250, 500, 500),
+        *(2000, 1000, 500, 250, 350, 350),
+    ]
+    assert [t.values["query_delay_ms"] for t in cal.trials] == [20] * 6 + [50] * 6
     assert cal.flag() == (
         f"{FLAG}connection_timeout_ms 350·query_delay_ms 50 — 흔한 구현이 hc1 에서 pool_acquire_timeout 로 실패, "
-        "허용 구현 모두 통과 (connection_timeout_ms 창 250~500, 시험 8회)"
+        "허용 구현 모두 통과 (connection_timeout_ms 창 250~500, 시험 12회)"
     )
 
 
@@ -111,7 +115,8 @@ async def test_a_wide_window_at_the_planned_delay_stops_early() -> None:
     k = knobs(POOL, V4, POOL_PLAN)
     assert k is not None
     cal = await search(k, _queue(naive_statements=10), ["hc1"])  # 지연 20 에서 흔한 구현 대기 800ms
-    assert cal.status == "calibrated" and cal.window == (250, 500) and len(cal.trials) == 4
+    # 사다리 4 + 확인 2
+    assert cal.status == "calibrated" and cal.window == (250, 500) and len(cal.trials) == 6
     assert dict(cal.values) == {"connection_timeout_ms": 350, "query_delay_ms": 20}
 
 
@@ -122,15 +127,11 @@ async def test_no_window_when_the_accepted_design_fails_where_the_naive_does() -
     assert k is not None
     cal = await search(k, _queue(accepted_statements=3), ["hc1"])
     assert cal.status == "no_window" and not cal.values
-    # 지연 20: 끝까지 (흔한 구현은 250 에서만 실패) · 지연 50: 허용 구현이 500 에서 떨어져 250 은 보지 않음
+    # 지연 20: 끝까지 (흔한 구현은 250 에서만 실패) + 창 끝 500 두 번 더 · 지연 50: 허용 구현이 500 에서 떨어져 250 은 보지 않음,
+    # 창 끝 1000 에서 떨어져도 허용 구현이 통과한 가장 작은 한도가 1000 이라 2배에 못 미쳐 다시 돌리지 않는다
     assert [t.values["connection_timeout_ms"] for t in cal.trials] == [
-        2000,
-        1000,
-        500,
-        250,
-        2000,
-        1000,
-        500,
+        *(2000, 1000, 500, 250, 500, 500),
+        *(2000, 1000, 500),
     ]
     assert "2배 창 없음" in cal.verdict() and "connection_timeout_ms: 500, 250" in cal.verdict()
     worse = await search(
@@ -144,7 +145,54 @@ async def test_a_naive_that_never_falls_goes_back_to_regeneration() -> None:
     k = knobs(POOL, V4, POOL_PLAN)
     assert k is not None
     cal = await search(k, _queue(naive_statements=1), ["hc1"])
+    # 떨어진 한도가 없으면 창 끝도 없다
     assert cal.status == "naive_untouched" and len(cal.trials) == 8
+
+
+def _flaky(base: Any, script: dict[tuple[int, int], list[dict[str, bool]]]) -> Any:
+    """대기열 모형 위에서 (대기 한도, 지연) 조합의 앞 몇 번 결과만 바꾼다 — 시험 한 번의 흔들림 (#308 운영 b7)."""
+    left = {key: list(changes) for key, changes in script.items()}
+
+    async def run(values: dict[str, int]) -> Trial:
+        trial = await base(values)
+        changes = left.get((values["connection_timeout_ms"], values.get("query_delay_ms", 20)))
+        return replace(trial, **changes.pop(0)) if changes else trial
+
+    return run
+
+
+async def test_a_naive_that_passes_the_edge_once_is_tried_again() -> None:
+    """#308 운영 b7: 지연 50·500ms 에서 흔한 구현이 한 번 통과해 창이 [250, 250] 으로 줄고 빌드가 실패했다 (같은 조건 재생은 5번 중
+    3번 실패). 창 끝 한도를 다시 돌려 떨어지면 창은 [250, 500] — 고른 350 을 두 번 확인하고 보정한다."""
+    k = knobs(POOL, V4, POOL_PLAN)
+    assert k is not None
+    cal = await search(k, _flaky(_queue(), {(500, 50): [{"caught": False}]}), ["hc1"])
+    assert cal.status == "calibrated" and cal.window == (250, 500)
+    assert dict(cal.values) == {"connection_timeout_ms": 350, "query_delay_ms": 50}
+    tried = [t.values["connection_timeout_ms"] for t in cal.trials]
+    assert tried[6:] == [2000, 1000, 500, 250, 500, 350, 350]
+
+
+async def test_a_picked_value_the_naive_passes_is_not_calibrated() -> None:
+    """고른 값의 확인 시험에서 흔한 구현이 통과하면 그 값으로 채점하지 않는다 — 다른 부하 단계가 없으면 재료 판정 (사람)."""
+    k = knobs(POOL, V4, POOL_PLAN)
+    assert k is not None
+    cal = await search(k, _flaky(_queue(), {(350, 50): [{"caught": False}]}), ["hc1"])
+    assert cal.status == "no_window" and not cal.values and cal.unconfirmed == (350,)
+    tried = [t.values["connection_timeout_ms"] for t in cal.trials]
+    assert tried[6:] == [2000, 1000, 500, 250, 350]
+    assert "창에서 고른 350 는 확인 시험에서 흔한 구현 통과 또는 허용 구현 실패" in cal.verdict()
+
+
+async def test_the_edge_is_not_widened_when_the_accepted_design_fails_there() -> None:
+    """창 끝을 다시 돌렸더니 흔한 구현은 떨어졌지만 허용 구현도 떨어졌다 — 허용 구현이 흔들리는 한도는 창에 넣지 않는다."""
+    k = knobs(POOL, V4, POOL_PLAN)
+    assert k is not None
+    script = {(500, 50): [{"caught": False}, {"caught": True, "clean": False}]}
+    cal = await search(k, _flaky(_queue(), script), ["hc1"])
+    assert cal.status == "no_window" and not cal.values
+    tried = [t.values["connection_timeout_ms"] for t in cal.trials]
+    assert tried[6:] == [2000, 1000, 500, 250, 500]
 
 
 @pytest.mark.parametrize(
@@ -352,7 +400,7 @@ async def _loop(
 
 @pytest.mark.usefixtures("no_variant_gates")
 async def test_the_build_calibrates_instead_of_regenerating_and_keeps_the_values() -> None:
-    """흔한 구현이 Hikari 기본 대기에서 hc1 을 통과 → 보정 (지연 20 은 창 없음, 50 에서 [250, 500] → 350) → 다음 회차 전체 검증에서
+    """흔한 구현이 Hikari 기본 대기에서 hc1 을 통과 → 보정 (지연 20 은 창 없음, 50 에서 [250, 500] → 350, 두 번 확인) → 다음 회차 전체 검증에서
     흔한 구현이 떨어져 review. 다시 만든 생성기 없음 — 보정 값은 빌드 계획(b.plan)·저장본(out.hidden_plan)·조절값 파일에 같이 남는다."""
     verifier = QueueVerifier()
     out, backend = await _loop(verifier)
@@ -363,8 +411,8 @@ async def test_the_build_calibrates_instead_of_regenerating_and_keeps_the_values
         {"pool_size": 8, "concurrency": 32},
         {"pool_size": 8, "concurrency": 32, "connection_timeout_ms": 350, "query_delay_ms": 50},
     ]
-    assert len(verifier.trials) == 8 and verifier.trials[0] == ["cal1-naive-all", "cal1-d1"]
-    assert len(out.calibration_reports) == 8
+    assert len(verifier.trials) == 10 and verifier.trials[0] == ["cal1-naive-all", "cal1-d1"]
+    assert len(out.calibration_reports) == 10  # 사다리 4 × 지연 2 + 확인 2
     assert out.hidden_plan is not None and out.hidden_plan.harness == {
         "pool_size": 8,
         "concurrency": 32,
@@ -441,7 +489,7 @@ async def test_replay_reads_a_saved_alpha_and_runs_the_same_calibration(tmp_path
     assert [(r["reason"], r["status"], r["values"]) for r in rows] == [
         (POOL, "calibrated", {"connection_timeout_ms": 350, "query_delay_ms": 50})
     ]
-    assert rows[0]["window"] == [250, 500] and len(rows[0]["trials"]) == 8
+    assert rows[0]["window"] == [250, 500] and len(rows[0]["trials"]) == 10
     assert verifier.trials[0] == ["cal1-d1", "cal1-naive-all"]  # 폴더 이름순 — 라벨이 대상
 
 
