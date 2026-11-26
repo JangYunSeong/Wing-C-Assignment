@@ -61,7 +61,7 @@ from task_spec.starter.contract import SpecView
 from task_spec.starter.forbidden_storage import storage_hits
 from task_spec.starter.hand_refs import load_references
 from task_spec.starter.interface import interface_ref
-from task_spec.starter.material_guide import guide_ref, load_guides
+from task_spec.starter.material_guide import guide_problems, guide_ref, load_guides
 from task_spec.starter.render import render_readme, thin_readme
 from task_spec.starter.static_check import readme_flags
 from task_spec.starter.templates import load_template, select_template
@@ -299,6 +299,10 @@ async def main() -> None:
         else None
     )
     guide = load_guides(s.incidents_dir).get(inc.incident_id)  # #256 재료 숨은 안내
+    if guide is not None and (bad := guide_problems(guide, inc)):
+        # 운영(builder/steps.contract)과 같게 — 재료 안내가 템플릿과 맞지 않으면 계약 전에 멈춘다 (설계 검사 #332 T-F9: 알파만 이 검사를
+        # 타지 않아, 운영에서 멈출 재료로 알파가 계약·빌드를 돌았다)
+        raise SystemExit(f"재료 숨은 안내가 템플릿과 맞지 않음 — {'; '.join(bad)}"[:400])
     report["guide"] = (
         {"incident_id": guide.incident_id, "sha256": guide_ref(guide)} if guide else None
     )
