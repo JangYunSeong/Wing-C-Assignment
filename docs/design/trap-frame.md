@@ -4,6 +4,7 @@
 > 구현: 1단계 뼈대 (#318, 브랜치 `feat/trap-frame`) — 틀 스키마(`schemas/trap_frame.py`)·프롬프트 `trap_frame` v1(`eval: pending`, CURRENT 없음 → 틀 단계를 건너뛰어 지금 동작 그대로)·틀 적용 재료(`interview/trap_frame.apply_frame`)·생성 흐름·공통 과제 행 저장(`common_task.framed`)·빌드 계약 단계·검사 4.
 > 2단계 (같은 브랜치): 프롬프트 `trap_frame` v1→v3 평가(qwen, `eval/interview/run_trap_frame.py`) → **CURRENT = v3** (2026-11-26 사용자, `prompts/trap_frame/PROMOTIONS.md`). v1 은 평범한 재료의 숨은 요구를 다시 쓰며 조건을 빼거나 설계를 좁혔고 업무 엔티티를 금지했다. design 틀의 숨은 요구는 재료 것을 글자 그대로 담아야 쓴다(`keeps_hidden`, 아니면 재료 것). 금지 엔티티 이름은 영문 PascalCase. `draft_feature_task` v13 (틀의 공개 쪽 입력 `frame_public_text`)은 평가했으나 올리지 않았다 — 이득이 보이지 않았고 규칙이 2단계 자료까지 덮는다 (2026-11-26 사용자, `prompts/draft_feature_task/PROMOTIONS.md`). 연결 코드는 남긴다.
 > 3단계 (같은 브랜치, 2026-11-26): 검사 1·2·3·5 — 모두 코드, 표시만 (검사 4 만 재요청). 결정 D5·D6·D7 은 §10. `interview/trap_frame.evidence_gaps`·`design_questions`·`match_design`, `interview/frame_leaks.py`, 보강 질문 `material_analysis.reinforce_questions`.
+> 5단계 (2026-11-26, 4단계보다 먼저): 함정 틀 빌드 알파 6회 (`eval/starter/run_alpha --virtual-incident session --trap-frame`, 가상 세션 유지 재료·JWT 를 사람이 뺀 것처럼·템플릿 Java v5) — 틀·계약 6/6 (원인 1·2 가 모든 회차에서 사라짐), 빌드 관문 1/3 (보정 창 없음 2회 = 하네스 재현성, 원인 3 — #327 의 근거), 검사 3 이 명세 초안 v12 의 금지 엔티티 노출(`CREATE TABLE sessions`)을 잡음. 알파가 찾은 빌드 버그(코드가 쓰는 공개 도우미의 주석이 운영 조건 낱말에 걸림)는 고침. 4단계는 #327.
 > 근거: #308 본문, 팩트체크 1~4차 댓글, 정리 댓글(남은 일·순서), 운영 분석(r3 빼먹기, 2026-11-25), 5차 팩트체크(이 초안의 코드 대조 — 틀이 계약 단계에 닿는 길, 재료 칸을 그대로 쓰는 코드).
 
 명세를 쓰기 **전에** 함정의 모양을 정한다. 무엇을 숨기고 무엇을 공개하며, 공개 쪽에 무엇을 쓰면 안 되는지, 허용 설계가 공개 요구를 지킬 수 있는지를 먼저 정한다. 그다음 명세·계약 생성과 검사가 그 틀을 따른다.
@@ -136,7 +137,7 @@ provenance 는 다른 LLM 산출물과 같다 (`prompt_id@version+hash`, 모델�
 ## 10. 정할 것
 
 - [확정: 2026-11-26 사용자] D5 설계 빼기는 ⑧ 보강 질문에 '뺀다/남긴다' 고정 답으로 (코드가 답을 읽는다 — LLM 해석·승인 화면 새 버튼은 쓰지 않음). D6 보강 질문 한도 둘 → 셋. D7 검사 3 은 코드만 (놓침이 보이면 LLM 판정을 더한다). 요구 완화는 [미정].
-- [미정] D2 B 를 기본으로 할지 — 정하면 템플릿 v6 이 따라온다 (§4). v5 판단 뒤에 정한다. 그 전까지 틀 종류는 design 하나다 (`interview/trap_frame.BEHAVIOR_REASONS` 가 비어 있음).
+- [미정] D2 B 를 기본으로 할지 (#327) — 정하면 템플릿 v6 이 따라온다 (§4). v5 판단 뒤에 정한다. 그 전까지 틀 종류는 design 하나다 (`interview/trap_frame.BEHAVIOR_REASONS` 가 비어 있음).
 - [확정: 2026-11-25 사용자] D4 stateful_target 처리를 틀에 합친다 (§6). 틀이 `stateful_target_forbidden` 이면 틀 적용 재료의 `contract_needs` 에서 stateful_target 을 뺀다 — 그 대상의 상태 칸에 적는 transition_rules 도 함께 (남기면 계약 검사가 대상을 다시 요구한다).
 - [확정: 2026-11-25 사용자] D3 틀은 하나. 호출 한 번에 틀 종류도 정하고, 코드가 템플릿을 보고 허용 종류를 넘긴다 (`allowed_kinds`). 허용 밖 종류·템플릿에 없는 사유면 원 재료로 만들고 표시만.
 - [확정: 2026-11-25 사용자] D1 저장 자리 = (나) 변형. 틀 적용 재료와 틀(`FramedMaterial`)을 그 공고의 공통 과제 행 `common_task.framed` 칸에 둔다 — `TaskItem` 스키마는 그대로. 빌드는 그 칸이 있으면 원 재료 대신 쓰고(`builder/steps.py` `contract`), 금지 저장 엔티티는 계약 입력(`plan_contract.storage_text`)과 검사 4(`contract._forbidden_storage`)로. 공용 회사 사례 재료는 바꾸지 않는다 — 공고마다 자기 틀, 회사 사례를 고른 공고도 틀이 빌드에 닿는다. 등록하는 재료(`spec.coding_incident`)는 원 재료 그대로.
