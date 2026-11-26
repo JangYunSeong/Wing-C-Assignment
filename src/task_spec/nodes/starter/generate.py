@@ -41,7 +41,7 @@ from task_spec.schemas import (
     GenRefInput,
     GenRefInputV3,
     GenStarterInput,
-    GenStarterInputV3,
+    GenStarterInputV4,
     GenTrapInput,
     GenTrapOutput,
     GenVariantInput,
@@ -313,15 +313,27 @@ def public_text(public: Overlay | None) -> str:
     return files_text(public.files) if public is not None else NONE
 
 
+def storage_rules_text(forbidden: Sequence[ForbiddenStorage]) -> str:
+    """시작 코드에 두지 않을 저장 (함정 틀이 금지한 저장 엔티티, 설계 검사 #332 T-F2) — 이름만. 틀의 why(LLM 글, 해법이 들어 있을 수
+    있음)는 싣지 않는다 (B-F10). 정적 검사(_starter_forbidden_storage)가 같은 목록으로 막는다."""
+    if not forbidden:
+        return NONE
+    return "\n".join(
+        f"- {s.entity} — 이 상태를 테이블·엔티티·저장소·조회 메서드로 두지 않는다 (흔한 구현의 저장 방식, 설계는 지원자 몫)"
+        for s in forbidden
+    )
+
+
 def starter_input(
     task: TaskItem,
     contract: TaskContract,
     template: Template,
     note: str | None = None,
     public: Overlay | None = None,
+    forbidden: Sequence[ForbiddenStorage] = (),
 ) -> GenStarterInput:
     m = template.manifest
-    return GenStarterInputV3(
+    return GenStarterInputV4(
         stack=stack_text(m),
         # 뼈대·앱 계약 타입은 지원자가 받는 판 그대로 (얇은 판이면 엔드포인트 요약 없음 — render.candidate_contract)
         template_files=_with_app_types(
@@ -336,6 +348,7 @@ def starter_input(
         contract=contract_markdown(contract, tables=template.manifest.naming.table),
         revision_note=note or NONE,
         public_tests=public_text(public),
+        storage_rules=storage_rules_text(forbidden),
     )
 
 
@@ -811,7 +824,7 @@ async def gen_starter(
 ) -> GenResult:
     return await _generate(
         "gen_starter",
-        lambda n: starter_input(b.task, b.contract, b.template, n, public),
+        lambda n: starter_input(b.task, b.contract, b.template, n, public, b.forbidden_storage),
         _app_overlay(b, "starter"),
         b.check,
         llm=llm,
