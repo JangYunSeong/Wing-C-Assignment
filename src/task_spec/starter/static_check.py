@@ -2794,6 +2794,10 @@ def static_check(
     terms = list(
         dict.fromkeys([*hidden_terms(seed, spec), *(n for n in hidden_names if len(n) >= 4)])
     )
+    # 코드가 쓰는 공개 도우미(PublicCase 등)는 낱말 대조에서 뺀다 — 고정 주석이 재료 낱말과 겹치면 생성기가 고칠 수 없는 재생성이 된다.
+    # 계약에서 온 글(설정 뜻·시드 값·이름)은 계약 검사(contract._leaks — 같은 hidden_terms)가 이미 본다. 2026-11-26 #318 알파 3회:
+    # 로그인 세션 도우미 주석 '동시 요청(peak) 안에서 부르지 않는다'가 재료 운영 조건 낱말 '동시 요청'에 걸려 gen_public 이 모두 실패
+    public_written = {m_.public_helper.path if m_.public_helper else None}
 
     for o in overlays:
         res.problems += _paths(o, template)
@@ -2802,7 +2806,7 @@ def static_check(
         # 공개 테스트는 지원자에게 주지 않아도 숨은 요구 낱말이 있으면 안 된다 (게이트 ⑤ 누설 사전 확인)
         public = o.kind in ("starter", "public_test")
         if public:
-            for path, shown in _leaks(o.files, terms):
+            for path, shown in _leaks([f for f in o.files if f.path not in public_written], terms):
                 res.problems.append(
                     StaticProblem(
                         o.target,

@@ -25,9 +25,10 @@ import json
 import re
 import tempfile
 import uuid
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from eval.interview.run_material_analysis import DEADLOCK, JAVA, _pseudonymized, _virtual
 from eval.spec.run_feature import ROOT, SUB, ModelOverride, make_client, pick
@@ -46,7 +47,13 @@ from task_spec.nodes.pseudonymize.dictionaries import load_dictionaries
 from task_spec.nodes.pseudonymize.engine import Detectors
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import DraftFeatureOutput, FeatureSeed, PublicIncident, TrapFrame
+from task_spec.schemas import (
+    DraftFeatureOutput,
+    FeatureSeed,
+    MaterialAnalysis,
+    PublicIncident,
+    TrapFrame,
+)
 from task_spec.schemas.incident import ContractNeed
 from task_spec.spec.draft import FLAG_DRAFT_INVALID, DraftContext
 from task_spec.spec.feature import draft_feature_task
@@ -65,8 +72,17 @@ STORAGE = re.compile(
 )
 
 
-def session_material(root: Path) -> PublicIncident:
-    """가상 세션 유지 재료 — 교착 공개 재료의 칸 이름만 빌리고 내용은 모두 이 재료의 것으로 (2단계·금지 낱말 포함)."""
+# 알파용 세 번째 허용 설계 (#318 5단계) — ⑧ 설계 질문에 담당자가 '뺀다 — <대신 인정할 설계>' 로 줄 법한 것. 하네스의 피크 버스트는
+# 요청마다 다른 행이라 세션 확인을 요청마다 DB 없이 하는 설계만 통과한다 (2026-11-24 세션 과제 알파 1~3 이 JWT 설계에 메모리 맵을 더해 수렴한 꼴)
+SIGNED_WITH_MEMORY = (
+    "[설계] 로그인 때 서명한 세션 값을 발급하고, 마지막 접근 시각은 서버 메모리 맵에서만 갱신해 만료를 판정 — 조건: 서명 검사로 위조를 "
+    "막고 메모리 맵은 서버끼리 공유 — 함정: 접근 시각을 요청마다 DB 에 쓰면 흔한 구현과 같다"
+)
+
+
+def session_material(root: Path, *, extra_designs: Sequence[str] = ()) -> PublicIncident:
+    """가상 세션 유지 재료 — 교착 공개 재료의 칸 이름만 빌리고 내용은 모두 이 재료의 것으로 (2단계·금지 낱말 포함).
+    extra_designs: 허용 설계를 더한다 (알파 — 사람이 JWT 설계를 빼도 허용 설계가 둘 남게)."""
     base = incident_by_id(load_incidents(root), DEADLOCK)
     assert base is not None
     return _virtual(
@@ -110,6 +126,7 @@ def session_material(root: Path) -> PublicIncident:
             "함정: 폐기를 확인하려고 요청마다 DB 를 보면 흔한 구현과 같다",
             "[설계] 세션을 메모리 저장소에 두고 접근할 때 만료를 연장, DB 에는 로그인 때만 씀 — 조건: 저장소를 서버끼리 공유 — "
             "함정: 메모리 저장소를 쓰면서 요청마다 DB 에도 반영하면 흔한 구현과 같다",
+            *extra_designs,
         ],
         stage2_symptom="배포 뒤 피크 시간대에만 상품·주문 조회 요청 일부가 일정한 간격으로 시간 초과되며 실패한다. 그 시간대에도 DB "
         "서버 자원과 쿼리 시간은 평소와 비슷하다.",
@@ -156,10 +173,19 @@ def session_material(root: Path) -> PublicIncident:
     )
 
 
-async def framed_session(
-    llm: LLMClient, inc: PublicIncident, template: Template
-) -> tuple[TrapFrame, FeatureSeed, float]:
-    """운영 순서로 틀을 한 번 만든다 — 재료 분석 → 틀 (레포 CURRENT), 저장본·derived 가명화 검사."""
+class FrameRun(NamedTuple):
+    frame: TrapFrame
+    framed: FeatureSeed  # 틀 적용 재료 (사람이 뺀 설계 반영)
+    analysis: MaterialAnalysis
+    notes: list[str]  # apply_frame 이 바꾼 것
+    cost_usd: float
+
+
+async def frame_run(
+    llm: LLMClient, inc: PublicIncident, template: Template, removed: Sequence[str] = ()
+) -> FrameRun:
+    """운영 순서로 틀을 한 번 만든다 — 재료 분석 → 틀 (레포 CURRENT), 저장본·derived 가명화 검사.
+    removed: ⑧ 설계 질문에 '뺀다'라고 답한 설계 (재료 원문 앞부분) — 서비스의 다음 과제 만들기처럼 apply_frame 이 뺀다."""
     assert inc.feature is not None
     prompts = PromptRegistry(ROOT / "prompts")
     with tempfile.TemporaryDirectory(prefix="feature-frame-") as tmp:
@@ -188,8 +214,10 @@ async def framed_session(
     problems = frame_problems(frame, template)
     if problems or not frame.forbidden_storage:
         raise SystemExit(f"틀이 점검에 맞지 않음 (금지 엔티티 없음 또는 틀 검사): {problems}")
-    framed, _ = apply_frame(inc.feature, frame)
-    return frame, framed, float(pa.cost_usd or 0.0) + float(pf.cost_usd or 0.0)
+    framed, notes = apply_frame(inc.feature, frame, removed)
+    return FrameRun(
+        frame, framed, analysis, notes, float(pa.cost_usd or 0.0) + float(pf.cost_usd or 0.0)
+    )
 
 
 def _texts(out: DraftFeatureOutput) -> tuple[list[str], list[str]]:
@@ -274,7 +302,8 @@ async def main() -> None:
     llm = make_client(None)
     template = load_template(JAVA)
     inc = session_material(s.incidents_dir)
-    frame, framed, frame_cost = await framed_session(llm, inc, template)
+    run = await frame_run(llm, inc, template)
+    frame, framed, frame_cost = run.frame, run.framed, run.cost_usd
     print(
         f"틀: 금지 엔티티 {[x.entity for x in frame.forbidden_storage]} · 공개할 것 {frame.public_rules}"
     )
