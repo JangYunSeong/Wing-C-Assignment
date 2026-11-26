@@ -1017,26 +1017,27 @@ def test_python_job_crash_blames_that_implementation_not_the_public_test() -> No
         run("naive-all", "ref_naive", "ASSERT", "assert 3000 == 5000"),
     ]
     terms = RepairTerms(impl_crash=r"\b[A-Z][A-Za-z]*(?: [A-Z][a-z]+)? ?(?:Error|Exception):")
-    acts, trusted = _public_refs(runs, {}, "", terms)
+    acts, trusted, _ = _public_refs(runs, {}, "", terms)
     assert [(a.generator, a.label) for a in acts] == [("gen_accepted", "d1")]
     assert "실행 오류" in acts[0].reason and trusted == set()
     assert (
         acts[0].budget_key == "gen_accepted:d1#crash"
     )  # 일반 재생성 예산과 따로 센다 (알파 6회차)
     # 패턴이 없는 스택(Java·Node)은 그대로 — 모든 구현 실패는 테스트 의심
-    acts, _ = _public_refs(runs, {}, "", RepairTerms())
+    acts, _, _ = _public_refs(runs, {}, "", RepairTerms())
     assert [a.generator for a in acts] == ["gen_public"]
     # 이미 다시 만든 구현이 또 실행 오류 — 구현 탓을 반복하지 않고 기존 규칙(테스트 의심)으로 (알파 5회차)
-    acts, _ = _public_refs(runs, {"gen_accepted:d1": 1}, "", terms)  # 일반 예산을 쓴 것은 상관없음
+    # 일반 예산을 쓴 것은 상관없음
+    acts, _, _ = _public_refs(runs, {"gen_accepted:d1": 1}, "", terms)
     assert [(a.generator, a.label) for a in acts] == [("gen_accepted", "d1")]
-    acts, _ = _public_refs(runs, {"gen_accepted:d1#crash": 1}, "", terms)
+    acts, _, _ = _public_refs(runs, {"gen_accepted:d1#crash": 1}, "", terms)
     assert [a.generator for a in acts] == ["gen_public"]
     # 모든 구현이 같은 실행 오류 — 공유 원인(입력·계약)일 수 있어 기존 규칙대로
     same = [
         run("d1", "ref_accepted", "ASSERT", crash),
         run("naive-all", "ref_naive", "ASSERT", crash),
     ]
-    acts, _ = _public_refs(same, {}, "", terms)
+    acts, _, _ = _public_refs(same, {}, "", terms)
     assert [a.generator for a in acts] == ["gen_public"]
 
 
@@ -1214,6 +1215,32 @@ def test_gate5_rebuilt_accepted_alone_failing_public_suspects_the_test_once() ->
     assert [a.key for a in spent.actions] == [
         "gen_accepted:d2"
     ]  # 한 번 의심했으면 원래대로 (예산이 막는다)
+
+
+def test_gate5_rebuilt_accepted_failing_public_and_hidden_keeps_the_test() -> None:
+    """2026-11-25 재시도 중복 알파: d2 가 @Transactional 메서드를 같은 클래스 안에서 불러 잔액이 저장되지 않아, 다시 만든 뒤에도 공개 pt1
+    ('충전 후 잔액 일치')과 숨은 hc1·hc2 를 함께 틀렸다. 테스트 의심 갈래가 맞던 pt1 을 다시 만들어 잔액 확인을 잃었다 — 두 묶음을 함께
+    틀리면 테스트를 바꾸지 않고 사람에게."""
+    pub = _t("public", "pt1", "ASSERT", None, "expected: 15000 but was: 10000")
+    report = _report(
+        _run("naive-all", "ref_naive", *GOOD_NAIVE, _t("public", "pt1")),
+        _run("d1", "ref_accepted", *GOOD_ACC, _t("public", "pt1")),
+        _run(
+            "d2",
+            "ref_accepted",
+            _t("hidden", "hc1", "ASSERT", "pool_acquire_timeout", "기대와 다른 응답 수 32"),
+            _t("hidden", "hc2"),
+            pub,
+        ),
+    )
+    first = assign(report, PLAN2, OVERLAYS, MISSED, {})
+    assert [a.key for a in first.actions] == ["gen_accepted:d2"]  # 처음엔 그 구현 (전과 같음)
+    again = assign(report, PLAN2, OVERLAYS, MISSED, {"gen_accepted:d2": 1})
+    assert not any(a.generator == "gen_public" for a in again.actions)
+    assert again.unresolved == [
+        "허용 설계 d2 를 다시 만든 뒤에도 공개 테스트 pt1 와 숨은 케이스 hc1 를 함께 틀림 — 따로 만든 두 테스트 묶음이 함께 "
+        "틀렸기보다 구현이 틀렸을 가능성이 커 테스트를 바꾸지 않음 (사람 확인)"
+    ]
 
 
 def test_harness_diagnosed_test_defect_goes_straight_to_the_test() -> None:

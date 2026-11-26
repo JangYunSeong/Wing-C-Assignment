@@ -217,6 +217,11 @@ def _gen_for(run: TargetRun) -> GeneratorName:
     return "gen_naive" if run.kind == "ref_naive" else "gen_accepted"
 
 
+def _hidden_failures(run: TargetRun) -> list[str]:
+    """그 구현이 단언에서 떨어진 숨은 케이스 (실행 오류·하네스 오류는 빼고)."""
+    return [t.name for t in run.results("hidden") if t.result == "ASSERT"]
+
+
 _GATE = re.compile(r"[①-⑳]'?|[a-z]+")
 
 
@@ -468,18 +473,20 @@ def _public_refs(
     regen_counts: Mapping[str, int],
     shared: str = "",
     terms: RepairTerms | None = None,
-) -> tuple[list[RepairAction], set[str]]:
+) -> tuple[list[RepairAction], set[str], list[str]]:
     """참조 구현 + 공개 테스트 — 공개 요구는 흔한 구현·허용 구현 모두 지켜야 한다. 구현끼리 비교해 탓을 정한다.
     - 일부 구현만 실패 → 그 구현. 단 흔한 구현만 실패하고 이미 다시 만들었으면 공개 테스트가 숨은 요구를 시험하는 것(누설, ⑤) → gen_public
     - 모든 구현이 같은 오류: 서버 쪽 예외면 공유 코드(시작 코드) → gen_starter, 단언 불일치면 테스트 의심 → gen_public
     - 모든 구현이 서로 다른 오류 → gen_public
     - 구현 실행 오류(manifest repair_terms.impl_crash — 명령이 예외로 끝남): 모든 구현이 같은 오류가 아니면 그 구현마다 한 번 다시 만든다
       (실행이 안 된 구현과는 비교할 수 없어 이번엔 나머지 구현의 실패를 짚지 않는다). 다시 만든 뒤에도 실행 오류면 위 규칙대로
-    돌려주는 집합 = 공개 테스트를 모두 통과한 구현 라벨 (숨은 게이트는 이 구현만 믿는다)."""
+    돌려주는 값 = (수리, 공개 테스트를 모두 통과한 구현 라벨 — 숨은 게이트는 이 구현만 믿는다, 배정하지 않고 사람에게 넘길 실패)."""
     names = sorted({t.name for r in runs for t in r.results("public")})
     trusted = {r.target for r in runs if all(t.result == "PASS" for t in r.results("public"))}
     server = re.compile(terms.server_side) if terms is not None and terms.server_side else None
     out: list[RepairAction] = []
+    # 테스트를 의심하지 않고 멈출 구현 → (실행, 틀린 공개 테스트)
+    held: dict[str, tuple[TargetRun, list[str]]] = {}
     for name in names:
         res = [(r, next((t for t in r.results("public") if t.name == name), None)) for r in runs]
         bad = [(r, t) for r, t in res if t is None or t.result != "PASS"]
@@ -544,6 +551,17 @@ def _public_refs(
                 if (
                     r.kind == "ref_accepted"
                     and exhausted(regen_counts, "gen_accepted", r.target)
+                    and _hidden_failures(r)
+                ):
+                    # 다시 만든 허용 구현이 이 공개 테스트와 숨은 케이스를 함께 틀렸다 — 따로 만든 두 테스트 묶음이 함께 틀렸기보다 구현 하나가
+                    # 틀렸을 가능성이 커 테스트를 의심하지 않는다. 2026-11-25 재시도 중복 알파(fix-retry): d2 가 @Transactional 메서드를 같은
+                    # 클래스 안에서 불러 잔액·결과가 저장되지 않아 pt1·hc1·hc2 를 함께 틀렸는데, 아래 갈래가 맞던 pt1 을 다시 만들어
+                    # '잔액이 실제로 늘었나' 단언을 잃었다. 과거 테스트 의심 수리(11-11 fault3 등 5건)는 그 회차에 한쪽 묶음만 틀렸다.
+                    held.setdefault(r.target, (r, []))[1].append(name)
+                    continue
+                if (
+                    r.kind == "ref_accepted"
+                    and exhausted(regen_counts, "gen_accepted", r.target)
                     and not exhausted(regen_counts, "gen_public", pool=DESIGN)
                 ):
                     # 다시 만든 허용 구현만 또 떨어지고 다른 구현은 통과 — 공개 테스트가 한 구현 방식에 기댔을 수 있다 (게이트 ④ 와 같은 규칙).
@@ -602,7 +620,13 @@ def _public_refs(
                     blame=(f"public:{name}",),
                 )
             )
-    return out, trusted
+    unresolved = [
+        f"허용 설계 {target} 를 다시 만든 뒤에도 공개 테스트 {', '.join(tests)} 와 숨은 케이스 "
+        f"{', '.join(_hidden_failures(run))} 를 함께 틀림 — 따로 만든 두 테스트 묶음이 함께 틀렸기보다 구현이 틀렸을 가능성이 커 "
+        "테스트를 바꾸지 않음 (사람 확인)"
+        for target, (run, tests) in held.items()
+    ]
+    return out, trusted, unresolved
 
 
 def _shared_cause(
@@ -1579,8 +1603,9 @@ def assign(
         return res
     for run in ready:
         actions += _ref_existing(run, starter, skip)
-    public_acts, trusted = _public_refs(ready, counts, shared, terms)
+    public_acts, trusted, held = _public_refs(ready, counts, shared, terms)
     actions += public_acts
+    res.unresolved += held
     # 숨은 게이트는 공개 테스트를 통과한 구현만 믿는다 — 공개 요구가 깨진 구현의 숨은 결과는 그 결함 탓일 수 있다
     # (2026-11-08: 시작 코드 결함으로 두 구현이 같은 500 을 내자 흔한 구현이 '의도한 사유'로 실패한 것처럼 보였다)
     judged = [r for r in ready if r.target in trusted]
