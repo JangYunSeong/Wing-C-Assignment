@@ -366,3 +366,11 @@ def test_it_is_not_an_overlap_when_an_accepted_implementation_fails_the_same_tes
     )
     again = _assign(_naive_only_public_fail(d2_fails=True), {**naive_rebuilt, "gen_public": 1}, log)
     assert not [u for u in again.unresolved if "구별 불가(겹침)" in u]
+
+
+def test_the_leak_repair_is_not_sent_when_an_accepted_implementation_fails_too() -> None:
+    """#337 4절: 허용 구현도 같은 공개 테스트에서 떨어졌는데 '흔한 구현만 … 누설 의심(공개 수용 기준만 확인)'을 함께 보냈다 — 틀린 전제다.
+    이 규칙이 걸린 3번(운영 ct-9433 b2, 알파 ct-f608-v4-1 ×2) 모두 '흔한 구현만'이나 '계속' 전제가 틀렸다. 허용 구현 쪽 갈래가 맡는다."""
+    plan = _assign(_naive_only_public_fail(d2_fails=True), {"gen_naive:naive-all": 1})
+    assert not [x for x in plan.actions if "누설 의심" in x.reason]
+    assert [x for x in plan.actions if x.label == "d2" and PUB in x.reason]

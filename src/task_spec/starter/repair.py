@@ -550,6 +550,11 @@ def _public_refs(
             )
             for r, _ in bad:
                 if r.kind == "ref_naive" and exhausted(regen_counts, "gen_naive", r.target):
+                    if accepted and not naive_only:
+                        # 허용 구현도 이 테스트에서 떨어졌다 — '흔한 구현만 … 누설 의심(공개 수용 기준만 확인)'은 틀린 전제라 보내지 않고,
+                        # 허용 구현 쪽 갈래(그 구현 다시·테스트가 한 구현 방식에 의존 의심)가 맡는다 (#337 4절 — 이 규칙이 걸린 3번 모두
+                        # '흔한 구현만'·'계속' 전제가 틀렸다: 운영 ct-9433 b2, 알파 ct-f608-v4-1 ×2)
+                        continue
                     out.append(
                         RepairAction(
                             "gen_public",
