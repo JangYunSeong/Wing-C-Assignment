@@ -117,3 +117,34 @@ async def test_finalize_refuses_when_common_task_is_gone() -> None:
     with pytest.raises(CommonTaskMissing) as e:
         await make_finalize(store)(_state("run-a", spec=spec, approval=_decision("approved")))
     assert e.value.common_ids == [gone] and gone in str(e.value)
+
+
+async def test_a_draft_whose_narrative_failed_is_not_reused() -> None:
+    """설계 검사 #332 S-F9: 서술 생성 실패로 골격만 남은 초안은 다음 실행이 다시 쓰지 않는다 — 다시 만든다. 승인된 판은 그대로 쓴다."""
+    from task_spec.spec.draft import FLAG_DRAFT_FAILED
+
+    store = InMemoryCommonStore()
+    draft = make_draft_spec(None, store=store)
+    await draft(_state("run-a"))
+    row = store.rows[0]
+    row["task"] = row["task"].model_copy(
+        update={"review_flags": [*row["task"].review_flags, FLAG_DRAFT_FAILED]}
+    )
+    b = (await draft(_state("run-b")))["spec"]
+    assert b.common_refs[0].reused is False and len(store.rows) == 2
+    # 다시 만든 초안은 실패 표시가 없어 그다음 실행이 쓴다
+    c = (await draft(_state("run-c")))["spec"]
+    assert (
+        c.common_refs[0].reused is True and c.common_refs[0].common_id == b.common_refs[0].common_id
+    )
+    # 승인된 판이면 실패 표시가 있어도 그대로 쓴다 (사람 결정)
+    approved = InMemoryCommonStore()
+    draft2 = make_draft_spec(None, store=approved)
+    await draft2(_state("run-a"))
+    only = approved.rows[0]
+    only["task"] = only["task"].model_copy(
+        update={"review_flags": [*only["task"].review_flags, FLAG_DRAFT_FAILED]}
+    )
+    await approved.approve(only["id"], "reviewer-fake", datetime(2026, 11, 3, tzinfo=UTC))
+    d = (await draft2(_state("run-d")))["spec"]
+    assert d.common_refs[0].reused is True and d.common_refs[0].status == "approved"

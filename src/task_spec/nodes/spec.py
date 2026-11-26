@@ -46,8 +46,14 @@ from task_spec.spec.company_incidents import (
     is_company_incident,
     pick_company_incident,
 )
+from task_spec.spec.draft import (
+    FLAG_DRAFT_FAILED,
+    DraftContext,
+    apply,
+    draft_task,
+    safe_reviewer_note,
+)
 from task_spec.spec.draft import TASK as DRAFT_TASK
-from task_spec.spec.draft import DraftContext, apply, draft_task, safe_reviewer_note
 from task_spec.spec.feature import TASK as FEATURE_TASK
 from task_spec.spec.feature import apply_feature, draft_feature_task, uses_seed
 from task_spec.spec.incidents import feature_incident, feature_ref, incident_ref, with_incident
@@ -365,6 +371,15 @@ def make_draft_spec(
                     if store is not None and not redo_common and kept is None
                     else None
                 )
+                if (
+                    reused is not None
+                    and reused.status != "approved"
+                    and FLAG_DRAFT_FAILED in reused.task.review_flags
+                ):
+                    # 서술 생성 실패(공급자 일시 장애 등)로 골격만 남은 초안은 다시 쓰지 않는다 — 이 실행이 다시 만든다. 예전에는 한 번의
+                    # 장애가 승인자가 수정 요청할 때까지 그 공고의 모든 지원자 명세를 골격으로 만들었다 (설계 검사 #332 S-F9).
+                    # 승인된 판은 사람이 정한 것이라 그대로 쓴다
+                    reused = None
                 if kept is not None and prev is not None:
                     # 이 판에서 공통 과제를 만들지 않는다 (LLM 호출 없음) — provenance 는 이미 State 에 있다
                     task = kept

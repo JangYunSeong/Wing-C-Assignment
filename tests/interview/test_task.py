@@ -65,6 +65,7 @@ from tests.api.conftest import make_settings
 from tests.interview.conftest import (
     COMPETENCIES,
     FACTS,
+    POSTING_ID,
     PROJECT,
     REPO,
     Session,
@@ -439,14 +440,17 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
 
     async def draft_feature_task(ctx: Any, **kwargs: Any) -> Any:
         seen["answers"] = ctx.with_known_answers
+        seen["feature_calls"] = seen.get("feature_calls", 0) + 1
         return SimpleNamespace(output=object(), provenance=[])
 
     async def draft_analysis_request(task: Any, ctx: Any, **kwargs: Any) -> Any:
         seen["request_ctx"] = (ctx.with_known_answers, ctx.env.basis)
+        seen["request_note"] = kwargs.get("reviewer_note")
         return SimpleNamespace(provenance=[])
 
     async def build_slots(profile: Any, matches: Any, task: Any, ctx: Any, **kwargs: Any) -> Any:
         seen["slots_ctx"] = (ctx.with_known_answers, ctx.env.basis)
+        seen["slots_note"] = kwargs.get("reviewer_note")
         return SimpleNamespace(slots=[], provenance=[], flags=["가상 슬롯"])
 
     monkeypatch.setattr(task_module, "build_common", build_common)
@@ -464,9 +468,12 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
         coding_incident=incident,
         template=template,
         task_id="t",
+        reviewer_note="가상 수정 요청 — 사실 답을 더 구체적으로",
     )
     made = await make_task(maker, req)
     assert seen["answers"] is True and seen["incidents"] == {"sw.backend": incident}
+    # 수정 요청은 요청 글·확장 슬롯에도 (설계 검사 #332 S-F17)
+    assert seen["request_note"] == seen["slots_note"] == req.reviewer_note
     assert made.task.tech_env.basis == "직군 기본 코딩 템플릿" and made.flags == [
         "가상 골격",
         "가상 슬롯",
@@ -484,6 +491,8 @@ async def test_ontology_maker_gives_reference_answers_only_to_its_own_generation
     )
     with pytest.raises(TaskGenerationFailed):  # 생성된 과제가 고른 역량(3개) 중 일부만 잼
         await maker.feature(TaskRequest(three, [], incident, template, task_id="t"))
+    # 뼈대가 이미 역량을 빠뜨렸으면 기능형 초안 LLM 을 부르지 않는다 (설계 검사 #332 S-F7)
+    assert seen["feature_calls"] == 1
 
 
 async def test_selecting_the_same_competencies_again_keeps_the_task(task_session) -> None:
@@ -1048,3 +1057,68 @@ async def test_discarding_drops_a_failed_generation_copy(task_session) -> None:
     discarded = await session.client.post(f"/interviews/{session.interview_id}/discard")
     assert discarded.status_code == 200, discarded.text
     assert session.store.rows[session.interview_id].state.generation is None
+
+
+def test_kept_competencies_follow_the_common_task_rule() -> None:
+    """설계 검사 #332 S-F7: 공통 과제 뼈대는 주 역량을 먼저 담고 보조 역량은 2개를 채울 때만 — 역량 선택(⑦)이 같은 규칙으로 미리 본다."""
+    from task_spec.interview.task import kept_competencies
+    from task_spec.schemas import CompetencyEvidence, NcsUnitRef
+
+    def comp(cid: str, primary: bool) -> PostingCompetency:
+        return PostingCompetency(competency_id=cid, label=f"가상 {cid}", primary=primary)
+
+    def ev(cid: str) -> CompetencyEvidence:
+        unit = NcsUnitRef(unit_cl_cd=f"u-{cid}", name="가상 단위", scope="primary", n_criteria=3)
+        return CompetencyEvidence(competency_id=cid, ncs_units=[unit])
+
+    def kept(*comps: PostingCompetency) -> set[str]:
+        profile = PROFILE.model_copy(update={"competencies": list(comps)})
+        return set(kept_competencies(profile, [ev(c.competency_id) for c in comps]))
+
+    assert kept(comp("p1", True), comp("p2", True)) == {"p1", "p2"}
+    assert kept(comp("p1", True), comp("s1", False)) == {"p1", "s1"}
+    assert kept(comp("p1", True), comp("p2", True), comp("s1", False)) == {"p1", "p2"}  # 보조 빠짐
+    assert kept(comp("p1", True), comp("s1", False), comp("s2", False)) == {"p1", "s1"}  # 하나만
+
+
+async def test_selecting_a_mix_the_common_task_cannot_hold_is_refused_at_once(
+    task_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설계 검사 #332 S-F7: 주 역량 하나 + 보조 역량 둘이면 뼈대가 보조 하나를 뺀다 — 과제 만들기 끝이 아니라 고를 때 알린다."""
+    from task_spec.interview.task import CompetencyChoice
+    from task_spec.schemas import CompetencyEvidence, NcsUnitRef
+
+    session, maker, _ = task_session
+    await confirmed(session)
+    profile = await session.service.postings.profile(POSTING_ID)
+    assert profile is not None
+    mixed = profile.model_copy(
+        update={
+            "competencies": [
+                c.model_copy(update={"primary": c.competency_id == "comp:api"})
+                for c in profile.competencies
+            ]
+        }
+    )
+
+    async def mixed_profile(posting_id: str) -> PostingProfile:
+        return mixed
+
+    async def with_evidence(p: PostingProfile) -> CompetencyChoice:
+        unit = NcsUnitRef(unit_cl_cd="u-가상", name="가상 단위", scope="primary", n_criteria=3)
+        return CompetencyChoice(
+            available=list(p.competencies),
+            matches=[
+                CompetencyEvidence(competency_id=c.competency_id, ncs_units=[unit])
+                for c in p.competencies
+            ],
+            suggested=[],
+        )
+
+    monkeypatch.setattr(session.service.postings, "profile", mixed_profile)
+    monkeypatch.setattr(maker, "competencies", with_evidence)
+    refused = await session.post("competencies", competency_ids=[c for c, _ in COMPETENCIES])
+    assert refused.status_code == 422, refused.text
+    assert "제외" in refused.text and "가상 검증 설계" in refused.text
+    fine = await session.post("competencies", competency_ids=["comp:api", "comp:retry"])
+    assert fine.status_code == 200, fine.text

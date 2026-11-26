@@ -220,6 +220,16 @@ def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
     assert stage2_kinds_in_stage1(
         ["DB 연결 사용량 대시보드", "DB 연결 상태 로그"], be.stage2_evidence, be.discoverable_by
     ) == ["DB 연결 상태 로그"]
+    # 단서와 2단계 증거에 똑같이 가까우면 단서 쪽 — 재료가 1단계 자료로 적어 둔 종류를 바꿔 쓴 제목이다 (설계 검사 #332 S-F10:
+    # '평시 DB 연결 사용 현황'은 단서와도 2단계 'DB 연결 상태 로그'와도 0.5 로 동점이라 걸렸고, 재요청으로 고치지 못했다)
+    assert (
+        stage2_kinds_in_stage1(
+            ["평시 DB 연결 사용 현황", "DB 연결 사용 현황 대시보드"],
+            be.stage2_evidence,
+            be.discoverable_by,
+        )
+        == []
+    )
     d = _v2draft()
     d["artifacts"][1]["title"] = (
         "DB 연결 상태 로그"  # 백엔드 핵심 증거와 같은 종류 (1단계 단서엔 '평시 DB 연결 사용량 대시보드')

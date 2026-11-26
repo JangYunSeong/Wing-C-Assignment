@@ -101,6 +101,7 @@ from task_spec.interview.task import (
     copies_answer,
     evaluation_criteria,
     hidden_requirements,
+    kept_competencies,
     mentions_artifact_id,
     prepare_coding_incident,
     pseudonymize_changes,
@@ -1231,6 +1232,24 @@ class InterviewService:
                 or not set(competency_ids) <= available
             ):
                 raise InterviewInvalid("수행준거 근거가 있는 공고 역량 2~3개를 고르세요")
+            # 공통 과제 뼈대 규칙(주 역량 먼저, 보조 역량은 2개를 채울 때만)으로 빠질 역량이 있으면 지금 알린다 — 예전에는 과제 만들기
+            # 끝(기능형 초안 LLM 뒤)에야 거절했다 (설계 검사 #332 S-F7)
+            chosen = profile.model_copy(
+                update={
+                    "competencies": [
+                        c for c in profile.competencies if c.competency_id in set(competency_ids)
+                    ]
+                }
+            )
+            kept = set(kept_competencies(chosen, choice.matches))
+            # 근거 조회 결과가 비면(규칙이 아무것도 못 담음) 여기서 막지 않는다 — 생성 단계가 같은 규칙으로 다시 본다
+            if kept and (
+                dropped := [c.label for c in chosen.competencies if c.competency_id not in kept]
+            ):
+                raise InterviewInvalid(
+                    f"고른 역량 가운데 {', '.join(dropped)} 제외 — 공통 과제는 주 역량을 먼저 담고, 보조 역량은 주 역량이 "
+                    "하나일 때 하나만 담습니다. 다시 골라 주세요"
+                )
             try:
                 template = coding_template(profile.sub or "")
             except TaskGenerationFailed as exc:

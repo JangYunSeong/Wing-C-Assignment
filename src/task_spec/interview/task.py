@@ -432,6 +432,21 @@ class TaskMaker(Protocol):
         ...
 
 
+def kept_competencies(profile: PostingProfile, matches: list[CompetencyEvidence]) -> list[str]:
+    """고른 역량(profile)으로 공통 과제 뼈대가 담을 역량 — 주 역량을 먼저 담고, 보조 역량은 2개를 채울 때만 (spec/common.plan_common).
+    역량 선택(⑦)이 같은 규칙으로 미리 본다 (설계 검사 #332 S-F7)."""
+    return [c.competency_id for c in plan_common(profile, matches).competencies]
+
+
+def _require_all_selected(task: TaskItem, req: TaskRequest) -> None:
+    if {c.competency_id for c in task.target_competencies} != {
+        c.competency_id for c in req.profile.competencies
+    }:
+        raise TaskGenerationFailed(
+            "선택한 역량 일부가 공통 과제에 포함되지 않았습니다. 역량을 다시 골라 주세요"
+        )
+
+
 async def make_task(tasks: TaskMaker, req: TaskRequest) -> MadeTask:
     """세 단계를 차례로 — 한 요청 안에서 끝까지 만들 때."""
     made = await tasks.feature(req)
@@ -503,6 +518,9 @@ class OntologyTaskMaker:
 
     async def feature(self, req: TaskRequest) -> MadeTask:
         base, ctx, flags = await self._context(req)
+        # 과제 역량은 결정적 뼈대가 정하고 기능형 초안은 바꾸지 않는다 — LLM 전에 본다 (설계 검사 #332 S-F7: 몇 분짜리 초안을 다 돈 뒤에야
+        # 거절했고, '이어서 하기'는 같은 선택으로 같은 실패를 되풀이했다)
+        _require_all_selected(base, req)
         result = await draft_feature_task(
             ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
         )
@@ -511,17 +529,16 @@ class OntologyTaskMaker:
         task = apply_feature(base, result)
         if task.behavioral_anchors is None:
             raise OutputRejected("평가 행동 기준이 생성되지 않았습니다")
-        if {c.competency_id for c in task.target_competencies} != {
-            c.competency_id for c in req.profile.competencies
-        }:
-            raise TaskGenerationFailed(
-                "선택한 역량 일부가 공통 과제에 포함되지 않았습니다. 역량을 다시 골라 주세요"
-            )
+        _require_all_selected(task, req)
         return MadeTask(task=task, provenance=list(result.provenance), flags=list(flags))
 
     async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
         _, ctx, _ = await self._context(req)
-        analysis = await draft_analysis_request(made.task, ctx, llm=self.llm, prompts=self.prompts)
+        # 반려 사유·팀 맥락(수정 요청)을 요청 글에도 — 일반 파이프라인처럼 세 생성기 모두에 (설계 검사 #332 S-F17: 기능형 초안에만 넘겨
+        # 요청 글·사실 때문에 반려해도 다시 만들기에 반영되지 않았다)
+        analysis = await draft_analysis_request(
+            made.task, ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
+        )
         return MadeTask(
             task=apply_analysis(made.task, analysis),
             provenance=[*made.provenance, *analysis.provenance],
@@ -538,6 +555,7 @@ class OntologyTaskMaker:
             ontology=self.ontology,
             llm=self.llm,
             prompts=self.prompts,
+            reviewer_note=req.reviewer_note,  # 요청 글과 같은 까닭 (설계 검사 #332 S-F17)
         )
         return MadeTask(
             task=made.task.model_copy(update={"slots": slots.slots}),

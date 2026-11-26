@@ -373,3 +373,24 @@ def test_v3_still_links_when_the_generator_did_not() -> None:
     assert check_analysis_draft(out, _task(), _ctx()) == []
     out = DraftAnalysisOutputV2.model_validate(_v3())
     assert any("p1 에 req_ids 가 없음" in p for p in check_analysis_draft(out, _task(), _ctx()))
+
+
+def test_link_defects_the_spec_draft_left_are_not_sent_back() -> None:
+    """설계 검사 #332 S-F15: 모든 공개 수용 기준에 req_ids 가 이미 있으면 이 단계는 연결을 쓰지 않는다(preview·프롬프트 v3) — 명세
+    초안이 남긴 '가리키는 공개 수용 기준이 없는 요구'를 재요청해도 고칠 수 없다. 연결을 쓸 수 있는 명세에서는 그대로 재요청한다."""
+    t = _linked_task()
+    orphaned = t.model_copy(
+        update={
+            "acceptance_public": [
+                a.model_copy(update={"req_ids": ["r1"]}) for a in t.acceptance_public
+            ]
+        }
+    )
+    out = DraftAnalysisOutputV2.model_validate(_v3())
+    assert not [
+        p
+        for p in check_analysis_draft(out, orphaned, _ctx())
+        if "가리키는 공개 수용 기준이 없는 요구" in p
+    ]
+    # 연결이 빈 공개 수용 기준이 있으면 이 단계가 고칠 수 있다 — 그대로 재요청
+    assert any("p1 에 req_ids 가 없음" in p for p in check_analysis_draft(out, _task(), _ctx()))
