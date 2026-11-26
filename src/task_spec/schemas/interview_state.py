@@ -16,10 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from task_spec.schemas.base import Schema
 from task_spec.schemas.domain import TaskItem
-from task_spec.schemas.incident import PublicIncident
+from task_spec.schemas.incident import FeatureSeed, PublicIncident
 from task_spec.schemas.interview_answer import AnswerValidationRecord, SuccessField
 from task_spec.schemas.interview_incident import IncidentFact
 from task_spec.schemas.provenance import Provenance
+from task_spec.schemas.trap_frame import TrapFrame
 
 Stage = Literal[
     "scope_interview",  # ② 팀 맥락 — 공고에 없는 항목만 고정 질문
@@ -127,12 +128,24 @@ class TargetedQuestion(Schema):
     answer: str | None = Field(default=None, min_length=1, max_length=ANSWER_MAX)
 
 
+ReinforceKind = Literal["gap", "design"]
+
+
 class ReinforceQuestion(Schema):
-    """보강 질문 (#308 검사 5) — 인터뷰 사례의 재료 재현 분석이 짚은 빠진 정보(gaps)를 ⑧ 에서 담당자에게 한 번 묻는다.
-    LLM 이 쓴 글이라 가명화 검사(derived)를 거친 글만. 답하지 않아도 승인은 막지 않는다."""
+    """보강 질문 (#308 검사 5, #318 검사 1·2) — 인터뷰 사례 과제를 만든 뒤 ⑧ 에서 담당자에게 한 번 묻는다. 답하지 않아도 승인은 막지 않는다.
+    - gap: 빠진 정보 — 재료 분석·함정 틀의 빈칸, 틀 사유의 재현 근거(검사 1). 자유 글로 답한다.
+    - design: 업무 요구를 못 지킬 수 있는 허용 설계를 정답에서 뺄지 (검사 2). choices 로 시작하는 답을 코드가 읽는다
+      ('뺀다 — <대신 인정할 설계>' 도 된다 — 대신할 설계는 다음 재료 만들기의 문답 입력으로 간다).
+    LLM 이 쓴 글이 섞이므로 가명화 검사(derived)를 거친 글만."""
 
     question_id: str = Field(pattern=r"^r\d$")
     question: str = Field(min_length=1)
+    kind: ReinforceKind = "gap"
+    # design: 재료의 허용 설계 원문 — 다시 만들 때 이 설계를 뺀다 (틀 출력이 달라져도 같은 설계를 가리키게)
+    design: str | None = None
+    choices: list[str] = Field(
+        default_factory=list
+    )  # design: 화면이 버튼으로 보일 답 (자유 글도 된다)
 
 
 class ReinforceAnswer(Schema):
@@ -141,6 +154,11 @@ class ReinforceAnswer(Schema):
     question_id: str = Field(pattern=r"^r\d$")
     question: str = Field(min_length=1)
     answer: str | None = Field(default=None, min_length=1, max_length=ANSWER_MAX)
+    kind: ReinforceKind = "gap"
+    design: str | None = None  # 질문의 재료 허용 설계 원문 (design)
+    # design 답을 코드가 읽은 결과 — remove 면 다시 만들 때 그 설계를 틀 적용 재료에서 뺀다 (interview/trap_frame.apply_frame).
+    # '뺀다/남긴다' 로 시작하지 않는 답은 None (남긴다) — 그 글은 문답으로 다음 재료 만들기에 들어간다
+    choice: Literal["remove", "keep"] | None = None
 
 
 class InterviewApprovalRecord(Schema):
@@ -186,8 +204,10 @@ class InterviewSpec(Schema):
     evaluation_criteria: list[str] = Field(default_factory=list)
     generation_provenance: list[Provenance] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
-    # 보강 질문 (#308) — 인터뷰 사례의 재료 분석에 빠진 정보가 있고 아직 답한 적이 없을 때만 (최대 2개)
-    reinforce_questions: list[ReinforceQuestion] = Field(default_factory=list, max_length=2)
+    # 보강 질문 (#308·#318) — 인터뷰 사례에 물을 것(설계 빼기·빠진 정보)이 있고 아직 답한 적이 없을 때만 (최대 3개)
+    reinforce_questions: list[ReinforceQuestion] = Field(default_factory=list, max_length=3)
+    # 이 공고의 함정 틀 (#318) — 과제 글을 고칠 때 공개 쪽 표시(검사 3)를 다시 계산한다. 틀이 없거나 예전 과제면 None
+    trap_frame: TrapFrame | None = None
 
 
 class InterviewGeneration(_State):
@@ -208,6 +228,10 @@ class InterviewGeneration(_State):
     seed_flags: list[str] = Field(default_factory=list)
     # seed: 재료 분석이 짚은 빠진 정보 (가명화 검사를 거친 글) — 인터뷰 사례면 생성을 마칠 때 보강 질문으로 (#308)
     seed_gaps: list[str] = Field(default_factory=list)
+    # seed: 함정 틀과 틀 적용 재료 (#318, 가명화 검사를 거친 글) — feature 단계가 원 재료 대신 틀 적용 재료로 명세 초안을 만들고,
+    # 생성을 마칠 때 공통 과제 저장 행에 함께 둔다 (빌드 계약 단계가 쓴다). 틀 프롬프트 CURRENT 가 없으면 비어 있다
+    trap_frame: TrapFrame | None = None
+    framed_seed: FeatureSeed | None = None
     task: TaskItem | None = None  # feature → request → slots 를 거치며 갱신
     task_provenance: list[Provenance] = Field(default_factory=list)
     task_flags: list[str] = Field(default_factory=list)

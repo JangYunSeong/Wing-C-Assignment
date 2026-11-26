@@ -214,6 +214,11 @@
   "schema_style": "json",
   "sha256": "2a52661f583dec0a1646246c831fc0227e55baae52d397371cf5464e9f0aa502"
  },
+ "trap_frame": {
+  "output_schema": "TrapFrame",
+  "schema_style": "json",
+  "sha256": "d04b64efd8e57297f3ba7c4ae64474a7f5a1d2fdd2afcf4bd7c3bd5b73769245"
+ },
  "verify_overlap": {
   "output_schema": "VerifyOverlapOutput",
   "schema_style": "json",

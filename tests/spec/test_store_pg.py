@@ -226,3 +226,42 @@ async def _approve_catching(
             assert await cur.fetchone() == (1,)
             return e
     return None
+
+
+async def test_store_keeps_the_framed_material_with_the_draft() -> None:
+    """#318 D1: 틀 적용 재료와 틀은 공통 과제 행의 framed 칸에 — 빌더 저장소도 같은 칸을 읽는다. 틀이 없으면 NULL."""
+    from task_spec.schemas import FeatureSeed, FramedMaterial, TrapFrame
+    from task_spec.starter.store import PgBuildStore
+    from tests.interview.test_task import feature_seed_output
+
+    u = _Urls().test_database_url
+    if u is None:
+        pytest.skip("TEST_DATABASE_URL 없음")
+    store = await CommonTaskStore.open(u.get_secret_value())
+    key = CommonKey(f"test-{uuid.uuid4().hex[:8]}", "onto-test", "interview:int-test")
+    framed = FramedMaterial(
+        seed=FeatureSeed.model_validate_json(feature_seed_output()),
+        frame=TrapFrame.model_validate(
+            {
+                "kind": "design",
+                "hidden_requirement": "가상 숨은 요구",
+                "forbidden_storage": [{"entity": "Session", "why": "가상 이유"}],
+                "reason": "pool_acquire_timeout",
+            }
+        ),
+    )
+    try:
+        r = await store.save_draft(key, _task(), [], framed=framed)
+        plain = await store.save_draft(key, _task(), [])
+        assert await store.framed(r.id) == framed and await store.framed(plain.id) is None
+        builds = await PgBuildStore.open(u.get_secret_value(), ddl=False)
+        try:
+            assert await builds.framed(r.id) == framed and await builds.framed(plain.id) is None
+        finally:
+            await builds.close()
+    finally:
+        async with store._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM public.common_task WHERE posting_id = %s", (key.posting_id,)
+            )
+        await store.close()

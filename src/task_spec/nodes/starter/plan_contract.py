@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 
 from pydantic import BaseModel
@@ -21,6 +21,7 @@ from task_spec.nodes.starter.generate import reason_line
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     FeatureSeed,
+    ForbiddenStorage,
     HiddenPlan,
     MaterialGuide,
     MaterialInterface,
@@ -432,12 +433,24 @@ def settings_text(m: TemplateManifest) -> str:
     )
 
 
+def storage_text(forbidden: Sequence[ForbiddenStorage]) -> str:
+    """함정 틀이 금지한 저장 방식 (#318 검사 4) — 공개 계약에 엔티티로 두지 않는다. 생성 뒤 검사(contract._forbidden_storage)가 같은 목록을
+    엔티티 단위로 본다 (낱말 목록 forbidden_text 와 따로 — 업무 요구에 나온 말은 낱말 목록에서 빠지고, 식별자 낱말 대조는 공개 칸까지 건다)."""
+    if not forbidden:
+        return ""
+    return (
+        "\n- 공개 계약에 엔티티(테이블)로 두지 않는 것 — 흔한 구현의 저장 방식이라 숨은 요구를 드러낸다 (두면 다시 요청): "
+        + "; ".join(f"{s.entity} ({s.why})" for s in forbidden)
+    )
+
+
 def plan_input(
     task: TaskItem,
     template: Template,
     note: str | None = None,
     seed: FeatureSeed | None = None,
     interface: MaterialInterface | None = None,
+    forbidden_storage: Sequence[ForbiddenStorage] = (),
 ) -> PlanContractInputV3:
     m = template.manifest
     rx = m.naming
@@ -479,10 +492,12 @@ def plan_input(
         # 붙인다 — 판마다 둘 중 하나만 렌더된다 (for_prompt 가 판의 입력 모델로 거른다)
         + interface_text(interface)
         + contract_rules_text(template)  # 재료 안내의 공개 테스트 입력 범위 (#256) — 없으면 빈 글
-        + forbidden_text(seed, SpecView.from_task(task)),
+        + forbidden_text(seed, SpecView.from_task(task))
+        + storage_text(forbidden_storage),  # 함정 틀 금지 저장 방식 (#318) — 없으면 빈 글
         row_rules=row_rules_text(m, seed)
         + interface_text(interface)
-        + contract_rules_text(template),
+        + contract_rules_text(template)
+        + storage_text(forbidden_storage),
         interface_rules=interface_rules_text(m),
     )
 
@@ -628,8 +643,10 @@ async def plan_contract(
     reviewer_note: str | None = None,
     interface: MaterialInterface | None = None,
     guide: MaterialGuide | None = None,
+    forbidden_storage: Sequence[ForbiddenStorage] = (),
 ) -> PlanResult:
-    """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획. guide: 재료 숨은 안내 (사유·공개 테스트 입력 범위 — for_material)."""
+    """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획. guide: 재료 숨은 안내 (사유·공개 테스트 입력 범위 — for_material).
+    forbidden_storage: 함정 틀이 금지한 저장 방식 (#318 검사 4) — 입력에 미리 알리고, 생성 뒤 검사가 엔티티 단위로 본다."""
     res = PlanResult()
     spec = SpecView.from_task(task)
     known = {
@@ -648,7 +665,10 @@ async def plan_contract(
     for attempt in range(ATTEMPTS):
         prompt = assemble(
             prompt_t,
-            for_prompt(plan_input(task, template, note, seed, interface), prompt_t.input_model),
+            for_prompt(
+                plan_input(task, template, note, seed, interface, forbidden_storage),
+                prompt_t.input_model,
+            ),
             ontology_version=ontology_version,
         )
         try:
@@ -681,6 +701,7 @@ async def plan_contract(
             seed,
             first_answer=attempt == 0,
             interface=interface,
+            forbidden_storage=forbidden_storage,
         )
         # 코드가 계약 이름을 재료 것으로 바꿨는데 테스트 글이 LLM 의 옛 이름을 쓰면 재요청 (#256) — 맞추기 전 답(raw)에서 본다
         check.problems.extend(stale_name_problems(raw, interface))

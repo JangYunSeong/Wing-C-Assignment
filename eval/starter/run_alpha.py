@@ -16,6 +16,10 @@
   uv run python -m eval.starter.run_alpha --posting 'kakaobank_2026#005' \\
       --model openai:gpt-4.1 --openai-key-env OPENAI_PREMIUM_API_KEY --budget-usd 0.5
   # 명세는 그대로 두고 ② 계약부터 다시: --task-json data/eval/build/<이전 알파>/task.json
+  # 함정 틀 (#318 5단계): 재료 분석 → 틀(CURRENT) → 틀 적용 재료로 명세·계약·빌드. 가상 세션 유지 재료(허용 설계 셋)에서 JWT 설계를
+  # 사람이 '뺀다'고 한 것처럼 빼고 템플릿 v5 로 — 리포트 frame 칸에 틀·검사 1~4 결과
+  uv run python -m eval.starter.run_alpha --posting 'autoever_1_both#001' --virtual-incident session --trap-frame \\
+      --remove-design '[설계] 서명된 토큰(JWT)' --template-version 5 --budget-usd 0.6 --tag frame-1
 """
 
 from __future__ import annotations
@@ -29,9 +33,12 @@ from pathlib import Path
 from typing import Any
 
 from eval.spec.run_feature import ModelOverride, make_client, run_one, sample_md
+from eval.spec.run_feature_frame import SIGNED_WITH_MEMORY, frame_run, session_material
 from eval.starter.run_generate import PinnedVersions, _run_row, usage_by_prompt, write_rejected
 from eval.starter.run_plan_contract import JAVA
 from task_spec.config import Settings
+from task_spec.interview.frame_leaks import frame_leak_flags
+from task_spec.interview.trap_frame import design_questions, evidence_gaps, match_design
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.nodes.starter.generate import BuildInputs, plan_text
 from task_spec.nodes.starter.plan_contract import plan_contract
@@ -40,7 +47,7 @@ from task_spec.ontology.queries import posting_profile
 from task_spec.ontology.relatedness import load_relatedness
 from task_spec.ontology.repository import OntologyRepository
 from task_spec.prompting import PromptRegistry
-from task_spec.schemas import TaskItem
+from task_spec.schemas import PublicIncident, TaskItem, TrapFrame
 from task_spec.spec.build import build_common
 from task_spec.spec.incidents import (
     feature_incident,
@@ -48,6 +55,7 @@ from task_spec.spec.incidents import (
     load_incidents,
     load_interfaces,
     pin_feature_incident,
+    with_incident,
 )
 from task_spec.starter.hand_refs import load_references
 from task_spec.starter.interface import interface_ref
@@ -113,6 +121,23 @@ async def main() -> None:
         default=None,
         help="템플릿 판 고정 (CURRENT 는 그대로) — 예: --template-version 10",
     )
+    ap.add_argument(
+        "--virtual-incident",
+        choices=["session"],
+        default=None,
+        help="가상 재료 (평가 코드 안 — 공개 재료 목록 밖): session = 세션 유지 (#318, 허용 설계 셋)",
+    )
+    ap.add_argument(
+        "--trap-frame",
+        action="store_true",
+        help="함정 틀 (#318): 재료 분석 → 틀(CURRENT) → 틀 적용 재료로 명세·계약·빌드 (인터뷰 서비스·빌더와 같은 길)",
+    )
+    ap.add_argument(
+        "--remove-design",
+        action="append",
+        default=[],
+        help="⑧ 설계 질문에 '뺀다'라고 답한 설계 (재료 허용 설계의 앞부분) — --trap-frame 과 함께",
+    )
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
     pins = {k: int(v) for k, _, v in (x.partition("=") for x in a.pin)}
@@ -141,9 +166,63 @@ async def main() -> None:
     p = await posting_profile(repo, a.posting)
     if p is None or not (p.sub and p.industry_id):
         raise SystemExit(f"공고 프로필이 없음: {a.posting}")
+    # 직군 → 템플릿 (없는 직군은 Java 로 — 종이 단계 밖). 틀은 템플릿을 보고 만든다 — 명세보다 먼저 정한다
+    template = select_template(p.sub) or load_template(JAVA)
+    if (
+        a.template_version is not None
+    ):  # 템플릿 판 고정 (CURRENT 는 그대로) — 예: 코드 뼈대 v10 을 v9 와 비교
+        template = load_template(template.manifest.template_id, a.template_version)
+        report["template_pinned"] = template.manifest.ref
+    # 어느 판의 검사·수리 칸으로 돌렸는지 (같은 vN 에서 고칠 수 있는 칸 — #176)
+    report["template"] = {"ref": template.manifest.ref, "manifest_sha256": template.manifest_sha256}
+    llm = make_client(a.openai_key_env)
+    per_task = dict(x.split("=", 1) for x in a.model_for)
+    prompts = ModelOverride(
+        PinnedVersions(PromptRegistry(ROOT / "prompts"), pins), a.model, per_task=per_task
+    )  # type: ignore[arg-type]
     if a.incident:
         incidents = pin_feature_incident(incidents, p.sub, a.incident)
         report["incident_pinned"] = a.incident
+    base: PublicIncident | None = None
+    if a.virtual_incident == "session":
+        base = session_material(s.incidents_dir, extra_designs=[SIGNED_WITH_MEMORY])
+        if base.sub != p.sub:
+            raise SystemExit(f"가상 재료 직군({base.sub})과 공고 직군({p.sub})이 다름")
+        incidents = with_incident(incidents, base)
+        report["incident_virtual"] = base.incident_id
+    frame: TrapFrame | None = None
+    frame_cost = 0.0
+    if a.trap_frame:
+        base = base or feature_incident(incidents, p.sub, a.posting)
+        if base is None or base.feature is None:
+            raise SystemExit(f"기능형 재료가 없는 직군: {p.sub}")
+        run = await frame_run(llm, base, template, a.remove_design)
+        frame, frame_cost = run.frame, run.cost_usd
+        # 틀 적용 재료로 명세·계약·빌드 — 인터뷰 서비스의 _framed·빌더 Job.framed 와 같은 자리
+        incidents = with_incident(incidents, base.model_copy(update={"feature": run.framed}))
+        report["frame"] = {
+            "kind": frame.kind,
+            "reason": frame.reason,
+            "hidden_requirement": frame.hidden_requirement,
+            "forbidden_storage": [f"{x.entity} ({x.why})" for x in frame.forbidden_storage],
+            "forbidden_terms": frame.forbidden_terms,
+            "stateful_target_forbidden": frame.stateful_target_forbidden,
+            "public_rules": frame.public_rules,
+            "design_matrix": [f"{d.holds}: {d.design[:70]} — {d.why}" for d in frame.design_matrix],
+            "notes": run.notes,
+            # 검사 1·2 — 인터뷰라면 ⑧ 에서 물었을 것
+            "evidence_gaps": [
+                e.flag for e in evidence_gaps(frame.reason, template, base.feature, run.analysis)
+            ],
+            "design_questions": [q for q, _ in design_questions(frame, base.feature)],
+            "removed": [match_design(r, base.feature.accepted_designs) for r in a.remove_design],
+            "accepted_designs": run.framed.accepted_designs,
+            "cost_usd": round(frame_cost, 4),
+        }
+        print(
+            f"⓪ 틀 금지 {[x.entity for x in frame.forbidden_storage]} · 설계 질문 "
+            f"{len(report['frame']['design_questions'])} · 허용 설계 {len(run.framed.accepted_designs)} (${frame_cost:.4f})"
+        )
     ev = await query_evidence(
         repo,
         p.competency_ids,
@@ -169,11 +248,8 @@ async def main() -> None:
         save()
         raise SystemExit(report["stopped"])
 
-    llm = make_client(a.openai_key_env)
-    per_task = dict(x.split("=", 1) for x in a.model_for)
-    prompts = ModelOverride(
-        PinnedVersions(PromptRegistry(ROOT / "prompts"), pins), a.model, per_task=per_task
-    )  # type: ignore[arg-type]
+    if frame is not None and built.ctx is not None:
+        built.ctx.trap_frame = frame  # 명세 초안 입력 (v13~ — 지금 CURRENT v12 는 받지 않는다)
     task: TaskItem | None
     if reuse is not None:
         task = TaskItem.model_validate_json(reuse.read_text("utf-8"))
@@ -201,6 +277,9 @@ async def main() -> None:
     (out / "task.json").write_text(
         task.model_dump_json(indent=1), "utf-8"
     )  # ② 부터 다시 돌릴 때 쓴다
+    spent += frame_cost
+    if frame is not None and base is not None:  # 검사 3 공개 중립성 — 명세 1단계 글에 틀이 막은 것
+        report["frame"]["public_leaks"] = frame_leak_flags(task, frame, base.feature)
 
     # ② 명세 → 공개 계약 + 숨은 테스트 계획
     # 명세가 쓴 재료 그대로 (없으면 직군 템플릿이 시험할 수 있는 사례 — 공고 id 로 고정 배정)
@@ -209,15 +288,6 @@ async def main() -> None:
     )
     if inc is None or inc.feature is None:
         raise SystemExit(f"기능형 재료가 없는 직군: {p.sub}")
-    # 직군 → 템플릿 (없는 직군은 Java 로 — 종이 단계 밖)
-    template = select_template(p.sub) or load_template(JAVA)
-    if (
-        a.template_version is not None
-    ):  # 템플릿 판 고정 (CURRENT 는 그대로) — 예: 코드 뼈대 v10 을 v9 와 비교
-        template = load_template(template.manifest.template_id, a.template_version)
-        report["template_pinned"] = template.manifest.ref
-    # 어느 판의 검사·수리 칸으로 돌렸는지 (같은 vN 에서 고칠 수 있는 칸 — #176)
-    report["template"] = {"ref": template.manifest.ref, "manifest_sha256": template.manifest_sha256}
     interface = load_interfaces(s.incidents_dir).get(inc.incident_id)  # #256 재료 인터페이스
     # 같은 프롬프트 판이라도 재료 인터페이스 파일이 바뀌면 계약 입력이 달라진다 — 어느 판으로 돌렸는지 남긴다
     report["interface"] = (
@@ -238,6 +308,8 @@ async def main() -> None:
         seed=inc.feature,
         interface=interface,
         guide=guide,
+        # 함정 틀 검사 4 (#318) — 금지 저장 엔티티를 계약 입력에 알리고 생성 뒤 대조 (빌더 steps.contract 와 같게)
+        forbidden_storage=frame.forbidden_storage if frame is not None else (),
     )
     spent += _cost(res.provenance)
     report["contract"] = {
@@ -249,6 +321,9 @@ async def main() -> None:
         "spec_gaps": res.spec_gaps,
         "fail_reasons": res.fail_reasons,
         "adjustments": res.adjustments,
+        "forbidden_storage_asks": [
+            x for x in res.first_problems if "공개 계약에 두지 않는다" in x
+        ],  # 검사 4 가 재요청한 것
     }
     print(f"② 계약 ok={res.ok} ${_cost(res.provenance)} (누적 ${spent:.4f})")
     if res.contract is not None and res.hidden_plan is not None:

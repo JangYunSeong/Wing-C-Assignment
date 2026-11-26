@@ -199,6 +199,7 @@ def _check(contract: dict[str, Any] | None = None, plan: dict[str, Any] | None =
         kw.pop("spec", _spec()),
         kw.pop("manifest", _manifest()),
         kw.pop("seed", BACKEND_SEED),
+        forbidden_storage=kw.pop("forbidden_storage", ()),
     )
 
 

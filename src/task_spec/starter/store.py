@@ -44,6 +44,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from psycopg import errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -75,6 +76,7 @@ from task_spec.schemas.package import (
     VerifySummary,
     flag_id,
 )
+from task_spec.schemas.trap_frame import FramedMaterial
 from task_spec.spec.store import DDL as COMMON_TASK_DDL
 
 # set_status 로 바꿀 수 있는 다음 상태. 수리(→ generating)는 reopen(), approved 는 approve(), published 는 finish_delivery().
@@ -535,6 +537,10 @@ class BuildRepo(Protocol):
         """공통 과제 명세 (진행자 보기용 — 숨은 칸이 함께 있으니 그대로 내보내지 않는다)."""
         ...
 
+    async def framed(self, common_id: str) -> FramedMaterial | None:
+        """그 공통 과제의 틀 적용 재료와 틀 (#318 D1 — common_task.framed). 없으면 None — 빌드 계약 단계는 원 재료를 쓴다."""
+        ...
+
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord: ...
 
     async def reopen(self, build_id: str) -> list[BuildArtifact]: ...
@@ -670,6 +676,7 @@ class InMemoryBuildStore:
     def __init__(self) -> None:
         self.labels: dict[str, TaskLabel] = {}  # 공통 과제 행 대신 (테스트가 채움)
         self.tasks: dict[str, TaskItem] = {}  # 공통 과제 명세 (테스트가 채움)
+        self.framed_materials: dict[str, FramedMaterial] = {}  # 함정 틀 (테스트가 채움, #318)
         self.commons: dict[str, CommonRef] = {}  # 공통 과제 상태·유형 (테스트가 채움)
         self._builds: dict[str, BuildRecord] = {}
         self._files: dict[tuple[str, str, str, str], StarterFile] = {}
@@ -733,6 +740,9 @@ class InMemoryBuildStore:
 
     async def task(self, common_id: str) -> TaskItem | None:
         return self.tasks.get(common_id)
+
+    async def framed(self, common_id: str) -> FramedMaterial | None:
+        return self.framed_materials.get(common_id)
 
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord:
         build = _require(self._builds.get(build_id), build_id)
@@ -1315,6 +1325,20 @@ class PgBuildStore:
             await cur.execute("SELECT task FROM public.common_task WHERE id = %s", (common_id,))
             row = await cur.fetchone()
         return None if row is None else TaskItem.model_validate(row["task"])
+
+    async def framed(self, common_id: str) -> FramedMaterial | None:
+        """칸이 아직 없으면(task-api 가 DDL 을 돌리기 전 builder 만 먼저 올린 배포) None — 원 재료로 빌드한다."""
+        try:
+            async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT framed FROM public.common_task WHERE id = %s", (common_id,)
+                )
+                row = await cur.fetchone()
+        except errors.UndefinedColumn:
+            return None
+        if row is None or row["framed"] is None:
+            return None
+        return FramedMaterial.model_validate(row["framed"])
 
     async def set_status(self, build_id: str, status: BuildStatus) -> BuildRecord:
         async with (

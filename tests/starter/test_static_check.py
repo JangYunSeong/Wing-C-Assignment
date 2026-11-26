@@ -1150,3 +1150,23 @@ def test_rendered_readme_artifact_list_line_is_allowed_like_the_spec_check() -> 
     assert _has(
         readme_flags(readme, spec=replace(spec, artifact_titles=()), seed=seed), "숨은 요구", "왕복"
     )
+
+
+def test_the_code_written_public_helper_is_not_leak_checked() -> None:
+    """코드가 쓰는 공개 도우미(PublicCase)는 낱말 대조에서 뺀다 — 고정 주석을 생성기가 고칠 수 없다. 생성기가 쓴 공개 테스트는 그대로 본다.
+    2026-11-26 #318 알파 3회: 로그인 세션 도우미 주석 '동시 요청(peak)' 이 재료 운영 조건 낱말 '동시 요청'에 걸려 gen_public 이 모두 실패."""
+    assert JAVA.manifest.public_helper is not None
+    helper = _f(
+        JAVA.manifest.public_helper.path,
+        "abstract class PublicCase {\n    /** 동시 요청(peak) 안에서 부르지 않는다 */\n}\n",
+    )
+    written = _f(
+        "src/test/java/com/example/service/publictests/Pt1Test.java",
+        "class Pt1Test extends PublicCase {\n    // 동시 요청 백 건\n}\n",
+    )
+    assert "동시 요청" in BACKEND_SEED.trigger_terms  # 재료의 운영 조건 낱말
+    only_helper = [p.message for p in _run(_overlays(public_test=[helper])).problems]
+    assert not [m for m in only_helper if "드러내는 말" in m]
+    both = [p.message for p in _run(_overlays(public_test=[helper, written])).problems]
+    leaks = [m for m in both if "드러내는 말" in m]
+    assert len(leaks) == 1 and "Pt1Test.java" in leaks[0] and "동시 요청" in leaks[0]

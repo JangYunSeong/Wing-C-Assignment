@@ -74,17 +74,19 @@ from task_spec.interview.incident import (
     prepare_incident,
     validate_incident,
 )
-from task_spec.interview.material_analysis import FAILED as MATERIAL_FAILED
-from task_spec.interview.material_analysis import TASK as MATERIAL_TASK
 from task_spec.interview.material_analysis import (
+    DESIGN_CHOICES,
     analysis_flags,
     analyze_material,
+    design_choice,
     material_block,
     reinforce_block,
     reinforce_lines,
     reinforce_questions,
     reinforced_flag,
 )
+from task_spec.interview.material_analysis import FAILED as MATERIAL_FAILED
+from task_spec.interview.material_analysis import TASK as MATERIAL_TASK
 from task_spec.interview.store import CLOSED_STAGES, InterviewRepo, InterviewRow, InterviewSummary
 from task_spec.interview.stream import QuestionStream
 from task_spec.interview.task import (
@@ -121,6 +123,18 @@ from task_spec.interview.text import (
     parse_project,
     posting_team_context,
 )
+from task_spec.interview.trap_frame import FAILED as TRAP_FAILED
+from task_spec.interview.trap_frame import TASK as TRAP_TASK
+from task_spec.interview.trap_frame import (
+    apply_frame,
+    design_questions,
+    evidence_gaps,
+    frame_block,
+    frame_flags,
+    frame_problems,
+    frame_texts,
+    make_frame,
+)
 from task_spec.llm import LLMClient, SchemaViolation, TransientLLMError
 from task_spec.llm.backend import TextCallback
 from task_spec.llm.client import EmptyResponse
@@ -135,11 +149,15 @@ from task_spec.postings.company import company_id as company_key
 from task_spec.prompting import PromptRegistry, assemble
 from task_spec.schemas import (
     CompetencyEvidence,
+    FeatureSeed,
+    FramedMaterial,
     GenerateStep,
+    MaterialAnalysis,
     PostingProfile,
     Provenance,
     PublicIncident,
     TaskItem,
+    TrapFrame,
 )
 from task_spec.schemas.interview_answer import (
     AnswerValidationRecord,
@@ -227,11 +245,23 @@ class _GenerationInputs:
 
 
 class _MaterialCheck(NamedTuple):
-    """재료 입구 분석 결과 — 검토 표시 · provenance · 빠진 정보(가명화 검사를 거친 글, 보강 질문 재료)."""
+    """재료 입구 분석 결과 — 검토 표시 · provenance · 빠진 정보(가명화 검사를 거친 글, 보강 질문 재료) · 분석(틀 입력, 실패·건너뜀이면 None)."""
 
     flags: list[str]
     provenance: list[Provenance]
     gaps: list[str]
+    analysis: MaterialAnalysis | None = None
+
+
+class _FrameResult(NamedTuple):
+    """함정 틀 결과 (#318) — 틀·틀 적용 재료(건너뜀·실패·쓸 수 없으면 None) · 검토 표시 · provenance ·
+    보강 질문 후보 빈칸(재현 근거 검사 1 → 틀의 빈칸 순, 가명화 검사를 거친 글)."""
+
+    frame: TrapFrame | None
+    framed: FeatureSeed | None
+    flags: list[str]
+    provenance: list[Provenance]
+    gaps: tuple[str, ...] = ()
 
 
 def _with_trap(incident: PublicIncident, trap: TrapAnswers) -> PublicIncident:
@@ -1355,6 +1385,17 @@ class InterviewService:
             reinforce=tuple(state.reinforce_answers) if interview else (),
         )
 
+    @classmethod
+    def _framed(cls, g: InterviewGeneration) -> PublicIncident:
+        """명세 초안에 쓸 재료 — 틀 적용 재료가 있으면 원 재료의 기능형 칸만 바꾼 사본 (#318). 등록·표시용 재료(spec.coding_incident)는
+        원 재료 그대로다 — 공용 회사 사례 재료는 공고 하나의 틀로 바꾸지 않는다 (D1)."""
+        coding = cls._seeded(g)
+        return (
+            coding
+            if g.framed_seed is None
+            else coding.model_copy(update={"feature": g.framed_seed})
+        )
+
     @staticmethod
     def _seeded(g: InterviewGeneration) -> PublicIncident:
         if g.coding_incident is None:  # 그래프가 seed 를 저장한 뒤에만 다음 단계로 간다
@@ -1390,16 +1431,7 @@ class InterviewService:
             block = material_block(coding, shared=shared)
             if inp.reinforce and not shared:
                 block["reinforcement"] = reinforce_lines(inp.reinforce)
-            tokens: frozenset[str] = frozenset()
-            if shared:
-                # 등록 때와 같은 규칙·탐지기 — 탐지기가 블로킹이라 스레드에서 (_approval_check 와 같이)
-                if await asyncio.to_thread(blocked_findings, coding, self.detect):
-                    raise InterviewTextRejected(
-                        "공유 재료의 LLM 입력 칸에 연락처·링크 형식이 있습니다"
-                    )
-                material, tokens = self.pseudo.shared_json(block, inp.mapping)
-            else:
-                material = self.pseudo.stored_json(block, inp.mapping)
+            material, tokens = await self._guarded_material(coding, block, inp, shared=shared)
             analysis, provenance = await self._llm(
                 analyze_material(
                     material,
@@ -1423,7 +1455,78 @@ class InterviewService:
             len(flags),
             len(gaps),
         )
-        return _MaterialCheck(flags, [provenance], gaps)
+        return _MaterialCheck(flags, [provenance], gaps, analysis)
+
+    async def _guarded_material(
+        self, coding: PublicIncident, block: dict[str, Any], inp: _GenerationInputs, *, shared: bool
+    ) -> tuple[PseudonymizedText, frozenset[str]]:
+        """재료 블록 → LLM 입력 (가명화 검사를 거친 글)과 출력 검사에 더 허용할 토큰. 재료 분석과 함정 틀이 같이 쓴다.
+        shared=True(공유 회사 사례): 등록 때와 같은 규칙·탐지기로 다시 보고(탐지기가 블로킹이라 스레드에서) shared_json (#316)."""
+        if not shared:
+            return self.pseudo.stored_json(block, inp.mapping), frozenset()
+        if await asyncio.to_thread(blocked_findings, coding, self.detect):
+            raise InterviewTextRejected("공유 재료의 LLM 입력 칸에 연락처·링크 형식이 있습니다")
+        return self.pseudo.shared_json(block, inp.mapping)
+
+    async def _trap_frame(
+        self,
+        coding: PublicIncident,
+        inp: _GenerationInputs,
+        analysis: MaterialAnalysis | None,
+        *,
+        shared: bool = False,
+    ) -> _FrameResult:
+        """함정 틀 (#318, docs/design/trap-frame.md) — 재료 분석 다음에 이 공고의 틀을 정하고 틀 적용 재료를 만든다.
+        프롬프트 CURRENT 가 없으면(평가 전) 건너뛴다 — 원 재료 그대로. 틀이 실패하거나 템플릿과 맞지 않아도 과제는 원 재료로 만들고
+        표시만 남긴다 (막지 않음). 입력은 재료 분석과 같은 가명화 길(_guarded_material), 틀의 글은 저장·다음 LLM 입력 전에 derived."""
+        if not inp.prompts.has_current(TRAP_TASK) or coding.feature is None:
+            return _FrameResult(None, None, [], [])
+        try:
+            block = frame_block(coding, analysis, inp.reinforce, shared=shared)
+            material, tokens = await self._guarded_material(coding, block, inp, shared=shared)
+            frame, provenance = await self._llm(
+                make_frame(
+                    material,
+                    inp.template,
+                    llm=inp.llm,
+                    prompts=inp.prompts,
+                    ontology_version=inp.profile.ontology_version,
+                )
+            )
+            for text in frame_texts(frame):
+                self.pseudo.derived(text, inp.mapping, tokens)
+            problems = frame_problems(frame, inp.template)
+            if problems:
+                logger.warning("interview_trap_frame_unusable problems=%d", len(problems))
+                return _FrameResult(None, None, problems, [provenance])
+            # 검사 2 (#318 §5.2) — ⑧ 설계 질문에 담당자가 '뺀다'고 한 설계를 뺀다 (재료 원문, 다시 만든 재료는 앞부분으로 맞춘다)
+            designs = [a for a in inp.reinforce if a.kind == "design"]
+            removed = [a.design for a in designs if a.choice == "remove" and a.design]
+            framed, notes = apply_frame(coding.feature, frame, removed)
+            if unread := sum(1 for a in designs if a.choice is None and a.answer):
+                notes.append(
+                    f"설계 질문 답 {unread}개를 '{'/'.join(DESIGN_CHOICES)}' 로 읽지 못해 설계를 남김 — 사람 확인"
+                )
+            # 검사 1 (#318 §5.1) — 틀 사유의 성립 조건에 쓰는 운영 값의 근거 (등록 재료 기준 — 틀 적용 재료는 조절값을 비울 수 있다)
+            evidence = evidence_gaps(frame.reason, inp.template, coding.feature, analysis)
+            flags = [
+                self.pseudo.derived(f, inp.mapping, tokens)
+                for f in [*frame_flags(frame, notes), *(e.flag for e in evidence)]
+            ]
+            gaps = tuple(
+                self.pseudo.derived(gap, inp.mapping, tokens)
+                for gap in [*(e.question for e in evidence), *frame.gaps]
+            )
+        except (*_LLM_ERRORS, InterviewError) as exc:
+            logger.warning("interview_trap_frame_failed type=%s", type(exc).__name__)
+            return _FrameResult(None, None, [TRAP_FAILED], [])
+        logger.info(
+            "interview_trap_frame kind=%s storage=%d designs_flagged=%d",
+            frame.kind,
+            len(frame.forbidden_storage),
+            sum(1 for d in frame.design_matrix if d.holds != "yes"),
+        )
+        return _FrameResult(frame, framed, flags, [provenance], gaps)
 
     async def _run_step(
         self, interview_id: str, step: GenerateStep, inp: _GenerationInputs, g: InterviewGeneration
@@ -1447,11 +1550,15 @@ class InterviewService:
                 )
                 self._registrable(coding)
                 checked = await self._material_check(coding, inp)
+                framed = await self._trap_frame(coding, inp, checked.analysis)
                 return {
                     "coding_incident": coding,
-                    "seed_provenance": [*seed_provenance, *checked.provenance],
-                    "seed_flags": checked.flags,
-                    "seed_gaps": checked.gaps,
+                    "seed_provenance": [*seed_provenance, *checked.provenance, *framed.provenance],
+                    "seed_flags": [*checked.flags, *framed.flags],
+                    # 보강 질문 후보 빈칸 — 재현 근거(검사 1) → 틀 → 재료 분석 순 (설계 질문은 마무리 때 틀에서 만든다)
+                    "seed_gaps": list(dict.fromkeys([*framed.gaps, *checked.gaps])),
+                    "trap_frame": framed.frame,
+                    "framed_seed": framed.framed,
                 }
             coding = ready_coding_incident(inp.incident, inp.template)
             if not is_company_incident(coding.incident_id):
@@ -1460,18 +1567,28 @@ class InterviewService:
             # 회사 사례도 재료 입구 분석 — 재료는 고치지 않고 표시만 (물을 담당자가 없다). 2026-11-25 #308 4차: 이 분기는 분석을
             # 부르지 않아 #311 전에 등록한 회사 재료를 다시 쓰면 재현 의문이 보이지 않았다. 재현 여부는 템플릿 판에 따라 달라 쓸 때마다 본다
             checked = await self._material_check(coding, inp, shared=True)
+            # 함정 틀도 공고마다 — 공용 재료는 바꾸지 않고 틀 적용 재료는 이 공고의 공통 과제 행에 둔다 (#318 D1)
+            framed = await self._trap_frame(coding, inp, checked.analysis, shared=True)
             return {
                 "coding_incident": coding,
-                "seed_provenance": checked.provenance,
-                "seed_flags": checked.flags,  # 물을 담당자가 없어 빠진 정보는 표시로만 (보강 질문 없음)
+                "seed_provenance": [*checked.provenance, *framed.provenance],
+                "seed_flags": [
+                    *checked.flags,
+                    *framed.flags,
+                ],  # 물을 담당자가 없어 빠진 정보는 표시로만 (보강 질문 없음)
+                "trap_frame": framed.frame,
+                "framed_seed": framed.framed,
             }
         req = TaskRequest(
             profile=inp.chosen,
             matches=inp.matches,
-            coding_incident=self._seeded(g),
+            coding_incident=self._framed(
+                g
+            ),  # 틀 적용 재료가 있으면 그것으로 (#318) — 명세가 재료에서 숨은 요구·허용 설계를 복사한다
             template=inp.template,
             task_id=f"{interview_id}-common-{g.revision}",
             reviewer_note=inp.reviewer_note,
+            frame=g.trap_frame,  # 공개 쪽을 명세 초안에 (#318 — draft_feature_task v13)
         )
         if step == "feature":
             made = await self._llm(inp.tasks.feature(req))
@@ -1538,7 +1655,20 @@ class InterviewService:
             # 보강 질문 (#308 검사 5) — 인터뷰 사례에 빠진 정보가 있으면 ⑧ 에서 한 번 묻는다. 답한 적이 있으면 다시 묻지 않고
             # 답을 넣어 만들었다는 표시만 (빠진 정보는 분석 표시로 그대로 보인다)
             asked = list(state.reinforce_answers) if inp.interview else []
-            questions = reinforce_questions(g.seed_gaps) if inp.interview and not asked else []
+            questions = (
+                reinforce_questions(
+                    g.seed_gaps,
+                    # 검사 2 (#318 §5.2) — 업무 요구를 못 지킬 수 있는 허용 설계를 뺄지 (설계 질문 먼저)
+                    [  # 질문 글·재료 설계 원문 모두 저장 전에 다시 검사 (설계 원문은 API 응답·다음 만들기 입력으로도 간다)
+                        (self.pseudo.derived(q, inp.mapping), self.pseudo.derived(d, inp.mapping))
+                        for q, d in design_questions(g.trap_frame, coding_incident.feature)
+                    ]
+                    if g.trap_frame is not None and coding_incident.feature is not None
+                    else (),
+                )
+                if inp.interview and not asked
+                else []
+            )
             seed_flags = [*g.seed_flags, *([reinforced_flag(asked)] if asked else [])]
             provenance = [*g.seed_provenance, *made.provenance]
             saved = await inp.common_store.save_draft(
@@ -1547,6 +1677,10 @@ class InterviewService:
                 ),
                 task,
                 provenance,
+                # 함정 틀 (#318 D1) — 틀 적용 재료와 틀을 이 공고의 공통 과제 행에. 빌드 계약 단계가 원 재료 대신 쓴다
+                framed=FramedMaterial(seed=g.framed_seed, frame=g.trap_frame)
+                if g.framed_seed is not None and g.trap_frame is not None
+                else None,
             )
             task = saved.task
             state.spec = InterviewSpec(
@@ -1575,9 +1709,13 @@ class InterviewService:
                 evaluation_criteria=evaluation_criteria(task),
                 generation_provenance=provenance,
                 review_flags=with_content_flags(
-                    [*made.flags, *task.review_flags, *reuse, *seed_flags], task, coding_incident
+                    [*made.flags, *task.review_flags, *reuse, *seed_flags],
+                    task,
+                    coding_incident,
+                    frame=g.trap_frame,
                 ),
                 reinforce_questions=questions,
+                trap_frame=g.trap_frame,
             )
             state.stage = "task_review"
             state.review_note = None
@@ -1630,7 +1768,15 @@ class InterviewService:
                 if text is not None and len(text) > ANSWER_MAX:
                     raise InterviewInvalid(f"답은 {ANSWER_MAX}자 이내로 적어 주세요")
                 done.append(
-                    ReinforceAnswer(question_id=q.question_id, question=q.question, answer=text)
+                    ReinforceAnswer(
+                        question_id=q.question_id,
+                        question=q.question,
+                        answer=text,
+                        kind=q.kind,
+                        design=q.design,
+                        # 설계 질문은 '뺀다/남긴다' 로 시작하는 답만 읽는다 (#318 검사 2) — 고정 답이라 가명화 전 글에서 읽는다
+                        choice=design_choice(raw) if q.kind == "design" else None,
+                    )
                 )
             state.reinforce_answers = done
             state.spec = None
@@ -1675,7 +1821,11 @@ class InterviewService:
                     "targeted_questions": targeted,
                     # 답은 지원자가 정확히 물으면 그대로 준다 — 기준 답안을 옮겨 적었는지·토큰이 남았는지 다시 본다
                     "review_flags": with_content_flags(
-                        spec.review_flags, spec.common_task, spec.coding_incident, targeted
+                        spec.review_flags,
+                        spec.common_task,
+                        spec.coding_incident,
+                        targeted,
+                        frame=spec.trap_frame,
                     ),
                 }
             )
@@ -1822,7 +1972,11 @@ class InterviewService:
                     "hidden_requirements": hidden_requirements(new_task, targeted_q),
                     "evaluation_criteria": evaluation_criteria(new_task),
                     "review_flags": with_content_flags(
-                        [*kept, *new_flags], new_task, spec.coding_incident, targeted_q
+                        [*kept, *new_flags],
+                        new_task,
+                        spec.coding_incident,
+                        targeted_q,
+                        frame=spec.trap_frame,
                     ),
                 }
             )
@@ -1863,6 +2017,7 @@ class InterviewService:
                         spec.common_task,
                         spec.coding_incident,
                         edited_targeted.root,
+                        frame=spec.trap_frame,
                     ),
                 }
             )

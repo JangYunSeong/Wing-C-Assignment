@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 from task_spec.interview.task import template_json
 from task_spec.llm import LLMClient
@@ -35,9 +35,14 @@ FAILED = FLAG + "자동 분석 실패 — 빌드에서 재현 여부 확인"
 # 재현 가능 판정이어도 빠진 정보가 있으면 내는 표시 머리 — 판정 표시와 갈라 센다 (평가 eval/interview/run_material_analysis.py)
 GAPS = FLAG + "재현 가능 판정 · 빠진 정보 확인 필요"
 _VERDICT = {"no": "빌드 하네스로 재현 불가 가능성 있음", "unsure": "재현 여부 판단 불가"}
-# 보강 질문 (#308 검사 5) — 인터뷰 사례의 빠진 정보를 ⑧ 에서 한 번에 최대 둘 묻는다 (담당자 부담). 모르면 '모름'
-MAX_REINFORCE = 2
+# 보강 질문 (#308 검사 5) — 인터뷰 사례에 물을 것을 ⑧ 에서 한 번에 묻는다 (담당자 부담). 모르면 '모름'.
+# 2026-11-26 #318 3단계: 설계 질문(검사 2)이 더해져 둘 → 셋 [사용자 결정 D6] — 설계 질문 → 빈칸 순
+MAX_REINFORCE = 3
 UNKNOWN = "모름"
+DESIGN_CHOICES = (
+    "뺀다",
+    "남긴다",
+)  # 설계 질문(#318 검사 2)의 답 — 이 말로 시작하는 답만 코드가 읽는다
 REINFORCED = FLAG + "보강 답 반영 — 답 {answered}개 · 모름 {unknown}개"
 
 
@@ -122,13 +127,32 @@ def analysis_flags(a: MaterialAnalysis, template: Template, seed: FeatureSeed | 
 # ── 보강 질문 (#308 검사 5) ──────────────────────────────────────────
 
 
-def reinforce_questions(gaps: Sequence[str]) -> list[ReinforceQuestion]:
-    """재료 분석이 짚은 빠진 정보 → ⑧ 보강 질문. 첫 판은 gaps 글 그대로, 앞의 MAX_REINFORCE 개만.
-    gaps 는 LLM 이 쓴 글이라 부르는 쪽이 가명화 검사(derived)를 거친 것만 넘긴다."""
-    return [
-        ReinforceQuestion(question_id=f"r{i}", question=gap)
-        for i, gap in enumerate(gaps[:MAX_REINFORCE], 1)
+def reinforce_questions(
+    gaps: Sequence[str], designs: Sequence[tuple[str, str]] = ()
+) -> list[ReinforceQuestion]:
+    """⑧ 보강 질문 — 설계 질문(#318 검사 2: (질문 글, 재료 허용 설계 원문)) 먼저, 그다음 빠진 정보(gaps 글 그대로 — seed 단계가
+    재현 근거(검사 1) → 함정 틀 → 재료 분석 순으로 모은 것). 합쳐 앞의 MAX_REINFORCE 개만.
+    LLM 이 쓴 글이 섞이므로 부르는 쪽이 가명화 검사(derived)를 거친 것만 넘긴다."""
+    items: list[dict[str, object]] = [
+        {"question": q, "kind": "design", "design": d, "choices": list(DESIGN_CHOICES)}
+        for q, d in designs
     ]
+    items += [{"question": gap} for gap in gaps]
+    return [
+        ReinforceQuestion.model_validate({"question_id": f"r{i}", **item})
+        for i, item in enumerate(items[:MAX_REINFORCE], 1)
+    ]
+
+
+def design_choice(answer: str | None) -> Literal["remove", "keep"] | None:
+    """설계 질문의 답을 읽는다 — '뺀다'(뒤에 대신 인정할 설계를 적어도 됨)·'남긴다' 로 시작할 때만. 그 밖의 답은 None (남긴다)."""
+    text = (answer or "").strip()
+    remove, keep = DESIGN_CHOICES
+    if text.startswith(remove):
+        return "remove"
+    if text.startswith(keep):
+        return "keep"
+    return None
 
 
 def reinforce_lines(answers: Sequence[ReinforceAnswer]) -> list[dict[str, str]]:
@@ -138,9 +162,10 @@ def reinforce_lines(answers: Sequence[ReinforceAnswer]) -> list[dict[str, str]]:
 
 def reinforce_block(answers: Sequence[ReinforceAnswer]) -> str:
     """기능형 재료(interview_feature_seed) 입력에 붙이는 보강 문답 — 재료를 정리할 때 담당자가 채운 빠진 정보를 함께 본다."""
-    lines = ["재료 재현 분석이 짚은 빠진 정보에 담당자가 답한 것 (보강 질문):"]
+    lines = ["담당자가 답한 보강 질문 (빠진 정보·허용 설계 확인):"]
     for a in answers:
-        lines += [f"- 빠진 정보: {a.question}", f"  담당자 답: {a.answer or UNKNOWN}"]
+        label = "허용 설계 확인" if a.kind == "design" else "빠진 정보"
+        lines += [f"- {label}: {a.question}", f"  담당자 답: {a.answer or UNKNOWN}"]
     return "\n".join(lines)
 
 

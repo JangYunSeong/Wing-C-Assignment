@@ -42,6 +42,7 @@ from task_spec.schemas.build import (
 from task_spec.schemas.domain import HiddenFault, TaskItem
 from task_spec.schemas.incident import FeatureSeed, HarnessRule, MaterialInterface
 from task_spec.schemas.template import HarnessParam, TemplateManifest
+from task_spec.schemas.trap_frame import ForbiddenStorage
 from task_spec.spec.feature import ORDINAL_FAULT, find_terms
 from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_targets
 from task_spec.starter.feasibility import feasibility_problems
@@ -1780,6 +1781,29 @@ def _related_problems(contract: TaskContract, note: str) -> list[str]:
     ]
 
 
+def _forbidden_storage(contract: TaskContract, forbidden: Sequence[ForbiddenStorage]) -> list[str]:
+    """함정 틀 검사 4 (#318) — 계약 엔티티가 틀이 금지한 저장 방식이면 재요청 (빌드 안전망 — 다른 틀 검사는 표시만).
+    새 엔티티만 보면 b3 의 Session(existing=true)을 놓쳐 새·기존 모두 본다. 낱말 대조(_leaks)로는 못 한다 — 식별자를 낱말로 풀어
+    sessionId 같은 공개 칸까지 걸리고, 업무 요구에 나온 말('세션')은 숨은 낱말에서 빠진다. 그래서 엔티티 이름 단위로 (단·복수 같게)."""
+
+    def key(name: str) -> str:
+        return re.sub(r"[^0-9a-z가-힣]", "", name.lower())
+
+    out: list[str] = []
+    for s in forbidden:
+        want = key(s.entity)
+        if not want:
+            continue
+        for m in contract.entities:
+            got = key(m.name)
+            if got in (want, f"{want}s") or f"{got}s" == want:
+                out.append(
+                    f"엔티티 {m.name}({m.entity_id}) 는 공개 계약에 두지 않는다 — {s.why} (함정 틀: 흔한 구현의 저장 방식). "
+                    "entities·seed·공개 테스트에서 빼고, 그 상태를 어떻게 둘지는 구현 몫으로 남긴다"
+                )
+    return out
+
+
 def _needs(
     contract: TaskContract, plan: HiddenPlan, seed: FeatureSeed | None, row_seeds: bool = True
 ) -> list[str]:
@@ -2531,6 +2555,7 @@ def check_contract(
     seed: FeatureSeed | None = None,
     first_answer: bool = True,
     interface: MaterialInterface | None = None,
+    forbidden_storage: Sequence[ForbiddenStorage] = (),
 ) -> ContractCheck:
     """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유.
     first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다).
@@ -2543,6 +2568,7 @@ def check_contract(
     problems += _api_refs(contract, plan, spec)
     problems += _added_marked_existing(contract, spec)
     problems += _leaks(without_fixed(contract, interface), spec, seed)
+    problems += _forbidden_storage(contract, forbidden_storage)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)
     problems += _ui_load_and_background(contract)

@@ -38,6 +38,7 @@ from task_spec.schemas import (
     TargetCompetency,
     TaskItem,
     TechEnv,
+    TrapFrame,
 )
 from task_spec.schemas.domain import ARTIFACT_TRIMMED, Anchor, BehavioralAnchors
 from task_spec.schemas.incident import FeatureSeed, PublicIncident
@@ -92,6 +93,9 @@ class DraftContext:
     with_known_answers: bool = False
     # 재료가 정한 명령·입출력 파일·엔티티 (#256, 데이터 재료) — 기능형 명세가 같은 형식·칸 이름을 쓰게 (spec/interface_terms.py)
     interface: MaterialInterface | None = None
+    # 이 공고의 함정 틀 (#318) — 인터뷰·회사 사례 과제만. draft_feature_task v13 이 공개 쪽(공개할 것·엔티티로 두지 않을 것)을 받는다.
+    # 숨은 쪽은 incident.feature 가 이미 틀 적용 재료다 (interview/service._framed)
+    trap_frame: TrapFrame | None = None
 
     @property
     def criterion_ids(self) -> set[str]:

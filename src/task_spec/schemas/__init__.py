@@ -120,6 +120,7 @@ from task_spec.schemas.draft import (
     DraftAnalysisOutputV2,
     DraftFeatureInput,
     DraftFeatureInputV2,
+    DraftFeatureInputV3,
     DraftFeatureOutput,
     DraftFeatureOutputLinked,
     DraftFeatureOutputV2,
@@ -257,6 +258,13 @@ from task_spec.schemas.template import (
     NamingRules,
     TemplateManifest,
 )
+from task_spec.schemas.trap_frame import (
+    DesignCheck,
+    ForbiddenStorage,
+    FramedMaterial,
+    TrapFrame,
+    TrapFrameInput,
+)
 from task_spec.schemas.verify import VerifyTaskInput, VerifyTaskOutput
 from task_spec.schemas.verify_overlap import (
     OverlapCheck,
@@ -360,6 +368,7 @@ __all__ = [
     "ClarificationDraft",
     "DraftFeatureOutputV3",
     "DraftFeatureInputV2",
+    "DraftFeatureInputV3",
     "DraftFeatureOutputV2",
     "FeatureSeed",
     "HarnessRule",
@@ -431,6 +440,11 @@ __all__ = [
     "MaterialInterface",
     "AnalyzeMaterialInput",
     "MaterialAnalysis",
+    "DesignCheck",
+    "FramedMaterial",
+    "ForbiddenStorage",
+    "TrapFrame",
+    "TrapFrameInput",
     "ReferenceManifest",
     "PublicIncident",
     "KnownIncidentCase",
