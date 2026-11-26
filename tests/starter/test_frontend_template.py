@@ -119,7 +119,7 @@ def _run(hidden: str = HC1, starter_extra: str = "") -> list[str]:
 
 
 def test_template_is_selected_by_job_family() -> None:
-    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v14"  # type: ignore[union-attr]
+    assert select_template("sw.frontend").manifest.ref == "frontend/react-vite-ts@v15"  # type: ignore[union-attr]
     assert select_template("sw.backend").manifest.ref == "backend/java-spring-boot3-jpa@v6"  # type: ignore[union-attr]
     assert select_template("infra.dba") is None
     assert not is_java(FE.manifest) and is_java(select_template("sw.backend").manifest)  # type: ignore[union-attr]
@@ -441,6 +441,48 @@ def test_element_lookups_outside_test_ids_are_one_rule() -> None:
         assert not hits(fine), fine
     # 화면 계약이 없으면 보지 않는다
     assert element_guesses([_f("x.test.tsx", "screen.getByText('a');")], None, "숨은 테스트") == []
+
+
+def test_head_meta_is_read_with_the_harness_not_selectors() -> None:
+    """ct-9433f54e7d06-b1: 계약이 og:image·og:description meta 를 확인하는데 head 를 읽을 도구가 없어 공개·숨은 테스트가
+    querySelector 로 찾다 막혔다 — v15 하네스 도구(document.title·headMeta)는 짐작이 아니고, 선택자로 찾으면 그 도구를 알린다."""
+    from task_spec.starter.static_check import element_guesses
+
+    def hits(line: str) -> list[str]:
+        return element_guesses(
+            [_f("src/__public__/pt3.test.tsx", line)], _contract(), "공개 테스트"
+        )
+
+    [meta] = hits("document.querySelector('meta[property=\"og:image\"]')?.getAttribute('content');")
+    assert "headMeta(" in meta and "document.title" in meta
+    [other] = hits("form.querySelector(sel);")  # head 와 무관한 선택자에는 붙이지 않는다
+    assert "headMeta(" not in other
+    for fine in (
+        "await waitFor(() => expect(headMeta('og:description')).toBe('가상 소개'));",
+        "expect(document.title).toContain('가상');",
+    ):
+        assert not hits(fine), fine
+
+
+def test_harness_export_names_match_the_current_react_harness() -> None:
+    """빠진 import 를 코드가 채우는 하네스 이름 표(HARNESS_EXPORTS)가 지금 템플릿 grader.ts 의 값 내보내기와 같다 — 하네스에 도구를
+    더하고 표를 빠뜨리면 import 없이 쓴 케이스가 컴파일 재요청이 된다. 새 도구는 생성기가 받는 두 문서에도 있다."""
+    import re
+
+    from task_spec.starter.ts_helpers import HARNESS_EXPORTS
+
+    template = select_template("sw.frontend")
+    assert template is not None
+    grader = (template.hidden / "harness" / "grader.ts").read_text("utf-8")
+    names = {
+        n.strip()
+        for group in re.findall(r"export \{([^}]*)\} from", grader)
+        for n in group.split(",")
+        if n.strip() and not n.strip().startswith("type ")
+    }
+    assert names == set(HARNESS_EXPORTS)
+    for doc in ("HARNESS.md", "PUBLIC.md"):
+        assert "headMeta(" in (template.hidden / doc).read_text("utf-8"), doc
 
 
 def test_frontend_contract_needs_are_checked_without_row_seeds() -> None:

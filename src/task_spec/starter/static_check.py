@@ -1953,9 +1953,10 @@ def element_guesses(
             if kind == "Role" and only_role and only_role.group(1) in DOC_ROLE_QUERIES:
                 continue
             hits.append(f"By{kind}({args[:30]})")
-        hits += [
-            f".{m.group(1)}({m.group(2).strip()[:30]})" for m in _DOM_SELECT.finditer(f.content)
-        ]
+        selects = [m for m in _DOM_SELECT.finditer(f.content)]
+        hits += [f".{m.group(1)}({m.group(2).strip()[:30]})" for m in selects]
+        # 문서 머리(<head>)는 test id 로 찾을 수 없다 — 하네스 도구로 읽는다 (React v15, ct-9433f54e7d06-b1: og meta 를 선택자로 찾다 생성 실패)
+        head = any(re.search(r"\b(?:meta|title)\b", m.group(2)) for m in selects)
         if hits:
             out.append(
                 f"{label} {f.path} 가 계약 test id 밖으로 요소를 찾음 ({'; '.join(dict.fromkeys(hits))}"[
@@ -1963,6 +1964,11 @@ def element_guesses(
                 ]
                 + ") — 요소는 계약의 test id 로만 찾는다 (`await screen.findByTestId(TID.X)`·`byTestId(범위, TID.X)`, 목록 글은 "
                 "`textsByRole(역할, TID.X)`). 이름·글·레이블·선택자는 계약에 없어 짐작이 된다 — 계약에 그 요소가 없으면 화면 결과로 확인한다"
+                + (
+                    ". 문서 머리의 제목·meta 는 `document.title`·`headMeta('og:image')` 로 읽는다 (하네스 문서)"
+                    if head
+                    else ""
+                )
             )
     return out
 
