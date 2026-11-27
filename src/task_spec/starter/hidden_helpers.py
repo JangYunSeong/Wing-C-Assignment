@@ -24,6 +24,7 @@ from task_spec.schemas.build import (
     AppSetting,
     AuthRule,
     Endpoint,
+    Entity,
     GeneratedFile,
     HiddenPlan,
     RowUse,
@@ -31,7 +32,13 @@ from task_spec.schemas.build import (
     TaskContract,
 )
 from task_spec.schemas.template import TemplateManifest
-from task_spec.starter.auth_rule import Credential, credentials, issued_rule
+from task_spec.starter.auth_rule import (
+    Credential,
+    credentials,
+    issued_rule,
+    issued_stores,
+    login_fields,
+)
 from task_spec.starter.header_values import ISSUED, PER_REQUEST, HeaderValues, header_values
 from task_spec.starter.seed_rows import (
     allocate_rows,
@@ -721,6 +728,155 @@ def _query_lines() -> list[str]:
     ]
 
 
+COUNT_REASON = "db_per_request"  # 요청당 DB 사용 세기 사유 — 템플릿 Java v7 부터 (#339)
+
+
+# 세션 저장소로 보이는 엔티티 — 업무 표로 빼면 흔한 구현의 세션 조회가 세기에서 빠진다 (계약 구조로는 issued_stores)
+_SESSIONISH = re.compile(r"session|token|login|credential|세션|토큰|로그인|인증", re.IGNORECASE)
+
+
+def _name_word(x: Entity) -> re.Pattern[str]:
+    """엔티티 이름·id 를 글에서 찾는 식 — 경계는 ASCII 낱말 문자로만. 파이썬 \b 는 한글도 낱말 문자로 보아 'Product를' 의 Product 를
+    놓친다 (관계 글은 한국어 문장이 흔하다)."""
+    return re.compile(rf"(?<![A-Za-z0-9_])(?:{re.escape(x.name)}|{x.entity_id})(?![A-Za-z0-9_])")
+
+
+def _entity_refs(contract: TaskContract, eid: str) -> set[str]:
+    """계약이 밝힌 이 엔티티의 참조 (엔티티 id) — 외래 키의 대상, 관계 글에 나온 다른 엔티티, 다른 엔티티를 타입으로 쓰는 칸.
+    시작 코드가 JPA 연관으로 매핑하면(@ManyToOne 은 기본이 즉시 로딩) 업무 API 가 이 표들도 읽는다."""
+    m = next((x for x in contract.entities if x.entity_id == eid), None)
+    if m is None:
+        return set()
+    targets = [re.split(r"→|->", fk)[-1] for fk in m.foreign_keys]  # "orderId → Order"
+    texts = [*targets, *m.relations, *(f.type for f in m.fields)]
+    return {
+        x.entity_id
+        for x in contract.entities
+        if x.entity_id != eid and any(_name_word(x).search(t) for t in texts)
+    }
+
+
+def _reach(contract: TaskContract, eid: str) -> set[str]:
+    """이 엔티티에서 참조로 닿는 엔티티 전부 (자기 자신은 빼고)."""
+    seen: set[str] = set()
+    todo = [eid]
+    while todo:
+        for y in _entity_refs(contract, todo.pop()):
+            if y != eid and y not in seen:
+                seen.add(y)
+                todo.append(y)
+    return seen
+
+
+def count_targets(contract: TaskContract) -> list[tuple[Endpoint, str, list[str]]]:
+    """요청당 DB 사용 세기에 부를 수 있는 업무 API — (엔드포인트, 도우미 함수 이름, 세기에서 뺄 표의 엔티티 id).
+    참조가 적은 것부터. 로그인 행이 정해지기 전에도 고른다.
+
+    로그인 세션(권한 칸 issued)으로 부르는 GET 중 경로 변수·필수 쿼리 매개변수가 없고 2xx 가 엔티티(그 목록)를 그대로 돌려주는 것.
+    돌려주는 엔티티나 그 참조가 로그인 엔티티면 뺀다 — 업무 API 가 정상으로 읽는 로그인 표 조회와 '메모리 세션 + 요청마다 사용자 조회'
+    함정 변형의 조회를 표로 가를 수 없다. 세션 저장소(발급 값을 칸으로 가진 엔티티·그렇게 보이는 이름)도 뺀다 — 그 표를 빼면 흔한 구현의
+    세션 조회가 세기에서 빠진다. 응답 모양(v…)은 계약 밖 표(집계 원천)를 읽을 수 있어 고르지 않는다.
+    뺄 표 = 돌려주는 엔티티 + 그 참조 + 그 엔티티를 가리키는 엔티티(역방향 연관을 매핑해 직렬화하면 읽는다 — 로그인·세션 저장소는 빼지
+    않는다) (#339 — LLM 이 아니라 코드가 고른다)."""
+    rule = next(
+        (e.auth for e in contract.endpoints if e.auth is not None and e.auth.kind == "issued"),
+        None,
+    )
+    if rule is None:
+        return []
+    ents = {m.entity_id: m for m in contract.entities}
+    login = set(login_fields(contract)) | ({rule.entity} if rule.entity else set())
+    keep = login | set(issued_stores(contract))  # 세기에서 빼면 안 되는 표
+    keep |= {x for x, m in ents.items() if _SESSIONISH.search(m.name)}
+    found: list[tuple[int, int, Endpoint, str, list[str]]] = []
+    for i, (e, name) in enumerate(api_functions(contract)):
+        a = e.auth
+        if (
+            e.method != "GET"
+            or e.endpoint_id == rule.issued_by
+            or a is None
+            or a.kind != "issued"
+            or a.header != rule.header
+            or not e.headers  # 도우미 함수가 headers 를 받는 것만
+            or _path_expr(e.path)[1]
+            or any(q.required for q in e.query)
+        ):
+            continue
+        ok = next((r for r in e.responses if 200 <= r.status < 300 and r.returns), None)
+        m = re.fullmatch(r"(m\d{1,2})(\[\])?", ok.returns or "") if ok is not None else None
+        if m is None or m.group(1) not in ents:
+            continue
+        eid = m.group(1)
+        reach = _reach(contract, eid)
+        if {eid, *reach} & keep:
+            continue
+        back = {x for x in ents if x != eid and eid in _entity_refs(contract, x)} - keep - reach
+        found.append((len(reach), i, e, name, [eid, *sorted(reach), *sorted(back)]))
+    found.sort(key=lambda x: (x[0], x[1]))
+    return [(e, name, ids) for _, _, e, name, ids in found]
+
+
+def count_endpoint(
+    contract: TaskContract, tables: Mapping[str, str]
+) -> tuple[Endpoint, str, list[str]] | None:
+    """count_targets 의 첫 것 (뺄 표가 모두 계약 테이블인 것)."""
+    return next(
+        ((e, fn, ids) for e, fn, ids in count_targets(contract) if all(x in tables for x in ids)),
+        None,
+    )
+
+
+def count_helper(
+    contract: TaskContract, manifest: TemplateManifest
+) -> tuple[Endpoint, str, list[str]] | None:
+    """숨은 ContractCase 에 세기 도우미(sessionPathStatements)가 생기는가 — 템플릿 사유 · 세션 도우미(_header_lines·_session_lines 와
+    같은 조건: 발급 헤더 값·로그인 행·자격 증명·발급 API 함수) · 고를 API. 계약 검사(_count_target)와 도우미가 같은 판단을 본다 —
+    엇갈리면 케이스가 없는 함수를 불러 채점 코드가 컴파일되지 않는다."""
+    if COUNT_REASON not in manifest.reason_codes:
+        return None
+    rule = issued_rule(contract)
+    if rule is None or not rule.rows or not credentials(contract, rule):
+        return None
+    if not any(h.source == ISSUED for h in header_values(contract)):
+        return None
+    if not any(e.endpoint_id == rule.issued_by for e, _ in api_functions(contract)):
+        return None
+    return count_endpoint(contract, contract_tables(contract, manifest.naming.table))
+
+
+def _count_lines(contract: TaskContract, manifest: TemplateManifest, body: str) -> list[str]:
+    """sessionPathStatements(session, n) — 숨은 케이스는 이 함수 하나로 요청당 DB 사용을 잰다 (사유 db_per_request, 하네스 v7 의
+    GraderSupport.countStatements). 만들 수 없으면(count_helper) 만들지 않는다 — 계약 검사가 다시 요청한다.
+    부른 API 가 2xx 가 아니면 멈춘다 — 세션 확인을 지났는지 모르는 수(예: 빠진 헤더로 400)로 통과시키지 않는다."""
+    found = count_helper(contract, manifest)
+    if found is None or "sessionHeaders(String session)" not in body:
+        return []
+    e, fn, ids = found
+    names = {m.entity_id: m.name for m in contract.entities}
+    table = ", ".join(f"TABLE_{_const(names[x])}" for x in ids)
+    return [
+        "",
+        f"    // ── 요청당 DB 사용 세기 (사유 {COUNT_REASON}): 부를 API·뺄 표는 빌드 파이프라인이 계약에서 골랐다 — 케이스에서 고르지 않는다 ──",
+        f"    /** 세션 하나로 {e.method} {e.path}({e.endpoint_id}) 를 n번 차례로 부르고, 그동안 실행된 SQL 문 중 그 API 가 읽는 표({table} — 돌려주는 엔티티와 계약이 밝힌 연관)를",
+        "     *  건드리지 않은 문 수 — 요청마다 세션 확인에 DB 를 쓰면 n 이상이다. 세션은 newSession() 으로 미리 받는다 (로그인은 세지 않는다).",
+        "     *  응답이 2xx 가 아니면 IllegalStateException — 세기의 전제(세션으로 부른 업무 API 가 성공)가 서지 않았다. */",
+        "    protected long sessionPathStatements(String session, int n) throws Exception {",
+        "        Map<String, String> headers = sessionHeaders(session);",
+        "        List<String> sql = countStatements(() -> {",
+        "            for (int i = 0; i < n; i++) {",
+        f"                HttpResponse<String> response = {fn}(headers);",
+        "                if (response.statusCode() / 100 != 2) {",
+        f'                    throw new IllegalStateException("세기 전제 불성립 — {e.method} {e.path} 응답 " + response.statusCode()',
+        '                            + " (세션으로 부른 업무 API 가 성공해야 요청당 DB 사용을 잰다)");',
+        "                }",
+        "            }",
+        "            return null;",
+        "        });",
+        f"        return GraderJdbcHarness.statementsNotTouching(sql, {table});",
+        "    }",
+    ]
+
+
 def render_contract_case(
     contract: TaskContract,
     plan: HiddenPlan,
@@ -844,6 +1000,8 @@ def render_contract_case(
                 "        return jsonObject(response.body());",
                 "    }",
             ]
+    if audience == "hidden":
+        lines += _count_lines(contract, manifest, "\n".join(lines))
     burst = manifest.burst_rows if audience == "hidden" else []
     if burst:
         c_name, r_name = burst[0], (burst[1] if len(burst) > 1 else None)

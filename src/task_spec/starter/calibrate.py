@@ -30,6 +30,7 @@ from task_spec.schemas.build import HiddenPlan
 from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.template import HarnessParam, TemplateManifest
 from task_spec.schemas.verify_report import VerifyReport
+from task_spec.starter.contract import pattern_values
 from task_spec.starter.render import render_params
 from task_spec.starter.static_check import Overlay
 
@@ -185,11 +186,11 @@ def spec_values(texts: Sequence[str], name: str, m: TemplateManifest) -> list[in
     patterns = [*(p.spec_patterns if p is not None else []), *SPEC_LOGS.get(name, ())]
     return sorted(
         {
-            int(found.group(1))
+            int(found)
             for text in texts
             for pattern in patterns
-            for found in re.finditer(pattern, text, re.IGNORECASE)
-            if found.group(1).isdigit()
+            for found in pattern_values(re.compile(pattern, re.IGNORECASE), text)
+            if found.isdigit()
         }
     )
 

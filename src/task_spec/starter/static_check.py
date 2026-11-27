@@ -1343,6 +1343,20 @@ def case_applied_tunes(m: TemplateManifest) -> dict[str, list[str]]:
     return out
 
 
+# 단언이 변수 하나를 볼 때 — `assertThat(n)` 의 n (세기·버스트 결과를 변수에 담아 단언하는 꼴)
+_ASSERTED_VAR = re.compile(r"assertThat\(\s*([A-Za-z_]\w*)\s*\)")
+
+
+def _assigned_before(content: str, var: str, end: int) -> str | None:
+    """content[:end] 에서 변수 var 에 마지막으로 대입한 식 — `long n = …`·`var n = …`·`n = …` (`==` 비교는 아님). 단언 바로 앞의 대입만
+    본다 — 파일 전체를 보면 다른 메서드가 같은 이름(n 등)에 세기 결과를 담았을 때 이 단언까지 인정했다 (#339 검토)."""
+    rx = re.compile(rf"(?<![\w.]){re.escape(var)}\s*=(?!=)\s*([^;]*)")
+    last: str | None = None
+    for m in rx.finditer(content, 0, end):
+        last = m.group(1)
+    return last
+
+
 def _reason_rules(
     cases: Iterable[GeneratedFile],
     m: TemplateManifest,
@@ -1363,7 +1377,9 @@ def _reason_rules(
     common_not = [re.compile(p) for p in m.hidden_rules.reason_not_on]
     out: list[str] = []
     for f in cases:
+        start = 0
         for stmt in f.content.split(";"):
+            at, start = start, start + len(stmt) + 1  # 이 문장이 파일에서 시작하는 자리
             codes = {mt.group(1) for rx in reason_rx for mt in rx.finditer(stmt) if mt.groups()}
             for code in sorted(codes):
                 r = reasons.get(code)
@@ -1380,6 +1396,16 @@ def _reason_rules(
                         + (f". {code}: {r.how}" if r and r.how else "")
                     )
                 elif on and not any(rx.search(stmt) for rx in on):
+                    # 결과를 변수에 담아 단언하는 꼴 — 그 변수를 같은 파일에서 사유가 보는 식으로 대입했으면 그 단언이다 (#339 알파:
+                    # `long n = sessionPathStatements(…); assertThat(n).as(Reasons.as(…))` 를 숨은 테스트까지 간 두 회차 모두 첫 답으로 써
+                    # 막혔고 한 회차는 재요청에도 같은 꼴이라 생성 실패). 붙이면 안 되는 단언(not_on)은 위에서 문장 그대로 본다
+                    if any(
+                        rx.search(expr)
+                        for var in _ASSERTED_VAR.findall(stmt)
+                        if (expr := _assigned_before(f.content, var, at)) is not None
+                        for rx in on
+                    ):
+                        continue
                     out.append(
                         f"숨은 테스트 {f.path} 가 사유 {code} 를 그 사유를 보는 단언이 아닌 곳에 붙임: {shown}"
                         + (f" — {r.how}" if r and r.how else "")

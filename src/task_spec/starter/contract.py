@@ -50,6 +50,7 @@ from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
 from task_spec.starter.forbidden_storage import forbidden_for
 from task_spec.starter.header_values import header_problems
+from task_spec.starter.hidden_helpers import COUNT_REASON, count_helper, count_targets
 from task_spec.starter.hygiene import hygiene_hits
 from task_spec.starter.interface import interface_problems, without_fixed
 from task_spec.starter.seed_rows import (
@@ -166,6 +167,21 @@ def _column_values(text: str, columns: list[re.Pattern[str]]) -> list[str]:
     return found
 
 
+# 값 바로 뒤 ':숫자' — 시각(09:00)이다. 표기 패턴(`in[-_ ]?flight\s*…`)이 줄을 넘어 다음 줄 시각을 값으로 잡았다 (2026-11-27 알파 sql339-2:
+# `http_requests_in_flight` 다음 줄 `09:00` 의 09 를 동시 요청 수로 읽어, 계약 검사가 '명세 자료의 값(09)'으로 안내). 템플릿의 표기 패턴은
+# 같은 판에서 고치지 않는 칸(harness_params)이라 읽는 쪽에서 거른다 — 운영 판에도 같은 패턴이 있다
+_TIME_AFTER = re.compile(r":\d")
+
+
+def pattern_values(rx: re.Pattern[str], text: str) -> list[str]:
+    """표기 패턴(그룹 1 = 값)이 글에서 잡은 값 — 시각 꼴은 뺀다. 계약 검사(extract_values)와 보정(calibrate.spec_values)이 같이 쓴다."""
+    return [
+        m.group(1).strip()
+        for m in rx.finditer(text)
+        if m.group(1) and not _TIME_AFTER.match(text, m.end(1))
+    ]
+
+
 def extract_values(param: HarnessParam, texts: Iterable[str]) -> list[str]:
     """표기 패턴(그룹 1)·표 열 이름으로 명세 글에서 이 조절값의 값을 뽑는다. 못 뽑으면 빈 목록 = "명세에 없음"."""
     texts = list(texts)
@@ -173,7 +189,7 @@ def extract_values(param: HarnessParam, texts: Iterable[str]) -> list[str]:
     for pattern in param.spec_patterns:
         rx = re.compile(pattern)
         for text in texts:
-            found += [m.group(1).strip() for m in rx.finditer(text) if m.group(1)]
+            found += pattern_values(rx, text)
     if param.spec_columns:
         cols = [re.compile(c, re.IGNORECASE) for c in param.spec_columns]
         for text in texts:
@@ -1499,6 +1515,30 @@ def _reasons(
     ]
 
 
+def _count_target(
+    contract: TaskContract, plan: HiddenPlan, manifest: TemplateManifest
+) -> list[str]:
+    """요청당 DB 사용 세기(db_per_request) 케이스가 부를 도우미 — 코드가 계약에서 만들고(count_helper), 만들 수 없으면 두지 않는다.
+    그대로 두면 케이스가 없는 함수를 불러 채점 코드가 컴파일되지 않는다 (#339). 도우미와 같은 판단(count_helper)을 본다."""
+    if COUNT_REASON not in manifest.reason_codes or not any(
+        c.intended_reason == COUNT_REASON for c in plan.cases
+    ):
+        return []
+    if count_helper(contract, manifest) is not None:
+        return []
+    if count_targets(contract):  # 부를 API 는 있는데 로그인 세션 도우미를 만들 수 없음
+        return [
+            f"숨은 케이스의 실패 사유 {COUNT_REASON} 는 로그인 세션 도우미(newSession·sessionHeaders)로 잰다 — 권한 칸 issued 의 "
+            "로그인 엔티티·자격 증명(발급 API 요청 칸)·발급 값 헤더를 도우미가 정할 수 있게 계약을 고친다"
+        ]
+    return [
+        f"숨은 케이스의 실패 사유 {COUNT_REASON}(세션 확인의 요청당 DB 사용)를 잴 업무 조회 API 가 계약에 없음 — 로그인 세션 헤더(권한 칸 "
+        "issued)로 부르는 GET 하나가 필요: 경로 변수·필수 쿼리 매개변수가 없고, 2xx 응답이 엔티티(m…)나 그 목록을 그대로 돌려주며, 그 "
+        "엔티티가 로그인·세션 엔티티가 아니고 외래 키·관계·칸으로 로그인·세션 엔티티를 가리키지 않는 것 (예: 기존 목록 조회 API 의 응답을 "
+        "응답 모양 대신 엔티티 목록으로)"
+    ]
+
+
 # 글에 나온 'METHOD /path' — 백틱으로 감싸도, 경로 변수는 {id}·:id 둘 다, 끝 문장 부호는 빼고 (`POST /x.` → /x).
 # 계약 검사·화면 폼 대조가 같은 파서를 쓴다 (#179: 두 정규식이 같은 글을 다르게 잘랐다)
 _API = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+`?(/(?:[A-Za-z0-9_\-./:{}]*[A-Za-z0-9_\-/}])?)")
@@ -2650,6 +2690,7 @@ def check_contract(
     problems += interface_issues
     flags += interface_flags
     problems += _reasons(plan, manifest, seed)
+    problems += _count_target(contract, plan, manifest)
     problems += _faults(contract, plan, spec)
     problems += feasibility_problems(plan, manifest)
     if manifest.seed_rows:
