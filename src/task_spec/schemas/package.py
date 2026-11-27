@@ -48,6 +48,10 @@ Platform = Literal["linux/amd64", "linux/arm64"]
 ReviewVerdict = Literal[
     "confirmed", "fixed", "accepted_risk"
 ]  # 확인(문제 없음) · 고침 · 알고 받아들임
+# 겹침·무력화 재료 판정을 받아들인 빌드의 검토 표시 머리 (#341, 2026-11-27 사용자 — 숨은 케이스는 채점에 남긴다). 이 표시는 판단이
+# '알고 받아들임'(accepted_risk)이어야 승인된다 (starter/store.check_approval) — 과제가 AI 첫 답과 구별되지 않음을 승인자가 받아들인다.
+# 저장 모델에 칸을 더하지 않고 문장 머리로 가른다 — 모든 경계 모델이 모르는 칸을 거부해 배포를 되돌리면 옛 코드가 새 기록을 못 읽는다
+NOT_A_TRAP = "함정 아님(채점 유지): "
 
 
 class ArtifactFile(Schema):

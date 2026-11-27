@@ -14,7 +14,7 @@ from task_spec.builder.runner import ContractResult, Job, StepFailed
 from task_spec.nodes.starter.build import HIDDEN
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import RepairRecord
-from task_spec.starter.repair import MATERIAL_VERDICT, STARTER
+from task_spec.starter.repair import CONTRACT_SUSPECT, MATERIAL_VERDICT, REBUILD_HINT, STARTER
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.store import TaskLabel
 from task_spec.starter.templates import load_template
@@ -121,6 +121,41 @@ async def test_a_material_verdict_failure_says_so(
     assert str(err2.value).startswith("build: 수리 루프 실패")
     assert err2.value.detail is not None and err2.value.detail.trace is not None
     assert err2.value.detail.trace.failure_kind == "generation"
+
+
+async def test_a_no_window_failure_suggests_a_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#341: 창 없음뿐이면 다시 빌드해 볼 만하다 — 창은 회차마다 달라 같은 재료가 다른 회차에서는 보정됐다. 과부하(명세 수치 결함)가
+    섞이면 다시 빌드해도 같으므로 덧붙이지 않는다."""
+    out = _out("failed", [f"{MATERIAL_VERDICT}가상 창 없음 · {REBUILD_HINT}"])
+    with pytest.raises(StepFailed) as err:
+        await _run(tmp_path, monkeypatch, out)
+    assert str(err.value).startswith(
+        "build: 재료 판정으로 멈춤 (회차 2) · 다시 빌드해 볼 수 있음 — "
+    )
+    mixed = _out(
+        "failed",
+        [
+            f"{MATERIAL_VERDICT}가상 창 없음 · {REBUILD_HINT}",
+            f"{MATERIAL_VERDICT}허용 구현도 버티지 못하는 부하 — 가상",
+        ],
+    )
+    with pytest.raises(StepFailed) as err2:
+        await _run(tmp_path, monkeypatch, mixed)
+    assert str(err2.value).startswith("build: 재료 판정으로 멈춤 (회차 2) — ")
+    suspect = _out(
+        "failed",
+        [
+            f"{MATERIAL_VERDICT}가상 창 없음 · {REBUILD_HINT}",
+            f"{CONTRACT_SUSPECT} — 가상 계약 의심",
+        ],
+    )
+    with pytest.raises(StepFailed) as err3:
+        await _run(
+            tmp_path, monkeypatch, suspect
+        )  # 계약 결함 의심이 함께면 다시 빌드해도 같은 계약
+    assert str(err3.value).startswith("build: 재료 판정으로 멈춤 (회차 2) — ")
 
 
 async def test_a_build_that_stopped_before_verification_names_the_step(

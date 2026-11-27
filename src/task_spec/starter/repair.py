@@ -123,7 +123,8 @@ WEAK_FLAG = "흔한 구현과 올바른 구현을 구별하지 않아 채점에�
 ALL_PUBLIC_FAIL = "모든 구현이 공개 테스트"
 ALL_ACCEPTED_FAIL = "허용 구현 모두 "
 CONTRACT_SUSPECT = "계약 결함 의심"
-# 흔한 구현이 정답 장치를 쓴다는 재료 판정 — 막는 표시(unresolved)로 옮긴다 (assign)
+# 재료 판정의 머리 — 막는 표시(unresolved)로 옮긴다 (assign). 겹침·무력화만 남은 회차는 빌드가 받아들여 '함정 아님' 표시로 review
+# (#341, nodes/starter/build._accept_material). 창 없음·과부하는 그대로 막는다
 MATERIAL_VERDICT = "재료 판정: "
 # 흔한 구현만 떨어지고 허용 구현은 모두 통과한 공개 테스트의 blame 머리 (#337 3절) — 그 테스트를 다시 만든 뒤에도 같으면 겹침 판정.
 # 모든 구현 실패의 blame(`public:X`)과 갈라 둔다 — 그쪽은 계약 결함 의심
@@ -131,6 +132,35 @@ NAIVE_ONLY = "naive-only:"
 OVERLAP = "구별 불가(겹침)"
 # 흔한 구현이 허용 설계의 장치를 쓰는 재료 판정의 머리 (#337 — 겹침·명세 부하와 같은 갈래, 판정 문구로 가른다)
 NEUTRALIZED = "구별 불가(무력화)"
+# 창 없음 재료 판정 끝의 안내 (#341) — 창 유무는 그 회차의 버스트 대상·명세 수치·생성 코드에 달려 같은 재료가 다른 회차에서는 보정됐다
+# (알파 fix337-1). 빌드 실패 사유가 이 안내를 보고 '다시 빌드' 를 덧붙인다 (builder/steps.py)
+REBUILD_HINT = "다시 빌드하면 창이 생길 수 있음 (회차마다 다름)"
+
+
+def overlap_verdict(tests: Sequence[str]) -> str:
+    """겹침 재료 판정 문장 (#337 3절) — 공개 테스트 이름은 overlap_tests 가 다시 읽는다 (#341: 받아들인 빌드의 관문이 그 테스트를 안다)."""
+    return (
+        f"{MATERIAL_VERDICT}{OVERLAP} — 공개 테스트 {', '.join(tests)} 에서 흔한 구현만 실패 "
+        "(흔한 구현·공개 테스트를 다시 만든 뒤에도, 허용 구현은 모두 통과) · 공개 요구가 숨은 요구를 이미 시험함 — 명세 확인 (사람)"
+    )
+
+
+_OVERLAP_TESTS = re.compile(re.escape(OVERLAP) + r" — 공개 테스트 (.+?) 에서 흔한 구현만 실패")
+
+
+def overlap_tests(text: str) -> list[str]:
+    """겹침 판정·'함정 아님' 표시 문장에서 공개 테스트 이름 — overlap_verdict 를 거꾸로. 겹침 문장이 아니면 빈 목록."""
+    m = _OVERLAP_TESTS.search(text)
+    return m.group(1).split(", ") if m else []
+
+
+def accepted_material(flag: str) -> bool:
+    """막지 않고 받아들이는 재료 판정인가 — 겹침·무력화 (#341, 2026-11-27 사용자). 두 판정 모두 숨은 테스트는 허용 구현을 통과시키고
+    흔한 구현(AI 첫 답)만 가르지 못한다 — 겹침은 공개 테스트가 그 요구를 이미 시험하고, 무력화는 흔한 구현이 허용 설계의 장치를 쓴다.
+    그래서 숨은 케이스는 채점에 남기고 승인자에게 '함정 아님' 을 받아들이게 한다. 창 없음·과부하는 숨은 테스트를 믿을 수 없어 막는다."""
+    return flag.startswith((MATERIAL_VERDICT + OVERLAP, MATERIAL_VERDICT + NEUTRALIZED))
+
+
 # 다른 사유로 흔한 구현을 다시 만들 때 붙인다 — 지적된 실패를 고치며 설명의 구조까지 '더 안전하게' 바꾸면 함정이 사라진다 (같은 알파)
 # (#182: 예전 문구의 괄호 '무엇을 어디서 열고, 어느 범위 안에서 부르는지'는 트랜잭션 사례의 모양이라 모든 스택에 나갔다 — 2026-11-09 dc2b08b)
 KEEP_NAIVE = (
@@ -1697,11 +1727,9 @@ def _contract_suspects(
             every = [b for b in again if not b.startswith(NAIVE_ONLY)]
             if overlap:
                 # 흔한 구현·공개 테스트를 모두 다시 만들었는데 흔한 구현만 같은 공개 테스트에서 떨어지고 허용 구현은 모두 통과 — 공개 요구가
-                # 숨은 요구를 이미 시험한다 (#337 3절, 운영 ct-9433 b2). 다시 빌드해도 같으므로 명세를 고칠 사람에게 (재료 판정 → material)
-                out.append(
-                    f"{MATERIAL_VERDICT}{OVERLAP} — 공개 테스트 {', '.join(overlap)} 에서 흔한 구현만 실패 "
-                    "(흔한 구현·공개 테스트를 다시 만든 뒤에도, 허용 구현은 모두 통과) · 공개 요구가 숨은 요구를 이미 시험함 — 명세 확인 (사람)"
-                )
+                # 숨은 요구를 이미 시험한다 (#337 3절, 운영 ct-9433 b2). 다시 빌드해도 같으므로 사람에게 — 빌드가 받아들이면 '함정 아님'
+                # 표시로 review, 못 받아들이면 재료 판정 실패 (#341, build._accept_material)
+                out.append(overlap_verdict(overlap))
             if every:
                 out.append(
                     f"{CONTRACT_SUSPECT} — {', '.join(every)} 에서 모든 구현이 그 테스트를 다시 만든 뒤에도 실패: {_short(a.note)} — "

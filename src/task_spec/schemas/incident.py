@@ -90,7 +90,8 @@ class FeatureSeed(Schema):
     # business_need 에 나온 말은 공개된 업무 요구라 검사에서 뺀다.
     trigger_terms: list[str] = Field(default_factory=list)
     # 허용 설계의 장치가 코드에 드러나는 표지 (정규식) — 흔한 구현에는 없어야 한다. 흔한 구현이 숨은 케이스를 통과하고 이 표지가 있으면
-    # 흔한 구현을 그 장치를 짚어 다시 만들고, 다시 만든 뒤에도 그렇면 "AI 흔한 구현이 기본으로 정답을 쓴다"는 재료 판정 (repair ③).
+    # 흔한 구현을 그 장치를 짚어 다시 만들고, 다시 만든 뒤에도 그렇면 "AI 흔한 구현이 기본으로 정답을 쓴다"는 재료 판정 (repair ③) —
+    # 조건이 맞으면 빌드는 멈추지 않고 '함정 아님' 표시로 review (#341, nodes/starter/build._accept_material).
     # 2026-11-10 변별 실패 분석: 응답 순서 흔한 구현이 매 회차 React 정리 패턴(let cancelled …)을 써 — 허용 설계 그 자체.
     # 생성 단계 정적 검사로는 쓰지 않는다 (저장 코드 검증에서 흔한 구현이 제대로 떨어진 회차에도 걸린 경우가 있었다).
     fix_markers: list[str] = Field(default_factory=list)
