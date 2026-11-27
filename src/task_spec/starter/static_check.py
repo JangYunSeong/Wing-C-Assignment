@@ -473,6 +473,97 @@ def _java_test_pitfalls(o: Overlay, t: Template, seed_path: str | None) -> list[
     return out
 
 
+# 기존 기능 테스트의 격리 (#340). 테스트 스레드에서 실행되는 쓰기 — 테스트 트랜잭션이 있으면 되돌린다
+_TEST_DB_WRITE = re.compile(
+    r"\.(?:save|saveAll|saveAndFlush|saveAllAndFlush|delete|deleteById|deleteAll|deleteAllById|deleteAllInBatch"
+    r"|deleteInBatch)\s*\(|\b(?:entityManager|em)\.(?:persist|merge|remove)\s*\(|\bjdbc\w*\.(?:update|batchUpdate)\s*\("
+)
+_TEST_MVC_WRITE = re.compile(
+    r"\b(?:post|put|patch|delete)\s*\(\s*\"/"
+)  # MockMvc 요청 — MOCK 환경이면 테스트 스레드
+# 실제 HTTP 쓰기 — 서버 스레드에서 커밋돼 테스트의 @Transactional 로 되돌릴 수 없다
+_TEST_HTTP_WRITE = re.compile(
+    r"\.(?:postForEntity|postForObject|patchForObject)\s*\(|\.method\s*\(\s*\"(?:POST|PUT|PATCH|DELETE)\""
+    r"|\.(?:POST|PUT|DELETE)\s*\(|exchange\s*\([^;]*HttpMethod\.(?:POST|PUT|PATCH|DELETE)"
+    r"|send\s*\(\s*\"(?:POST|PUT|PATCH|DELETE)\""
+)
+# 다른 테스트가 더하거나 지운 행에 따라 달라지는 단언 — 표 전체 행 수·목록 크기
+_TEST_SIZE_ASSERT = re.compile(
+    r"\.count\(\)\s*\)\s*\.(?:isEqualTo|isGreaterThan|isLessThan|isBetween)|assert\w*\(\s*\d+L?\s*,\s*[\w.]+\.count\(\)"
+    r"|hasSize\(\s*\d+|\$\.length\(\)|\.size\(\)\s*\)\s*\.isEqualTo\(\s*\d+|COUNT\(\s*\*\s*\)"
+)
+_TEST_ROLLBACK = re.compile(
+    r"@Transactional\b|@DataJpaTest\b|\bTransactionTemplate\b|setRollbackOnly\("
+)
+_TEST_COMMIT = re.compile(r"@Commit\b|@Rollback\s*\(\s*(?:value\s*=\s*)?false")
+_JAVA_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def _test_group(text: str) -> str | None:
+    """같은 스프링 컨텍스트(같은 DB)로 보는 묶음 — @DataJpaTest · MOCK · 실제 서버. 저장소를 흉내 내는 @WebMvcTest·단위 테스트는 DB 가 없다."""
+    if "@DataJpaTest" in text:
+        return "jpa"
+    if "@SpringBootTest" not in text:
+        return None
+    return "server" if re.search(r"RANDOM_PORT|DEFINED_PORT", text) else "mock"
+
+
+def _existing_test_isolation(o: Overlay, t: Template) -> list[StaticProblem]:
+    """기존 기능 테스트가 되돌리지 않는 쓰기와 표 전체 행 수·목록 크기 단언을 같은 DB(같은 컨텍스트 묶음)에서 함께 하면 다시 요청 (#340).
+
+    테스트 순서는 정해지지 않아(JUnit 기본 순서) 더한 행이 크기 단언을 깬다 — 2026-11-27 알파 sql339-1: 기존 테스트가 부품을 저장(되돌림
+    없음)한 뒤 시드 행 수 127 단언이 128 로 실패해 검증 한 회차와 시작 코드 재생성이 더 들었다 (재현으로 확인). 파일 단위로 본다 — 되돌림 표지
+    (@Transactional·@DataJpaTest·TransactionTemplate)가 있는 파일의 저장소·MockMvc 쓰기는 되돌린다고 본다 (오탐이면 시작 코드 생성이
+    실패하므로 놓치는 쪽으로). 실제 HTTP 쓰기는 표지와 상관없이 남는다."""
+    if not is_java(t.manifest):
+        return []
+    writes: dict[str, list[str]] = {}
+    sizes: dict[str, list[str]] = {}
+    http: set[str] = set()
+    for f in o.files:
+        if not f.path.endswith(".java") or "/test/" not in f.path:
+            continue
+        text = _JAVA_COMMENT.sub("", f.content)
+        group = _test_group(text)
+        if group is None or "@Test" not in text:
+            continue
+        name = f.path.rsplit("/", 1)[-1]
+        remote = group == "server" and bool(
+            _TEST_HTTP_WRITE.search(text) or _TEST_MVC_WRITE.search(text)
+        )
+        local = bool(_TEST_DB_WRITE.search(text)) or (
+            group == "mock" and bool(_TEST_MVC_WRITE.search(text))
+        )
+        rolled = (group == "jpa" or bool(_TEST_ROLLBACK.search(text))) and not _TEST_COMMIT.search(
+            text
+        )
+        if remote or (local and not rolled):
+            writes.setdefault(group, []).append(name)
+            if remote:
+                http.add(group)
+        if _TEST_SIZE_ASSERT.search(text):
+            sizes.setdefault(group, []).append(name)
+    out: list[StaticProblem] = []
+    for group, names in writes.items():
+        if group not in sizes:
+            continue
+        fix = (
+            "실제 HTTP 로 쓴 행은 테스트의 @Transactional 로 되돌릴 수 없다 — 크기 단언을 정해진 id 의 행 확인으로 바꾸거나, 쓰는 테스트가 만든 "
+            "행을 지운다"
+            if group in http
+            else "쓰는 테스트(또는 클래스)에 @Transactional 을 붙여 되돌리거나, 크기 단언을 정해진 id 의 행 확인으로 바꾼다"
+        )
+        out.append(
+            StaticProblem(
+                o.target,
+                f"{o.name} 기존 기능 테스트가 되돌리지 않는 쓰기({', '.join(sorted(set(names))[:3])})와 표 전체 행 수·목록 크기 단언"
+                f"({', '.join(sorted(set(sizes[group]))[:3])})을 같은 DB 에서 함께 함 — 테스트 순서는 정해지지 않아 더하거나 지운 행 때문에 "
+                f"크기 단언이 순서에 따라 깨진다. {fix}. 저장 확인(새 엔티티를 저장하면 id 가 생긴다)은 빌드 파이프라인이 쓰므로 따로 쓰지 않는다",
+            )
+        )
+    return out
+
+
 def _call_arg(text: str, start: int) -> str:
     """start 부터 괄호 깊이 0 의 `,` 또는 `)` 앞까지 — 호출 인자 식 하나."""
     depth, i, quote = 0, start, False
@@ -2885,6 +2976,7 @@ def static_check(
             res.problems += _starter_issued_calls(o, contract, spec)
             res.problems += _starter_stub_tests(o, template, contract, spec)
             res.problems += _starter_schema(o, template, contract)
+            res.problems += _existing_test_isolation(o, template)  # #340
             if not is_java(template.manifest):
                 res.problems += _starter_options(o, contract)
             else:
