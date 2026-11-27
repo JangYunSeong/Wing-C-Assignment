@@ -112,13 +112,19 @@ public class GraderJdbcHarness {
         countingSources = Set.of();
     }
 
-    /** 표(tables)를 하나도 건드리지 않은 SQL 문 수 — 표 이름은 낱말 경계로, 대소문자 없이 대조한다. */
+    /**
+     * 표(tables)를 하나도 건드리지 않은 SQL 문 수 — 표 이름은 표 자리(from·join·update·into 뒤, 스키마 접두어·따옴표 허용)에서만, 대소문자
+     * 없이 대조한다. 같은 이름의 칼럼(세션 조회의 s1_0.status 와 업무 표 status)은 업무 표로 보지 않는다 — 낱말로만 대조하면 흔한 구현의 세션
+     * 조회가 업무 문으로 빠져 세기가 적게 나왔다 (#339 검토). 쉼표 조인(from a, b)의 뒤 표는 보지 않는다 (Hibernate 6 은 쓰지 않음).
+     */
     public static long statementsNotTouching(List<String> statements, String... tables) {
         if (tables.length == 0) {
             return statements.size();
         }
         Pattern any = Pattern.compile(
-                "\\b(?:" + Arrays.stream(tables).map(Pattern::quote).collect(Collectors.joining("|")) + ")\\b",
+                "\\b(?:from|join|update|into)\\s+(?:[\"`]?\\w+[\"`]?\\.)?[\"`]?(?:"
+                        + Arrays.stream(tables).map(Pattern::quote).collect(Collectors.joining("|"))
+                        + ")[\"`]?(?!\\w)",
                 Pattern.CASE_INSENSITIVE);
         return statements.stream().filter(sql -> !any.matcher(sql).find()).count();
     }

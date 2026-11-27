@@ -1347,10 +1347,14 @@ def case_applied_tunes(m: TemplateManifest) -> dict[str, list[str]]:
 _ASSERTED_VAR = re.compile(r"assertThat\(\s*([A-Za-z_]\w*)\s*\)")
 
 
-def _assigned_from(content: str, var: str) -> list[str]:
-    """파일에서 변수 var 에 대입한 식들 — `long n = …`·`var n = …`·`n = …` (`==` 비교는 아님)."""
+def _assigned_before(content: str, var: str, end: int) -> str | None:
+    """content[:end] 에서 변수 var 에 마지막으로 대입한 식 — `long n = …`·`var n = …`·`n = …` (`==` 비교는 아님). 단언 바로 앞의 대입만
+    본다 — 파일 전체를 보면 다른 메서드가 같은 이름(n 등)에 세기 결과를 담았을 때 이 단언까지 인정했다 (#339 검토)."""
     rx = re.compile(rf"(?<![\w.]){re.escape(var)}\s*=(?!=)\s*([^;]*)")
-    return [m.group(1) for m in rx.finditer(content)]
+    last: str | None = None
+    for m in rx.finditer(content, 0, end):
+        last = m.group(1)
+    return last
 
 
 def _reason_rules(
@@ -1373,7 +1377,9 @@ def _reason_rules(
     common_not = [re.compile(p) for p in m.hidden_rules.reason_not_on]
     out: list[str] = []
     for f in cases:
+        start = 0
         for stmt in f.content.split(";"):
+            at, start = start, start + len(stmt) + 1  # 이 문장이 파일에서 시작하는 자리
             codes = {mt.group(1) for rx in reason_rx for mt in rx.finditer(stmt) if mt.groups()}
             for code in sorted(codes):
                 r = reasons.get(code)
@@ -1396,7 +1402,7 @@ def _reason_rules(
                     if any(
                         rx.search(expr)
                         for var in _ASSERTED_VAR.findall(stmt)
-                        for expr in _assigned_from(f.content, var)
+                        if (expr := _assigned_before(f.content, var, at)) is not None
                         for rx in on
                     ):
                         continue

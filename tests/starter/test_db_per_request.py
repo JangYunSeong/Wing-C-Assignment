@@ -280,6 +280,44 @@ def test_the_reason_rule_follows_a_variable_holding_the_count() -> None:
         assert "그 사유를 보는 단언이 아닌 곳에 붙임" in why
 
 
+def test_the_reason_rule_takes_the_nearest_assignment_only() -> None:
+    """다른 메서드가 같은 이름(n)에 세기 결과를 담았어도, 이 단언 바로 앞의 대입이 다른 값이면 막는다 — 파일 전체에서 대입을 찾으면
+    인정됐다 (#339 검토). 하네스는 표 이름을 표 자리에서만 대조한다 — 자체 점검이 칼럼 이름이 겹치는 꼴을 본다."""
+    import re
+
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import _reason_rules
+
+    m = load_template(JAVA, 7).manifest
+    raw = _plan()
+    raw["cases"][0]["intended_reason"] = "db_per_request"
+    plan = HiddenPlan.model_validate(raw)
+    cid = plan.cases[0].case_id
+    tag = '.as(Reasons.as("db_per_request", "업무 표 밖 SQL 문 수"))'
+    content = (
+        f'@DisplayName("{cid} 세션 확인이 요청마다 DB 를 쓰지 않음")\nclass DbPerRequestTest extends ContractCase {{\n'
+        "    @Test void a() throws Exception { long n = sessionPathStatements(newSession(), 20); }\n"
+        f"    @Test void b() throws Exception {{ long n = 5L; assertThat(n){tag}.isLessThan(20); }}\n}}"
+    )
+    case = GeneratedFile(
+        path="src/test/java/com/example/service/grading/cases/DbPerRequestTest.java",
+        content=content,
+    )
+    rules = m.hidden_rules
+    (why,) = _reason_rules(
+        [case],
+        m,
+        plan,
+        re.compile(rules.case_id_pattern),
+        [re.compile(p) for p in rules.reason_patterns],
+    )
+    assert "그 사유를 보는 단언이 아닌 곳에 붙임" in why
+    selftest = (load_template(JAVA, 7).root / "hidden/selftest/HarnessSelfTest.java").read_text(
+        "utf-8"
+    )
+    assert "표_이름은_표_자리에서만_대조한다" in selftest
+
+
 def test_no_helper_before_v7_or_without_a_session() -> None:
     assert "sessionPathStatements" not in _helper(_with_get(_session(), "/orders", "m1[]"), 6)
     plain = _with_get(_session(auth=None), "/orders", "m1[]", session=False)

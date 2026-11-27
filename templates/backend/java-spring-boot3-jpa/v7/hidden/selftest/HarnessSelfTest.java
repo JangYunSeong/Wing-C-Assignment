@@ -131,6 +131,21 @@ class HarnessSelfTest extends GraderSupport {
     }
 
     @Test
+    void 표_이름은_표_자리에서만_대조한다() {
+        // 업무 표가 흔한 칼럼 이름(status)이어도 세션·사용자 조회의 칼럼은 업무 문이 아니다 (#339 검토)
+        List<String> sql = List.of(
+                "select s1_0.id,s1_0.status from session s1_0 where s1_0.token=?",
+                "select o1_0.id,o1_0.role from operator o1_0 where o1_0.id=?",
+                "select st1_0.id,st1_0.name from status st1_0",
+                "select r1_0.id from robot r1_0 join status st1_0 on st1_0.id=r1_0.status_id",
+                "update status set name=? where id=?",
+                "insert into \"status\" (id,name) values (?,?)",
+                "delete from public.status where id=?");
+        assertThat(GraderJdbcHarness.statementsNotTouching(sql, "status")).isEqualTo(2);
+        assertThat(GraderJdbcHarness.statementsNotTouching(sql, "role")).isEqualTo(7);
+    }
+
+    @Test
     void 데이터소스를_감쌌다() {
         assertThat(GraderJdbcHarness.WRAPPED_DATASOURCES.get()).isPositive();
     }
