@@ -137,6 +137,8 @@ NEUTRALIZED = "구별 불가(무력화)"
 REBUILD_HINT = "다시 빌드하면 창이 생길 수 있음 (회차마다 다름)"
 
 
+# 문구를 바꾸면 아래 _OVERLAP_TESTS 도 함께 — 받아들이기(build._accept_material)와 ⑩ 확인(build._add_public_cases)이 이 정규식으로
+# 공개 테스트 이름을 읽는다. 어긋나면 겹침을 받아들이지 못하고 예전처럼 멈춘다 (읽기 테스트: tests/starter/test_not_a_trap.py, #347 리뷰)
 def overlap_verdict(tests: Sequence[str]) -> str:
     """겹침 재료 판정 문장 (#337 3절) — 공개 테스트 이름은 overlap_tests 가 다시 읽는다 (#341: 받아들인 빌드의 관문이 그 테스트를 안다)."""
     return (
