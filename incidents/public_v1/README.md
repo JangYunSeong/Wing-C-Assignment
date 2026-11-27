@@ -104,6 +104,7 @@ feature 블록 (기능형 재료 — "어떤 기능을 만들 때 흔한 구현�
 - feature 블록의 자료 종류 이름(`discoverable_by`·`stage2_evidence`)에는 그 재료의 `leak_terms`·`stage2_cause_terms` 를 쓰지 않는다 — 생성 모델이 이름을 자료 제목으로
   그대로 써서 늘 재요청에 걸린다 (2026-11-06 v5 비교에서 발견, 테스트 `test_seed_artifact_kinds_have_no_leak_terms`). 1단계 자료 종류 이름은 2단계 핵심 증거
   (`stage2_evidence` 첫 항목)와 낱말이 절반 넘게 겹치지 않게 짓는다 — 겹치면 1단계에 배포 뒤 증거가 섞여도 못 잡는다 (`stage2_kinds_in_stage1`).
+- 낱말 목록(`leak_terms`·`stage2_cause_terms`·`trigger_terms`·`hidden_terms`)의 영문은 온전한 낱말로 쓴다 — 낱말 대조(`find_terms`)는 영문을 단어 경계로 본다. 잘린 어간 `idempot` 은 `idempotent`·`Idempotency-Key` 에 걸리지 않아 아무것도 막지 못했다 — 활용형을 따로 적는다 (2026-11-26 설계 검사 #332 T-F7, 테스트 `test_material_english_terms_are_whole_words`). `hidden_terms` 는 명세 검사와 빌드 누설 검사(계약·시작 코드·README)가 함께 본다.
 
 현황
 - sw.game: 보류 (적합한 공개 사례 없음 — v1 처럼 사례 없이 생성).

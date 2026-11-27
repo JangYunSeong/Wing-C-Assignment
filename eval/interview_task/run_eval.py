@@ -218,7 +218,7 @@ async def run_seed(
     )
     started = time.monotonic()
     try:
-        coding, provs = await prepare_coding_incident(
+        coding, provs, _fit = await prepare_coding_incident(
             incident,
             coding_template(case.sub),
             interview=text,

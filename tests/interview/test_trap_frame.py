@@ -396,3 +396,72 @@ async def test_check1_and_check3_reach_the_review_flags(frame_env: Any) -> None:
         f.startswith(FLAG_FRAME_LEAK) and "자료 a3(방해)" in f and "가상 메모" in f for f in flags
     )
     assert spec["trap_frame"]["forbidden_terms"] == ["가상 메모"]
+
+
+def test_frame_words_already_public_or_operating_conditions_are_not_added() -> None:
+    """설계 검사 #332 S-F6: 틀 금지 낱말 가운데 공개된 업무 요구(감사 기록)·운영 조건 낱말(동시 요청 — 1단계 자료에 보여야 하는 단서)에
+    걸리는 말은 leak_terms 에 넣지 않는다 — 검사 3 과 같은 예외. 예외 없이 합치면 명세 검사가 고칠 수 없는 재요청을 냈다."""
+    framed, _ = apply_frame(SEED, _frame(forbidden_terms=["감사 기록", "동시 요청", "세션 테이블"]))
+    assert "세션 테이블" in framed.leak_terms
+    assert "감사 기록" not in framed.leak_terms and "동시 요청" not in framed.leak_terms
+
+
+def test_removed_designs_are_named_in_the_notes() -> None:
+    """설계 검사 #332 S-F4: 사람이 뺀 설계를 다시 만든 재료에서 못 찾으면 개수만이 아니라 어느 설계인지 보인다 (무엇을 확인할지),
+    뺀 설계도 무엇과 맞췄는지 남긴다."""
+    designs = [*SEED.accepted_designs, "[설계] 가상 세 번째 설계 — 조건: x — 함정: y"]
+    seed3 = SEED.model_copy(update={"accepted_designs": designs})
+    _, notes = apply_frame(
+        seed3, _frame(), removed_designs=["[설계] 다시 만들며 사라진 가상 설계 — 조건: z"]
+    )
+    assert any(
+        "다시 만든 재료에 없음" in n and "다시 만들며 사라진 가상 설계" in n for n in notes
+    ), notes
+    _, notes = apply_frame(seed3, _frame(), removed_designs=[designs[2][:12]])
+    assert any("허용 설계 1개를 뺌 (사람 결정): 가상 세 번째 설계" in n for n in notes), notes
+
+
+async def test_a_shared_company_case_is_framed_for_the_general_pipeline(frame_env: Any) -> None:
+    """설계 검사 #332 S-F8: 일반 파이프라인이 공유 회사 사례로 공통 과제를 만들 때 인터뷰 서비스가 같은 가명화 길(등록 규칙·shared_json —
+    그 재료의 토큰만 허용, 대응표 없음)로 재료 분석·함정 틀을 만든다. 틀 적용 재료는 기능형 칸만 바꾼 사본이다."""
+    from tests.interview.conftest import POSTING_ID
+
+    session, _, _ = frame_env
+    case = known_incident().model_copy(
+        update={
+            "incident_id": "co:sw.backend:aaaa00000001",
+            "feature": SEED,
+            "known_incident_cases": [],
+        }
+    )
+    profile = await session.service.postings.profile(POSTING_ID)
+    assert profile is not None
+    session.backend.push(ANALYSIS, Completion(_frame().model_dump_json()))
+    framed = await session.service.frame_shared_case(case, profile)
+    assert framed.framed is not None and framed.frame == _frame()
+    assert framed.incident.feature is not None
+    assert framed.incident.feature.hidden_requirement == HIDDEN
+    assert framed.incident.incident_id == case.incident_id  # 기능형 칸만 바꾼 사본
+    assert framed.provenance  # 재료 분석·틀 호출 출처
+
+
+async def test_a_shared_case_frame_with_a_forged_token_is_not_used(frame_env: Any) -> None:
+    """개인정보 점검 권고 (#332 S-F8): 공유 회사 사례 경로는 빈 대응표 + 그 재료의 토큰만 허용한다 — 틀 출력에 재료에 없는 토큰이 있으면
+    (위조·다른 대응표의 토큰) 틀을 쓰지 않고 원 재료와 표시로 남는다."""
+    from tests.interview.conftest import POSTING_ID
+
+    session, _, _ = frame_env
+    case = known_incident().model_copy(
+        update={
+            "incident_id": "co:sw.backend:aaaa00000002",
+            "feature": SEED,
+            "known_incident_cases": [],
+        }
+    )
+    profile = await session.service.postings.profile(POSTING_ID)
+    assert profile is not None
+    forged = _frame(hidden_requirement=HIDDEN + " [PERSON_77] 의 세션은 따로 둔다.")
+    session.backend.push(ANALYSIS, Completion(forged.model_dump_json()))
+    framed = await session.service.frame_shared_case(case, profile)
+    assert framed.framed is None and framed.frame is None
+    assert framed.incident == case and framed.flags

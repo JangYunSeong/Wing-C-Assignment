@@ -843,6 +843,12 @@ class GenStarterInputV3(GenStarterInputV2):
     public_tests: str = "(없음)"
 
 
+class GenStarterInputV4(GenStarterInputV3):
+    """gen_starter v11~ — 함정 틀이 막은 저장 방식 (설계 검사 #332 T-F2: 시작 코드 생성기가 세션 테이블을 만들었다). 틀이 없으면 '(없음)'."""
+
+    storage_rules: str = "(없음)"
+
+
 class GenPublicInput(Schema):
     """gen_public 프롬프트 변수 — 공개 정보만 (숨은 요구·HiddenPlan·운영 조건·구현 없음). 공개 수용 기준을 확인하는 기능 테스트.
     2026-11-08 사용자 결정: 테스트 먼저(TDD) — 시작 코드·참조 구현이 이 테스트를 보고 맞춘다. 숨은 테스트는 여전히 독립."""

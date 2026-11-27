@@ -118,7 +118,7 @@ async def test_failed_calls_are_counted_in_provenance() -> None:
 async def test_gen_starter_ok_and_reask_on_locked_file() -> None:
     fake = FakeBackend().push(_files(*STARTER))
     res = await _gen(gen_starter, fake, _inputs())
-    assert res.ok and res.provenance[0].prompt == "gen_starter@10" and res.overlay is not None
+    assert res.ok and res.provenance[0].prompt == "gen_starter@11" and res.overlay is not None
     assert [f.path for f in _no_seed(res.overlay.files)] == [p for p, _ in STARTER]
 
     # 수리판(v3~): 재요청엔 첫 답이 이전 출력으로 가고, 고칠 파일만 — 잠긴 파일은 빈 content 로 지운다
@@ -733,3 +733,18 @@ def test_weak_case_is_dropped_from_plan_and_hidden_tests() -> None:
         f"cases/{keep_id}.java",
         "cases/Common.java",
     ]
+
+
+def test_starter_input_lists_storage_the_trap_frame_forbids() -> None:
+    """설계 검사 #332 T-F2: gen_starter v11 은 함정 틀이 막은 저장 엔티티를 입력으로 받는다 (이름만 — 틀의 why 는 싣지 않음, B-F10).
+    옛 판(v10, GenStarterInputV3)에는 그 칸이 없어 fit_input 이 뺀다."""
+    from task_spec.nodes.starter.generate import fit_input, starter_input
+    from task_spec.schemas import ForbiddenStorage, GenStarterInputV3
+
+    b = _inputs()
+    session = ForbiddenStorage(entity="Session", why="가상 해법 — DB 밖에 둔다")
+    inp = starter_input(b.task, b.contract, b.template, None, None, (session,))
+    assert "Session" in inp.storage_rules and "DB 밖" not in inp.storage_rules  # type: ignore[attr-defined]
+    assert starter_input(b.task, b.contract, b.template).storage_rules == "(없음)"  # type: ignore[attr-defined]
+    old = fit_input(inp, GenStarterInputV3)
+    assert "storage_rules" not in old.model_dump()

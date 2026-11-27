@@ -399,3 +399,158 @@ async def test_posting_incidents_order_approved_latest_first_then_drafts() -> No
     await _used_by(common, "p", new, at=datetime(2026, 11, 20, tzinfo=UTC))
     await common.save_draft(CommonKey("p", "onto-v", "skeleton"), _task_for(None), [])
     assert await common.posting_incidents("p") == [new, old, ""]
+
+
+# ── 공유 회사 사례의 함정 틀 (설계 검사 #332 S-F8) ──────────────────────────────
+
+
+async def test_a_shared_company_case_goes_through_the_trap_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """일반 파이프라인(지원자 실행)이 공유 회사 사례의 기능형 재료로 공통 과제를 만들 때도 인터뷰처럼 함정 틀을 거친다 (사용자 결정
+    2026-11-26). 초안은 틀 적용 재료로 쓰고, 틀 적용 재료는 공통 과제 행에 — 빌드 계약 단계가 원 재료 대신 쓴다. 재사용 초안은 다시
+    틀을 만들지 않는다 (저장된 틀)."""
+    from types import SimpleNamespace
+
+    from task_spec.llm import FakeBackend
+    from task_spec.schemas import FramedMaterial, TrapFrame
+    from task_spec.spec.case_frame import CaseFrame
+    from tests.spec.test_feature import PROMPTS, _client
+
+    store, common, catalog = (
+        InMemoryCompanyIncidents(),
+        InMemoryCommonStore(),
+        load_incidents(PUBLIC),
+    )
+    rec = await _shared(store, "mmmm00000001")
+    seen: dict[str, Any] = {"framer": 0}
+    frame = TrapFrame.model_validate(
+        {
+            "kind": "design",
+            "hidden_requirement": "가상 틀 숨은 요구",
+            "reason": "pool_acquire_timeout",
+        }
+    )
+
+    async def framer(incident: PublicIncident, profile: Any) -> CaseFrame:
+        seen["framer"] += 1
+        seen["framed_id"] = incident.incident_id
+        assert incident.feature is not None
+        seed = incident.feature.model_copy(update={"hidden_requirement": "가상 틀 숨은 요구"})
+        return CaseFrame(
+            incident=incident.model_copy(update={"feature": seed}),
+            frame=frame,
+            framed=FramedMaterial(seed=seed, frame=frame),
+            flags=["함정 틀: 가상 표시"],
+        )
+
+    async def draft_feature_task(ctx: Any, **kw: Any) -> Any:
+        seen["draft_hidden"] = ctx.incident.feature.hidden_requirement
+        seen["draft_frame"] = ctx.trap_frame
+        return SimpleNamespace(output=object(), provenance=[], errors=[])
+
+    monkeypatch.setattr(spec_mod, "draft_feature_task", draft_feature_task)
+    # 진짜 apply_feature 처럼 과제에 쓴 사례 id 를 남긴다 — 다음 실행이 이 공고의 회사 사례를 이어 쓴다 (posting_incidents)
+    monkeypatch.setattr(
+        spec_mod,
+        "apply_feature",
+        lambda task, res: task.model_copy(update={"source_incident": rec.incident_id}),
+    )
+    real_build = spec_mod.build_common
+
+    async def build_common(*args: Any, **kw: Any) -> Any:
+        # 온톨로지 없이도 초안 맥락을 채운다 — 사례는 노드가 고른 카탈로그의 그 직군 것 (회사 사례)
+        from task_spec.spec.build import CommonDraft
+        from tests.spec.test_feature import _ctx
+
+        built = await real_build(*args, **kw)
+        ctx = _ctx()
+        ctx.incident = kw["incidents"][SUB]
+        return CommonDraft(task=built.task, ctx=ctx, flags=built.flags)
+
+    monkeypatch.setattr(spec_mod, "build_common", build_common)
+
+    async def company_of(posting_id: str) -> str | None:
+        return "가상회사"
+
+    node = spec_mod.make_draft_spec(
+        None,
+        llm=_client(FakeBackend()),
+        prompts=PROMPTS,
+        store=common,
+        incidents=catalog,
+        feature_default=True,
+        company_incidents=store,
+        company_of=company_of,
+        case_framer=framer,
+    )
+    out = await node(_state("run-a"))
+    task = out["spec"].common_tasks[0]
+    assert task.task_kind == "feature", task.task_kind
+    assert seen["framer"] == 1 and seen["framed_id"] == rec.incident_id
+    assert seen["draft_hidden"] == "가상 틀 숨은 요구" and seen["draft_frame"] == frame
+    assert "함정 틀: 가상 표시" in task.review_flags
+    stored = await common.framed(task.task_id)
+    assert stored is not None and stored.frame == frame
+    # 다음 지원자 실행은 저장된 초안을 쓴다 — 틀을 다시 만들지 않는다
+    again = await node(_state("run-b"))
+    assert again["spec"].common_tasks[0].task_id == task.task_id and seen["framer"] == 1
+
+
+async def test_a_failing_case_framer_does_not_stop_the_applicant_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """개인정보 점검 M1 (#332 S-F8): 틀 만들기가 예상 밖으로 실패해도 지원자 실행은 원 재료로 계속하고 표시만 남긴다."""
+    from types import SimpleNamespace
+
+    from task_spec.llm import FakeBackend
+    from task_spec.spec.build import CommonDraft
+    from task_spec.spec.case_frame import FLAG_CASE_FRAME_FAILED
+    from tests.spec.test_feature import PROMPTS, _client, _ctx
+
+    store, common, catalog = (
+        InMemoryCompanyIncidents(),
+        InMemoryCommonStore(),
+        load_incidents(PUBLIC),
+    )
+    rec = await _shared(store, "nnnn00000001")
+    seen: dict[str, Any] = {}
+
+    async def framer(incident: PublicIncident, profile: Any) -> Any:
+        raise RuntimeError("가상 장애")
+
+    async def draft_feature_task(ctx: Any, **kw: Any) -> Any:
+        seen["draft_incident"] = ctx.incident.incident_id
+        return SimpleNamespace(output=object(), provenance=[], errors=[])
+
+    real_build = spec_mod.build_common
+
+    async def build_common(*args: Any, **kw: Any) -> Any:
+        built = await real_build(*args, **kw)
+        ctx = _ctx()
+        ctx.incident = kw["incidents"][SUB]
+        return CommonDraft(task=built.task, ctx=ctx, flags=built.flags)
+
+    monkeypatch.setattr(spec_mod, "draft_feature_task", draft_feature_task)
+    monkeypatch.setattr(spec_mod, "apply_feature", lambda task, res: task)
+    monkeypatch.setattr(spec_mod, "build_common", build_common)
+
+    async def company_of(posting_id: str) -> str | None:
+        return "가상회사"
+
+    node = spec_mod.make_draft_spec(
+        None,
+        llm=_client(FakeBackend()),
+        prompts=PROMPTS,
+        store=common,
+        incidents=catalog,
+        feature_default=True,
+        company_incidents=store,
+        company_of=company_of,
+        case_framer=framer,
+    )
+    out = await node(_state("run-a"))
+    task = out["spec"].common_tasks[0]
+    assert seen["draft_incident"] == rec.incident_id  # 원 재료로 초안
+    assert FLAG_CASE_FRAME_FAILED in task.review_flags
+    assert await common.framed(task.task_id) is None

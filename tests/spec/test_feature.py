@@ -475,3 +475,18 @@ def test_clue_and_new_rule_clarifications_are_kept() -> None:
         "피크 시 HTTP 요청량"  # 단서는 주제에 HTTP 가 있어도 보지 않음
     )
     assert clarification_overlaps(_out(d)) == {}
+
+
+def test_slot_secrets_include_the_common_material_leak_words() -> None:
+    """설계 검사 #332 S-F6: 슬롯 글도 공통 과제 재료의 새는 말(틀 금지 낱말이 합쳐진 leak_terms·2단계 원인 낱말)로 대조한다 — 예전에는
+    먼저 말할 개념·원 사례 원인 용어만 봐, 슬롯이 공통 과제의 숨은 요구 낱말을 드러낼 수 있었다. 업무 요구에 나온 말은 뺀다."""
+    from task_spec.spec.slots import common_secrets
+    from tests.spec.test_feature_seed import BACKEND
+
+    task = apply_feature(_skeleton(), DraftResult(output=_out()))
+    ctx = _ctx()
+    ctx.incident = BACKEND
+    seed = BACKEND.feature
+    assert seed is not None and seed.leak_terms
+    secrets = common_secrets(task, ctx)
+    assert all(t in secrets for t in [*seed.leak_terms, *seed.stage2_cause_terms])

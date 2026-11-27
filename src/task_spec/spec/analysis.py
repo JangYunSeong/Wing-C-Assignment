@@ -42,6 +42,14 @@ def check_analysis(task: TaskItem) -> list[str]:
         problems.append(f"덮는 사실이 없는 요구·기준 (물어서 알 수 없음): {', '.join(loose)}")
     if bad := [r for r in task.request_mentions if r not in reqs]:
         problems.append(f"request_mentions 가 없는 요구를 가리킴: {', '.join(bad)}")
+    return problems + link_problems(task)
+
+
+def link_problems(task: TaskItem) -> list[str]:
+    """공개 수용 기준 → 공식 요구 연결 — 기준마다 요구 하나 이상, 있는 요구만, 요구마다 가리키는 기준이 있게. 요청 글 단계는 기준에
+    req_ids 가 이미 있으면(생성기 v6~) 연결을 쓰지 않으므로 그 결함을 재요청하지 않는다 (spec/analysis_request, 설계 검사 #332 S-F15)."""
+    reqs = [r.req_id for r in task.requirements]
+    problems: list[str] = []
     for a in task.acceptance_public:
         if not a.req_ids:
             problems.append(

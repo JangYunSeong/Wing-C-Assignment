@@ -37,6 +37,7 @@ from task_spec.postings.suggest import OntologyLists
 from task_spec.prompting import PromptRegistry
 from task_spec.retrieve.t1 import T1Retriever
 from task_spec.schemas import PublicIncident, RunInput, RunState
+from task_spec.spec.case_frame import CaseFramer
 from task_spec.spec.company_incidents import CompanyIncidentRepo, CompanyResolver
 from task_spec.spec.store import CommonTaskRepo
 
@@ -71,6 +72,8 @@ def build_graph(
     feature_task_default: bool = False,
     company_incidents: CompanyIncidentRepo | None = None,
     company_of: CompanyResolver | None = None,
+    # 공유 회사 사례의 함정 틀 (설계 검사 #332 S-F8) — 인터뷰 서비스가 만든다 (같은 가명화 길). 없으면 틀 없이
+    case_framer: CaseFramer | None = None,
 ) -> CompiledStateGraph:
     g = StateGraph(RunState, input_schema=RunInput)
 
@@ -102,6 +105,7 @@ def build_graph(
             feature_default=feature_task_default,
             company_incidents=company_incidents,
             company_of=company_of,
+            case_framer=case_framer,
         ),
     )
     g.add_node("approval", approval, destinations=("finalize", "draft_spec", END))

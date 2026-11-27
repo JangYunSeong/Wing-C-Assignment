@@ -33,11 +33,18 @@ from task_spec.schemas import (
 from task_spec.schemas.interview_state import ReinforceAnswer
 from task_spec.schemas.pseudo_text import PseudonymizedText
 from task_spec.schemas.trap_frame import TrapKind
+from task_spec.spec.feature import find_terms, without_public
 from task_spec.starter.feasibility import names as condition_names
 from task_spec.starter.templates import Template
 
 TASK = "trap_frame"
 FLAG = "함정 틀: "  # 과제 검토 표시 머리 (막지 않음)
+# ⑧ 에서 담당자가 숨은 요구·허용 설계를 고침 — 빌드 계약 단계는 생성 때 틀 적용 재료를 그대로 쓰고, 숨은 테스트·허용 구현은 고친 글로 만든다
+# (설계 검사 B-F5). 고친 판을 넘어 남는다 — 틀 적용 재료와 글이 갈린 것은 다시 고쳐도 그대로다.
+FLAG_FRAME_EDITED = (
+    f"{FLAG}숨은 요구·허용 설계 수정 — 빌드 계약 단계는 생성 때 틀 적용 재료(사유·필요 요소·금지 낱말·금지 저장) 사용, "
+    "숨은 테스트·허용 구현은 고친 글 기준"
+)
 FAILED = FLAG + "자동 생성 실패 — 원 재료로 만듦"
 # B(동작 함정)를 잴 수 있는 템플릿 실패 사유 — 템플릿 v5 에는 없다 (injected_failure_ignored 는 401 과 503 을 가르지 못한다).
 # 템플릿 v6 에 생기면 여기에 더한다 (#318 D2). 그 전에는 틀 종류가 design 하나다.
@@ -239,6 +246,13 @@ def keeps_hidden(seed: FeatureSeed, frame: TrapFrame) -> bool:
     return _key(seed.hidden_requirement) in _key(frame.hidden_requirement)
 
 
+def _design_head(design: str) -> str:
+    """표시용 설계 머리 — '[설계] 요약 — 조건…' 의 요약 앞부분."""
+    body = design.split("] ", 1)[1] if design.startswith("[") and "] " in design else design
+    head = body.split(" — ", 1)[0].strip()
+    return head[:40] + ("…" if len(head) > 40 else "")
+
+
 def apply_frame(
     seed: FeatureSeed,
     frame: TrapFrame,
@@ -269,14 +283,20 @@ def apply_frame(
     if removed_designs:
         matched = [match_design(r, seed.accepted_designs) for r in removed_designs]
         gone = {d for d in matched if d is not None}
-        if lost := sum(1 for d in matched if d is None):
+        if lost := [r for r, d in zip(removed_designs, matched, strict=True) if d is None]:
+            # 어느 설계인지 보인다 — 다시 만든 재료는 문구가 바뀌어 앞부분 맞춤이 못 찾을 수 있다 (설계 검사 #332 S-F4: 개수만 보여 무엇을
+            # 확인할지 몰랐다). 찾은 설계도 무엇과 맞췄는지 남긴다
             notes.append(
-                f"사람이 뺀 설계 {lost}개가 다시 만든 재료에 없음 (이미 빠졌을 수 있음) — 사람 확인"
+                f"사람이 뺀 설계 {len(lost)}개가 다시 만든 재료에 없음 (이미 빠졌을 수 있음) — 사람 확인: "
+                + "; ".join(_design_head(r) for r in lost)
             )
         kept = [d for d in seed.accepted_designs if d not in gone]
         if gone and len(kept) >= 2:
             update["accepted_designs"] = kept
-            notes.append(f"허용 설계 {len(gone)}개를 뺌 (사람 결정)")
+            notes.append(
+                f"허용 설계 {len(gone)}개를 뺌 (사람 결정): "
+                + "; ".join(_design_head(d) for d in gone)
+            )
         elif gone:
             notes.append(
                 "허용 설계를 빼면 둘 미만이라 그대로 둠 — 대신 인정할 설계 필요, 사람 확인"
@@ -296,7 +316,15 @@ def apply_frame(
                 "재료의 상태 대상 요구를 뺌 — 흔한 구현의 저장 방식"
                 + (f" ({frame.stateful_target_why})" if frame.stateful_target_why else "")
             )
-    terms = list(dict.fromkeys([*seed.leak_terms, *(t for t in frame.forbidden_terms if t)]))
+    # 틀 금지 낱말 가운데 공개된 업무 요구·운영 조건 낱말(1단계 자료에 보여야 하는 단서)에 걸리는 말은 넣지 않는다 — 검사 3 과 같은 예외.
+    # 예외는 틀 스키마 설명에만 있어 그대로 합치면 명세 검사가 고칠 수 없는 재요청을 냈다 (설계 검사 #332 S-F6)
+    trigger = " / ".join(seed.trigger_terms)
+    added = [
+        t
+        for t in without_public((t for t in frame.forbidden_terms if t), seed.business_need)
+        if not find_terms([t], trigger)
+    ]
+    terms = list(dict.fromkeys([*seed.leak_terms, *added]))
     if len(terms) > len(seed.leak_terms):
         update["leak_terms"] = terms
     return seed.model_copy(update=update), notes

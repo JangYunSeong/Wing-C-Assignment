@@ -1170,3 +1170,99 @@ def test_the_code_written_public_helper_is_not_leak_checked() -> None:
     both = [p.message for p in _run(_overlays(public_test=[helper, written])).problems]
     leaks = [m for m in both if "드러내는 말" in m]
     assert len(leaks) == 1 and "Pt1Test.java" in leaks[0] and "동시 요청" in leaks[0]
+
+
+def test_trap_frame_forbidden_storage_in_the_starter_is_a_problem() -> None:
+    """설계 검사 #332 T-F2: 함정 틀이 금지한 저장 엔티티는 시작 코드(지원자가 받는 기존 시스템)에도 두지 않는다 — 테이블·저장소 어느
+    꼴이든, 템플릿 테이블 규칙·발급 값 예외와 상관없이. 틀이 없으면 같은 코드가 이 문제로 걸리지 않는다."""
+    from task_spec.schemas import ForbiddenStorage
+
+    session = ForbiddenStorage(entity="Session", why="가상 이유")
+    starter = [
+        _f(f"{PKG}/order/Order.java", ORDER),
+        _f(
+            "src/main/resources/schema.sql",
+            "CREATE TABLE orders (id BIGINT PRIMARY KEY, status VARCHAR(20));\n"
+            "CREATE TABLE user_session (token VARCHAR(64) PRIMARY KEY, user_id BIGINT);\n",
+        ),
+        _f(
+            f"{PKG}/auth/UserSessionRepository.java",
+            "package com.example.service.auth;\npublic interface UserSessionRepository {}\n",
+        ),
+    ]
+
+    def run(forbidden: tuple[ForbiddenStorage, ...]) -> list[str]:
+        res = static_check(
+            _overlays(starter=starter),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            seed=BACKEND_SEED,
+            forbidden_storage=forbidden,
+        )
+        return res.for_target("gen_starter")
+
+    got = run((session,))
+    assert _has(got, "함정 틀이 금지한 저장 방식 Session", "schema.sql", "user_session")
+    assert _has(got, "함정 틀이 금지한 저장 방식 Session", "UserSessionRepository")
+    assert not _has(run(()), "함정 틀")
+
+
+def test_material_cause_terms_are_checked_in_public_overlays_and_readme() -> None:
+    """설계 검사 #332 T-F7: 재료의 원인 기술 용어(check_terms)도 시작 코드·README 누설 대조에 — 빌드 단계는 seed 낱말 목록만 봤다."""
+    starter = [
+        _f(f"{PKG}/order/Order.java", ORDER),
+        _f(
+            "src/main/resources/schema.sql",
+            "CREATE TABLE orders (id BIGINT PRIMARY KEY, status VARCHAR(20));\n",
+        ),
+        _f(
+            f"{PKG}/order/OrderController.java",
+            "package com.example.service.order;\n// idempotency 키는 아직 없다\nclass OrderController {}\n",
+        ),
+    ]
+
+    def run(terms: tuple[str, ...]) -> list[str]:
+        res = static_check(
+            _overlays(starter=starter),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            seed=BACKEND_SEED,
+            check_terms=terms,
+        )
+        return res.for_target("gen_starter")
+
+    assert _has(run(("idempotency",)), "idempotency")
+    assert not _has(run(()), "idempotency")
+
+
+def test_code_written_files_are_not_the_generators_fault() -> None:
+    """설계 검사 #332 T-F6: 코드가 계약에서 쓰는 파일(시드 SQL 등)의 고유어·외부 주소는 생성기 탓이 아니다 — 생성기가 다시 써도 코드가 같은
+    파일을 넣는다. 그 글은 계약 검사가 본다. 생성기가 쓴 파일의 같은 글은 그대로 문제다."""
+    seed_sql = JAVA.manifest.seed_sql
+    assert seed_sql is not None
+    rendered = _f(
+        seed_sql.path,
+        "INSERT INTO orders VALUES (1, '우아한형제들 https://api.real-shop.co.kr');\n",
+    )
+    written = _f(
+        f"{PKG}/order/Note.java", "// 우아한형제들 https://api.real-shop.co.kr\nclass Note {}\n"
+    )
+
+    def run(*extra: Any) -> list[str]:
+        starter = [*_overlays()[0].files, *extra]
+        res = static_check(
+            _overlays(starter=starter),
+            template=JAVA,
+            plan=PLAN,
+            spec=SpecView.from_task(_task()),
+            seed=BACKEND_SEED,
+            avoid_terms=("우아한형제들",),
+        )
+        return res.for_target("gen_starter")
+
+    assert not _has(run(rendered), seed_sql.path)
+    assert _has(run(written), "Note.java", "외부 네트워크 주소") and _has(
+        run(written), "Note.java", "우아한형제들"
+    )

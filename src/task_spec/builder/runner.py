@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from task_spec.schemas import FramedMaterial, HiddenPlan, TaskContract, TaskItem
+from task_spec.schemas import ForbiddenStorage, FramedMaterial, HiddenPlan, TaskContract, TaskItem
 from task_spec.schemas.build import RepairRecord
 from task_spec.schemas.build_record import (
     README_FULL_PATH,
@@ -35,6 +35,7 @@ from task_spec.schemas.build_record import (
     BuildOutcome,
     BuildProvenance,
     BuildRecord,
+    BuildTrace,
     StarterFile,
 )
 from task_spec.schemas.incident import FeatureSeed, MaterialGuide, MaterialInterface
@@ -95,6 +96,12 @@ class ContractResult:
     # 재료 숨은 안내 (#256 재료 옮기기) — 계약 단계와 같은 것을 빌드 입력(BuildInputs)에 넘긴다
     guide: MaterialGuide | None = None
     avoid_terms: tuple[str, ...] = ()
+    # 함정 틀이 금지한 저장 엔티티 (#318 D1) — 계약 단계(입력·검사 4)와 같은 목록을 빌드 입력·정적 검사·README 검사에 (설계 검사 #332 T-F2)
+    forbidden_storage: tuple[ForbiddenStorage, ...] = ()
+    # 재료의 원인 기술 용어 (PublicIncident.hidden_terms) — 계약·정적·README 누설 검사에만 (LLM 입력 아님, 설계 검사 #332 T-F7)
+    check_terms: tuple[str, ...] = ()
+    # 계약을 코드가 맞춘 것 (PlanResult.adjustments) — 빌드 기록 trace 에 (설계 검사 #332 T-F16: 승인 화면에 보인다던 메모가 버려졌다)
+    adjustments: tuple[str, ...] = ()
     # 계약 단계의 승인자 표시 (plan_contract flags — '운영 값 후보가 여럿', 근거 조각 등). 예전에는 운영 경로가 버려 승인 화면에
     # 나오지 않았다 (평가 러너에서만 보였다)
     review_flags: tuple[str, ...] = ()
@@ -113,6 +120,7 @@ class BuildResult:
     readme_full: str | None = None  # 문제 분석 판의 원래 판 README — 승인 화면·평가 키트에만
     # build_and_repair 의 LLM 호출마다의 출처 — 생성기·수리 루프 재요청·관문 호출 (#233)
     provenance: tuple[Provenance, ...] = ()
+    trace: BuildTrace | None = None  # 코드 맞춤·정적 재생성·보정·관문 결과 (설계 검사 #332 T-F16)
 
 
 @dataclass(frozen=True)
@@ -261,6 +269,7 @@ async def run_job(
                 verification=i.verification,
                 review_flags=merged_flags(task.review_flags, c.review_flags, b.review_flags),
                 repairs=b.repairs,
+                trace=b.trace,
             ),
         )
         await run.enter("package")
@@ -327,6 +336,7 @@ def failure_detail(
             part.review_flags if part is not None else (),
         ),
         repairs=list(b.repairs if b is not None else (part.repairs if part is not None else [])),
+        trace=(b.trace if b is not None else None) or (part.trace if part is not None else None),
     )
 
 

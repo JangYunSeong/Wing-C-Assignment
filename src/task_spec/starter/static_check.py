@@ -35,7 +35,7 @@ from typing import Any
 
 import yaml
 
-from task_spec.schemas import FeatureSeed, GeneratedFile, HiddenPlan, TaskContract
+from task_spec.schemas import FeatureSeed, ForbiddenStorage, GeneratedFile, HiddenPlan, TaskContract
 from task_spec.schemas.build import Endpoint, FileKind
 from task_spec.schemas.template import SlotKind, TemplateManifest
 from task_spec.spec.feature import find_terms, title_allowed_text
@@ -43,6 +43,7 @@ from task_spec.starter.auth_rule import credentials, issued_rule, locked_existin
 from task_spec.starter.contract import SpecView, contract_fields, existing_endpoints, hidden_terms
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
+from task_spec.starter.forbidden_storage import forbidden_for, storage_hits
 from task_spec.starter.header_values import PER_REQUEST, header_values
 from task_spec.starter.hidden_helpers import (
     api_functions,
@@ -53,6 +54,7 @@ from task_spec.starter.hidden_helpers import (
     row_use_consts,
     setting_const,
 )
+from task_spec.starter.hygiene import hygiene_hits
 from task_spec.starter.py_helpers import command_name, py_ident
 from task_spec.starter.render import README, render_params
 from task_spec.starter.seed_rows import peak_reasons
@@ -109,19 +111,10 @@ KIND_TARGET = {
 }
 
 # 실제 비밀의 정해진 형식 — 걸리면 생성기에 다시 쓰게 한다
-_SECRETS = [
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"\b(?:sk|ghp|gho|xox[abp])[-_][A-Za-z0-9]{20,}"),
-]
 # 이름과 길이만 보는 추정 — 승인자 표시로만. 2026-11-18 ct-10eb910705dd-b1: 계약 fixture 의 시험용 토큰
 # (access_token: 'test-token-001')을 공개 테스트가 그대로 써야 하는데 이 규칙이 막아, 재요청으로 못 고치고 빌드가 실패했다
 _SECRET_HINT = re.compile(
     r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token)\b\s*[:=]\s*['\"]?(?=[^\s'\"]*\d)(?=[^\s'\"]*[A-Za-z])[^\s'\"]{12,}"
-)
-_URL = re.compile(r"https?://([A-Za-z0-9.\-]+)")
-_LOCAL_HOSTS = re.compile(
-    r"^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|(?:[\w-]+\.)*example\.(?:com|org|net)|[\w-]+\.test|[\w-]+\.invalid)$"
 )
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]*")  # 케밥 표기도 한 이름 (#241)
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -294,16 +287,15 @@ def _hygiene(
     out: list[str] = []
     for f in files:
         where = f"{o.name} 파일 {f.path}" if o else f.path
-        if any(rx.search(f.content) for rx in _SECRETS):
+        hits = hygiene_hits(f.content, avoid_terms)
+        if hits.secret:
             out.append(f"{where} 에 비밀 값처럼 보이는 문자열이 있음")
-        hosts = sorted({h for h in _URL.findall(f.content) if not _LOCAL_HOSTS.match(h)})
-        if hosts:
+        if hits.hosts:
             out.append(
-                f"{where} 에 외부 네트워크 주소: {', '.join(hosts)} — 검증·채점은 네트워크 없이 돈다"
+                f"{where} 에 외부 네트워크 주소: {', '.join(hits.hosts)} — 검증·채점은 네트워크 없이 돈다"
             )
-        named = find_terms(avoid_terms, f.content)
-        if named:
-            out.append(f"{where} 에 원 사례의 실존 이름·고유어: {', '.join(named)}")
+        if hits.named:
+            out.append(f"{where} 에 원 사례의 실존 이름·고유어: {', '.join(hits.named)}")
     return out
 
 
@@ -1113,8 +1105,37 @@ def _timed_requests(
     return out
 
 
-def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> list[StaticProblem]:
-    """시작 코드가 선언한 테이블(CREATE TABLE·@Table 등)은 계약이 정한 이름이어야 한다 — 숨은 테스트가 그 이름으로 오류를 주입한다."""
+def _starter_forbidden_storage(
+    o: Overlay, forbidden: Sequence[ForbiddenStorage]
+) -> list[StaticProblem]:
+    """함정 틀이 금지한 저장 엔티티 (#318 검사 4 의 빌드 쪽, 설계 검사 #332 T-F2) — 시작 코드(지원자가 받는 기존 시스템)에 테이블·엔티티·
+    저장소·조회 메서드로 두지 않는다. 템플릿의 테이블 선언 규칙이 없어도(비 Java) 같은 글 꼴로 본다. 두면 틀이 숨은 요구로 막은 흔한
+    구현(예: 요청마다 세션 테이블 조회)이 기존 시스템으로 나가고, README '시작 코드' 절에도 실린다. 2026-11-26 알파 r2 3/3 이 기존 API 의
+    세션 확인에 쓸 session·user_session 테이블을 만들었다."""
+    if not forbidden:
+        return []
+    out: list[StaticProblem] = []
+    for f in o.files:
+        for entity, shown in storage_hits(f.content, forbidden):
+            out.append(
+                StaticProblem(
+                    "gen_starter",
+                    f"시작 코드 {f.path} 에 함정 틀이 금지한 저장 방식 {entity} ('{shown}') — 그 상태를 테이블·엔티티·저장소로 "
+                    "두지 않는다. 이미 있는 API 에는 공개 요구가 더하는 발급 값 확인을 넣지 않고, 저장 방식은 지원자 몫으로 남긴다",
+                )
+            )
+    return out
+
+
+def _starter_tables(
+    o: Overlay,
+    t: Template,
+    contract: TaskContract | None,
+    forbidden: Sequence[ForbiddenStorage] = (),
+) -> list[StaticProblem]:
+    """시작 코드가 선언한 테이블(CREATE TABLE·@Table 등)은 계약이 정한 이름이어야 한다 — 숨은 테스트가 그 이름으로 오류를 주입한다.
+    함정 틀이 금지한 저장 엔티티의 테이블은 여기서 다루지 않는다 — 발급 값 예외로도 통과하지 않고 _starter_forbidden_storage 가 따로
+    막는다 (설계 검사 #332 T-F2: 예외가 세션 테이블을 통과시켰다)."""
     naming = t.manifest.naming.table
     if contract is None or naming is None or not naming.declare_patterns:
         return []
@@ -1136,6 +1157,7 @@ def _starter_tables(o: Overlay, t: Template, contract: TaskContract | None) -> l
         for d in declared_tables(o.files, naming.declare_patterns)
         if not any(same_table(d, e, naming) for e in expected.values())
         and not any(same_table(d, s, naming) for s in stores)
+        and forbidden_for(d, forbidden) is None
     ]
     if not stray:
         return []
@@ -2803,32 +2825,38 @@ def static_check(
     avoid_terms: Sequence[str] = (),
     public_tests_visible: bool = False,
     hidden_cases_only: Collection[str] | None = None,
+    forbidden_storage: Sequence[ForbiddenStorage] = (),
+    check_terms: Sequence[str] = (),
 ) -> StaticResult:
-    """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게."""
+    """오버레이 정적 검사 (§6). problems 는 생성기별 재생성 사유, review_flags 는 승인자에게.
+    forbidden_storage: 이 공고의 함정 틀이 금지한 저장 엔티티 (틀 적용 재료가 있을 때 — 계약 단계와 같은 목록)."""
     res = StaticResult()
     hidden_files = [f for o in overlays if o.kind == "hidden" for f in o.files]
     # 코드가 쓴 파일(조절값·계약 도우미)의 이름은 빼고 — 2026-11-09 React 알파: 숨은 도우미 contract.ts 의 이름이 공개 테스트의
     # `import … from './contract'`(공개 도우미)를 누설로 막아 공개 테스트 생성이 재생성 예산을 다 썼다
     m_ = template.manifest
-    written = {m_.hidden_layout.params if m_.hidden_layout else None}
-    written |= {m_.hidden_helper.path if m_.hidden_helper else None}
-    hidden_names = [PurePosixPath(f.path).stem for f in hidden_files if f.path not in written]
+    # 코드가 계약에서 결정적으로 쓰는 파일 — 생성기 몫 검사(고유어·외부 주소·비밀 값, 공개 낱말 대조, 숨은 이름)에서 한 집합으로 뺀다.
+    # 그 글의 출처인 계약은 계약 검사가 같은 규칙으로 본다 (starter/hygiene, contract._contract_hygiene — 설계 검사 #332 T-F6: 집합이 셋이라
+    # 시드 SQL·계약 도우미의 글이 생성기를 탓하는 재생성이 되었다)
+    coded = code_written_paths(m_)
+    hidden_names = [PurePosixPath(f.path).stem for f in hidden_files if f.path not in coded]
     terms = list(
-        dict.fromkeys([*hidden_terms(seed, spec), *(n for n in hidden_names if len(n) >= 4)])
+        dict.fromkeys(
+            [*hidden_terms(seed, spec, check_terms), *(n for n in hidden_names if len(n) >= 4)]
+        )
     )
-    # 코드가 쓰는 공개 도우미(PublicCase 등)는 낱말 대조에서 뺀다 — 고정 주석이 재료 낱말과 겹치면 생성기가 고칠 수 없는 재생성이 된다.
-    # 계약에서 온 글(설정 뜻·시드 값·이름)은 계약 검사(contract._leaks — 같은 hidden_terms)가 이미 본다. 2026-11-26 #318 알파 3회:
-    # 로그인 세션 도우미 주석 '동시 요청(peak) 안에서 부르지 않는다'가 재료 운영 조건 낱말 '동시 요청'에 걸려 gen_public 이 모두 실패
-    public_written = {m_.public_helper.path if m_.public_helper else None}
+    # 2026-11-26 #318 알파 3회: 코드가 쓰는 공개 도우미 주석 '동시 요청(peak) …'이 재료 운영 조건 낱말에 걸려 gen_public 이 모두 실패 —
+    # 고정 주석은 hidden_helpers 에서 운영 조건 낱말 없이 쓰고(설계 검사 #332 B-F11), 계약에서 온 글은 계약 검사가 본다
 
     for o in overlays:
         res.problems += _paths(o, template)
-        res.problems += [StaticProblem(o.target, msg) for msg in _hygiene(o, o.files, avoid_terms)]
+        mine = [f for f in o.files if f.path not in coded]  # 생성기가 쓴 파일만
+        res.problems += [StaticProblem(o.target, msg) for msg in _hygiene(o, mine, avoid_terms)]
         res.review_flags += _secret_hints(o, o.files)
         # 공개 테스트는 지원자에게 주지 않아도 숨은 요구 낱말이 있으면 안 된다 (게이트 ⑤ 누설 사전 확인)
         public = o.kind in ("starter", "public_test")
         if public:
-            for path, shown in _leaks([f for f in o.files if f.path not in public_written], terms):
+            for path, shown in _leaks(mine, terms):
                 res.problems.append(
                     StaticProblem(
                         o.target,
@@ -2850,7 +2878,8 @@ def static_check(
         if o.kind == "starter":
             problems, flags = _operating_values(o, template, plan)
             res.problems += problems
-            res.problems += _starter_tables(o, template, contract)
+            res.problems += _starter_tables(o, template, contract, forbidden_storage)
+            res.problems += _starter_forbidden_storage(o, forbidden_storage)
             res.problems += _starter_foreign_keys(o, template, contract)
             res.problems += _starter_new_api_tests(o, template, contract, spec)
             res.problems += _starter_issued_calls(o, contract, spec)
@@ -2876,7 +2905,14 @@ def static_check(
             res.problems += _harness_overrides(o, starter, template, plan)
 
     if readme is not None:
-        res.review_flags += readme_flags(readme, spec=spec, seed=seed, avoid_terms=avoid_terms)
+        res.review_flags += readme_flags(
+            readme,
+            spec=spec,
+            seed=seed,
+            avoid_terms=avoid_terms,
+            forbidden_storage=forbidden_storage,
+            check_terms=check_terms,
+        )
     res.review_flags = list(dict.fromkeys(res.review_flags))
     return res
 
@@ -2887,6 +2923,8 @@ def readme_flags(
     spec: SpecView,
     seed: FeatureSeed | None = None,
     avoid_terms: Sequence[str] = (),
+    forbidden_storage: Sequence[ForbiddenStorage] = (),
+    check_terms: Sequence[str] = (),
 ) -> list[str]:
     """지원자 README 검사 — 승인자 표시(review_flags)만. README 는 승인된 명세 문장으로 결정적으로 만든다 — 걸리면 명세 문제
     (재생성으로 못 고침). 표시는 '{README} …' 로 시작한다 (승인 화면 README 경고 칸이 이 머리로 고른다 — api/routers/builds.py).
@@ -2896,7 +2934,7 @@ def readme_flags(
     — 운영 조건 낱말(trigger_terms)이 재료의 업무 요구·자료 종류 이름에 나왔으면 괜찮다 (spec/feature.title_allowed_text).
     숨은 요구·원인 낱말·먼저 말할 개념은 명세 검사처럼 자료 제목에서도 표시한다. 2026-11-18: 이 허용을 몰라 명세가 통과시킨
     자료 제목을 '명세 수정 필요'로 표시했다 — 알파 README 49개 중 33개, 걸린 44줄이 모두 자료 목록 줄."""
-    terms = hidden_terms(seed, spec)
+    terms = hidden_terms(seed, spec, check_terms)
     titles = set(spec.artifact_titles)
     listed: list[str] = []
     rest: list[str] = []
@@ -2930,6 +2968,13 @@ def readme_flags(
         if shown
         else []
     )
+    # 함정 틀이 금지한 저장 방식 (설계 검사 #332 T-F2) — README 계약 절·'시작 코드' 절(시작 코드의 public 클래스)에서
+    if hits := storage_hits(readme.content, forbidden_storage):
+        out.append(
+            f"{README} 에 함정 틀이 금지한 저장 방식: "
+            + ", ".join(f"{e} '{s}'" for e, s in dict.fromkeys(hits))
+            + " — 계약 또는 시작 코드에서 유래함, 확인 필요"
+        )
     out += _hygiene(None, [readme], avoid_terms)
     out += _secret_hints(None, [readme])
     return out

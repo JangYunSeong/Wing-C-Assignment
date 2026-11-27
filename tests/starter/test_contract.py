@@ -200,6 +200,8 @@ def _check(contract: dict[str, Any] | None = None, plan: dict[str, Any] | None =
         kw.pop("manifest", _manifest()),
         kw.pop("seed", BACKEND_SEED),
         forbidden_storage=kw.pop("forbidden_storage", ()),
+        check_terms=kw.pop("check_terms", ()),
+        avoid_terms=kw.pop("avoid_terms", ()),
     )
 
 
@@ -1391,3 +1393,38 @@ def test_an_api_the_spec_adds_must_not_be_marked_existing() -> None:
     both = marked.model_copy(update={"endpoints": [*marked.endpoints, other]})
     add2 = "목록을 돌려주는 GET 엔드포인트를 추가한다"
     assert not _added_marked_existing(both, _spec(req_texts={"r1": add2}, public_texts=(add2,)))
+
+
+def test_a_comma_list_of_counts_is_not_read_as_one_thousands_number() -> None:
+    """설계 검사 #332 T-F5: '85,91,88건' 같은 쉼표 나열을 한 토큰으로 묶어 859188 로 읽고 '값(8591)과 다름 — 그 값을 쓴다'로
+    재요청했다 (#318 알파 frame-2·r2-3 첫 답). 쉼표는 세 자리 묶음일 때만 천 단위 구분이다."""
+    q = "시간대별 동시 요청은 85,91,88건이었다"
+    assert value_check(85, q, "85", [q], None).verdict == "ok"
+    assert value_check(91, q, "91", [q], None).verdict == "ok"
+    q2 = "피크 동시 요청 38,95,240건"
+    assert value_check(38, q2, "38", [q2], None).verdict == "ok"
+    # 천 단위 구분은 그대로 — 1,200건은 1200
+    q3 = "하루 주문 1,200건"
+    assert value_check(1200, q3, "1,200건", [q3], None).verdict == "ok"
+
+
+def test_material_cause_terms_are_checked_in_the_public_contract() -> None:
+    """설계 검사 #332 T-F7: 재료의 원인 기술 용어(PublicIncident.hidden_terms)도 공개 계약 누설 검사에 — 명세 단계는 보는데 빌드
+    단계는 안 봐 'idempotency' 같은 말이 계약·시작 코드·README 로 나갈 수 있었다. 검사에만 쓰고 계약 생성 입력에는 싣지 않는다."""
+    c = _contract()
+    c["endpoints"][1]["summary"] = "주문별 변경 이력 최신순 — idempotency 키로 중복을 막는다"
+    assert not _has(_check(c).problems, "idempotency")
+    assert _has(_check(c, check_terms=["idempotency"]).problems, "공개 계약", "idempotency")
+
+
+def test_contract_text_is_checked_for_real_names_and_external_addresses() -> None:
+    """설계 검사 #332 T-F6: 시드 SQL·공개 테스트 도우미처럼 코드가 계약에서 쓰는 파일은 생성기 몫 정적 검사에서 빠진다 — 그 글의 출처인
+    계약을 같은 규칙(원 사례 고유어·외부 주소)으로 보고 계약 재요청으로 고친다."""
+    c = _contract()
+    c["endpoints"][1]["summary"] = (
+        "우아한형제들 주문 이력 — https://api.real-shop.co.kr 에서 가져온 형식"
+    )
+    got = _check(c, avoid_terms=["우아한형제들"]).problems
+    assert _has(got, "원 사례의 실존 이름·고유어", "우아한형제들")
+    assert _has(got, "외부 네트워크 주소", "api.real-shop.co.kr")
+    assert not _has(_check().problems, "외부 네트워크 주소")

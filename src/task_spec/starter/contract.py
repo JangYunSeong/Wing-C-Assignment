@@ -48,7 +48,9 @@ from task_spec.starter.auth_rule import auth_flags, auth_problems, unreachable_t
 from task_spec.starter.feasibility import feasibility_problems
 from task_spec.starter.field_types import non_null
 from task_spec.starter.field_types import parse as parse_field
+from task_spec.starter.forbidden_storage import forbidden_for
 from task_spec.starter.header_values import header_problems
+from task_spec.starter.hygiene import hygiene_hits
 from task_spec.starter.interface import interface_problems, without_fixed
 from task_spec.starter.seed_rows import (
     case_rows_problems,
@@ -378,7 +380,9 @@ _TIME_WORDS = ("밀리초", "sec", "min", "ms", "분", "초", "s")
 _UNIT_TAIL = "의에도만까부마씩쯤간내후뒤전대째정동짜남여넘이미초밖처뿐조보가인일임입"
 _UNIT_TAIL_OPEN = "를는와로다였며고야나면라"  # 받침 없는 단위 (초·밀리초)
 _UNIT_TAIL_CLOSED = "을은과으"  # 받침 있는 단위 (분)
-_TOK_NUM = r"\d(?:[\d,]*\d)?(?:\.\d+)?"
+# 수 — 쉼표는 세 자리 묶음일 때만 천 단위 구분 (1,200). 그 밖의 쉼표는 나열이라 수를 나눈다 — 예전 꼴(\d[\d,]*\d)은 '85,91,88건'을
+# 한 토큰 859188 로 읽어 '값(8591)과 다름'으로 헛 재요청했다 (설계 검사 #332 T-F5, #318 알파 frame-2·r2-3)
+_TOK_NUM = r"(?:\d{1,3}(?:,\d{3})+(?![\d,]\d)|\d+)(?:\.\d+)?"
 _TOK_WORD = r"[^\s\d.,:;()\[\]{}/|=~～∼<>≤≥·\-–—%]+"
 # 값 토큰 — 수 + 붙은 말, 범위면 '수~수' 째 ('~' 는 띄어 써도, 붙임표는 붙여 쓸 때만 — '3건 - 5건' 은 둘).
 # 앞이 글자·숫자·점·붙임표·빗금이면 수가 아니다 (p50 의 50, EV-2024-011 의 011, 버전 1.2.3 의 뒤쪽, 15/33ms 의 33)
@@ -1404,9 +1408,12 @@ def _naming(
     return problems
 
 
-def hidden_terms(seed: FeatureSeed | None, spec: SpecView) -> list[str]:
-    """계약에 나오면 안 되는 말 — 재료의 숨은 요구·원인·운영 조건 낱말 + 먼저 말할 개념. 공개된 업무 요구에 나온 말은 뺀다."""
-    terms = list(spec.concepts)
+def hidden_terms(seed: FeatureSeed | None, spec: SpecView, extra: Sequence[str] = ()) -> list[str]:
+    """계약에 나오면 안 되는 말 — 재료의 숨은 요구·원인·운영 조건 낱말 + 먼저 말할 개념. 공개된 업무 요구에 나온 말은 뺀다.
+    extra: 검사에만 더하는 말 — 재료의 원인 기술 용어(PublicIncident.hidden_terms). 명세 단계는 보는데 빌드 단계는 안 봐 'idempotency'
+    같은 원인 용어가 계약·시작 코드·README 로 나갈 수 있었다 (설계 검사 #332 T-F7). 회사 사례에서는 LLM 입력에 싣지 않는 칸
+    (company_incidents.OTHER_FIELDS)이라 계약 생성 입력(forbidden_text)에는 넣지 않는다."""
+    terms = [*spec.concepts, *extra]
     if seed is not None:
         terms += [*seed.leak_terms, *seed.stage2_cause_terms, *seed.trigger_terms]
         public = set(find_terms(terms, seed.business_need))
@@ -1414,9 +1421,34 @@ def hidden_terms(seed: FeatureSeed | None, spec: SpecView) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
-def _leaks(contract: TaskContract, spec: SpecView, seed: FeatureSeed | None) -> list[str]:
+def _contract_hygiene(contract: TaskContract, avoid_terms: Sequence[str]) -> list[str]:
+    """계약 글의 비밀 값·외부 주소·원 사례 고유어 (starter/hygiene — 생성기 산출물과 같은 규칙). 시드 SQL·계약 도우미·공개 테스트 값처럼
+    코드가 계약에서 쓰는 파일은 생성기 몫 정적 검사에서 빠지므로, 그 글의 출처인 계약에서 보고 계약 재요청으로 고친다 (설계 검사 #332 T-F6:
+    생성기가 고칠 수 없는 재생성이 되었다)."""
+    out: list[str] = []
+    for where, text in contract_places(contract):
+        hits = hygiene_hits(text, avoid_terms)
+        if hits.secret:
+            out.append(
+                f"공개 계약 {where} 에 비밀 값처럼 보이는 문자열이 있음 — 시험용 값으로 바꾼다"
+            )
+        if hits.hosts:
+            out.append(
+                f"공개 계약 {where} 에 외부 네트워크 주소: {', '.join(hits.hosts)} — 검증·채점은 네트워크 없이 돈다 "
+                "(example.com·localhost 같은 주소로)"
+            )
+        if hits.named:
+            out.append(
+                f"공개 계약 {where} 에 원 사례의 실존 이름·고유어: {', '.join(hits.named)} — 가상 이름으로"
+            )
+    return list(dict.fromkeys(out))
+
+
+def _leaks(
+    contract: TaskContract, spec: SpecView, seed: FeatureSeed | None, extra: Sequence[str] = ()
+) -> list[str]:
     places = contract_places(contract)
-    shown = find_terms(hidden_terms(seed, spec), "\n".join(t for _, t in places))
+    shown = find_terms(hidden_terms(seed, spec, extra), "\n".join(t for _, t in places))
     if not shown:
         return []
     where = []
@@ -1784,23 +1816,16 @@ def _related_problems(contract: TaskContract, note: str) -> list[str]:
 def _forbidden_storage(contract: TaskContract, forbidden: Sequence[ForbiddenStorage]) -> list[str]:
     """함정 틀 검사 4 (#318) — 계약 엔티티가 틀이 금지한 저장 방식이면 재요청 (빌드 안전망 — 다른 틀 검사는 표시만).
     새 엔티티만 보면 b3 의 Session(existing=true)을 놓쳐 새·기존 모두 본다. 낱말 대조(_leaks)로는 못 한다 — 식별자를 낱말로 풀어
-    sessionId 같은 공개 칸까지 걸리고, 업무 요구에 나온 말('세션')은 숨은 낱말에서 빠진다. 그래서 엔티티 이름 단위로 (단·복수 같게)."""
-
-    def key(name: str) -> str:
-        return re.sub(r"[^0-9a-z가-힣]", "", name.lower())
-
+    sessionId 같은 공개 칸까지 걸리고, 업무 요구에 나온 말('세션')은 숨은 낱말에서 빠진다. 그래서 엔티티 이름 단위로 — 시작 코드 정적
+    검사와 같은 규칙(starter/forbidden_storage.names_entity: 끝 낱말들이 같으면, 단·복수 같게 — UserSession·LoginSession 도).
+    틀의 why(LLM 글)는 싣지 않는다 — 허용 설계(해법)가 들어 있을 수 있고 계약은 지원자가 받는다 (설계 검사 B-F10)."""
     out: list[str] = []
-    for s in forbidden:
-        want = key(s.entity)
-        if not want:
-            continue
-        for m in contract.entities:
-            got = key(m.name)
-            if got in (want, f"{want}s") or f"{got}s" == want:
-                out.append(
-                    f"엔티티 {m.name}({m.entity_id}) 는 공개 계약에 두지 않는다 — {s.why} (함정 틀: 흔한 구현의 저장 방식). "
-                    "entities·seed·공개 테스트에서 빼고, 그 상태를 어떻게 둘지는 구현 몫으로 남긴다"
-                )
+    for m in contract.entities:
+        if forbidden_for(m.name, forbidden) is not None:
+            out.append(
+                f"엔티티 {m.name}({m.entity_id}) 는 공개 계약에 두지 않는다 — 함정 틀: 흔한 구현의 저장 방식이라 숨은 요구를 드러낸다. "
+                "entities·seed·공개 테스트에서 빼고, 그 상태를 어떻게 둘지는 구현 몫으로 남긴다"
+            )
     return out
 
 
@@ -2556,6 +2581,8 @@ def check_contract(
     first_answer: bool = True,
     interface: MaterialInterface | None = None,
     forbidden_storage: Sequence[ForbiddenStorage] = (),
+    check_terms: Sequence[str] = (),
+    avoid_terms: Sequence[str] = (),
 ) -> ContractCheck:
     """공개 계약·HiddenPlan 결정적 검사 (§3.3). problems 는 재요청 사유, spec_gaps 는 명세 수정 사유.
     first_answer: 자료와 다른 상태 값은 첫 답에서만 재요청하고 그 뒤엔 확인 표시 (요구가 새 상태를 더할 수 있다).
@@ -2567,8 +2594,9 @@ def check_contract(
     problems += _command_paths(contract, manifest)
     problems += _api_refs(contract, plan, spec)
     problems += _added_marked_existing(contract, spec)
-    problems += _leaks(without_fixed(contract, interface), spec, seed)
+    problems += _leaks(without_fixed(contract, interface), spec, seed, check_terms)
     problems += _forbidden_storage(contract, forbidden_storage)
+    problems += _contract_hygiene(contract, avoid_terms)
     problems += _ui_actions(contract)
     problems += _ui_options(contract)
     problems += _ui_load_and_background(contract)

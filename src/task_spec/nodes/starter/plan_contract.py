@@ -438,9 +438,11 @@ def storage_text(forbidden: Sequence[ForbiddenStorage]) -> str:
     엔티티 단위로 본다 (낱말 목록 forbidden_text 와 따로 — 업무 요구에 나온 말은 낱말 목록에서 빠지고, 식별자 낱말 대조는 공개 칸까지 건다)."""
     if not forbidden:
         return ""
+    # 틀의 why 는 넣지 않는다 — LLM 이 쓴 글이라 허용 설계(해법)가 들어 있을 수 있고(알파 r2-1 '세션 상태를 DB 밖(서명 토큰·메모리)에'),
+    # 이 칸은 '계약에 쓰지 않음' 표시가 없는 입력이다. 계약은 지원자가 받는다 (설계 검사 B-F10)
     return (
         "\n- 공개 계약에 엔티티(테이블)로 두지 않는 것 — 흔한 구현의 저장 방식이라 숨은 요구를 드러낸다 (두면 다시 요청): "
-        + "; ".join(f"{s.entity} ({s.why})" for s in forbidden)
+        + ", ".join(s.entity for s in forbidden)
     )
 
 
@@ -644,9 +646,12 @@ async def plan_contract(
     interface: MaterialInterface | None = None,
     guide: MaterialGuide | None = None,
     forbidden_storage: Sequence[ForbiddenStorage] = (),
+    check_terms: Sequence[str] = (),
+    avoid_terms: Sequence[str] = (),
 ) -> PlanResult:
     """승인된 기능형 명세 → 공개 계약 + 숨은 테스트 계획. guide: 재료 숨은 안내 (사유·공개 테스트 입력 범위 — for_material).
-    forbidden_storage: 함정 틀이 금지한 저장 방식 (#318 검사 4) — 입력에 미리 알리고, 생성 뒤 검사가 엔티티 단위로 본다."""
+    forbidden_storage: 함정 틀이 금지한 저장 방식 (#318 검사 4) — 입력에 미리 알리고, 생성 뒤 검사가 엔티티 단위로 본다.
+    check_terms: 누설 검사에만 더하는 말 — 재료의 원인 기술 용어 (LLM 입력에는 싣지 않는다, 설계 검사 #332 T-F7)."""
     res = PlanResult()
     spec = SpecView.from_task(task)
     known = {
@@ -702,6 +707,8 @@ async def plan_contract(
             first_answer=attempt == 0,
             interface=interface,
             forbidden_storage=forbidden_storage,
+            check_terms=check_terms,
+            avoid_terms=avoid_terms,
         )
         # 코드가 계약 이름을 재료 것으로 바꿨는데 테스트 글이 LLM 의 옛 이름을 쓰면 재요청 (#256) — 맞추기 전 답(raw)에서 본다
         check.problems.extend(stale_name_problems(raw, interface))

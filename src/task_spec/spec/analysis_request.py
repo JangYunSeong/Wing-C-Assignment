@@ -35,9 +35,9 @@ from task_spec.schemas import (
 )
 from task_spec.schemas.draft import FactDraft as FactDraftT
 from task_spec.schemas.incident import FeatureSeed
-from task_spec.spec.analysis import check_analysis
+from task_spec.spec.analysis import check_analysis, link_problems
 from task_spec.spec.draft import DraftContext
-from task_spec.spec.feature import find_terms
+from task_spec.spec.feature import find_terms, without_public
 from task_spec.starter.answer_rule import strip_particle
 
 logger = logging.getLogger(__name__)
@@ -111,9 +111,9 @@ def _hidden_terms(task: TaskItem, ctx: DraftContext) -> list[str]:
     obs = [*task.observables, *(task.debug_stage.observables if task.debug_stage else [])]
     terms = [o.value for o in obs if o.kind == "first_mention_of"]
     if seed is not None:
-        public = seed.business_need
-        terms += [*seed.leak_terms, *seed.stage2_cause_terms]
-        terms += [t for t in seed.trigger_terms if not find_terms([t], public)]
+        terms += without_public(
+            [*seed.leak_terms, *seed.stage2_cause_terms, *seed.trigger_terms], seed.business_need
+        )
     if inc is not None:
         terms += inc.hidden_terms
     return list(dict.fromkeys(terms))
@@ -165,8 +165,14 @@ def preview(task: TaskItem, out: DraftAnalysisOutput) -> TaskItem:
 def check_analysis_draft(out: DraftAnalysisOutput, task: TaskItem, ctx: DraftContext) -> list[str]:
     """§5.1 재요청 사유 — 틀림이 확실한 것만: 참조(spec/analysis.check_analysis)·길이·숨은 요구 금지어·모호한 답이 구체 답과 같음.
     낱말 겹침으로 재는 흘림(수치·베끼기·모호한 답 흘림·배경 글 누출)은 leak_flags 로 표시만 — v1 평가에서 6건 중 4건이 일반 낱말 오탐,
-    "API 호출 시점에 남아요"처럼 낱말을 바꾼 흘림은 못 잡았다 (2026-11-16 사용자)."""
+    "API 호출 시점에 남아요"처럼 낱말을 바꾼 흘림은 못 잡았다 (2026-11-16 사용자).
+    앞 단계(명세 초안)가 남긴 연결 결함은 뺀다 — 모든 공개 수용 기준에 req_ids 가 이미 있으면(생성기 v6~) preview 가 이 단계의
+    acceptance_links 를 쓰지 않고 프롬프트도 비우라고 시켜, 재요청해도 고칠 수 없다. 그 결함은 명세 초안 표시(FLAG_DRAFT_INVALID)로
+    이미 보인다 (설계 검사 #332 S-F15: 같은 결함을 요청 글 LLM 전체 재요청 1회와 표시 두 번으로 썼다)."""
     problems = check_analysis(preview(task, out))
+    if task.acceptance_public and all(a.req_ids for a in task.acceptance_public):
+        inherited = set(link_problems(task))
+        problems = [p for p in problems if p not in inherited]
     hidden = _hidden_terms(task, ctx)
     for label, text, limit in (
         ("배경 글", out.background, BACKGROUND_MAX),

@@ -98,10 +98,12 @@ from task_spec.interview.task import (
     TaskGenerationFailed,
     TaskMaker,
     TaskRequest,
+    coding_template,
     copies_answer,
     evaluation_criteria,
     hidden_requirements,
     interview_template,
+    kept_competencies,
     mentions_artifact_id,
     prepare_coding_incident,
     pseudonymize_changes,
@@ -127,8 +129,8 @@ from task_spec.interview.text import (
     posting_team_context,
 )
 from task_spec.interview.trap_frame import FAILED as TRAP_FAILED
-from task_spec.interview.trap_frame import TASK as TRAP_TASK
 from task_spec.interview.trap_frame import (
+    FLAG_FRAME_EDITED,
     apply_frame,
     design_questions,
     evidence_gaps,
@@ -138,6 +140,7 @@ from task_spec.interview.trap_frame import (
     frame_texts,
     make_frame,
 )
+from task_spec.interview.trap_frame import TASK as TRAP_TASK
 from task_spec.llm import LLMClient, SchemaViolation, TransientLLMError
 from task_spec.llm.backend import TextCallback
 from task_spec.llm.client import EmptyResponse
@@ -188,6 +191,7 @@ from task_spec.schemas.interview_state import (
     TrapAnswers,
 )
 from task_spec.schemas.pseudo_text import PseudonymizedText
+from task_spec.spec.case_frame import CaseFrame
 from task_spec.spec.company_incidents import (
     FLAG_COMPANY_REUSED,
     CompanyIncidentRepo,
@@ -197,6 +201,7 @@ from task_spec.spec.company_incidents import (
     new_incident_id,
 )
 from task_spec.spec.draft import FLAG_DRAFT_FAILED, FLAG_DRAFT_INVALID, FLAG_DRAFT_INVALID_LEGACY
+from task_spec.spec.feature import trap_link_problems
 from task_spec.spec.incidents import incident_block, incident_by_id, known_cases_block
 from task_spec.spec.store import CommonKey, CommonTaskRepo, InterviewTaskConflict, StoredCommon
 from task_spec.starter.store import BuildRepo, BuildRuleError
@@ -242,6 +247,8 @@ class _GenerationInputs:
     profile: PostingProfile
     chosen: PostingProfile  # 고른 역량만
     matches: list[CompetencyEvidence]
+    # 공고 전체 역량의 근거 — 확장 슬롯이 공통 과제 밖 역량을 고른다 (설계 검사 #332 S-F18)
+    all_matches: list[CompetencyEvidence]
     # 사례형(명세가 곧 과제)은 없음 — 코딩 재료·재현 분석·함정 틀을 건너뛴다
     template: Template | None
     reviewer_note: str | None
@@ -276,6 +283,45 @@ class _FrameResult(NamedTuple):
     flags: list[str]
     provenance: list[Provenance]
     gaps: tuple[str, ...] = ()
+
+
+def _links(task: TaskItem) -> list[str]:
+    return trap_link_problems(
+        [t.trap_id for t in task.traps], task.acceptance_hidden, task.accepted_designs
+    )
+
+
+def _design_counts(task: TaskItem) -> dict[str, int]:
+    return {
+        t.trap_id: sum(t.trap_id in d.trap_ids for d in task.accepted_designs) for t in task.traps
+    }
+
+
+def _broken_links(old: TaskItem, edited: TaskItem) -> list[str]:
+    """고친 기능형 과제가 새로 깨뜨린 숨은 요구 연결 (설계 검사 B-F5) — 고치기 전에도 있던 문제는 뺀다. 허용 설계 수는 줄었을 때만
+    (예전 판이 이미 모자랐으면 늘리는 고침은 막지 않는다 — 문장에 개수가 들어 있어 문장 비교로는 못 가린다)."""
+    if edited.task_kind != "feature":
+        return []
+    before = set(_links(old))
+    was, now = _design_counts(old), _design_counts(edited)
+    fewer = {t for t, n in now.items() if n < 2 and n < was.get(t, 2)}
+    out: list[str] = []
+    for p in _links(edited):
+        if p in before:
+            continue
+        if "를 만족하는 허용 설계가" in p and not any(
+            p.startswith(f"숨은 요구 {t} ") for t in fewer
+        ):
+            continue
+        out.append(p)
+    return out
+
+
+def _hidden_edited(old: TaskItem, new: TaskItem) -> bool:
+    """숨은 요구 글·허용 설계를 고쳤는가 — 틀 적용 재료(빌드 계약 단계)와 글(숨은 테스트·허용 구현)이 갈린다."""
+    return [t.model_dump() for t in old.traps] != [t.model_dump() for t in new.traps] or [
+        d.model_dump() for d in old.accepted_designs
+    ] != [d.model_dump() for d in new.accepted_designs]
 
 
 def _with_trap(incident: PublicIncident, trap: TrapAnswers) -> PublicIncident:
@@ -1235,6 +1281,24 @@ class InterviewService:
                 or not set(competency_ids) <= available
             ):
                 raise InterviewInvalid("수행준거 근거가 있는 공고 역량 2~3개를 고르세요")
+            # 공통 과제 뼈대 규칙(주 역량 먼저, 보조 역량은 2개를 채울 때만)으로 빠질 역량이 있으면 지금 알린다 — 예전에는 과제 만들기
+            # 끝(기능형 초안 LLM 뒤)에야 거절했다 (설계 검사 #332 S-F7)
+            chosen = profile.model_copy(
+                update={
+                    "competencies": [
+                        c for c in profile.competencies if c.competency_id in set(competency_ids)
+                    ]
+                }
+            )
+            kept = set(kept_competencies(chosen, choice.matches))
+            # 근거 조회 결과가 비면(규칙이 아무것도 못 담음) 여기서 막지 않는다 — 생성 단계가 같은 규칙으로 다시 본다
+            if kept and (
+                dropped := [c.label for c in chosen.competencies if c.competency_id not in kept]
+            ):
+                raise InterviewInvalid(
+                    f"고른 역량 가운데 {', '.join(dropped)} 제외 — 공통 과제는 주 역량을 먼저 담고, 보조 역량은 주 역량이 "
+                    "하나일 때 하나만 담습니다. 다시 골라 주세요"
+                )
             template = self._template(state)
             state.task_kind = self._task_kind(state)  # 칸 전에 만든 행도 여기서 정해 둔다
             state.competency_ids = list(competency_ids)
@@ -1424,6 +1488,7 @@ class InterviewService:
             profile=profile,
             chosen=chosen,
             matches=[e for e in choice.matches if e.competency_id in selected],
+            all_matches=list(choice.matches),
             template=template,
             reviewer_note=self._reviewer_note(state),
             reinforce=tuple(state.reinforce_answers) if interview else (),
@@ -1500,6 +1565,45 @@ class InterviewService:
             len(gaps),
         )
         return _MaterialCheck(flags, [provenance], gaps, analysis)
+
+    async def frame_shared_case(self, coding: PublicIncident, profile: PostingProfile) -> CaseFrame:
+        """공유 회사 사례(co:) 기능형 재료의 함정 틀 — 일반 파이프라인(지원자 실행)이 그 재료로 공통 과제를 만들 때 (설계 검사 #332 S-F8,
+        사용자 결정 2026-11-26). 인터뷰의 공유 재료와 같은 길: 등록 규칙으로 다시 보고(blocked_findings) 그 재료의 토큰만 허용하는
+        shared_json — 이 공고에는 인터뷰가 없어 대응표는 비어 있다. 재료 분석·틀이 실패하거나 건너뛰어도 막지 않고 원 재료와 표시로."""
+        if self.llm is None or self.prompts is None or coding.feature is None:
+            return CaseFrame(incident=coding)
+        try:
+            template = coding_template(profile.sub or "")
+        except TaskGenerationFailed:
+            return CaseFrame(incident=coding)
+        inp = _GenerationInputs(
+            interview=False,
+            llm=self.llm,
+            prompts=self.prompts,
+            tasks=self.tasks,  # type: ignore[arg-type]
+            common_store=self.common_store,  # type: ignore[arg-type]
+            incident=coding,
+            mapping=RunMapping(),
+            profile=profile,
+            chosen=profile,
+            matches=[],
+            all_matches=[],
+            template=template,
+            reviewer_note=None,
+        )
+        checked = await self._material_check(coding, inp, shared=True)
+        framed = await self._trap_frame(coding, inp, checked.analysis, shared=True)
+        flags = [*checked.flags, *framed.flags]
+        provenance = [*checked.provenance, *framed.provenance]
+        if framed.framed is None or framed.frame is None:
+            return CaseFrame(incident=coding, flags=flags, provenance=provenance)
+        return CaseFrame(
+            incident=coding.model_copy(update={"feature": framed.framed}),
+            frame=framed.frame,
+            framed=FramedMaterial(seed=framed.framed, frame=framed.frame),
+            flags=flags,
+            provenance=provenance,
+        )
 
     async def _guarded_material(
         self, coding: PublicIncident, block: dict[str, Any], inp: _GenerationInputs, *, shared: bool
@@ -1588,7 +1692,7 @@ class InterviewService:
                 if inp.reinforce:  # ⑧ 보강 질문의 답 (#308) — 재료를 정리할 때 함께 본다
                     parts.append(reinforce_block(inp.reinforce))
                 text = self.pseudo.stored("\n".join(parts), inp.mapping)
-                coding, seed_provenance = await self._llm(
+                coding, seed_provenance, seed_fit = await self._llm(
                     prepare_coding_incident(
                         inp.incident,
                         inp.coding_template,
@@ -1604,7 +1708,7 @@ class InterviewService:
                 return {
                     "coding_incident": coding,
                     "seed_provenance": [*seed_provenance, *checked.provenance, *framed.provenance],
-                    "seed_flags": [*checked.flags, *framed.flags],
+                    "seed_flags": [*seed_fit, *checked.flags, *framed.flags],
                     # 보강 질문 후보 빈칸 — 재현 근거(검사 1) → 틀 → 재료 분석 순 (설계 질문은 마무리 때 틀에서 만든다)
                     "seed_gaps": list(dict.fromkeys([*framed.gaps, *checked.gaps])),
                     "trap_frame": framed.frame,
@@ -1632,6 +1736,8 @@ class InterviewService:
         req = TaskRequest(
             profile=inp.chosen,
             matches=inp.matches,
+            slot_profile=inp.profile,  # 확장 슬롯은 공고 전체 역량으로 (설계 검사 #332 S-F18)
+            slot_matches=inp.all_matches,
             coding_incident=self._framed(
                 g
             ),  # 틀 적용 재료가 있으면 그것으로 (#318) — 명세가 재료에서 숨은 요구·허용 설계를 복사한다
@@ -1985,6 +2091,12 @@ class InterviewService:
                 raise InterviewInvalid(
                     "자료와 숨은 조건(관찰할 개념 또는 함정)이 있어야 지원자 질문을 만들 수 있습니다"
                 )
+            if broken := _broken_links(old, edited):
+                # 생성 때 명세 검사의 연결 규칙(숨은 요구마다 숨김 수용 기준·허용 설계 2개 이상)을 고친 글에도 — 빌드의 숨은 테스트·허용
+                # 구현은 이 글로 만든다 (설계 검사 B-F5). 고친 글이 새로 깨뜨린 것만 막는다 (예전 판에 이미 있던 것은 그대로)
+                raise InterviewInvalid(
+                    "숨은 요구·숨김 수용 기준·허용 설계 연결을 고쳐 주세요 — " + "; ".join(broken)
+                )
             artifact_ids = {a.artifact_id for a in edited.artifacts}
             general_q = (
                 spec.general_questions
@@ -1995,10 +2107,14 @@ class InterviewService:
                 q.hidden_condition for q in questions_for(old)[1]
             ]
             targeted_q = spec.targeted_questions if same_hidden else new_targeted
+            # 함정 틀은 재료·템플릿에서 정해지고 글 고치기로 바뀌지 않는다 (#318 D1) — 틀 적용 재료를 새 판이 이어받는다.
+            # 승인은 최신 판을 승인한 뒤 다른 초안 판을 지우므로, 여기서 옮기지 않으면 틀을 가진 생성 판과 함께 사라진다 (설계 검사 S-F1)
+            framed = await common_store.framed(old.task_id)
             saved = await common_store.save_draft(
                 CommonKey(spec.posting_id, spec.ontology_version, f"interview:{interview_id}"),
                 edited,
                 spec.generation_provenance,
+                framed=framed,
             )
             new_task = saved.task
             old_flags = {*old.review_flags, *(f for slot in old.slots for f in slot.review_flags)}
@@ -2025,7 +2141,15 @@ class InterviewService:
                     "hidden_requirements": hidden_requirements(new_task, targeted_q),
                     "evaluation_criteria": evaluation_criteria(new_task),
                     "review_flags": with_content_flags(
-                        [*kept, *new_flags],
+                        [
+                            *kept,
+                            *new_flags,
+                            *(
+                                [FLAG_FRAME_EDITED]
+                                if spec.trap_frame is not None and _hidden_edited(old, new_task)
+                                else []
+                            ),
+                        ],
                         new_task,
                         spec.coding_incident,
                         targeted_q,
@@ -2287,7 +2411,16 @@ class InterviewService:
                 await self._company_case(spec.coding_incident.incident_id, state)
             except InterviewInvalid:
                 source_problem = "고른 회사 사례를 더 쓸 수 없습니다(보관·반려). 다른 사례를 골라 과제를 다시 만들어 주세요"
-        problems = approval_problems(state, stored, company, blocked, source_problem)
+        framed_missing = (
+            spec is not None
+            and spec.trap_frame is not None
+            and stored is not None
+            and self.common_store is not None
+            and await self.common_store.framed(stored.id) is None
+        )
+        problems = approval_problems(
+            state, stored, company, blocked, source_problem, framed_missing=framed_missing
+        )
         if self.approvals is None or self.common_store is None:
             problems.append("승인 저장소가 준비되지 않았습니다")
         if self._generating(

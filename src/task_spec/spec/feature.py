@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import random
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, cast
 
 from task_spec.llm import LLMClient
@@ -115,9 +115,11 @@ def stage2_kinds_in_stage1(
         w = _kind_words(t)
         if not any(_same_kind(w, k) for k in kinds):
             continue
-        # 1단계 단서(discoverable_by)에 더 가까우면 그 자료다 — 2026-11-09 알파 kakaobank_2026#005: 단서 '평시 DB 연결 사용량
-        # 대시보드' 그대로인 제목이 2단계 'DB 연결 상태 로그'(일반어를 빼면 {db, 연결})와 0.5 로 겹쳐 재요청에도 못 고침
-        if max((_jaccard(w, d) for d in disc), default=0.0) > max(_jaccard(w, k) for k in kinds):
+        # 1단계 단서(discoverable_by)에 더 가깝거나 똑같이 가까우면 그 자료다 — 2026-11-09 알파 kakaobank_2026#005: 단서 '평시 DB 연결
+        # 사용량 대시보드' 그대로인 제목이 2단계 'DB 연결 상태 로그'(일반어를 빼면 {db, 연결})와 0.5 로 겹쳐 재요청에도 못 고침.
+        # 동점도 단서 쪽 (설계 검사 #332 S-F10): 단서를 바꿔 쓴 '평시 DB 연결 사용 현황'이 두 쪽 모두 0.5 — 재료가 시킨 자료라 모델이
+        # 재요청으로 못 고치고 부분 수리 규칙도 없어 FLAG_DRAFT_INVALID 로 남았다 (11-26 v12·v13 관찰 4건 중 3건)
+        if max((_jaccard(w, d) for d in disc), default=0.0) >= max(_jaccard(w, k) for k in kinds):
             continue
         out.append(t)
     return out
@@ -494,6 +496,15 @@ def find_terms(terms: Iterable[str], text: str) -> list[str]:
     return [t for t in dict.fromkeys(terms) if len(_norm(t)) >= 2 and _in_text(t, text)]
 
 
+def without_public(terms: Iterable[str], business_need: str) -> list[str]:
+    """공개 쪽 금지 낱말에서 공개된 업무 요구(business_need)에 나온 말을 뺀다 — 지원자에게 이미 보이는 말이라 막으면 고칠 수 없는
+    재요청이 되고, 계약 검사(starter/contract.hidden_terms)는 이미 뺐다. 명세·요청 글·슬롯 검사와 재료 맞춤·틀 적용이 같은 함수를 쓴다
+    (설계 검사 #332 S-F6 — 단계마다 다른 예외로 쟀다)."""
+    terms = list(dict.fromkeys(terms))
+    public = set(find_terms(terms, business_need))
+    return [t for t in terms if t not in public]
+
+
 def title_allowed_text(seed: FeatureSeed) -> str:
     """자료 제목에 써도 되는 운영 조건 낱말(trigger_terms)이 있는 글 — 재료의 업무 요구와 자료 종류 이름(괄호 앞). 그 말은
     자료의 이름이라 괜찮다 (예: DBA "DB 정리 작업 설정"). 괄호 안 설명의 말은 안 된다. 숨은 요구·원인 낱말은 여기 나와도
@@ -743,6 +754,35 @@ def check_hidden_faults(out: DraftFeatureOutput, seed: FeatureSeed | None) -> li
     return out_
 
 
+def trap_link_problems(
+    trap_ids: Sequence[str],
+    hidden: Sequence[HiddenAcceptance],
+    designs: Sequence[AcceptedDesign],
+) -> list[str]:
+    """숨은 요구 ↔ 숨김 수용 기준 ↔ 허용 설계 연결 — 참조가 숨은 요구 안에 있고, 숨은 요구마다 숨김 수용 기준이 있고 허용 설계가
+    2개 이상(한 가지 정답으로 감점하지 않게). 명세 초안 검사(check_feature)와 ⑧ 과제 고치기(설계 검사 B-F5)가 같은 규칙을 쓴다."""
+    traps = set(trap_ids)
+    problems: list[str] = []
+    for h in hidden:
+        if h.trap_id not in traps:
+            problems.append(f"숨김 수용 기준 {h.ac_id} 의 trap_id {h.trap_id} 가 traps 에 없음")
+    for d in designs:
+        bad = [t for t in d.trap_ids if t not in traps]
+        if bad:
+            problems.append(
+                f"허용 설계 {d.design_id} 의 trap_ids 에 없는 trap_id: {', '.join(bad)}"
+            )
+    for t in trap_ids:
+        if not any(h.trap_id == t for h in hidden):
+            problems.append(f"숨은 요구 {t} 에 숨김 수용 기준이 없음")
+        n = sum(t in d.trap_ids for d in designs)
+        if n < 2:
+            problems.append(
+                f"숨은 요구 {t} 를 만족하는 허용 설계가 {n}개 — 2개 이상 (한 가지 정답으로 감점하지 않게)"
+            )
+    return problems
+
+
 def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     """어긋난 점 목록 (비면 통과). 문장은 그대로 재요청 사유가 된다."""
     # 이슈형 공통 규칙 (제목·상황·산출물·1단계 자료 목록의 노출 검사, 1단계 관찰 행동 id 포함)
@@ -773,29 +813,13 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     problems += _dup("accepted_designs", [d.design_id for d in out.accepted_designs])
 
     # id 참조 — 숨은 요구(traps) 안에서만
-    for h in out.acceptance_hidden:
-        if h.trap_id not in traps:
-            problems.append(f"숨김 수용 기준 {h.ac_id} 의 trap_id {h.trap_id} 가 traps 에 없음")
     for c in out.clarifications:
         bad = [t for t in c.reveals if t not in traps]
         if bad:
             problems.append(
                 f"추가 요구 {c.clarification_id} 의 reveals 에 없는 trap_id: {', '.join(bad)}"
             )
-    for d in out.accepted_designs:
-        bad = [t for t in d.trap_ids if t not in traps]
-        if bad:
-            problems.append(
-                f"허용 설계 {d.design_id} 의 trap_ids 에 없는 trap_id: {', '.join(bad)}"
-            )
-    for t in trap_ids:
-        if not any(h.trap_id == t for h in out.acceptance_hidden):
-            problems.append(f"숨은 요구 {t} 에 숨김 수용 기준이 없음")
-        n = sum(t in d.trap_ids for d in out.accepted_designs)
-        if n < 2:
-            problems.append(
-                f"숨은 요구 {t} 를 만족하는 허용 설계가 {n}개 — 2개 이상 (한 가지 정답으로 감점하지 않게)"
-            )
+    problems += trap_link_problems(trap_ids, out.acceptance_hidden, out.accepted_designs)
     for o in out.observables:
         if o.kind == "asks_clarification" and o.value not in clar:
             problems.append(f"asks_clarification 값 {o.value} 가 clarifications 의 id 가 아님")
@@ -874,7 +898,7 @@ def check_feature(out: DraftFeatureOutput, ctx: DraftContext) -> list[str]:
     if seed is not None:
         # 사람이 적어 둔 새는 말 — 바꿔 쓴 표현까지 잡으려고 재료마다 둔다
         stage1 = "\n".join([base_visible, extra_visible])
-        terms = [*seed.leak_terms, *seed.stage2_cause_terms]
+        terms = without_public([*seed.leak_terms, *seed.stage2_cause_terms], seed.business_need)
         s1 = [t for t in terms if _term_rx(t).search(stage1)]
         if s1:
             problems.append(

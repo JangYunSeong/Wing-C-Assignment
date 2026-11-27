@@ -15,8 +15,9 @@ import json
 import re
 import subprocess
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from task_spec.builder.runner import (
     BuildResult,
@@ -31,7 +32,7 @@ from task_spec.nodes.starter.generate import BuildInputs
 from task_spec.nodes.starter.plan_contract import PlanResult, plan_contract
 from task_spec.prompting import PromptRegistry
 from task_spec.schemas import PublicIncident, TaskItem
-from task_spec.schemas.build_record import BuildFailure
+from task_spec.schemas.build_record import BuildFailure, BuildTrace
 from task_spec.schemas.package import PackageHeader
 from task_spec.spec.company_incidents import CompanyIncidentReader, is_company_incident
 from task_spec.spec.incidents import incident_by_id, load_incidents, load_interfaces
@@ -50,7 +51,7 @@ from task_spec.starter.layers import Podman
 from task_spec.starter.loader import ImageRef, PackageInputs, register_packages
 from task_spec.starter.material_guide import guide_problems, load_guides
 from task_spec.starter.render import render_readme, thin_readme
-from task_spec.starter.repair import STARTER
+from task_spec.starter.repair import MATERIAL_VERDICT, STARTER
 from task_spec.starter.static_check import Overlay, readme_flags
 from task_spec.starter.store import BuildRepo
 from task_spec.starter.templates import select_template
@@ -114,6 +115,35 @@ def contract_failure(res: PlanResult) -> str:
         if kinds
     ]
     return " · ".join(parts) or "사유 없음"
+
+
+def build_trace(
+    out: Any, contract_adjustments: Sequence[str] = (), failure_kind: str | None = None
+) -> BuildTrace:
+    """빌드 기록 칸 (설계 검사 #332 T-F16) — 알파 보고서에만 있던 코드 맞춤·정적 재생성·보정·관문 결과. 원문 없음 (값·판정 한 줄).
+    out 은 build_and_repair 의 결과 — 칸이 없는 대역(테스트)도 받는다."""
+    calibration: list[str] = []
+    # 창 없음 뒤 숨은 케이스를 다시 만들기 전의 보정(T-F1)도 차례로
+    tries = [*getattr(out, "calibration_tries", []), getattr(out, "calibration", None)]
+    for cal in (c for c in tries if c is not None):
+        row = cal.row()
+        trials = row["trials"]
+        calibration.append(
+            f"{row['status']} 사유 {row['reason'] or '-'} · 값 {row['values'] or '-'} · 창 {row['window'] or '-'} · "
+            f"시험 {len(trials)}회 (흔한 구현 떨어짐 {sum(1 for t in trials if t['caught'])}회)"
+        )
+    return BuildTrace(
+        failure_kind=failure_kind,  # type: ignore[arg-type]
+        contract_adjustments=list(contract_adjustments),
+        build_adjustments=list(getattr(out, "adjustments", [])),
+        static_retries=list(getattr(out, "static_retries", [])),
+        calibration=calibration,
+        gates=[
+            *(v.line() for v in getattr(out, "variants", [])),
+            *(t.line() for t in getattr(out, "traps", [])),
+            *getattr(out, "hand", []),
+        ],
+    )
 
 
 class RealSteps:
@@ -181,6 +211,7 @@ class RealSteps:
             raise StepFailed(
                 f"contract: 재료 숨은 안내가 템플릿과 맞지 않음 — {'; '.join(bad)}"[:280]
             )
+        forbidden = tuple(framed.frame.forbidden_storage) if framed is not None else ()
         res = await plan_contract(
             task,
             template,
@@ -190,7 +221,11 @@ class RealSteps:
             seed=inc.feature,
             interface=interface,
             guide=guide,
-            forbidden_storage=framed.frame.forbidden_storage if framed is not None else (),
+            forbidden_storage=forbidden,
+            check_terms=tuple(inc.hidden_terms),
+            avoid_terms=tuple(
+                inc.avoid_terms
+            ),  # 계약 글(시드·fixture·공개 테스트 값)의 고유어 — 설계 검사 #332 T-F6
         )
         if not res.ok or res.contract is None or res.hidden_plan is None:
             raise StepFailed(
@@ -207,6 +242,9 @@ class RealSteps:
             interface=interface,
             guide=guide,
             avoid_terms=tuple(inc.avoid_terms),
+            forbidden_storage=forbidden,
+            check_terms=tuple(inc.hidden_terms),
+            adjustments=tuple(res.adjustments),
             review_flags=tuple(res.flags),
             provenance=tuple(res.provenance),
         )
@@ -223,6 +261,8 @@ class RealSteps:
             avoid_terms=c.avoid_terms,
             references=refs.checked_against(c.interface) if refs is not None else None,
             guide=c.guide,
+            forbidden_storage=c.forbidden_storage,
+            check_terms=c.check_terms,
         )
         g = verifier_for(c.template, job.work / "verify")
         out = await build_and_repair(
@@ -241,8 +281,12 @@ class RealSteps:
             why = (
                 f"{last.gate} {last.target} {last.result}" if last is not None else "수리 기록 없음"
             )
+            # 실패 종류를 사유 머리에 (설계 검사 #332 B-F1) — 재료 판정은 같은 명세로 다시 요청해도 되풀이되기 쉬워 담당자가 알아야 한다.
+            # 판정 문장은 실패 빌드 기록(DB)에만, 사유에는 종류·회차·관문만
+            material = any(f.startswith(MATERIAL_VERDICT) for f in out.review_flags)
+            head = "재료 판정으로 멈춤" if material else "수리 루프 실패"
             raise StepFailed(
-                f"build: 수리 루프 실패 (회차 {out.rounds}) — {why}",
+                f"build: {head} (회차 {out.rounds}) — {why}",
                 cost_usd=out.cost_usd,
                 provenance=out.provenance,
                 # 사유 문장(숨은 테스트 문구가 올 수 있음)은 저장소 사유가 아니라 실패 빌드 기록(DB)에만
@@ -250,13 +294,21 @@ class RealSteps:
                     hidden_plan=out.hidden_plan or c.plan,
                     review_flags=list(out.review_flags),
                     repairs=list(out.repairs),
+                    trace=build_trace(out, c.adjustments, "material" if material else "generation"),
                 ),
             )
         starter = out.overlays[STARTER].files
         readme = render_readme(job.task, c.contract, c.template, starter=starter)
         # 응시용 README 누설 검사 → 승인 화면 README 경고 칸 (#232: 렌더만 하고 검사하지 않았다)
         spec = SpecView.from_task(job.task)
-        flags = readme_flags(readme, spec=spec, seed=c.seed, avoid_terms=c.avoid_terms)
+        flags = readme_flags(
+            readme,
+            spec=spec,
+            seed=c.seed,
+            avoid_terms=c.avoid_terms,
+            forbidden_storage=c.forbidden_storage,
+            check_terms=c.check_terms,
+        )
         # 문제 분석 판 — 원래 판도 같은 명세에서 (손으로 고치지 않는다, analysis-stage.md §6)
         full = (
             render_readme(job.task, c.contract, c.template, starter=starter, full=True)
@@ -272,6 +324,7 @@ class RealSteps:
             cost_usd=out.cost_usd,
             readme_full=full.content if full is not None else None,
             provenance=tuple(out.provenance),
+            trace=build_trace(out, c.adjustments),
         )
 
     # ③ 이미지

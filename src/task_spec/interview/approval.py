@@ -62,9 +62,12 @@ def approval_problems(
     company_id: str | None,
     blocked: list[Finding],
     source_problem: str | None = None,
+    *,
+    framed_missing: bool = False,
 ) -> list[str]:
     """승인할 수 없는 사유 (비면 승인 가능). 포크 approve 의 검사 + 회사 사례 등록 검사. 사유는 고정 문구·칸 이름만.
-    인터뷰 사례(known_problem)만 기준 답안 검증·회사 사례 등록 검사를 본다 — 공개·회사 사례는 고른 사례가 아직 쓸 수 있는지(source_problem)."""
+    인터뷰 사례(known_problem)만 기준 답안 검증·회사 사례 등록 검사를 본다 — 공개·회사 사례는 고른 사례가 아직 쓸 수 있는지(source_problem).
+    framed_missing: 함정 틀이 있는 과제인데 저장본에 틀 적용 재료가 없음 — 승인하면 빌드가 원 재료로 돈다 (#318 D1, 설계 검사 S-F1)."""
     spec = state.spec
     if spec is None:
         return ["과제를 먼저 생성해 주세요"]
@@ -88,6 +91,10 @@ def approval_problems(
         problems.append("사례형 과제·재료가 맞지 않습니다. 과제를 다시 생성해 주세요")
     if stored is None or stored.id != task.task_id or stored.status != "draft":
         problems.append("공통 과제 저장본이 지금 과제와 다릅니다. 과제를 다시 생성해 주세요")
+    if framed_missing:
+        problems.append(
+            "공통 과제 저장본에 함정 틀 적용 재료가 없습니다. 과제를 다시 생성해 주세요"
+        )
     interview = state.incident_source == "known_problem"
     incident = state.incident_confirmed
     if (

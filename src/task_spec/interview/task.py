@@ -48,6 +48,7 @@ from task_spec.schemas import (
 from task_spec.schemas.interview_incident import InterviewFeatureSeedInput
 from task_spec.schemas.interview_state import ANSWER_MAX, GeneralQuestion, TargetedQuestion
 from task_spec.schemas.pseudo_text import PseudonymizedText
+from task_spec.schemas.template import TemplateManifest
 from task_spec.spec.analysis_request import apply_analysis, draft_analysis_request
 from task_spec.spec.build import build_common
 from task_spec.spec.common import (
@@ -56,7 +57,7 @@ from task_spec.spec.common import (
     plan_common,
 )
 from task_spec.spec.draft import DraftContext, apply, draft_task
-from task_spec.spec.feature import apply_feature, draft_feature_task
+from task_spec.spec.feature import apply_feature, draft_feature_task, without_public
 from task_spec.spec.incidents import IncidentCatalog
 from task_spec.spec.slots import build_slots
 from task_spec.starter.templates import TEMPLATE_FOR_SUB, Template, load_template
@@ -186,9 +187,12 @@ async def prepare_coding_incident(
     llm: LLMClient,
     prompts: PromptRegistry,
     ontology_version: str,
-) -> tuple[PublicIncident, list[Provenance]]:
-    """확인된 사례·기준 답안 → 템플릿이 시험할 수 있는 기능형 재료. interview 는 가명화 모듈이 만든 사례 블록.
-    재료가 템플릿에 없는 실패 조건·실행 조건을 쓰면 OutputRejected (다시 시도)."""
+) -> tuple[PublicIncident, list[Provenance], list[str]]:
+    """확인된 사례·기준 답안 → 템플릿이 시험할 수 있는 기능형 재료와 코드가 고친 것(검토 표시). interview 는 가명화 모듈이 만든 사례 블록.
+    코드가 풀 수 있는 것은 고친다 (설계 검사 #332 S-F2 — 예전에는 모두 OutputRejected 로 멈추고 '이어서 하기'가 같은 호출을 되풀이):
+    템플릿 밖 실패 사유가 섞였어도 맞는 사유가 남으면 그것만, 모르는 조절값 이름은 뺀다 (템플릿 필수 조절값과 합쳐지므로 필수는 남는다).
+    맞는 사유가 하나도 없거나 조절값 칸을 비워 보내면(None = 템플릿 필수값 — 성능 사례가 아니면 풀 크기 같은 값을 잘못 요구해 계약이
+    막힌다, 2026-11-10) OutputRejected (다시 시도)."""
     if not incident.known_incident_cases or any(
         not case.answer_text.strip() for case in incident.known_incident_cases
     ):
@@ -202,15 +206,48 @@ async def prepare_coding_incident(
         ),
         FeatureSeed,
     )
-    seed = result.parsed
-    if not set(seed.reasons) <= {r.code for r in manifest.failure_reasons}:
-        raise OutputRejected("선택한 코딩 환경에서 검증할 수 없는 실패 조건입니다")
-    if seed.harness is None or not set(seed.harness) <= {p.name for p in manifest.harness_params}:
-        raise OutputRejected("검증에 필요한 실행 조건을 코딩 환경과 맞춰 주세요")
+    seed, notes = fit_seed_to_template(result.parsed, manifest)
     seed = seed.model_copy(update={"reviewed": False, "starter": None, "task_shape": "code"})
-    return incident.model_copy(update={"feature": seed, "templates": [manifest.template_id]}), [
-        result.provenance
-    ]
+    return (
+        incident.model_copy(update={"feature": seed, "templates": [manifest.template_id]}),
+        [result.provenance],
+        notes,
+    )
+
+
+FLAG_SEED_FIT = "기능형 재료 맞춤: "  # 코드가 템플릿에 맞춰 고친 것 (막지 않음)
+
+
+def fit_seed_to_template(
+    seed: FeatureSeed, manifest: TemplateManifest
+) -> tuple[FeatureSeed, list[str]]:
+    """LLM 재료를 템플릿이 시험할 수 있게 — 고칠 수 없으면 OutputRejected. 고친 것은 검토 표시 문장으로 (prepare_coding_incident)."""
+    codes = {r.code for r in manifest.failure_reasons}
+    params = {p.name for p in manifest.harness_params}
+    update: dict[str, Any] = {}
+    notes: list[str] = []
+    if outside := [r for r in seed.reasons if r not in codes]:
+        kept = [r for r in seed.reasons if r in codes]
+        if not kept:  # 비우면 '템플릿 사유 전체'가 되어 뜻이 바뀐다
+            raise OutputRejected("선택한 코딩 환경에서 검증할 수 없는 실패 조건입니다")
+        update["reasons"] = kept
+        notes.append(f"{FLAG_SEED_FIT}템플릿에 없는 실패 사유 {', '.join(outside)} 를 뺌")
+    if seed.harness is None:
+        raise OutputRejected("검증에 필요한 실행 조건을 코딩 환경과 맞춰 주세요")
+    if unknown := [h for h in seed.harness if h not in params]:
+        update["harness"] = [h for h in seed.harness if h in params]
+        notes.append(f"{FLAG_SEED_FIT}템플릿에 없는 조절값 {', '.join(unknown)} 를 뺌")
+    # 공개된 업무 요구에 나온 말은 공개 쪽 금지 낱말이 될 수 없다 — 두면 명세 검사가 고칠 수 없는 재요청을 낸다 (설계 검사 #332 S-F6.
+    # 프롬프트 지시만으로 막고 있었다). 낱말 목록은 이 재료를 쓰는 모든 검사가 그대로 받는다
+    for name in ("leak_terms", "stage2_cause_terms", "trigger_terms"):
+        terms = list(getattr(seed, name))
+        kept_terms = without_public(terms, seed.business_need)
+        if dropped := [t for t in terms if t not in kept_terms]:
+            update[name] = kept_terms
+            notes.append(
+                f"{FLAG_SEED_FIT}업무 요구에 나온 말을 {name} 에서 뺌 — {', '.join(dropped)}"
+            )
+    return (seed.model_copy(update=update) if update else seed), notes
 
 
 def ready_coding_incident(incident: PublicIncident, template: Template) -> PublicIncident:
@@ -478,6 +515,10 @@ class TaskRequest:
     reviewer_note: str | None = None
     # 이 공고의 함정 틀 (#318) — 명세 초안이 공개 쪽을 받는다 (draft_feature_task v13). coding_incident 는 이미 틀 적용 재료다
     frame: TrapFrame | None = None
+    # 확장 슬롯은 공고 전체 역량·근거로 — 공통 과제가 다루지 않은 역량을 슬롯이 먼저 확인한다 (spec/slots.plan_slots). 고른 역량만 넘기면
+    # 그 규칙이 성립하지 않았다 (설계 검사 #332 S-F18, 사용자 결정 2026-11-26). None 이면 profile·matches 그대로 (예전 호출)
+    slot_profile: PostingProfile | None = None
+    slot_matches: list[CompetencyEvidence] | None = None
 
     @property
     def task_kind(self) -> TaskKind:
@@ -501,6 +542,21 @@ class TaskMaker(Protocol):
     async def slots(self, req: TaskRequest, made: MadeTask) -> MadeTask:
         """확장 슬롯 (build_slots)."""
         ...
+
+
+def kept_competencies(profile: PostingProfile, matches: list[CompetencyEvidence]) -> list[str]:
+    """고른 역량(profile)으로 공통 과제 뼈대가 담을 역량 — 주 역량을 먼저 담고, 보조 역량은 2개를 채울 때만 (spec/common.plan_common).
+    역량 선택(⑦)이 같은 규칙으로 미리 본다 (설계 검사 #332 S-F7)."""
+    return [c.competency_id for c in plan_common(profile, matches).competencies]
+
+
+def _require_all_selected(task: TaskItem, req: TaskRequest) -> None:
+    if {c.competency_id for c in task.target_competencies} != {
+        c.competency_id for c in req.profile.competencies
+    }:
+        raise TaskGenerationFailed(
+            "선택한 역량 일부가 공통 과제에 포함되지 않았습니다. 역량을 다시 골라 주세요"
+        )
 
 
 async def make_task(tasks: TaskMaker, req: TaskRequest) -> MadeTask:
@@ -574,6 +630,9 @@ class OntologyTaskMaker:
 
     async def feature(self, req: TaskRequest) -> MadeTask:
         base, ctx, flags = await self._context(req)
+        # 과제 역량은 결정적 뼈대가 정하고 기능형 초안은 바꾸지 않는다 — LLM 전에 본다 (설계 검사 #332 S-F7: 몇 분짜리 초안을 다 돈 뒤에야
+        # 거절했고, '이어서 하기'는 같은 선택으로 같은 실패를 되풀이했다)
+        _require_all_selected(base, req)
         # 공고 경로(nodes/spec.py)와 같은 갈래 — 사례형은 기준 답안을 넣지 않는 사례 블록(incident_block)으로 만든다
         if req.task_kind == "feature":
             result = await draft_feature_task(
@@ -588,12 +647,7 @@ class OntologyTaskMaker:
         task = (apply_feature if req.task_kind == "feature" else apply)(base, result)
         if task.behavioral_anchors is None:
             raise OutputRejected("평가 행동 기준이 생성되지 않았습니다")
-        if {c.competency_id for c in task.target_competencies} != {
-            c.competency_id for c in req.profile.competencies
-        }:
-            raise TaskGenerationFailed(
-                "선택한 역량 일부가 공통 과제에 포함되지 않았습니다. 역량을 다시 골라 주세요"
-            )
+        _require_all_selected(task, req)
         return MadeTask(task=task, provenance=list(result.provenance), flags=list(flags))
 
     async def request(self, req: TaskRequest, made: MadeTask) -> MadeTask:
@@ -602,7 +656,11 @@ class OntologyTaskMaker:
         ):  # 요청 글(문제 분석 판)은 기능형 명세 칸 — 공고 경로도 기능형만 (nodes/spec.py)
             return made
         _, ctx, _ = await self._context(req)
-        analysis = await draft_analysis_request(made.task, ctx, llm=self.llm, prompts=self.prompts)
+        # 반려 사유·팀 맥락(수정 요청)을 요청 글에도 — 일반 파이프라인처럼 세 생성기 모두에 (설계 검사 #332 S-F17: 기능형 초안에만 넘겨
+        # 요청 글·사실 때문에 반려해도 다시 만들기에 반영되지 않았다)
+        analysis = await draft_analysis_request(
+            made.task, ctx, llm=self.llm, prompts=self.prompts, reviewer_note=req.reviewer_note
+        )
         return MadeTask(
             task=apply_analysis(made.task, analysis),
             provenance=[*made.provenance, *analysis.provenance],
@@ -612,13 +670,14 @@ class OntologyTaskMaker:
     async def slots(self, req: TaskRequest, made: MadeTask) -> MadeTask:
         _, ctx, _ = await self._context(req)
         slots = await build_slots(
-            req.profile,
-            req.matches,
+            req.slot_profile or req.profile,
+            req.slot_matches if req.slot_matches is not None else req.matches,
             made.task,
             ctx,
             ontology=self.ontology,
             llm=self.llm,
             prompts=self.prompts,
+            reviewer_note=req.reviewer_note,  # 요청 글과 같은 까닭 (설계 검사 #332 S-F17)
         )
         return MadeTask(
             task=made.task.model_copy(update={"slots": slots.slots}),

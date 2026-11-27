@@ -220,6 +220,16 @@ def test_stage1_must_not_hold_post_deploy_key_evidence() -> None:
     assert stage2_kinds_in_stage1(
         ["DB 연결 사용량 대시보드", "DB 연결 상태 로그"], be.stage2_evidence, be.discoverable_by
     ) == ["DB 연결 상태 로그"]
+    # 단서와 2단계 증거에 똑같이 가까우면 단서 쪽 — 재료가 1단계 자료로 적어 둔 종류를 바꿔 쓴 제목이다 (설계 검사 #332 S-F10:
+    # '평시 DB 연결 사용 현황'은 단서와도 2단계 'DB 연결 상태 로그'와도 0.5 로 동점이라 걸렸고, 재요청으로 고치지 못했다)
+    assert (
+        stage2_kinds_in_stage1(
+            ["평시 DB 연결 사용 현황", "DB 연결 사용 현황 대시보드"],
+            be.stage2_evidence,
+            be.discoverable_by,
+        )
+        == []
+    )
     d = _v2draft()
     d["artifacts"][1]["title"] = (
         "DB 연결 상태 로그"  # 백엔드 핵심 증거와 같은 종류 (1단계 단서엔 '평시 DB 연결 사용량 대시보드')
@@ -857,3 +867,50 @@ def test_links_are_only_checked_on_v6_output() -> None:
 
     out = fill_from_seed_v5(DraftFeatureOutputV5.model_validate(_v5draft()), BACKEND.feature)  # type: ignore[arg-type]
     assert check_links(out) == []  # 예전 판은 연결을 요청 글 단계가 쓴다
+
+
+def test_material_english_terms_are_whole_words() -> None:
+    """설계 검사 #332 T-F7: 낱말 대조는 영문을 단어 경계로 본다 — 'idempot' 같은 잘린 어간은 'idempotent'·'Idempotency-Key' 에 걸리지
+    않아 목록에 있어도 아무것도 막지 못했다. 재료 글(낱말 목록 밖)에 그 말로 시작하는 더 긴 영문 낱말이 있는데 그 말 자체는 한 번도
+    낱말로 나오지 않으면 잘린 어간으로 본다 — 온전한 낱말(활용형 포함)로 쓴다."""
+    import re
+
+    root = Path(__file__).resolve().parents[2] / "incidents" / "public_v1"
+    lists = ("leak_terms", "stage2_cause_terms", "trigger_terms")
+    stems: list[str] = []
+    for path in sorted(root.glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        feature = data.get("feature") or {}
+        terms = [*data.get("hidden_terms", []), *(t for k in lists for t in feature.get(k, []))]
+        rest = copy.deepcopy(data)
+        rest.pop("hidden_terms", None)
+        for k in lists:
+            (rest.get("feature") or {}).pop(k, None)
+        text = json.dumps(rest, ensure_ascii=False).lower()
+        words = set(re.findall(r"[a-z]+", text))
+        for term in dict.fromkeys(terms):
+            if not re.fullmatch(r"[A-Za-z]+", term):
+                continue
+            low = term.lower()
+            longer = any(w != low and w.startswith(low) for w in words)
+            if longer and low not in words:
+                stems.append(f"{path.name}: {term}")
+    assert stems == [], stems
+
+
+def test_stage1_leak_terms_skip_words_the_business_need_already_shows() -> None:
+    """설계 검사 #332 S-F6: 명세 검사의 1단계 금지 낱말도 공개된 업무 요구에 나온 말은 뺀다 — 계약 검사와 같은 예외."""
+    from task_spec.spec.feature import without_public
+
+    assert without_public(["감사 기록", "커넥션 풀"], "변경 시도마다 감사 기록을 남긴다") == [
+        "커넥션 풀"
+    ]
+    seed = BACKEND.feature
+    assert seed is not None
+    leaky = seed.model_copy(update={"leak_terms": [*seed.leak_terms, "감사 기록"]})
+    d = _v2draft()
+    d["title"] = "가상 주문 상태 변경 감사 기록 기능"
+    out = fill_from_seed(DraftFeatureOutputV2.model_validate(d), leaky)  # type: ignore[arg-type]
+    ctx = _seed_ctx()
+    ctx.incident = ctx.incident.model_copy(update={"feature": leaky})  # type: ignore[union-attr]
+    assert not [p for p in check_feature(out, ctx) if "감사 기록" in p and "1단계 지원자 화면" in p]
