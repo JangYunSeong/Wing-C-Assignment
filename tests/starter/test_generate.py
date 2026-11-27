@@ -118,7 +118,7 @@ async def test_failed_calls_are_counted_in_provenance() -> None:
 async def test_gen_starter_ok_and_reask_on_locked_file() -> None:
     fake = FakeBackend().push(_files(*STARTER))
     res = await _gen(gen_starter, fake, _inputs())
-    assert res.ok and res.provenance[0].prompt == "gen_starter@11" and res.overlay is not None
+    assert res.ok and res.provenance[0].prompt == "gen_starter@12" and res.overlay is not None
     assert [f.path for f in _no_seed(res.overlay.files)] == [p for p, _ in STARTER]
 
     # 수리판(v3~): 재요청엔 첫 답이 이전 출력으로 가고, 고칠 파일만 — 잠긴 파일은 빈 content 로 지운다
