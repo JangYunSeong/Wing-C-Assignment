@@ -51,7 +51,7 @@ from task_spec.starter.layers import Podman
 from task_spec.starter.loader import ImageRef, PackageInputs, register_packages
 from task_spec.starter.material_guide import guide_problems, load_guides
 from task_spec.starter.render import render_readme, thin_readme
-from task_spec.starter.repair import MATERIAL_VERDICT, STARTER
+from task_spec.starter.repair import CONTRACT_SUSPECT, MATERIAL_VERDICT, REBUILD_HINT, STARTER
 from task_spec.starter.static_check import Overlay, readme_flags
 from task_spec.starter.store import BuildRepo
 from task_spec.starter.templates import select_template
@@ -283,9 +283,18 @@ class RealSteps:
             )
             # 실패 종류를 사유 머리에 (설계 검사 #332 B-F1) — 재료 판정은 같은 명세로 다시 요청해도 되풀이되기 쉬워 담당자가 알아야 한다.
             # 판정 문장은 실패 빌드 기록(DB)에만, 사유에는 종류·회차·관문만
-            material = any(f.startswith(MATERIAL_VERDICT) for f in out.review_flags)
-            head = "재료 판정으로 멈춤" if material else "수리 루프 실패"
-            message = f"build: {head} (회차 {out.rounds}) — {why}"
+            verdicts = [f for f in out.review_flags if f.startswith(MATERIAL_VERDICT)]
+            head = "재료 판정으로 멈춤" if verdicts else "수리 루프 실패"
+            # 창 없음뿐이면 다시 빌드해 볼 만하다 — 창은 회차마다 다르다 (#341, 판정 문장 끝의 REBUILD_HINT). 계약 결함 의심이 함께면
+            # 다시 빌드해도 같은 계약이라 덧붙이지 않는다 (예산 소진은 다시 빌드하면 새 예산이라 막지 않는다)
+            retry = (
+                " · 다시 빌드해 볼 수 있음"
+                if verdicts
+                and all(REBUILD_HINT in f for f in verdicts)
+                and not any(f.startswith(CONTRACT_SUSPECT) for f in out.review_flags)
+                else ""
+            )
+            message = f"build: {head} (회차 {out.rounds}){retry} — {why}"
             if not out.reports:
                 # 검증 전에 멈춤 (#337 6절) — 판단은 수리 기록이 아니라 검증 보고서 유무로. 채점 코드 컴파일을 고친 뒤 생성이 실패하면
                 # 마지막 컴파일 수리가 사유처럼 보였다. 멈춘 단계 이름만 (사유 문장은 검토 표시·실패 빌드 기록에)
@@ -300,7 +309,7 @@ class RealSteps:
                     hidden_plan=out.hidden_plan or c.plan,
                     review_flags=list(out.review_flags),
                     repairs=list(out.repairs),
-                    trace=build_trace(out, c.adjustments, "material" if material else "generation"),
+                    trace=build_trace(out, c.adjustments, "material" if verdicts else "generation"),
                 ),
             )
         starter = out.overlays[STARTER].files

@@ -24,6 +24,7 @@ from psycopg.rows import dict_row
 
 from eval.starter.register_mock_common import dsn
 from task_spec.config import Settings
+from task_spec.schemas.package import NOT_A_TRAP
 from task_spec.starter.material_guide import load_guides, reason_descriptions
 from task_spec.starter.store import PgBuildStore
 from task_spec.starter.templates import load_template
@@ -233,6 +234,7 @@ function show(i){
  [...nav.children].forEach((e,j)=>e.setAttribute('aria-current',j===i));
  const b=D.builds[i];const hid=b.cases.filter(c=>c.kind==='hidden'),pub=b.cases.filter(c=>c.kind==='public');
  const mism=b.cases.filter(c=>c.mismatch);
+ const notTrap=(b.review_flags||[]).some(f=>f.startsWith(__NOT_A_TRAP__));  // #341 — 흔한 구현과 구별되지 않음을 받아들인 빌드
  let h=`<h2>${esc(b.title||b.common_id)}</h2><div class="mute">${esc(b.build_id)} · <span class="tag">${esc(b.status)}</span> · ${esc(b.template_ref)}</div>
  <div class="meta">
  <div><b>판정 이미지</b>${esc(b.image)}${b.image_found?'':' <span class="bad">(로컬에 없음)</span>'}</div>
@@ -244,7 +246,7 @@ function show(i){
  <div><b>수리 이력 · 검토 표시</b>${b.repairs}건 · ${b.review_flags.length}건</div>
  <div><b>파일</b>${b.image_files.map(f=>esc(f.name)+' ('+mb(f.size)+')').join('<br>')}</div></div>`;
  if(mism.length)h+=`<p class="bad">이미지 케이스와 숨은 계획이 어긋납니다: ${mism.map(c=>esc(c.id)+(c.missing_in_image?' (이미지에 없음)':' (계획에 없음)')).join(', ')}</p>`;
- h+=`<h3>숨은 케이스 — 흔한 구현을 잡는 테스트</h3><table><tr><th>케이스</th><th>숨은 요구</th><th>의도한 실패 사유</th><th>시나리오 → 통과 조건</th></tr>`;
+ h+=`<h3>숨은 케이스 — ${notTrap?'함정 아님 (흔한 구현과 구별되지 않음 — 표시 참고, 채점 유지)':'흔한 구현을 잡는 테스트'}</h3><table><tr><th>케이스</th><th>숨은 요구</th><th>의도한 실패 사유</th><th>시나리오 → 통과 조건</th></tr>`;
  hid.forEach(c=>{const t=b.traps.find(t=>t.trap_id===c.trap_id);
   h+=`<tr><td><b>${esc(c.id)}</b><br><span class="mute">${esc(c.ac_id||'')}</span></td><td><code>${esc(c.trap_id)}</code><br>${esc(t?t.description:'')}</td>
   <td><code>${esc(c.intended_reason)}</code><br><span class="mute">${esc(b.reasons[c.intended_reason]||'')}</span></td>
@@ -252,8 +254,8 @@ function show(i){
  h+=`</table><h3>검증 결과 — 판정 이미지로 채점한 구현별 통과 수</h3><table><tr><th>구현</th><th class="num">숨은</th><th class="num">공개</th><th>기대</th></tr>`;
  Object.entries(b.verification).forEach(([k,s])=>{
   const naive=k.startsWith('naive'),start=k==='starter-only';
-  const okExp=(naive||start)?s.hidden_passed===0:s.hidden_passed===s.hidden_total;
-  h+=`<tr><td>${esc(k)}</td><td class="num ${okExp?'ok':'bad'}">${pass(s)}</td><td class="num">${s.public_passed}/${s.public_total}</td><td class="mute">${naive?'흔한 구현 — 숨은 테스트에서 실패':start?'시작 코드 — 숨은 테스트에서 실패':'허용 설계 — 모두 통과'}</td></tr>`});
+  const okExp=(naive&&notTrap)||((naive||start)?s.hidden_passed===0:s.hidden_passed===s.hidden_total);
+  h+=`<tr><td>${esc(k)}</td><td class="num ${okExp?'ok':'bad'}">${pass(s)}</td><td class="num">${s.public_passed}/${s.public_total}</td><td class="mute">${naive?(notTrap?'흔한 구현 — 함정 아님 (승인자가 받아들임)':'흔한 구현 — 숨은 테스트에서 실패'):start?'시작 코드 — 숨은 테스트에서 실패':'허용 설계 — 모두 통과'}</td></tr>`});
  h+=`</table>`;
  if(b.harness)h+=`<h3>하네스 조절값</h3><pre>${esc(JSON.stringify(b.harness,null,1))}</pre>`;
  h+=`<h3>공개 케이스 (지원자가 보는 테스트)</h3><div>${pub.map(c=>'<span class="tag">'+esc(c.id)+'</span>').join(' ')||'–'}</div>`;
@@ -276,7 +278,9 @@ def snapshot(conninfo: str, only: list[str], label: str) -> dict[str, Any]:
 
 
 def page_with(data: dict[str, Any]) -> str:
-    return PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"))
+    return PAGE.replace("__NOT_A_TRAP__", json.dumps(NOT_A_TRAP, ensure_ascii=False)).replace(
+        "__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    )
 
 
 def serve(conninfo: str, label: str, port: int) -> None:

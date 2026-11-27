@@ -19,6 +19,7 @@ from task_spec.nodes.starter import build as build_mod
 from task_spec.nodes.starter.build import build_and_repair
 from task_spec.schemas import VerifyReport
 from task_spec.schemas.domain import Artifact, TaskItem
+from task_spec.schemas.package import NOT_A_TRAP
 from task_spec.schemas.verify_report import TargetRun
 from task_spec.starter.calibrate import (
     FLAG,
@@ -32,7 +33,7 @@ from task_spec.starter.calibrate import (
     spec_note,
     spec_values,
 )
-from task_spec.starter.repair import MATERIAL_VERDICT, RepairPlan, assign
+from task_spec.starter.repair import MATERIAL_VERDICT, REBUILD_HINT, RepairPlan, assign
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.templates import Template, load_template
 from tests.starter.test_generate import D1, _files, _inputs, _task
@@ -506,8 +507,13 @@ async def test_no_window_stops_the_build_for_a_person() -> None:
         and "조절값으로 재현 불가" in f
         and "한 번 다시 만든 뒤에도" in f
         and "명세 운영 값" in f
+        and REBUILD_HINT
+        in f  # #341: 창은 회차마다 달라 다시 빌드해 볼 만하다 — 실패 사유가 이 안내를 본다
         for f in out.review_flags
     )
+    assert not any(
+        f.startswith(NOT_A_TRAP) for f in out.review_flags
+    )  # 창 없음은 받아들이지 않는다
     assert backend.calls.count("gen_naive") == 1  # 다시 만들지 않았다
     assert backend.calls.count("gen_hidden") == 2  # 처음 + 창 없음 뒤 한 번
     retry = [u for n, u in backend.users if n == "gen_hidden"][-1]
@@ -524,9 +530,12 @@ async def test_a_load_the_accepted_design_cannot_bear_stops_for_a_person_without
     assert out.calibration.status == "overloaded" and out.hidden_plan is None
     assert not out.calibration_tries
     assert any(
-        f.startswith(f"{MATERIAL_VERDICT}허용 구현도 버티지 못하는 부하") and "한 번 다시" not in f
+        f.startswith(f"{MATERIAL_VERDICT}허용 구현도 버티지 못하는 부하")
+        and "한 번 다시" not in f
+        and REBUILD_HINT not in f  # 과부하는 명세 수치 결함 — 다시 빌드해도 같다 (#341)
         for f in out.review_flags
     )
+    assert not any(f.startswith(NOT_A_TRAP) for f in out.review_flags)  # 과부하도 받아들이지 않는다
     assert backend.calls.count("gen_naive") == 1  # 흔한 구현은 다시 만들지 않는다
     assert backend.calls.count("gen_hidden") == 1  # 숨은 케이스도 다시 만들지 않는다
 

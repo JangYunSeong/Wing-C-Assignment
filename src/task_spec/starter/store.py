@@ -70,6 +70,7 @@ from task_spec.schemas.build_record import (
 from task_spec.schemas.domain import TaskItem
 from task_spec.schemas.package import (
     BUILD_ID,
+    NOT_A_TRAP,
     ArtifactFile,
     ArtifactRole,
     ReviewDecision,
@@ -407,6 +408,19 @@ def check_approval(
     if len(decided - flags):
         raise BuildRuleError(
             f"{build.build_id}: 없는 검토 표시에 대한 판단 {len(decided - flags)}건"
+        )
+    # '함정 아님' 표시는 '알고 받아들임' 으로만 (#341, 2026-11-27 사용자) — 확인(문제 없음)·고침은 이 표시에 맞지 않는다: 과제가 AI 첫 답과
+    # 구별되지 않는 것은 승인자가 고칠 수 없고 문제가 없는 것도 아니다. 같은 표시에 판단이 여럿이면 모두 — 순서로 갈리지 않게
+    wrong = [
+        f
+        for f in build.outcome.review_flags
+        if f.startswith(NOT_A_TRAP)
+        and any(d.verdict != "accepted_risk" for d in decisions if d.flag_id == flag_id(f))
+    ]
+    if wrong:
+        raise BuildRuleError(
+            f"{build.build_id}: '함정 아님' 표시 {len(wrong)}건은 '알고 받아들임'(accepted_risk)으로만 승인 — "
+            "AI 첫 답과 구별되지 않는 과제"
         )
 
 

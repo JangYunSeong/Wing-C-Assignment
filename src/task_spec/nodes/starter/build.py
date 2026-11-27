@@ -42,6 +42,7 @@ from task_spec.schemas import (
     VerifyReport,
 )
 from task_spec.schemas.build import HiddenPlan, RepairRecord, TaskContract
+from task_spec.schemas.package import NOT_A_TRAP
 from task_spec.spec.fix_markers import usable_markers
 from task_spec.starter import calibrate as calib
 from task_spec.starter.conformance import render_conformance
@@ -61,15 +62,20 @@ from task_spec.starter.repair import (
     CALIBRATE,
     COMPILE_RETRIES,
     MATERIAL_VERDICT,
+    NEUTRALIZED,
+    OVERLAP,
+    REBUILD_HINT,
     STARTER,
     WEAK_FLAG,
     ContractSignal,
     RegenNote,
     RepairAction,
     RepairPlan,
+    accepted_material,
     assign,
     contract_signals,
     gates_of,
+    overlap_tests,
 )
 from task_spec.starter.repair import HAND as HAND_POOL
 from task_spec.starter.repair import TRAP_GATE as TRAP_POOL
@@ -824,12 +830,78 @@ class _Passed:
     weak: tuple[str, ...]
     traps: list[TrapResult]
     gate: str = TRAP_GATE  # 다시 만든 관문 — 되돌릴 때 표시에
+    not_trap: tuple[str, ...] = ()  # 그 상태의 '함정 아님' 표시 (#341) — 되돌릴 때 표시도 그 상태로
+
+
+def _accept_material(
+    plan: RepairPlan, report: VerifyReport, repairing: bool
+) -> tuple[list[str], str]:
+    """그 회차의 막는 표시가 받아들이는 재료 판정(겹침·무력화)뿐이고 이 회차 검증이 판정의 전제와 맞으면, 막는 표시에서 빼고 그 판정
+    문장을 돌려준다 — 회차는 통과한다 (#341, 2026-11-27 사용자 — 숨은 케이스는 채점에 남긴다. 예전에는 '재료 판정으로 멈춤' 으로 실패해
+    과제가 없었다). 두 번째 값은 받아들이지 않은 이유 (받아들였거나 다른 막는 표시가 함께면 빈 글). 받아들이지 않으면 예전처럼 멈춘다:
+    - 다른 막는 표시(창 없음·과부하·계약 결함 의심 등)가 하나라도 있을 때.
+    - 관문(함정·손 구현) 수리 뒤 회차일 때 — 수리 전 통과 상태(흔한 구현을 잡던 숨은 테스트)로 되돌리는 쪽이 낫다.
+    - 같은 회차에 다른 수리가 남았을 때 — 판정과 함께 수리하면 예산 소진·회차 상한으로 실패 기록이 예전과 달라진다.
+    - 허용 구현이 이 회차 검증에서 무엇 하나라도 떨어졌거나 결과가 없을 때 (calibrate.accepted_clean) — 채점에 남길 테스트는 올바른
+      구현을 통과시켜야 한다. 겹침 판정은 같은 회차에 합쳐진 다른 공개 테스트 수리를 함께 버린다 (repair._contract_suspects).
+    - 무력화인데 흔한 구현이 숨은 케이스 하나라도 떨어졌을 때 — ③ 이 판정만 내고 다른 케이스의 수리(의도와 다른 사유 등)를 건너뛰었다.
+    - 겹침인데 흔한 구현이 판정에 적힌 것 밖의 공개 테스트에서도 떨어졌거나 하네스 오류일 때 — 버려진 수리가 그 테스트였을 수 있다.
+    (#341 적대적 검토 두 번)"""
+    if not plan.unresolved or not all(accepted_material(u) for u in plan.unresolved):
+        return [], ""
+    verdicts = list(dict.fromkeys(plan.unresolved))
+    naive = [r for r in report.runs if r.kind == "ref_naive"]
+    named = {n for v in verdicts for n in overlap_tests(v)}
+    public_off = [t for r in naive for t in r.results("public") if t.result != "PASS"]
+    why = ""
+    if repairing:
+        why = "관문 수리 뒤 회차 — 수리 전 통과 상태로 되돌림"
+    # 허용 구현 실패를 다른 수리보다 먼저 — 허용 구현이 떨어지면 그 구현을 고치는 수리도 함께 나온다
+    elif not calib.accepted_clean(report):
+        why = "허용 구현이 이 회차 검증에서 실패하거나 결과가 없음"
+    elif plan.actions or plan.calibrate:
+        why = "같은 회차에 다른 수리가 남음"
+    elif any(v.startswith(MATERIAL_VERDICT + NEUTRALIZED) for v in verdicts) and not all(
+        t.result == "PASS" for r in naive for t in r.results("hidden")
+    ):
+        why = "흔한 구현이 숨은 케이스에서 떨어짐 — 다른 케이스의 수리를 건너뛴 판정"
+    elif any(v.startswith(MATERIAL_VERDICT + OVERLAP) for v in verdicts) and any(
+        t.result != "ASSERT" or t.name not in named for t in public_off
+    ):
+        why = "흔한 구현이 판정 밖 공개 테스트에서도 떨어지거나 하네스 오류"
+    if why:
+        return [], why
+    plan.unresolved = []
+    return verdicts, ""
+
+
+def _not_a_trap_flag(verdict: str) -> str:
+    """받아들인 재료 판정 → 승인자 표시. 겹침은 흔한 구현이 공개 테스트에서 먼저 떨어져 숨은 케이스를 흔한 구현으로 확인하지 못했고,
+    함정 관문(⑪)은 함정 변형이 그 공개 테스트에서 떨어져 판정할 수 없어 건너뛴다. 무력화는 흔한 구현이 숨은 케이스를 모두 통과해 숨은
+    케이스가 떨어뜨린 구현은 함정 관문·손 구현 결과로만 보인다."""
+    body = verdict.removeprefix(MATERIAL_VERDICT)
+    if body.startswith(OVERLAP):
+        note = (
+            " · 숨은 케이스는 흔한 구현으로 확인 못 함 (흔한 구현이 공개 테스트에서 먼저 실패)"
+            f" · 숨은 테스트 함정 관문({TRAP_GATE}) 건너뜀 (함정 변형도 그 공개 테스트에서 실패)"
+        )
+    else:
+        note = " · 흔한 구현은 숨은 케이스를 모두 통과 — 숨은 케이스의 변별 근거는 함정 관문·손 구현 결과뿐"
+    return f"{NOT_A_TRAP}{body}{note} · 승인 조건: '알고 받아들임'"
+
+
+def _set_not_a_trap(out: BuildOutcome, flags: Sequence[str]) -> None:
+    """'함정 아님' 표시를 지금 상태의 것으로 — 앞 회차에 붙인 것은 걷는다. 판정은 회차마다 다시 하므로(관문 수리로 숨은 테스트를 다시
+    만들면 흔한 구현이 떨어질 수 있다) 끝난 상태의 표시만 승인자에게 간다."""
+    out.review_flags[:] = [f for f in out.review_flags if not f.startswith(NOT_A_TRAP)]
+    out.review_flags += [f for f in flags if f not in out.review_flags]
 
 
 def _restore_passed(out: BuildOutcome, p: _Passed, why: str) -> None:
     """관문 수리 전 통과 상태로 — 변별 못 하는 숨은 케이스는 부르는 쪽이 손 구현 관문 뒤에 뺀다 (_settle_weak)."""
     out.overlays = dict(p.overlays)
     out.traps = list(p.traps)
+    _set_not_a_trap(out, p.not_trap)
     out.snapshots.append(dict(out.overlays))  # 마지막 스냅샷이 끝난 상태와 같게 (리뷰 2026-11-13)
     if p.gate == HAND_GATE:
         out.review_flags.append(
@@ -1067,7 +1139,14 @@ async def _add_public_cases(
     if any(x.setup != "ok" for x in check.runs):
         out.repairs.append(_record(action, "failed"))
         return _survivor_flags(alive, "추가한 테스트로 참조 구현이 기동하지 못함")
-    failing = {t.name for x in check.runs for t in x.results("public") if t.result != "PASS"}
+    # 겹침을 받아들인 빌드(#341)의 흔한 구현은 겹친 공개 테스트에서 원래 떨어진다 — 더한 테스트 탓이 아니다 (표시 문장의 테스트 이름)
+    known = {n for f in out.review_flags if f.startswith(NOT_A_TRAP) for n in overlap_tests(f)}
+    failing = {
+        t.name
+        for x in check.runs
+        for t in x.results("public")
+        if t.result != "PASS" and not (x.kind == "ref_naive" and t.name in known)
+    }
     keep = [f for f in added if not (_class_names(f) & failing)]
     flags: list[str] = []
     if len(keep) < len(added) or (failing - {n for f in added for n in _class_names(f)}):
@@ -1386,6 +1465,10 @@ async def _build_and_repair(
 
     for round_no in range(max_rounds + 1):
         out.rounds = round_no
+        # 이 회차에 받아들인 겹침·무력화 판정 문장 (#341) — 검증한 회차에서만 생기고, 받아들이면 수리할 것이 없어 회차는 통과한다
+        # ('함정 아님' 표시로). 못 받아들이면 판정은 막는 표시로 남아 예전처럼 멈춘다
+        admitted: list[str] = []
+        not_admitted = ""  # 받아들이지 않은 이유 — 실패 기록에 (#341)
         plan = _static_actions(out.overlays, b)
         for flag in plan.flags:
             if flag not in out.review_flags:
@@ -1457,26 +1540,42 @@ async def _build_and_repair(
                             + cal.verdict()
                             + again
                             + " (재료 또는 이 회차의 명세 운영 값·생성 코드 확인)"
+                            + (f" · {REBUILD_HINT}" if cal.status == "no_window" else "")
                         )
+            # 겹침·무력화 재료 판정만 남았으면 막지 않는다 — 숨은 케이스는 채점에 남기고 '함정 아님' 표시 (#341). 창 없음·과부하는 그대로 막는다.
+            # 관문 수리 뒤 회차는 받아들이지 않는다 — 수리 전 통과 상태로 되돌린다 (_finish_restored)
+            admitted, not_admitted = _accept_material(plan, report, repairing=passed is not None)
+            if not_admitted:
+                logger.info("build round=%d material verdict kept: %s", round_no, not_admitted)
             for (
                 flag
             ) in plan.flags:  # 막지 않는 표시 (예: 다시 만든 시작 코드가 또 숨은 케이스 통과)
                 if flag not in out.review_flags:
                     out.review_flags.append(flag)
         logger.info(
-            "build round=%d actions=%d unresolved=%d",
+            "build round=%d actions=%d unresolved=%d admitted=%d",
             round_no,
             len(plan.actions),
             len(plan.unresolved),
+            len(admitted),
         )
         if plan.passed:
-            tplan = await _trap_gate(out, b, kw, verifier, tgate)
+            not_trap = [_not_a_trap_flag(v) for v in admitted]
+            _set_not_a_trap(out, not_trap)  # 통과한 회차의 판정으로 — 앞 회차의 표시는 걷는다
+            # 겹침이면 함정 관문을 건너뛴다 — 함정 변형도 겹친 공개 테스트에서 떨어져 '무효' 로만 판정된다 (#341 검토, 표시에 적음)
+            overlap = any(v.startswith(MATERIAL_VERDICT + OVERLAP) for v in admitted)
+            tplan = RepairPlan() if overlap else await _trap_gate(out, b, kw, verifier, tgate)
             out.review_flags += [f for f in tplan.flags if f not in out.review_flags]
             if tplan.actions:
                 a = tplan.actions[0]
                 tried = out.regen_counts.get(a.budget_key, 0) >= a.pool.limit
                 if not tried and round_no < max_rounds:
-                    passed = _Passed(dict(out.overlays), tuple(plan.weak), list(out.traps))
+                    passed = _Passed(
+                        dict(out.overlays),
+                        tuple(plan.weak),
+                        list(out.traps),
+                        not_trap=tuple(not_trap),
+                    )
                     if not await _regenerate(
                         tplan.actions, out, b, by_id, kw, took, drop, compiler, absorb
                     ):
@@ -1510,7 +1609,13 @@ async def _build_and_repair(
             if spent:
                 _hand_skipped(out, hgate, spent, "다시 생성 1회 뒤에도")
             if fresh and round_no < max_rounds:
-                passed = _Passed(dict(out.overlays), tuple(plan.weak), list(out.traps), HAND_GATE)
+                passed = _Passed(
+                    dict(out.overlays),
+                    tuple(plan.weak),
+                    list(out.traps),
+                    HAND_GATE,
+                    not_trap=tuple(not_trap),
+                )
                 if await _regenerate(fresh, out, b, by_id, kw, took, drop, compiler, absorb):
                     continue
                 _restore_passed(out, passed, "테스트를 다시 생성하지 못함")
@@ -1539,6 +1644,10 @@ async def _build_and_repair(
                     compiler,
                 )
             out.review_flags += plan.unresolved
+            if not_admitted:  # '겹침·무력화는 멈추지 않는다' 와 어긋나 보이는 실패의 근거 (#341) — 판정 문장은 위에 그대로(실패 종류 material)
+                out.review_flags.append(
+                    f"재료 판정(겹침·무력화)을 받아들이지 않음 — {not_admitted}"
+                )
             out.review_flags += [f"재생성 예산을 소진함 — {a.key}: {a.reason}" for a in blocked]
             if round_no == max_rounds and not (plan.unresolved or blocked):
                 out.review_flags.append(
