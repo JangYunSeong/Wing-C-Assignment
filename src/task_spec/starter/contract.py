@@ -167,6 +167,21 @@ def _column_values(text: str, columns: list[re.Pattern[str]]) -> list[str]:
     return found
 
 
+# 값 바로 뒤 ':숫자' — 시각(09:00)이다. 표기 패턴(`in[-_ ]?flight\s*…`)이 줄을 넘어 다음 줄 시각을 값으로 잡았다 (2026-11-27 알파 sql339-2:
+# `http_requests_in_flight` 다음 줄 `09:00` 의 09 를 동시 요청 수로 읽어, 계약 검사가 '명세 자료의 값(09)'으로 안내). 템플릿의 표기 패턴은
+# 같은 판에서 고치지 않는 칸(harness_params)이라 읽는 쪽에서 거른다 — 운영 판에도 같은 패턴이 있다
+_TIME_AFTER = re.compile(r":\d")
+
+
+def pattern_values(rx: re.Pattern[str], text: str) -> list[str]:
+    """표기 패턴(그룹 1 = 값)이 글에서 잡은 값 — 시각 꼴은 뺀다. 계약 검사(extract_values)와 보정(calibrate.spec_values)이 같이 쓴다."""
+    return [
+        m.group(1).strip()
+        for m in rx.finditer(text)
+        if m.group(1) and not _TIME_AFTER.match(text, m.end(1))
+    ]
+
+
 def extract_values(param: HarnessParam, texts: Iterable[str]) -> list[str]:
     """표기 패턴(그룹 1)·표 열 이름으로 명세 글에서 이 조절값의 값을 뽑는다. 못 뽑으면 빈 목록 = "명세에 없음"."""
     texts = list(texts)
@@ -174,7 +189,7 @@ def extract_values(param: HarnessParam, texts: Iterable[str]) -> list[str]:
     for pattern in param.spec_patterns:
         rx = re.compile(pattern)
         for text in texts:
-            found += [m.group(1).strip() for m in rx.finditer(text) if m.group(1)]
+            found += pattern_values(rx, text)
     if param.spec_columns:
         cols = [re.compile(c, re.IGNORECASE) for c in param.spec_columns]
         for text in texts:

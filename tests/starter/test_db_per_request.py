@@ -231,6 +231,55 @@ def test_the_contract_check_asks_for_a_countable_api() -> None:
     assert "로그인 세션 도우미" in why
 
 
+def test_the_reason_rule_follows_a_variable_holding_the_count() -> None:
+    """숨은 테스트까지 간 알파 두 회차(sql339-1·3) 모두 첫 답이 `long n = sessionPathStatements(…); assertThat(n).as(Reasons.as(…))` 였고
+    한 회차는 재요청에도 같은 꼴이라 숨은 테스트 생성이 실패했다. 변수를 같은 파일에서 세기 결과로 대입했으면 그 단언이다 — 응답·다른 값에
+    붙인 사유는 그대로 막는다."""
+    import re
+
+    from task_spec.schemas import GeneratedFile
+    from task_spec.starter.static_check import _reason_rules
+
+    m = load_template(JAVA, 7).manifest
+    raw = _plan()
+    raw["cases"][0]["intended_reason"] = "db_per_request"
+    plan = HiddenPlan.model_validate(raw)
+    cid = plan.cases[0].case_id
+
+    def probs(body: str) -> list[str]:
+        case = GeneratedFile(
+            path="src/test/java/com/example/service/grading/cases/DbPerRequestTest.java",
+            content=f'@DisplayName("{cid} 세션 확인이 요청마다 DB 를 쓰지 않음")\nclass DbPerRequestTest extends ContractCase {{\n'
+            f"    @Test void t() throws Exception {{\n        String session = newSession();\n        int n = 20;\n{body}\n    }}\n}}",
+        )
+        rules = m.hidden_rules
+        return _reason_rules(
+            [case],
+            m,
+            plan,
+            re.compile(rules.case_id_pattern),
+            [re.compile(p) for p in rules.reason_patterns],
+        )
+
+    tag = '.as(Reasons.as("db_per_request", "요청 %d건 동안 업무 표 밖 SQL 문 수", n))'
+    assert (
+        probs(
+            f"        long extra = sessionPathStatements(session, n);\n        assertThat(extra){tag}.isLessThan(n);"
+        )
+        == []
+    )
+    assert probs(f"        assertThat(sessionPathStatements(session, n)){tag}.isLessThan(n);") == []
+    on_response = (
+        "        long extra = sessionPathStatements(session, n);\n"
+        "        HttpResponse<String> resp = getOrders(sessionHeaders(session));\n"
+        f"        assertThat(resp.statusCode()){tag}.isEqualTo(200);"
+    )
+    other = f"        long extra = sessionPathStatements(session, n);\n        long fixed = 5L;\n        assertThat(fixed){tag}.isLessThan(n);"
+    for body in (on_response, other):
+        (why,) = probs(body)
+        assert "그 사유를 보는 단언이 아닌 곳에 붙임" in why
+
+
 def test_no_helper_before_v7_or_without_a_session() -> None:
     assert "sessionPathStatements" not in _helper(_with_get(_session(), "/orders", "m1[]"), 6)
     plain = _with_get(_session(auth=None), "/orders", "m1[]", session=False)

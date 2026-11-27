@@ -402,6 +402,24 @@ def test_extract_values_uses_patterns_not_any_number() -> None:
     assert _check(plan=p, spec=spec).ok  # 천 단위 쉼표는 같은 수
 
 
+def test_extract_values_skips_a_time_after_the_value() -> None:
+    """표기 패턴이 줄을 넘어 다음 줄 시각을 값으로 잡았다 — 2026-11-27 알파 sql339-2: `http_requests_in_flight` 다음 줄 `09:00` 의 09 를
+    동시 요청 수로 읽어 계약 검사가 '명세 자료의 값(09)'으로 안내했다. 운영 판(v6)에도 같은 패턴이라 읽는 쪽에서 거른다. 줄을 넘는 다른 꼴
+    (YAML `threads:` 다음 줄 `max: 200`)은 그대로 읽는다. 보정의 수치 읽기(spec_values)도 같은 도우미를 쓴다."""
+    from task_spec.starter.calibrate import spec_values
+    from task_spec.starter.templates import load_template
+
+    m = load_template("backend/java-spring-boot3-jpa", 6).manifest
+    conc, threads = m.param("concurrency"), m.param("server_threads")
+    assert conc is not None and threads is not None
+    metric = "metric: http_requests_in_flight\n  09:00  avg 12  max 18\n  09:15  avg 31  max 44"
+    assert extract_values(conc, [metric]) == [] and spec_values([metric], "concurrency", m) == []
+    assert extract_values(conc, ["in_flight: 52"]) == ["52"]
+    assert extract_values(threads, ["server:\n  tomcat:\n    threads:\n      max: 200\n"]) == [
+        "200"
+    ]
+
+
 def test_harness_keys_types_ranges_and_reasons() -> None:
     p = _plan(
         harness={"pool": 8, "concurrency": "32", "query_delay_ms": 999},
