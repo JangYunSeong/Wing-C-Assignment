@@ -188,7 +188,9 @@ async def main() -> None:
         report["incident_pinned"] = a.incident
     base: PublicIncident | None = None
     if a.virtual_incident == "session":
-        base = session_material(s.incidents_dir, extra_designs=[SIGNED_WITH_MEMORY])
+        # 템플릿이 요청당 DB 사용 세기 사유를 가지면(v7, #339) 그 사유로 — 아니면 예전 대기 시간 사유
+        count = "db_per_request" in template.manifest.reason_codes
+        base = session_material(s.incidents_dir, extra_designs=[SIGNED_WITH_MEMORY], count=count)
         if base.sub != p.sub:
             raise SystemExit(f"가상 재료 직군({base.sub})과 공고 직군({p.sub})이 다름")
         incidents = with_incident(incidents, base)

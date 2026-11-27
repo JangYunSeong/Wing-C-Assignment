@@ -80,9 +80,12 @@ SIGNED_WITH_MEMORY = (
 )
 
 
-def session_material(root: Path, *, extra_designs: Sequence[str] = ()) -> PublicIncident:
+def session_material(
+    root: Path, *, extra_designs: Sequence[str] = (), count: bool = False
+) -> PublicIncident:
     """가상 세션 유지 재료 — 교착 공개 재료의 칸 이름만 빌리고 내용은 모두 이 재료의 것으로 (2단계·금지 낱말 포함).
-    extra_designs: 허용 설계를 더한다 (알파 — 사람이 JWT 설계를 빼도 허용 설계가 둘 남게)."""
+    extra_designs: 허용 설계를 더한다 (알파 — 사람이 JWT 설계를 빼도 허용 설계가 둘 남게).
+    count: 사유를 요청당 DB 사용 세기(db_per_request, 템플릿 Java v7 — #339)로, 필수 조절값 없이. 아니면 대기 시간 사유(보정)."""
     base = incident_by_id(load_incidents(root), DEADLOCK)
     assert base is not None
     return _virtual(
@@ -112,7 +115,10 @@ def session_material(root: Path, *, extra_designs: Sequence[str] = ()) -> Public
         business_need="로그인 API 를 추가하고, 로그인으로 받은 세션 값으로 기존 조회 API(상품·주문)를 쓰게 한다. 세션은 마지막 접근 뒤 "
         "30분 동안 유효하고 접근할 때마다 만료가 연장된다. 만료되었거나 없는 세션이면 401 을 준다.",
         naive_impl="세션을 DB 테이블에 저장하고, 요청마다 세션 테이블에서 세션을 조회해 마지막 접근 시각을 갱신한 뒤 본 처리를 한다",
-        hidden_requirement="피크 시간대에도 로그인 유지 확인이 DB 연결 대기로 실패하지 않는다",
+        # 요청당 DB 사용 세기면 채점 기준이 결과에서 설계로 (#339 D4) — 숨은 요구에 세는 문장을 둔다. 틀이 이 글을 그대로 담지 않으면
+        # 재료 것이 남는다(keeps_hidden)
+        hidden_requirement="피크 시간대에도 로그인 유지 확인이 DB 연결 대기로 실패하지 않는다"
+        + (". 세션 확인 경로는 요청마다 DB 를 쓰지 않는다" if count else ""),
         trigger="피크 시간대 동시 요청 수가 커넥션 풀 크기보다 크다. 운영 설정과 피크 시간대 지표를 봐야만 보인다.",
         why_naive_breaks="요청 하나가 세션 조회·갱신까지 DB 문장 약 4개를 실행해 연결을 오래 쥐고, 동시 요청이 풀보다 많으면 뒤 요청의 연결 "
         "대기가 대기 한도를 넘는다",
@@ -165,8 +171,8 @@ def session_material(root: Path, *, extra_designs: Sequence[str] = ()) -> Public
                 }
             )
         ],
-        reasons=["pool_acquire_timeout"],
-        harness=["pool_size", "concurrency"],
+        reasons=["db_per_request"] if count else ["pool_acquire_timeout"],
+        harness=[] if count else ["pool_size", "concurrency"],
         harness_notes={},
         harness_rules={},
         fault_by=None,
