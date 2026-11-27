@@ -19,7 +19,7 @@ def test_template_follows_the_job_family_and_the_pinned_version(tmp_path: Path) 
     """빌드 폴더의 직군으로 템플릿, 직군 없는 손 예시 루프는 Java, 알파가 고정한 판이 있으면 그 판."""
     for sub, ref in (
         ("sw.frontend", "frontend/react-vite-ts@v15"),
-        ("sw.backend", "backend/java-spring-boot3-jpa@v6"),
+        ("sw.backend", "backend/java-spring-boot3-jpa@v7"),
         ("data.eng", "data/python-duckdb@v4"),
     ):
         assert b.template_of(_run(tmp_path, sub, {"sub": sub})).manifest.ref == ref

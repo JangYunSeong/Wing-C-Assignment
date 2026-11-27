@@ -57,6 +57,8 @@ P1 내부 문서다 (`gen_hidden` 프롬프트에 들어감). 채점용 이미�
   실행된 SQL 문 중 그 API 가 읽는 업무 표를 건드리지 않은 문 수를 돌려준다 (표 이름은 from·join·update·into 뒤 표 자리에서만 본다 —
   같은 이름의 칼럼은 업무 표가 아니다). 부를 API·뺄 표는 빌드 파이프라인이 계약에서 골랐다(로그인 세션으로
   부르는 GET 중 로그인 엔티티를 돌려주지도 가리키지도 않는 것 — 뺄 표는 그 엔티티와 계약이 밝힌 참조) — 케이스에서 API 나 표를 고르지 않는다.
+- 하네스의 `GraderSupport.countStatements(Callable)`(측정 구간의 SQL 문 목록)과 `GraderJdbcHarness.statementsNotTouching(List, String...)`
+  (표 자리 대조로 업무 표를 건드리지 않은 문 수)는 `sessionPathStatements` 가 쓰는 부품이다 — 케이스에서 직접 부르지 않는다.
 - **단언은 `< n`** — 요청마다 한 번이라도 DB 를 쓰면 n 이상이다. 세션은 `newSession()` 으로 미리 받는다(로그인은 세지 않는다).
   `assertThat(sessionPathStatements(newSession(), 20)).as(Reasons.as("db_per_request", "요청 20건 동안 업무 표 밖 SQL 문 수")).isLessThan(20);`
 - 세는 범위는 측정 구간 전체다 — 비동기로 넘긴 DB 작업도 센다 (이 앱의 DataSource 문만). 부른 API 가 2xx 가 아니면 도우미가
