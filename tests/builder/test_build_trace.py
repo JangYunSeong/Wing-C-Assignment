@@ -13,6 +13,7 @@ import task_spec.builder.steps as steps_mod
 from task_spec.builder.runner import ContractResult, Job, StepFailed
 from task_spec.nodes.starter.build import HIDDEN
 from task_spec.schemas import GeneratedFile, HiddenPlan, TaskContract
+from task_spec.schemas.build import RepairRecord
 from task_spec.starter.repair import MATERIAL_VERDICT, STARTER
 from task_spec.starter.static_check import Overlay
 from task_spec.starter.store import TaskLabel
@@ -53,6 +54,8 @@ def _out(status: str, flags: list[str]) -> SimpleNamespace:
         variants=[],
         traps=[],
         hand=["⑫ 가상 손 구현: 통과"],
+        reports=["가상 검증 보고서"],  # 검증까지 간 빌드
+        failed_steps=[],
     )
 
 
@@ -118,3 +121,24 @@ async def test_a_material_verdict_failure_says_so(
     assert str(err2.value).startswith("build: 수리 루프 실패")
     assert err2.value.detail is not None and err2.value.detail.trace is not None
     assert err2.value.detail.trace.failure_kind == "generation"
+
+
+async def test_a_build_that_stopped_before_verification_names_the_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#337 6절: 생성 단계에서 검증 전에 멈추면 사유가 '수리 기록 없음'이었다 (운영 3건). 채점 코드 컴파일 수리 뒤 생성이 실패하면 마지막
+    컴파일 수리를 사유처럼 보였다. 판단은 수리 기록이 아니라 검증 보고서 유무로 — 멈춘 단계 이름만 (숨은 테스트 문구 없음)."""
+    out = _out("failed", ["gen_hidden 생성 실패: 가상 사유"])
+    out.reports = []
+    out.failed_steps = ["gen_public", "gen_hidden", "gen_hidden"]
+    out.repairs = [
+        RepairRecord(
+            gate="compile", target="gen_hidden", reason="가상 컴파일", result="regenerated"
+        )
+    ]
+    with pytest.raises(StepFailed) as err:
+        await _run(tmp_path, monkeypatch, out)
+    assert str(err.value) == "build: 검증 전 생성 실패 (gen_public, gen_hidden) — 검토 표시 참고"
+    detail = err.value.detail
+    assert detail is not None and detail.trace is not None
+    assert detail.trace.failure_kind == "generation"

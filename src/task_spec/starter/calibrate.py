@@ -36,6 +36,9 @@ from task_spec.starter.static_check import Overlay
 # 한도 조절값 → 시도할 값 (넉넉한 쪽부터). 대기 한도는 Hikari 하한 250 아래로 가지 않는다 — 1~249 는 기동 실패 (#301 하네스 실험).
 # 사다리가 없는 tunes 값(예: request_timeout_s)은 아직 후보를 정하지 않아 보정하지 않는다 — 그 사유는 기존 재생성 경로로.
 THRESHOLDS: dict[str, tuple[int, ...]] = {"connection_timeout_ms": (2000, 1000, 500, 250)}
+# 사다리 맨 위에서 허용 구현이 떨어질 때 올려 볼 더 느슨한 한도 (낮은 쪽부터) — 버스트 부하가 무거우면 2000 에서도 허용 구현이 떨어졌다
+# (#337 7절, #334 알파 2·3회차 동시/풀 82/20·124/20). 8000 이면 요청 한도는 max(30, 8000×2/1000+5) = 30초 그대로
+LOOSER: dict[str, tuple[int, ...]] = {"connection_timeout_ms": (4000, 8000)}
 # 부하 조절값 → 계획 값으로 창이 안 나올 때 차례로 올려 볼 값
 LOADS: dict[str, tuple[int, ...]] = {"query_delay_ms": (50,)}
 MIN_RATIO = 2.0
@@ -45,13 +48,14 @@ MAX_TRIALS = 16  # 부하 단계 2 × (사다리 4 + 창 끝 2 + 확인 2)
 STEP = 10  # 고른 한도의 단위
 LABEL = "cal"  # 보정 실행 대상 라벨 cal<n>-<라벨> — 검증기 작업 폴더(r<회차>-<라벨>)가 실제 검증·다른 조합과 겹치지 않게
 FLAG = "조절값 보정: "  # 승인 화면 표시 머리 (막지 않음 — 승인자가 확인)
+OVERLOADED = "허용 구현도 버티지 못하는 부하"  # overloaded 재료 판정의 머리 (#337 7절)
 # 명세 글이 조절값을 적는 로그 문구 — 표기 패턴(spec_patterns)은 설정 꼴만 읽어, 2단계 로그의 Hikari 문구
 # 'Connection is not available, request timed out after 3000ms' 를 못 읽었다 (2026-11-25 #308: 보정 350ms ↔ 공개 로그 3000ms)
 SPEC_LOGS: dict[str, tuple[str, ...]] = {
     "connection_timeout_ms": (r"timed\s+out\s+after\s+(\d+)\s*ms",)
 }
 
-Status = Literal["calibrated", "naive_untouched", "no_window", "skipped"]
+Status = Literal["calibrated", "naive_untouched", "no_window", "overloaded", "skipped"]
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,9 @@ class Knobs:
     ladder: tuple[int, ...]
     load: str | None = None  # 재료가 나열했거나 지금 값을 모르면 None — 계획 값 그대로
     loads: tuple[int, ...] = ()  # 시도할 부하 값 (계획 값 먼저)
+    looser: tuple[
+        int, ...
+    ] = ()  # 사다리 맨 위에서 허용 구현이 떨어질 때 올려 볼 한도 (LOOSER, #337 7절)
 
 
 @dataclass(frozen=True)
@@ -70,15 +77,20 @@ class Trial:
     """조합 하나를 돌린 결과."""
 
     values: Mapping[str, int]
-    caught: bool  # 흔한 구현이 요청한 케이스를 모두 의도한 사유(같은 묶음 사유 포함)로 떨어뜨림
+    # 흔한 구현이 요청한 케이스 중 하나라도 의도한 사유(같은 묶음 사유 포함)로 떨어뜨림 — 케이스마다 따로 (#337 7절: '모두'로 보면
+    # 누구에게나 가벼운 케이스 하나 때문에 떨어진 케이스까지 '흔한 구현이 안 떨어짐'이 됐다)
+    caught: bool
     clean: bool  # 허용 구현이 모두 모든 테스트 통과
+    caught_cases: tuple[str, ...] = ()  # 흔한 구현이 떨어진 케이스 (judge — 비면 알 수 없음)
 
 
 @dataclass(frozen=True)
 class Calibration:
     """보정 한 번의 결과 — calibrated 면 values 를 숨은 계획에 넣는다.
-    naive_untouched: 어느 조합에서도 흔한 구현이 떨어지지 않음 (흔한 구현이 함정을 안 가졌을 수 있다 → 기존 재생성 경로).
+    naive_untouched: 어느 조합·케이스에서도 흔한 구현이 떨어지지 않음 (흔한 구현이 함정을 안 가졌을 수 있다 → 기존 재생성 경로).
     no_window: 흔한 구현은 떨어지는데 허용 구현이 모두 통과하는 넉넉한 창이 없음 (재료가 조절값으로 재현되지 않음 → 사람).
+    overloaded: 더 느슨한 한도까지 올려도 허용 구현이 떨어짐 — 버스트가 읽는 행 수·동시 요청이 허용 설계도 버티지 못함
+    (#337 7절 → 사람, 숨은 케이스 재시도 없이 바로 재료 판정).
     skipped: 돌릴 수 없음 (검증기·공개 테스트·보정할 값 없음) → 기존 경로."""
 
     status: Status
@@ -90,15 +102,23 @@ class Calibration:
     why: str = ""  # skipped 사유
     # 창에서 골랐지만 확인 시험에서 흔한 구현이 통과했거나 허용 구현이 떨어진 한도
     unconfirmed: tuple[int, ...] = ()
+    # 요청한 케이스 중 고른 값에서 흔한 구현이 떨어지지 않은 것 (calibrated) — 보정 밖, 다음 회차 기존 경로 (#337 7절)
+    missed: tuple[str, ...] = ()
 
     def flag(self) -> str:
         """승인 화면 표시 (calibrated)."""
         assert self.knobs is not None and self.window is not None
         values = "·".join(f"{name} {value}" for name, value in self.values.items())
         lo, hi = self.window
+        hit = [c for c in self.cases if c not in self.missed]
+        missed = (
+            f" · {'·'.join(self.missed)} 는 흔한 구현이 떨어지지 않아 보정 밖"
+            if self.missed
+            else ""
+        )
         return (
-            f"{FLAG}{values} — 흔한 구현이 {'·'.join(self.cases)} 에서 {self.knobs.reason} 로 실패, 허용 구현 모두 통과 "
-            f"({self.knobs.threshold} 창 {lo}~{hi}, 시험 {len(self.trials)}회)"
+            f"{FLAG}{values} — 흔한 구현이 {'·'.join(hit)} 에서 {self.knobs.reason} 로 실패, 허용 구현 모두 통과 "
+            f"({self.knobs.threshold} 창 {lo}~{hi}, 시험 {len(self.trials)}회){missed}"
         )
 
     def row(self) -> dict[str, Any]:
@@ -110,17 +130,32 @@ class Calibration:
             "values": dict(self.values),
             "window": list(self.window) if self.window is not None else None,
             "trials": [
-                {"values": dict(t.values), "caught": t.caught, "clean": t.clean}
+                {
+                    "values": dict(t.values),
+                    "caught": t.caught,
+                    "clean": t.clean,
+                    "caught_cases": list(t.caught_cases),
+                }
                 for t in self.trials
             ],
             "why": self.why,
             "unconfirmed": list(self.unconfirmed),
+            "missed": list(self.missed),
         }
 
     def verdict(self) -> str:
-        """재료 판정 문구 (no_window) — 머리(repair.MATERIAL_VERDICT)는 부르는 쪽이 붙인다."""
+        """재료 판정 문구 (no_window·overloaded) — 머리(repair.MATERIAL_VERDICT)는 부르는 쪽이 붙인다."""
         assert self.knobs is not None
         names = "·".join(n for n in (self.knobs.threshold, self.knobs.load) if n)
+        if self.status == "overloaded":
+            top = max(t.values[self.knobs.threshold] for t in self.trials)
+            # 일반 문장 + 사례 (2026-11-26): 세션 재료 알파에서 보정이 성공한 회차는 버스트가 22행 표를 읽었고, 실패한 회차들은 동시
+            # 요청만큼 더한 행이 버스트가 읽는 목록 표에 들어가 400~550행을 매 요청 읽었다 — 다른 재료에서는 확인 전이라 '예:' 로만 단다
+            return (
+                f"{OVERLOADED} — {self.knobs.threshold} 를 {top} 까지 늘려도 허용 구현이 실패 "
+                f"({self.knobs.reason}, {names} 변경, 시험 {len(self.trials)}회) · 동시 요청·풀 크기·버스트가 읽는 데이터 양 확인 "
+                "(사람 — 예: 동시 요청만큼 더한 행이 버스트가 읽는 목록 표에 들어감)"
+            )
         hit = sorted(
             {t.values[self.knobs.threshold] for t in self.trials if t.caught}, reverse=True
         )
@@ -202,12 +237,15 @@ def knobs(
     ladder = tuple(v for v in THRESHOLDS[threshold] if _in_range(v, m.param(threshold)))
     if not ladder:
         return None
+    looser = tuple(
+        v for v in LOOSER.get(threshold, ()) if v > ladder[0] and _in_range(v, m.param(threshold))
+    )
     load = next((n for n in free if n in LOADS), None)
     base = _current(plan, m, load) if load is not None else None
     if load is None or base is None:
-        return Knobs(reason, threshold, ladder)
+        return Knobs(reason, threshold, ladder, looser=looser)
     ups = tuple(v for v in LOADS[load] if v > base and _in_range(v, m.param(load)))
-    return Knobs(reason, threshold, ladder, load, (base, *ups))
+    return Knobs(reason, threshold, ladder, load, (base, *ups), looser)
 
 
 def window(level: Sequence[Trial], threshold: str) -> tuple[int, int] | None:
@@ -271,6 +309,16 @@ async def search(
             level.append(trial)
             if not trial.clean:
                 break  # 한도가 짧을수록 허용 구현에 불리 — 그 아래는 보지 않는다
+        if level and not level[0].clean:
+            # 사다리 맨 위에서 허용 구현이 떨어짐 — 버스트 부하가 무겁다. 더 느슨한 한도로 올려 본다 (#337 7절). 흔한 구현이 계속 떨어지면
+            # 창을 넓히려고 한 칸 더, 허용 구현이 통과하고 흔한 구현도 통과하면 거기가 창 위 끝이라 멈춘다
+            for value in k.looser:
+                trial = await attempt({k.threshold: value, **fixed})
+                if trial is None:
+                    break
+                level.append(trial)
+                if trial.clean and not trial.caught:
+                    break
         w = window(level, k.threshold)
         top = edge(level, k.threshold) if w is None or w[1] < MIN_RATIO * w[0] else None
         if top is not None:
@@ -287,11 +335,13 @@ async def search(
         if w is None or w[1] < MIN_RATIO * w[0]:
             continue
         values = {k.threshold: pick(*w), **fixed}
+        confirms: list[Trial] = []
         for _ in range(CONFIRM):
             trial = await attempt(values)
             if trial is None or not (trial.caught and trial.clean):
                 unconfirmed.append(values[k.threshold])
                 break
+            confirms.append(trial)
         else:
             return Calibration(
                 "calibrated",
@@ -301,8 +351,15 @@ async def search(
                 tuple(trials),
                 tuple(cases),
                 unconfirmed=tuple(unconfirmed),
+                missed=_missed(cases, confirms),
             )
-    status: Status = "no_window" if any(t.caught for t in trials) else "naive_untouched"
+    status: Status
+    if trials and not any(t.clean for t in trials):
+        status = "overloaded"  # 더 느슨한 한도까지 허용 구현이 떨어짐 (#337 7절)
+    elif any(t.caught for t in trials):
+        status = "no_window"
+    else:
+        status = "naive_untouched"
     return Calibration(
         status, k, {}, None, tuple(trials), tuple(cases), unconfirmed=tuple(unconfirmed)
     )
@@ -311,6 +368,14 @@ async def search(
 def base_label(target: str) -> str:
     """보정 실행 대상 라벨(cal<n>-d1) → 원래 라벨(d1)."""
     return re.sub(rf"^{LABEL}\d+-", "", target)
+
+
+def _missed(cases: Sequence[str], confirms: Sequence[Trial]) -> tuple[str, ...]:
+    """고른 값의 확인 시험에서 흔한 구현이 한 번도 안 떨어진 케이스 — 시험이 케이스를 적지 않았으면(가짜 시험) 알 수 없어 비운다."""
+    if not confirms or any(not t.caught_cases for t in confirms):
+        return ()
+    hit = set.intersection(*(set(t.caught_cases) for t in confirms))
+    return tuple(c for c in cases if c not in hit)
 
 
 def accepted_clean(report: VerifyReport) -> bool:
@@ -329,7 +394,8 @@ def judge(
     intended: Mapping[str, str],
     family: Collection[str] = (),
 ) -> Trial:
-    """조합 하나의 보고서 → 흔한 구현이 요청한 (라벨, 케이스)를 모두 의도한 사유로 떨어뜨렸나 · 허용 구현이 모두 통과했나.
+    """조합 하나의 보고서 → 흔한 구현이 요청한 (라벨, 케이스) 중 어디서 의도한 사유로 떨어졌나 · 허용 구현이 모두 통과했나.
+    케이스마다 따로 본다 (#337 7절) — 하나라도 떨어지면 caught, 떨어진 케이스는 caught_cases.
     family: 재료가 정한 이 숨은 요구의 사유들 — 같은 묶음의 다른 사유로 떨어져도 잡은 것으로 본다 (repair._gate3 와 같다)."""
     fam = set(family)
     runs = {base_label(r.target): r for r in report.runs}
@@ -344,11 +410,8 @@ def judge(
             return False
         return t.reason == want or (t.reason is not None and t.reason in fam and want in fam)
 
-    return Trial(
-        dict(values),
-        bool(request) and all(caught(t, c) for t, c in request),
-        accepted_clean(report),
-    )
+    hit = tuple(dict.fromkeys(c for t, c in request if caught(t, c)))
+    return Trial(dict(values), bool(hit), accepted_clean(report), hit)
 
 
 def with_params(hidden: Overlay, plan: HiddenPlan, m: TemplateManifest) -> Overlay:

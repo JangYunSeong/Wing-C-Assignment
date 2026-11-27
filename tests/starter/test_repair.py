@@ -370,6 +370,22 @@ def test_naive_regenerated_for_another_failure_keeps_its_structure() -> None:
     assert a.gate == "⑤" and "지적된 실패만 고친다" in a.note and a.pool.suffix == ""
 
 
+def test_starter_that_already_passes_new_public_tests_is_told_to_fix_its_existing_tests_too() -> (
+    None
+):
+    """#337 팩트체크 (알파 fix337-1): 시작 코드가 새 API(로그인)까지 구현하고 그 동작을 확인하는 기존 기능 테스트를 썼다. ②' 수리가
+    새 동작을 자리 표시로 바꾸게 했는데 지시에 기존 테스트 얘기가 없어 — 수리는 고친 파일만 덮어써 — 옛 기존 테스트가 남아 깨졌고
+    시작 코드 예산을 다 썼다. 숨은 케이스 쪽 ②' 지시처럼 기존 기능 테스트도 그 동작만 확인하게 고치라고 한다."""
+    from task_spec.starter.repair import _starter_public
+
+    starter = _run(
+        "starter", "starter", _t("public", "Pt1LoginTest"), _t("public", "Pt2WorkOrdersTest")
+    )
+    acts, _ = _starter_public(starter, {})
+    [a] = acts
+    assert a.gate == "②'" and "기존 기능 테스트" in a.note and "함께 낸다" in a.note
+
+
 def test_starter_that_already_passes_a_hidden_case_is_regenerated() -> None:
     """2026-11-07 알파 테스트: 시작 코드가 새 기능까지 구현해 시작 코드 그대로 숨은 케이스를 통과 — 2회차는 모두, 4회차(배송 감사)는 hc1 만."""
     refs = (_run("naive-all", "ref_naive", *GOOD_NAIVE), _run("d1", "ref_accepted", *GOOD_ACC))
@@ -685,6 +701,7 @@ async def test_generation_failure_stops_before_verify() -> None:
     out = await _build(verifier, llm)
     assert out.status == "failed" and not verifier.seen
     assert any("gen_starter 생성 실패" in f for f in out.review_flags)
+    assert out.failed_steps == ["gen_starter"] and not out.reports  # 검증 전 멈춤 사유 (#337 6절)
 
 
 async def test_two_designs_and_static_cross_check() -> None:
@@ -1703,7 +1720,7 @@ ONE_NEED_PINNED: dict[str, dict[str, Any]] = {
     "material": {
         "actions": [],
         "unresolved": [
-            "재료 판정: 흔한 구현(naive-all)이 다시 생성한 뒤에도 허용 설계의 장치(let cancelled =)를 사용해 숨은 "
+            "재료 판정: 구별 불가(무력화) — 흔한 구현(naive-all)이 다시 생성한 뒤에도 허용 설계의 장치(let cancelled =)를 사용해 숨은 "
             "케이스 hc1, hc2 를 통과 — AI 흔한 구현이 기본으로 정답을 사용하므로 이 함정은 AI 첫 답을 구별하지 못할 수 "
             "있다. 재료의 숨은 요구·흔한 구현 설명 확인 (사람)"
         ],

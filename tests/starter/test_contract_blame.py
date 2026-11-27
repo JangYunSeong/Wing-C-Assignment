@@ -13,6 +13,7 @@ from task_spec.nodes.starter.build import MAX_SIGNALS, SIGNAL_FLAG, BuildOutcome
 from task_spec.schemas import VerifyReport
 from task_spec.starter.repair import (
     CONTRACT_SUSPECT,
+    MATERIAL_VERDICT,
     RegenNote,
     assign,
     contract_signals,
@@ -321,3 +322,55 @@ async def test_signal_flags_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
         len(shown) == MAX_SIGNALS + 1
         and shown[-1] == f"{SIGNAL_FLAG}외 2건 (보고서의 마지막 검증 참고)"
     )
+
+
+def _naive_only_public_fail(d2_fails: bool = False) -> VerifyReport:
+    """흔한 구현만 공개 테스트 PUB 에서 실패, 허용 구현은 통과 (d2_fails 면 d2 도 같은 테스트에서 실패) — 운영 ct-9433 b2 꼴."""
+    c = _case()
+    bad = _t("public", PUB, "ASSERT", None, "기대 200 실제 500")
+    return _one_case(
+        _run("naive-all", "ref_naive", _t("hidden", c, "ASSERT", REASON), bad),
+        _run("d1", "ref_accepted", _t("hidden", c), _t("public", PUB)),
+        _run("d2", "ref_accepted", _t("hidden", c), bad if d2_fails else _t("public", PUB)),
+    )
+
+
+def test_a_public_test_only_the_naive_fails_after_both_were_rebuilt_is_an_overlap() -> None:
+    """#337 3절: 흔한 구현을 다시 만든 뒤에도 흔한 구현만 PUB 에서 떨어져 공개 테스트를 다시 만들었는데(누설 의심) 또 같으면 — 공개
+    요구가 숨은 요구를 이미 시험한다(겹침). 예전에는 예산을 다 쓰고 '수리 루프 실패'로 끝나 다시 빌드해 볼 만한 실패처럼 보였다.
+    '재료 판정: ' 머리라 실패 빌드 기록의 종류는 material (#334)."""
+    naive_rebuilt = {"gen_naive:naive-all": 1}
+    first = _assign(_naive_only_public_fail(), naive_rebuilt)
+    a = next(x for x in first.actions if x.generator == "gen_public")
+    assert "누설 의심" in a.reason and a.blame
+    again = _assign(
+        _naive_only_public_fail(),
+        {**naive_rebuilt, "gen_public": 1},
+        {"gen_public": RegenNote(a.gate, a.cases, a.reason, a.blame)},
+    )
+    assert not [x for x in again.actions if x.generator == "gen_public"]
+    overlap = [u for u in again.unresolved if u.startswith(f"{MATERIAL_VERDICT}구별 불가(겹침)")]
+    assert len(overlap) == 1 and PUB in overlap[0] and "명세 확인" in overlap[0]
+    assert not [u for u in again.unresolved if u.startswith(CONTRACT_SUSPECT)]
+
+
+def test_it_is_not_an_overlap_when_an_accepted_implementation_fails_the_same_test() -> None:
+    """허용 구현도 같은 공개 테스트에서 떨어지면 테스트 쪽 문제다 — 겹침으로 판정하지 않는다 (알파 ct-f608-v4-1: d2 도 Pt1 실패)."""
+    naive_rebuilt = {"gen_naive:naive-all": 1}
+    first = _assign(_naive_only_public_fail(d2_fails=True), naive_rebuilt)
+    leak = [x for x in first.actions if x.generator == "gen_public" and "누설 의심" in x.reason]
+    log = (
+        {"gen_public": RegenNote(leak[0].gate, leak[0].cases, leak[0].reason, leak[0].blame)}
+        if leak
+        else {}
+    )
+    again = _assign(_naive_only_public_fail(d2_fails=True), {**naive_rebuilt, "gen_public": 1}, log)
+    assert not [u for u in again.unresolved if "구별 불가(겹침)" in u]
+
+
+def test_the_leak_repair_is_not_sent_when_an_accepted_implementation_fails_too() -> None:
+    """#337 4절: 허용 구현도 같은 공개 테스트에서 떨어졌는데 '흔한 구현만 … 누설 의심(공개 수용 기준만 확인)'을 함께 보냈다 — 틀린 전제다.
+    이 규칙이 걸린 3번(운영 ct-9433 b2, 알파 ct-f608-v4-1 ×2) 모두 '흔한 구현만'이나 '계속' 전제가 틀렸다. 허용 구현 쪽 갈래가 맡는다."""
+    plan = _assign(_naive_only_public_fail(d2_fails=True), {"gen_naive:naive-all": 1})
+    assert not [x for x in plan.actions if "누설 의심" in x.reason]
+    assert [x for x in plan.actions if x.label == "d2" and PUB in x.reason]

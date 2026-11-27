@@ -1314,6 +1314,23 @@ def test_seed_words_already_in_the_business_need_are_dropped_with_a_flag() -> No
     assert any(n.startswith(FLAG_SEED_FIT) and "감사 기록" in n for n in notes)
 
 
+def test_sentence_fix_markers_are_dropped_with_a_flag() -> None:
+    """#337 1절: 인터뷰 재료(v1)는 정답 장치 표지를 문장으로 썼다 — 코드에 걸리지 않아 ③ 의 무력화 판정이 꺼진다. 빼고 알린다
+    (생성은 막지 않는다 — 출력 모델 검증으로 막으면 형식 재시도 한 번 뒤 재료 생성 전체가 실패한다)."""
+    from task_spec.interview.task import FLAG_SEED_FIT, fit_seed_to_template
+    from task_spec.schemas import FeatureSeed
+
+    manifest = coding_template("sw.backend").manifest
+    seed = FeatureSeed.model_validate_json(
+        feature_seed_output(
+            fix_markers=["요청 번호를 먼저 저장해 중복을 막음", r"\bfindByRequestId\b"]
+        )
+    )
+    fitted, notes = fit_seed_to_template(seed, manifest)
+    assert fitted.fix_markers == [r"\bfindByRequestId\b"]
+    assert f"{FLAG_SEED_FIT}정답 장치 표지 1개 제외 — 코드 꼴이 아님" in notes
+
+
 async def test_interview_slots_see_the_whole_posting(task_session) -> None:
     """설계 검사 #332 S-F18 (사용자 결정 2026-11-26): 공통 과제는 고른 역량으로, 확장 슬롯은 공고 전체 역량으로 — 슬롯이 공통 과제 밖
     역량을 먼저 확인한다. 예전에는 고른 역량만 넘겨 그 규칙이 성립하지 않았다."""

@@ -75,6 +75,9 @@ async def test_persistent_compile_errors_stop_before_implementations() -> None:
     assert [r.target for r in out.repairs] == ["gen_hidden", "gen_hidden"]
     assert any("채점 코드 컴파일 실패" in f and "IntUnaryOperator" in f for f in out.review_flags)
     assert "gen_starter" not in backend.calls and set(out.overlays) == {"public", "hidden"}
+    assert (
+        out.failed_steps == ["채점 코드 컴파일"] and not out.reports
+    )  # 검증 전 멈춤 사유 (#337 6절)
 
 
 async def test_errors_in_code_written_files_are_not_sent_to_generators() -> None:

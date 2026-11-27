@@ -285,8 +285,14 @@ class RealSteps:
             # 판정 문장은 실패 빌드 기록(DB)에만, 사유에는 종류·회차·관문만
             material = any(f.startswith(MATERIAL_VERDICT) for f in out.review_flags)
             head = "재료 판정으로 멈춤" if material else "수리 루프 실패"
+            message = f"build: {head} (회차 {out.rounds}) — {why}"
+            if not out.reports:
+                # 검증 전에 멈춤 (#337 6절) — 판단은 수리 기록이 아니라 검증 보고서 유무로. 채점 코드 컴파일을 고친 뒤 생성이 실패하면
+                # 마지막 컴파일 수리가 사유처럼 보였다. 멈춘 단계 이름만 (사유 문장은 검토 표시·실패 빌드 기록에)
+                steps_ = ", ".join(dict.fromkeys(out.failed_steps)) or "단계 기록 없음"
+                message = f"build: 검증 전 생성 실패 ({steps_}) — 검토 표시 참고"
             raise StepFailed(
-                f"build: {head} (회차 {out.rounds}) — {why}",
+                message,
                 cost_usd=out.cost_usd,
                 provenance=out.provenance,
                 # 사유 문장(숨은 테스트 문구가 올 수 있음)은 저장소 사유가 아니라 실패 빌드 기록(DB)에만

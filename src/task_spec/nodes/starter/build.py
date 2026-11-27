@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import PurePosixPath
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from task_spec.llm import LLMClient
 from task_spec.nodes.starter.generate import (
@@ -42,6 +42,7 @@ from task_spec.schemas import (
     VerifyReport,
 )
 from task_spec.schemas.build import HiddenPlan, RepairRecord, TaskContract
+from task_spec.spec.fix_markers import usable_markers
 from task_spec.starter import calibrate as calib
 from task_spec.starter.conformance import render_conformance
 from task_spec.starter.contract import SpecView
@@ -415,6 +416,9 @@ class BuildOutcome:
     status: Literal["review", "failed"]
     overlays: dict[str, Overlay] = field(default_factory=dict)  # starter · hidden · 참조 구현 라벨
     reports: list[VerifyReport] = field(default_factory=list)  # 검증 회차마다
+    # 생성·컴파일이 실패한 단계 (생성기 이름·'채점 코드 컴파일'·'시작 코드 컴파일') — 검증 보고서 없이 멈춘 빌드의 사유 머리에 (#337 6절:
+    # 예전에는 '수리 기록 없음'이나 마지막 컴파일 수리가 사유처럼 보였다). 단계 이름만 — 숨은 테스트 문구는 검토 표시에
+    failed_steps: list[str] = field(default_factory=list)
     repairs: list[RepairRecord] = field(default_factory=list)
     review_flags: list[str] = field(default_factory=list)
     # 참조 구현 라벨 → 그 구현의 컴파일 실패 표시 (review_flags 에도 있음) — 뒤 검증에서 기동되면 거둔다 (_withdraw_compile_flags)
@@ -771,18 +775,24 @@ def _no_window_retry(
     if out.calibration_tries or round_no + 1 >= max_rounds or not cal.cases:
         return None
     row = cal.row()
+
+    def naive(t: dict[str, Any]) -> str:
+        where = f"{', '.join(t['caught_cases'])} 에서 " if t.get("caught_cases") else ""
+        return f"흔한 구현 {where}떨어짐" if t["caught"] else "흔한 구현 통과"
+
     grid = "; ".join(
-        f"{t['values']} → 흔한 구현 {'떨어짐' if t['caught'] else '통과'}, 허용 구현 {'모두 통과' if t['clean'] else '일부 떨어짐'}"
+        f"{t['values']} → {naive(t)}, 허용 구현 {'모두 통과' if t['clean'] else '일부 떨어짐'}"
         for t in row["trials"]
     )
+    cases = ", ".join(cal.cases)
     return RepairAction(
         generator="gen_hidden",
         label="",
         gate="③",
-        reason=f"보정 창 없음 — 숨은 케이스 {', '.join(cal.cases)} 를 한 번 다시",
+        reason=f"보정 창 없음 — 숨은 케이스 {cases} 를 한 번 다시",
         note=(
             f"조절값 보정 시험에서 흔한 구현이 떨어지기 시작한 한도에서 허용 구현도 함께 떨어져 둘을 가를 창이 없었다 "
-            f"(숨은 케이스 {', '.join(cal.cases)}, 사유 {row['reason'] or '-'}): {grid}. "
+            f"(숨은 케이스 {cases}, 사유 {row['reason'] or '-'}): {grid}. "
             "시간을 재는 요청 묶음(버스트)을 업무 조회가 가벼운 경로로 보내거나 묶음 크기를 줄여, 허용 설계는 견디고 흔한 구현만 "
             "떨어지게 그 케이스만 고친다. 사유와 확인하는 결과는 바꾸지 않는다."
         ),
@@ -1229,6 +1239,10 @@ async def _build_and_repair(
 ) -> BuildOutcome:
     kw = {"llm": llm, "prompts": prompts, "ontology_version": ontology_version}
     out = BuildOutcome(status="failed")
+    # 정답 장치 표지는 코드 꼴만 ③ 으로 (#337 1절) — 이미 저장된 재료의 문장 표지는 다시 만들지 않으므로 여기서도 거른다
+    markers, marker_flag = usable_markers(b.seed)
+    if marker_flag is not None:
+        out.review_flags.append(marker_flag)
     by_id = {d.design_id: d for d in designs}
     missed = {"naive-all": {t.trap_id for t in b.task.traps}}
     gate = VariantGate()  # 공개 테스트 변별 관문 상태 (#164)
@@ -1259,6 +1273,7 @@ async def _build_and_repair(
             out.review_flags.append(
                 f"{r.task} 생성 실패: " + "; ".join([*r.problems, *r.fail_reasons][:3])
             )
+            out.failed_steps.append(r.task)
             return None
         return r.overlay
 
@@ -1316,6 +1331,7 @@ async def _build_and_repair(
                 f"채점 코드 컴파일 실패 (재요청 {len(fix.repairs)}회 뒤, 오류 {len(fix.errors)}건): "
                 f"{e.path}:{e.line} {e.message} {e.detail}".strip()[:300]
             )
+            out.failed_steps.append("채점 코드 컴파일")
             out.overlays = made_tests
             return out
     # ② 구현 코드 — 공개 테스트를 보고 맞춘다 (숨은 테스트는 보지 않음)
@@ -1337,6 +1353,7 @@ async def _build_and_repair(
         starter = sfix.overlay
         if sfix.errors:
             out.review_flags.append(_compile_flag("시작 코드", sfix))
+            out.failed_steps.append("시작 코드 컴파일")
             out.overlays = {STARTER: starter, **made_tests}
             return out
     first = await asyncio.gather(
@@ -1397,7 +1414,7 @@ async def _build_and_repair(
                 out.regen_counts,
                 shared,
                 terms=b.template.manifest.repair_terms,
-                fix_markers=b.seed.fix_markers if b.seed is not None else (),
+                fix_markers=markers,
                 feature_reasons=b.seed.reasons if b.seed is not None else (),
                 regen_log=out.regen_log,
                 passed_before=out.passed_before,
@@ -1412,10 +1429,16 @@ async def _build_and_repair(
                 if cal.status == "calibrated":
                     b = _apply_calibration(out, b, cal)
                     continue
-                # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음은 재료 판정으로 멈춤)
+                # 못 맞춤 — 보정 없이 다시 배정한다 (흔한 구현이 안 떨어짐·돌릴 수 없음은 기존 재생성 경로, 창 없음은 숨은 케이스 한 번
+                # 다시 뒤 재료 판정, 가장 느슨한 한도에서도 허용 구현이 떨어지면(overloaded) 바로 재료 판정 — #337 7절. 재시도는 창 없음에만:
+                # T-F1 재시도는 아직 창을 만든 실적이 없다 (알파 fix332-1: 다시 만든 케이스가 동시 요청을 줄여 다시 창 없음))
                 plan = assign_now()
-                if cal.status == "no_window":
-                    retry = _no_window_retry(out, cal, round_no, max_rounds)
+                if cal.status in ("no_window", "overloaded"):
+                    retry = (
+                        _no_window_retry(out, cal, round_no, max_rounds)
+                        if cal.status == "no_window"
+                        else None
+                    )
                     if retry is not None:
                         # 처음 창 없음 — 시험 격자를 주고 그 숨은 케이스를 한 번 다시 만든 뒤 다시 보정한다 (설계 검사 #332 T-F1).
                         # 흔한 구현은 다시 만들지 않는다 — 창이 없다는 것은 흔한 구현이 떨어진다는 뜻이다 (예전 재료 판정 때도 건너뛰었다)
@@ -1426,7 +1449,7 @@ async def _build_and_repair(
                     else:
                         again = (
                             " — 숨은 케이스를 한 번 다시 만든 뒤에도 창 없음"
-                            if out.calibration_tries
+                            if out.calibration_tries and cal.status == "no_window"
                             else ""
                         )
                         plan.unresolved.append(

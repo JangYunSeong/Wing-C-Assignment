@@ -130,12 +130,13 @@ async def replay(
         print(f"  {reason} — 케이스 {', '.join(cases)} · 결과 {cal.status}")
         for t in cal.trials:
             values = " ".join(f"{n}={v}" for n, v in t.values.items())
+            where = f" {', '.join(t.caught_cases)} 에서" if t.caught_cases else ""
             print(
-                f"    {values}: 흔한 구현 {'떨어짐' if t.caught else '통과'} · 허용 구현 {'모두 통과' if t.clean else '떨어짐'}"
+                f"    {values}: 흔한 구현{where} {'떨어짐' if t.caught else '통과'} · 허용 구현 {'모두 통과' if t.clean else '떨어짐'}"
             )
         if cal.status == "calibrated":
             print(f"  [고른 값] {cal.flag()}")
-        elif cal.status == "no_window":
+        elif cal.status in ("no_window", "overloaded"):
             print(f"  [재료 판정] {cal.verdict()}")
         results.append({"alpha": alpha.name, **cal.row()})
     return results
