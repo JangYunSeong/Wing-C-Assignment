@@ -35,7 +35,7 @@ def java():  # type: ignore[no-untyped-def]
 
 
 def test_java_template_is_registered_and_clean(java) -> None:  # type: ignore[no-untyped-def]
-    assert JAVA in available() and current_version(JAVA) == 6
+    assert JAVA in available() and current_version(JAVA) == 7
     assert java.manifest.ref == f"{JAVA}@{CUR}"
     assert check_template(java) == []
     assert "build.gradle" in java.files("project")
